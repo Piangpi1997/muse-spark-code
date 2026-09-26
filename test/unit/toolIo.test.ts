@@ -21,6 +21,7 @@ import {
 } from '../../src/host/backend/toolIo'
 import { shellJobAssembly } from '../../src/host/backend/shellJob'
 import { ShellTimeLimit } from '../../src/core/backends/modelapi/tools'
+import { posixQuoted } from '../../src/core/shellQuote'
 import type { RunProgram } from '../../src/host/processTree'
 import { removeFolder } from './helpers/temporaryFolders'
 
@@ -482,9 +483,13 @@ describe('createToolIo (real file system and shell)', () => {
     if (runHook === undefined) {
       throw new Error('hook runner missing')
     }
-    const command = process.platform === 'win32' ? 'more' : 'cat'
+    const echo = 'process.stdin.pipe(process.stdout)'
+    const command =
+      process.platform === 'win32'
+        ? `"${process.execPath}" -e "${echo}"`
+        : `${posixQuoted(process.execPath)} -e ${posixQuoted(echo)}`
     const result = await runHook(command, '{"session_id":"fixture"}\n', root, 10_000)
-    expect(result.exitCode).toBe(0)
+    expect(result.exitCode, result.stderr).toBe(0)
     expect(result.stdout).toContain('"session_id":"fixture"')
     expect(result.isTimedOut).toBe(false)
   }, 30_000)

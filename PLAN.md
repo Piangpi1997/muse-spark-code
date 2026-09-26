@@ -3837,6 +3837,16 @@ documented tree `0b990287` passed full local Windows quality (2,034 tests,
 gitleaks and SAST zero) and a process audit of zero. The verified pre-PR
 workflow receipt below changes documentation again, so the final candidate
 must receive its own exact-tree gate before commit and branch dispatch.
+The second M51 branch dispatch on `d9602f9` passed all other jobs but Windows
+again failed the real hook stdin fixture: with an adequate outer deadline,
+`more` returned exit code 1 in hosted CI. The test must exercise the same
+PowerShell-to-cmd hook runner using a deterministic Node stdin echo child,
+not a terminal pager whose behavior depends on runner console state. Keep
+the 10 second product deadline and the assertions that stdin is echoed,
+exit is zero and no timeout occurred. The exact staged tree `e46ece3`
+passed the focused real hook test on WIN-11-VM after `npm ci`, with zero
+checkout-owned processes. Repeat exact documented-tree local quality and
+branch dispatch before opening a PR.
 An M54 integration review found a separate hook-stdin privacy boundary:
 `input_text`, developer instructions, tool descriptions and assistant output
 can themselves contain pasted `data:` media URLs. The common model-call
