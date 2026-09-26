@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { SessionStore } from '../../src/core/backends/modelapi/sessionStore'
-import { ModelApiBackendManager } from '../../src/host/backend/modelApiBackendManager'
+import {
+  ModelApiBackendManager,
+  type ModelApiBackendManagerDeps,
+} from '../../src/host/backend/modelApiBackendManager'
+import { fakeMcpSource } from './helpers/fakeMcpSource'
 import { FakeLogOutputChannel } from './helpers/fakes'
 import { fakeModelApi } from './helpers/fakeModelApi'
 import { memoryContextIo } from './helpers/fakeContextIo'
@@ -20,6 +24,7 @@ function managerOn(
   store: SessionStore | undefined,
   log = new FakeLogOutputChannel(),
   hooks?: HookFixture,
+  mcp: Pick<ModelApiBackendManagerDeps, 'createMcpServers' | 'ideTools'> = {},
 ) {
   const api = fakeModelApi()
   return {
@@ -44,6 +49,7 @@ function managerOn(
       hookSettingsPath: '/cfg/muse/settings.json',
       isHooksEnabled: () => hooks?.enabled ?? false,
       memory: undefined,
+      ...mcp,
     }),
   }
 }
@@ -115,6 +121,24 @@ describe('ModelApiBackendManager', () => {
     await m.manager.dispose()
     expect(m.manager.isRunning).toBe(false)
     expect(m.log.info).toHaveBeenCalledWith(expect.stringContaining('Model API backend ready'))
+  })
+
+  it('gives the host its MCP servers for the workspace, shows their state, stops them (M50)', async () => {
+    const servers = fakeMcpSource([])
+    const roots: string[] = []
+    const m = managerOn('/ws', undefined, new FakeLogOutputChannel(), undefined, {
+      createMcpServers: (root) => {
+        roots.push(root)
+        return servers
+      },
+      ideTools: [],
+    })
+    expect(m.manager.mcpSnapshot()).toBeUndefined()
+    await m.manager.ensureHost()
+    expect(roots).toEqual(['/ws'])
+    expect(m.manager.mcpSnapshot()).toBe(servers.snapshotValue)
+    await m.manager.dispose()
+    expect(servers.isClosed).toBe(true)
   })
 
   it('refuses to start without a workspace', async () => {

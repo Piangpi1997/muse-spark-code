@@ -22,6 +22,8 @@ import {
   READ_FILE_DEFAULT_LIMIT,
   READ_FILE_MAX_LINE_CHARS,
   SEARCH_MAX_CANDIDATES,
+  SEARCH_MAX_FILE_BYTES,
+  SEARCH_MAX_HITS,
   SEARCH_MAX_RESULTS,
   SEARCH_PATTERN_MAX_LENGTH,
   SEARCH_TIMEOUT_MS,
@@ -50,7 +52,7 @@ import { GOAL_TOOL_DEFINITIONS } from './goals'
 import { MEMORY_TOOL_DEFINITIONS } from './memoryTools'
 
 import type { ToolClass } from './permissions'
-import type { FunctionToolDefinition } from './schemas'
+import type { FunctionOutputPart, FunctionToolDefinition } from './schemas'
 import { SUBAGENT_TOOL_DEFINITIONS } from './subagentTools'
 
 export interface ShellResult {
@@ -95,6 +97,9 @@ export interface SearchJob {
   /** The workspace root: a file whose canonical path leaves it is skipped (D24). */
   readonly root: string
   readonly files: readonly { readonly relative: string; readonly absolute: string }[]
+  /** The canonical limits travel with the job so the worker stays small. */
+  readonly maxFileBytes: number
+  readonly maxHits: number
 }
 
 export interface SearchHit {
@@ -205,6 +210,8 @@ const FINGERPRINT_HASH = 'sha256'
 export interface ToolOutcome {
   /** What the model receives as the function result. */
   readonly output: string
+  /** The result as content parts instead, when it holds pictures (an MCP tool's, M50). */
+  readonly outputParts?: readonly FunctionOutputPart[]
   /** What the transcript row shows. */
   readonly visibleOutput: string
   readonly failureReason?: string
@@ -977,6 +984,8 @@ async function search(
   const outcome = await context.io.searchFiles({
     pattern: args.pattern,
     root: context.workspaceRoot,
+    maxFileBytes: SEARCH_MAX_FILE_BYTES,
+    maxHits: SEARCH_MAX_HITS,
     files: searched.map((relative) => ({
       relative,
       absolute: p.join(context.workspaceRoot, ...relative.split('/')),

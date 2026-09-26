@@ -211,26 +211,31 @@ function skillManagementItems(backend: BackendKind | undefined): readonly Palett
     : []
 }
 
-/** What Muse Code loads from its own settings (M31); the Model API backend loads neither. */
+/**
+ * What Muse Code loads from its own settings (M31). The Model API backend
+ * runs the same MCP servers itself (M50) and may load reviewed hooks (M51).
+ */
 function museConfigItems(backend: BackendKind | undefined): readonly PaletteItem[] {
-  return backend === 'museCode'
-    ? [
-        {
-          id: 'mcpServers',
-          label: UI_TEXT.mcpItem,
-          slashName: SLASH_COMMAND_NAMES.mcp,
-          detail: UI_TEXT.mcpItemDetail,
-          action: { type: 'showMcpServers' },
-        },
-        {
-          id: 'hooks',
-          label: UI_TEXT.hooksItem,
-          slashName: SLASH_COMMAND_NAMES.hooks,
-          detail: UI_TEXT.hooksItemDetail,
-          action: { type: 'showHooks' },
-        },
-      ]
-    : []
+  if (backend === undefined) {
+    return []
+  }
+  const mcp: PaletteItem = {
+    id: 'mcpServers',
+    label: UI_TEXT.mcpItem,
+    slashName: SLASH_COMMAND_NAMES.mcp,
+    detail: backend === 'museCode' ? UI_TEXT.mcpItemDetail : UI_TEXT.mcpItemDetailModelApi,
+    action: { type: 'showMcpServers' },
+  }
+  return [
+    mcp,
+    {
+      id: 'hooks',
+      label: UI_TEXT.hooksItem,
+      slashName: SLASH_COMMAND_NAMES.hooks,
+      detail: UI_TEXT.hooksItemDetail,
+      action: { type: 'showHooks' },
+    },
+  ]
 }
 
 /**

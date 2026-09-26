@@ -209,8 +209,46 @@ export const EN = {
   mcpStdioPlaceholder: 'A local server needs no sign-in; edit its entry in the settings file',
   mcpCliMissing: 'Signing in to an MCP server needs the Muse Code CLI, which is not installed.',
   mcpTerminalName: 'Muse Code MCP sign-in',
+  // MCP servers on the Model API backend (M50, D42).
+  mcpItemDetailModelApi: 'The servers in Muse Code’s settings, run by this window',
+  mcpTitleModelApi: 'MCP servers on the Model API backend',
+  mcpRequiredModelApi: 'required (a message stops if it is not running)',
+  mcpStateNotStarted: 'Starts with your next message',
+  mcpStateStarting: 'Starting…',
+  mcpStateConnected: forms({ one: 'Connected: {count} tool', other: 'Connected: {count} tools' }),
+  mcpStateUnoffered: forms({
+    one: '{count} more not offered',
+    other: '{count} more not offered',
+  }),
+  mcpStateFailed: 'Not running: {reason}',
+  mcpStateRestricted: 'Not started: this workspace is in Restricted Mode',
+  mcpStateNotLoaded: 'Not loaded: see the warning',
+  mcpBuiltIn: 'built in',
+  mcpBuiltInDetail:
+    'The extension’s own getDiagnostics: the errors and warnings in VS Code’s Problems panel',
+  mcpRestartModelApi: 'Restart the MCP servers',
+  mcpRestartModelApiDetail:
+    'A reply that is running stops; the servers start again with your next message, from the settings as they are then',
+  mcpRestartedModelApi:
+    'The MCP servers stopped; your next message starts them from the settings as they are now.',
+  mcpShowLog: 'Show the log',
+  mcpShowLogDetail: 'What the server wrote to stderr, and why it stopped',
+  mcpModelApiPlaceholder:
+    'This window runs the server itself; a sign-in with muse mcp login is for Muse Code only',
+  mcpServerUnavailable: 'MCP server {name} is not available: {reason}',
+  mcpRequiredFailed:
+    'MCP server {name} is required and is not running: {reason}. Fix its entry in Muse Code’s settings, or set "mode": "optional", then restart the MCP servers (MCP servers… in the palette).',
+  mcpNoServersKeys:
+    'No MCP server is loaded: Muse Code’s settings hold both “mcpServers” and “mcp_servers”. Keep one key.',
+  mcpNoServersMode:
+    'No MCP server is loaded: {servers} set both “required” and “mode”. Keep only “mode”.',
+  mcpNoServersUnreadable:
+    'No MCP server is loaded: Muse Code’s settings file could not be read ({reason}).',
   hooksTitle: 'Muse Code hooks',
+  hooksTitleModelApi: 'Model API hooks',
   hooksWarning: 'Hooks run through your shell, outside Muse Code’s sandbox and approvals',
+  hooksModelApiWarning:
+    'Hooks run through your shell outside tool approvals. Turn on museSpark.modelApiHooks only after reviewing these sources.',
   hooksProject: 'Project hooks',
   hooksProjectFile: '.muse/hooks.json',
   hooksProjectNone: 'This workspace has no .muse/hooks.json.',

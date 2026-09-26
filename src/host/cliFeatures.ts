@@ -8,10 +8,12 @@ import { existsSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import path from 'node:path'
 import * as vscode from 'vscode'
+import type { McpPoolSnapshot } from '../core/backends/modelapi/mcp/pool'
 import {
   EXPORT_FILE_EXTENSIONS,
   MUSE_EXPORT_TIMEOUT_MS,
   MUSE_EXTENDING_DOCS_URL,
+  MODEL_API_HOOKS_SETTING,
   MUSE_SKILLS_TIMEOUT_MS,
   PROJECT_HOOKS_SEGMENTS,
   type SkillImportSource,
@@ -39,6 +41,15 @@ export interface CliFeatureDeps {
   readonly workspaceRoot: string | undefined
   /** Stops the hosts; the next message starts them with the new settings (D25). */
   readonly restartBackend: () => Promise<void>
+  /**
+   * The Model API backend's MCP servers, read for the view when this window
+   * runs on that backend (M50); undefined on Muse Code.
+   */
+  readonly modelApiMcp: () => (() => McpPoolSnapshot | undefined) | undefined
+  /** Undefined on Muse Code; current machine hook setting on Model API. */
+  readonly modelApiHooks: () => boolean | undefined
+  /** Shows the extension's log, where an MCP server's stderr goes. */
+  readonly openLog: () => void
   readonly log: Logger
 }
 
@@ -53,7 +64,7 @@ export interface CliFeatures {
 const NOT_FOUND = 'ENOENT'
 
 /** The file's text; undefined when there is none; throws on any other failure. */
-function readTextIfPresent(fsPath: string): string | undefined {
+export function readTextIfPresent(fsPath: string): string | undefined {
   try {
     return readFileSync(fsPath, 'utf8')
   } catch (error: unknown) {
@@ -132,6 +143,15 @@ export function createCliFeatures(deps: CliFeatureDeps): CliFeatures {
         void vscode.window.showInformationMessage(message)
       },
       showWarning: loggedPopups(deps.log).showWarning,
+      modelApiServers: deps.modelApiMcp(),
+      modelApiHooks: deps.modelApiHooks() === undefined ? undefined : () => deps.modelApiHooks(),
+      openModelApiHooksSetting: async () => {
+        await vscode.commands.executeCommand(
+          'workbench.action.openSettings',
+          MODEL_API_HOOKS_SETTING,
+        )
+      },
+      openLog: deps.openLog,
     }
   }
   const saveTarget = (fileName: string, filterName: string, extension: string) =>

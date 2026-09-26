@@ -21,6 +21,12 @@
 // edit itself (git's hooks and config, the editor's tasks, CI workflows,
 // the agent's own rules and skills) never changes without a card.
 //
+// An MCP server's tool (M50, PLAN.md D42) is arbitrary code: it asks like a
+// shell command, "always allow in this session" included, and Plan refuses
+// it. A tool its server marks read-only (`annotations.readOnlyHint`) runs
+// without a card in Auto, as Muse Code runs it under on-request approvals
+// (its 1.2.1 changelog), and asks in Plan instead of being refused.
+//
 // A memory write (M49, D41: `add_memory`, `edit_memory`) is an edit, never
 // a protected one, although the project's notes sit under `.agents`: the
 // tools write only Markdown notes under a memory root, so Manual asks, Auto
@@ -30,7 +36,7 @@ import type { ApprovalChoice } from '../../../shared/agentEvents'
 import { PROTECTED_PATH_SEGMENTS, PROTECTED_FILE_NAMES, UI_TEXT } from '../../../shared/constants'
 import type { ApprovalMode } from '../../../shared/permissionModes'
 
-export type ToolClass = 'read' | 'edit' | 'shell' | 'interactive' | 'paid' | 'spawn'
+export type ToolClass = 'read' | 'edit' | 'shell' | 'interactive' | 'paid' | 'mcp' | 'spawn'
 
 export type PermissionVerdict = 'allow' | 'ask' | 'deny'
 
@@ -70,14 +76,36 @@ export function isProtectedPath(canonicalRelative: string): boolean {
   )
 }
 
+/** An MCP server's tool: a shell command's rules, eased for one its server marks read-only. */
+function mcpVerdict(mode: ApprovalMode, isReadOnly: boolean): PermissionVerdict {
+  switch (mode) {
+    case 'allowAll': {
+      return 'allow'
+    }
+    case 'onRequest': {
+      return isReadOnly ? 'allow' : 'ask'
+    }
+    case 'denyUnmatched': {
+      return isReadOnly ? 'ask' : 'deny'
+    }
+    case 'promptUnmatched': {
+      return 'ask'
+    }
+  }
+}
+
 /** What the mode says about a tool of this class, before session rules. */
 export function verdictFor(
   mode: ApprovalMode,
   toolClass: ToolClass,
   isProtected = false,
+  isReadOnly = false,
 ): PermissionVerdict {
   if (toolClass === 'paid') {
     return mode === 'denyUnmatched' ? 'deny' : 'ask'
+  }
+  if (toolClass === 'mcp') {
+    return mcpVerdict(mode, isReadOnly)
   }
   if (toolClass === 'spawn') {
     return mode === 'denyUnmatched' ? 'deny' : 'ask'
@@ -142,6 +170,8 @@ export interface PermissionQuery {
   readonly command?: string | undefined
   /** An edit whose target is a protected path (D24). */
   readonly isProtected?: boolean
+  /** An MCP tool its server marks read-only (M50). */
+  readonly isReadOnly?: boolean
 }
 
 /** The mode plus the rules a session accumulated. */
@@ -169,7 +199,7 @@ export class PermissionEngine {
 
   public verdict(query: PermissionQuery): PermissionVerdict {
     const isProtected = query.isProtected === true
-    const byMode = verdictFor(this.mode, query.toolClass, isProtected)
+    const byMode = verdictFor(this.mode, query.toolClass, isProtected, query.isReadOnly === true)
     // A session rule never answers for a paid call (D30).
     if (
       byMode !== 'ask' ||
