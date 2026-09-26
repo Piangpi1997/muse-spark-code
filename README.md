@@ -343,10 +343,31 @@ hooks from `.muse/hooks.json`. The extension shows them and never edits them:
 - **Loud warnings** for the two settings mistakes that make Muse Code load no
   server at all: both `mcpServers` and the older `mcp_servers` in one file,
   or `required` beside `mode` on a server.
-- **Hooks…** lists the project's, yours and your administrator's hooks, and
+- On the Muse Code backend, **Hooks…** lists the project's, yours and your administrator's hooks, and
   opens the file behind each. A hook runs through your shell outside Muse
   Code's sandbox and approvals, so read a repository's hooks before you
   trust its folder.
+
+On the **Model API backend**, `museSpark.modelApiHooks` is a machine-scoped
+setting, off by default. When enabled, a new session reads the same managed,
+user and project hook sources. Project hooks require VS Code workspace trust.
+The implementation currently fires `SessionStart`, `UserPromptSubmit`,
+`PreToolUse`, `PermissionRequest`, `PostToolUse`, `PostToolUseFailure`,
+`PostToolBatch`, `PreLLMCall`, `PostLLMCall`, `PreCompact`, `PostCompact`,
+`Stop`, `StopFailure`, `SessionEnd` and `Notification`;
+unsupported events and handlers are reported and skipped. Hook commands run as your user outside
+the agent's sandbox, with a narrow environment that excludes the Model API key.
+They get JSON on stdin, have a timeout and output cap, and may approve an
+ordinary tool call that would otherwise ask. Paid calls and protected writes
+still need your confirmation. Review each source with
+**Muse Spark: Hooks** in the Command Palette before enabling the setting.
+That picker reads the Muse Code source files but does not yet show the Model
+API execution setting; check `museSpark.modelApiHooks` directly. Changes take
+effect in the next session.
+Model-call hooks receive bounded summaries without inline image bytes or the
+Model API key. A pre-call veto stops the request before it reaches Meta. A
+post-call veto stops returned tools and follow-up requests. An isolated Muse
+Code echo capture also ended the run as failed without another model request.
 
 **Worktrees.** **New worktree…** asks for a new branch and its base (the
 current commit or any local branch), creates it in a folder of its own, and

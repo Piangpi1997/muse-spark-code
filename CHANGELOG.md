@@ -32,6 +32,21 @@ while they are (PLAN.md D30, D34).
   Muse Code's two uncaptured owner verbs remain a later follow-up. Final
   M48 quality and hosted checks remain open.
 
+- **Model API hooks, initial M51 increment (certification pending).** The
+  machine-scoped `modelApiHooks` setting enables fifteen Muse Code lifecycle
+  events from the managed, user and trusted-project hook files. Commands get
+  JSON on stdin, a cleared environment without the Model API key, time and
+  output caps, and process-tree cancellation. Unsupported events and handlers
+  are reported and skipped; the remaining M51 events are still open. Windows
+  managed PATH grants retain only absolute entries even when the variable
+  uses mixed case. Captured PreLLMCall hooks can veto a Model API request
+  before HTTPS. Successful PostLLMCall hooks see bounded summaries; a
+  post-call veto stops tools and follow-up requests without claiming Muse's
+  full hook parity; an isolated Muse echo capture ended its run as failed
+  without another request. The M45 Stop and goal-budget checks still fence
+  buffered replies and keep accepted steering when hooks run.
+  Untrusted regular-expression matchers now compile under the same V8
+  deadline as matching, so pattern compilation cannot stall the host thread.
 - **Image edits** (M44, PLAN.md D37). With image generation on, the model
   can also change one workspace image, or combine up to four, by a prompt,
   into a new PNG (`edit_image`, Meta's `/images/edits`, $0.01 per image).

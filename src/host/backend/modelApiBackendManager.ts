@@ -5,6 +5,7 @@
 import { ModelApiClient } from '../../core/backends/modelapi/client'
 import type { EnvironmentFacts } from '../../core/backends/modelapi/instructions'
 import { ModelApiHost, type ModelApiPaidHooks } from '../../core/backends/modelapi/ModelApiHost'
+import { loadHookDefinitions } from '../../core/backends/modelapi/hooks'
 import type { SessionStore } from '../../core/backends/modelapi/sessionStore'
 import type { ToolIo } from '../../core/backends/modelapi/tools'
 import type { ContextIo } from '../../core/context/contextFiles'
@@ -30,6 +31,8 @@ export interface ModelApiBackendManagerDeps extends ModelApiPaidHooks {
   readonly store: SessionStore | undefined
   /** The git facts for the prompt's environment section (D15). */
   readonly describeEnvironment: () => Promise<EnvironmentFacts>
+  readonly hookSettingsPath?: string
+  readonly isHooksEnabled?: () => boolean
 }
 
 const MANAGER_DISPOSED = 'The Model API backend was stopped while it was starting'
@@ -96,6 +99,20 @@ export class ModelApiBackendManager {
       notePaidUse: this.deps.notePaidUse,
       confirmSubagentTask: this.deps.confirmSubagentTask,
       noteSubagentUsage: this.deps.noteSubagentUsage,
+      isHooksEnabled: this.deps.isHooksEnabled,
+      loadHooks: async () =>
+        this.deps.isHooksEnabled?.() === true && this.deps.hookSettingsPath !== undefined
+          ? await loadHookDefinitions({
+              io: this.deps.contextIo,
+              platform: process.platform,
+              settingsPath: this.deps.hookSettingsPath,
+              workspaceRoot,
+              isWorkspaceTrusted: this.deps.isWorkspaceTrusted,
+              warn: (message) => {
+                this.deps.log.warn(`Hooks: ${message}`)
+              },
+            })
+          : [],
     })
     await host.load()
     this.deps.log.info('Model API backend ready (api.meta.ai/v1, stateless reasoning replay)')

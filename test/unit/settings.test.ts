@@ -26,6 +26,7 @@ describe('readSettings', () => {
         environmentVariables: [{ name: 'MUSE_HOME', value: 'D:/muse' }],
         shellSandbox: 'off',
         backend: 'modelApi',
+        modelApiHooks: true,
       }),
       new FakeLogOutputChannel(),
     )
@@ -36,6 +37,7 @@ describe('readSettings', () => {
     expect(settings.environmentVariables).toEqual([{ name: 'MUSE_HOME', value: 'D:/muse' }])
     expect(settings.shellSandbox).toBe('off')
     expect(settings.backend).toBe('modelApi')
+    expect(settings.modelApiHooks).toBe(true)
   })
 
   it('reads the retention period as a whole number of days, 0 keeping for ever (D26)', () => {
@@ -91,6 +93,7 @@ describe('toSettingsSnapshot', () => {
     expect(snapshot).not.toHaveProperty('shellSandbox')
     expect(snapshot).not.toHaveProperty('enableNewConversationShortcut')
     expect(snapshot).not.toHaveProperty('backend')
+    expect(snapshot).not.toHaveProperty('modelApiHooks')
     expect(snapshot.preferredLocation).toBe(SETTING_DEFAULTS.preferredLocation)
   })
 })

@@ -3599,6 +3599,114 @@ translations. The order is D36's table:
 | M55       | Sign in and install Muse Code from the panel (M41 folded in)                                                                          |
 | M56       | Enterprise network: proxy and certificates, the sandbox network switch, no session log, the CLI's config status                       |
 
+### M51 — Hooks on the Model API backend (D36)
+
+**Status 2026-09-26: M48 reconciled on `999d72e`; Windows source-tree quality green; M49/M50 joins and certification pending.** The
+initial bounded runtime supports `SessionStart`, `UserPromptSubmit`,
+`PreToolUse`, `PermissionRequest`, `PostToolUse`, `PostToolUseFailure`,
+`PostToolBatch`, `PreCompact`, `PostCompact`, `Stop`, `StopFailure`, `SessionEnd`
+and `Notification`, plus captured `PreLLMCall` and successful `PostLLMCall`
+boundaries. `SubagentStart` and `SubagentStop` now run at the M48 child turn
+boundary under the same paid task grant. The complete event-specific output
+contract remains open. The pre-M48 stage is pinned at
+`refs/codex-backups/m51-pre-m48-20260926`; M48 reconciliation passed 232/232
+focused tests across six hook/host/settings/tool-I/O files, host and unit
+typechecks, localization and targeted lint. The final documented-tree gate
+remains open. An
+initial duplication check failed on 11 clone pairs, then passed with zero
+clones after shared hook and write-turn helpers; no gate was weakened. An
+isolated Muse Code 1.3.0 echo-provider run
+captured PreLLMCall/PostLLMCall success frames and a PreLLMCall block. A
+subsequent isolated echo run captured a PostLLMCall block: its run failed
+without another model request. Full Model API parity remains open; the
+captured safe subset is staged in this isolated worktree.
+
+The first full M48-base quality run reached `security:sast` after 1,814
+passing unit tests and 304 accessible pages, then failed on unbounded
+host-thread regex compilation in the hook parser. Compilation now runs
+inside a bounded V8 context, and the focused hook/host tests and Semgrep
+scan pass. The exact documented tree still needs a full quality rerun.
+The first documented rerun found a separate 25 ms regex match timeout
+false negative under 147 coverage workers because each match built a new
+V8 context. Reusing fixed contexts kept the 25 ms match bound and restored
+the full unit-coverage pass (1,814 tests, 3 skipped). The final exact-tree
+quality gate remains pending.
+Windows `npm run quality` then exited 0 on exact staged source tree
+`b87fb92247a57e37b4a28a01a1ad2a3effbeef5c`: 1,814 unit tests passed
+(3 skipped), all 304 accessibility pages returned with no violations or
+undecided results, and audit, secret and SAST checks were clean. This
+receipt is for the source tree before the documentation update; rerun the
+full gate on the final documented tree before committing.
+The documented tree `1ebbfc1eba20f41c09c57a6c4f113071e692c4af`
+also passed local Windows `npm run quality`: 1,814 unit tests passed
+(3 skipped), 304 accessibility pages returned with zero violations,
+undecided results or missing pages, and audit, secret and SAST checks were
+clean. Independent process audit found no M51-owned Node or Chrome process.
+This added receipt changes the staged tree, so the commit candidate must
+pass the full gate once more before commit.
+
+The captured M51 model-call increment wires `PreLLMCall` before a logical
+Model API response stream (including compaction) and `PostLLMCall` after a
+completed response. It uses the observed summary fields with bounded text
+previews, not media bytes, full tool output or API keys. A captured pre-call
+block vetoes the request before HTTPS. A post-call block stops before tools
+run, pairs returned calls with failure outputs for replay and buys no
+follow-up request, matching the isolated echo capture's failed terminal.
+Internal HTTP retries share the logical attempt's hook boundary, and the exact retry/failed-response
+hook sequence remains an explicit certification gap. The M48 child events
+passed local fake boundary tests but have no live provider claim. M50's external MCP tool dispatch and the
+Model API Hooks picker need integration tests after M50 joins; no MCP tool
+or subagent hook parity is claimed on this isolated tree.
+
+**Integration map, recorded 2026-09-26; M48 child path focused-green, M50 open.** M48 creates a child
+in `ModelApiSession.spawnChild`, admits queued work in `startQueuedChildren`
+only after its paid grant, and reports a completed turn in `childEvent`.
+Pass M51's session hook snapshot into the child without re-reading settings.
+Dispatch `SubagentStart` at the actual first child-session start, before its
+first model request, and put its allowed context in the child replay. Do not
+fire it for a declined spawn or a cancelled queued child. `childEvent` is
+too late to implement `SubagentStop`: dispatch that event at the child's
+natural stop boundary inside its turn, with the documented child ids and
+last assistant message. A block may continue the same child task only within
+both M51's stop-continuation bound and M48's existing four-request paid
+grant; owner Stop, interrupt, disposal and queued cancellation must not be
+converted into a hook-funded continuation. These are local Model API hook
+events, not new Muse MSP notification parsers; the SDK's documented payload
+is reference evidence, not a live subagent capture.
+
+M50's `ModelApiSession.externalTool` and `performExternal` must join M51's
+`runCall`/`decideAndRun` hook path: keep the external `mcp`/read-only IDE
+permission and trust checks, route the effective `PreToolUse` input through
+normal approval and the MCP/IDE validator, skip workspace `touchPath` for
+external tools, preserve M50's structured `outputParts` for model replay,
+and send bounded text to `PostToolUse` or `PostToolUseFailure`. Include
+`mcp__<server>__<tool>` and `mcp__ide__<tool>` in matcher, post-tool and
+batch coverage without exposing media bytes or provider credentials to hook
+stdin. M50's Model API Customize palette currently offers MCP but not Hooks;
+add the Model API Hooks picker and backend-aware source status after M50's
+palette change. M51's machine opt-in is presently checked only when hooks
+load: a session kept open after the setting turns off still runs its stored
+commands. Recheck opt-in at dispatch, make opt-out effective immediately,
+and require source/command review before enabling execution; a trusted
+project path must not be labelled running while execution is off.
+
+Focused M48 fake checks now cover no `SubagentStart` for decline/queued
+cancel, one start context reaching only the child, natural `SubagentStop`
+feedback under the four-request cap, explicit Stop that cannot be vetoed,
+and live hook opt-out in an open session. Still owed: MCP and IDE
+rewrite/deny/approval/post/batch cases use local fake tools; the backend-specific
+picker shows accurate state and source labels. Run red drills and the full
+quality/browser gates after ordered M49/M50 integration. The captured echo
+frames are unchanged; no new live hook capture is claimed here.
+
+- **Source contract:** Muse Code 1.3.0's [settings-level hook guide](https://meta-models.github.io/muse-code-sdk/next/guides/extend/hooks/) and [event/payload reference](https://meta-models.github.io/muse-code-sdk/next/guides/plugins/reference/hook-events/) document the project, user and managed sources, 17 events, matcher grammar, command fields, stdin and result shapes, and execution limits. The guide includes captured runs. The shorter user guide names 15 events; the SDK reference also documents `PostToolBatch` and `StopFailure`. These are reference shapes, not a claim that this extension has executed them.
+- **Goal:** use those existing Muse hook files with Model API sessions, without handing the Model API key to a hook process. Project hooks require VS Code workspace trust. Hook commands are outside the tool sandbox; the Model API backend must not execute them merely because the model chose a tool. Activation needs an explicit, machine-scoped opt-in and a visible review of commands/sources. A declined or unavailable activation runs no hook.
+- **Runtime:** read and validate each source at session start, in managed/user/project order, and keep that snapshot for the session. Reject an invalid source without silently keeping partial guards. Run commands with a cleared, allowlisted environment, stdin JSON, a bounded timeout, independent stdout/stderr limits, process-tree cancellation and at most four concurrent hook commands across the extension host. Validate JSON output before use. Hook answers can block or alter only the event actions the reference allows; any rewritten tool input is revalidated and still passes normal approvals. A hook never approves a paid call, bypasses a protected write, or broadens a session rule. Show failures and hook messages without leaking command environment or credentials.
+- **Context priority:** hook-added text is replayed as user-level context. A repository hook cannot create a developer instruction; its blocking decision is enforced by code before the relevant action.
+- **Panel access:** expose **Hooks…** in Customize on both backends after M50's palette changes. The picker must say whether Model API hook execution is on, and link to its machine setting; source rows must not claim a trusted project runs while the opt-in is off. Keep Muse Code's read-only settings behavior.
+- **Event mapping:** wire lifecycle, prompt, tool, permission, model, compaction, subagent and stop events at their real boundaries. Where a Model API session has no corresponding operation, the event cannot fire; do not fake it. Preserve event-specific payload fields and any hook feedback in the replay/transcript. Bound repeated `Stop` and post-model continuations so hooks cannot create an infinite paid loop.
+- **Acceptance:** tests from the cited reference shapes cover source order, trust/opt-in, bad config, matcher selection, denial, updated input plus permission recheck, failure/timeout/output caps, cancellation, cleared credentials, each applicable event and persisted replay. Red drills show a disabled guard test fails, then restored green. `npm run quality` and the relevant UI/accessibility checks pass. Record local and live evidence in `docs/certification/m51.md`; do not mark complete on unit tests alone.
+
 ### M43 — A row for every tool Muse Code runs (D36)
 
 **Status 2026-09-25: built and certified** (`docs/certification/m43.md`).

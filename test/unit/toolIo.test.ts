@@ -11,6 +11,7 @@ import {
 import {
   BoundedText,
   createToolIo,
+  hookEnvironment,
   runCommand,
   shellArguments,
   shellEnvironment,
@@ -162,6 +163,43 @@ describe('shellEnvironment', () => {
       ProgramFiles: String.raw`C:\Program Files`,
       PSModulePath: String.raw`C:\Program Files\WindowsPowerShell\Modules;C:\Windows\System32\WindowsPowerShell\v1.0\Modules`,
     })
+  })
+})
+
+describe('hookEnvironment (M51)', () => {
+  it('passes only Muse hook variables, withholding provider credentials and editor handles', () => {
+    expect(
+      hookEnvironment(
+        {
+          HOME: '/home/u',
+          PATH: '/usr/bin:.:bin:/opt/bin',
+          LANG: 'en_US.UTF-8',
+          META_API_KEY: 'LLM|1|secret',
+          OPENAI_API_KEY: 'secret',
+          VSCODE_IPC_HOOK_CLI: '/tmp/editor.sock',
+          CI_TOKEN: 'secret',
+        },
+        'linux',
+        ['CI_TOKEN', 'META_API_KEY'],
+      ),
+    ).toEqual({
+      HOME: '/home/u',
+      PATH: '/usr/bin:/opt/bin',
+      LANG: 'en_US.UTF-8',
+      CI_TOKEN: 'secret',
+    })
+  })
+
+  it('sanitizes mixed-case Windows PATH and COMSPEC grants too', () => {
+    const clean = hookEnvironment(
+      { Path: String.raw`C:\bin;.;tools`, ComSpec: 'cmd.exe' },
+      'win32',
+      ['Path', 'comspec'],
+    )
+    expect(Object.entries(clean).filter(([name]) => name.toUpperCase() === 'PATH')).toEqual([
+      ['Path', String.raw`C:\bin`],
+    ])
+    expect(Object.keys(clean).some((name) => name.toUpperCase() === 'COMSPEC')).toBe(false)
   })
 })
 
@@ -438,4 +476,35 @@ describe('createToolIo (real file system and shell)', () => {
     expect(result.stderr).toMatch(/ENOENT/)
     expect(result.isTimedOut).toBe(false)
   })
+
+  it('delivers hook JSON on stdin without placing it in the command line (M51)', async () => {
+    const runHook = io().runHook
+    if (runHook === undefined) {
+      throw new Error('hook runner missing')
+    }
+    const command = process.platform === 'win32' ? 'more' : 'cat'
+    const result = await runHook(command, '{"session_id":"fixture"}\n', root, 10_000)
+    expect(result.exitCode).toBe(0)
+    expect(result.stdout).toContain('"session_id":"fixture"')
+    expect(result.isTimedOut).toBe(false)
+  })
+
+  it('kills a hook that exceeds its per-stream output limit', async () => {
+    const result = await runCommand({
+      file: process.execPath,
+      args: ['-e', `process.stdout.write('x'.repeat(17000)); setTimeout(() => {}, 30000)`],
+      cwd: root,
+      env: process.env,
+      timeoutMs: 10_000,
+      signal: undefined,
+      tree: {
+        platform: process.platform,
+        systemRoot: process.env['SystemRoot'],
+        log: () => undefined,
+      },
+      maxOutputBytes: 16 * 1024,
+    })
+    expect(result.isOutputTooLarge).toBe(true)
+    expect(result.isTimedOut).toBe(false)
+  }, 30_000)
 })

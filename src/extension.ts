@@ -841,6 +841,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     random: () => Math.random(),
     personalSkillsRoot: skillsHome,
     isWorkspaceTrusted: () => vscode.workspace.isTrusted,
+    hookSettingsPath: museSettingsPath(museConfig()),
+    isHooksEnabled: () => currentSettings().modelApiHooks,
     // Sessions survive the window (PLAN.md D14) in the workspace storage
     // directory; no folder open, no storage, no persistence.
     store:
