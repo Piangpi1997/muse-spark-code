@@ -465,6 +465,8 @@ Model-call hooks receive bounded summaries without inline image bytes or the
 Model API key. A pre-call veto stops the request before it reaches Meta. A
 post-call veto stops returned tools and follow-up requests. An isolated Muse
 Code echo capture also ended the run as failed without another model request.
+Pasted media data URLs inside ordinary text are removed before any model-call
+hook preview is shortened; the original text still reaches the model.
 Tool hooks receive bounded previews of arguments and output, with media data
 URLs and credential-named fields omitted. MCP tools and the model still use
 the original arguments and results. A required MCP server failure ends the

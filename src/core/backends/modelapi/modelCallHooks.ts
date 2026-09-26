@@ -20,6 +20,7 @@ import {
   type ResponseObject,
   type ToolDefinition,
 } from './schemas'
+import { redactHookText } from './toolHookPayload'
 
 interface TextSummary {
   readonly type: 'text'
@@ -39,9 +40,10 @@ interface ToolSummary {
 }
 
 function preview(text: string, limit: number): string {
+  const safe = redactHookText(text)
   let result = ''
   let count = 0
-  for (const character of text) {
+  for (const character of safe) {
     if (count >= limit) {
       break
     }

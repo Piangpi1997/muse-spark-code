@@ -117,6 +117,57 @@ describe('captured Model API hook summaries (M51)', () => {
     })
   })
 
+  it('omits pasted media URLs from every model-call hook text preview', () => {
+    const media = `data:image/png;base64,${'P'.repeat(400)}`
+    const withPastedMedia: CreateResponseBody = {
+      ...body,
+      instructions: `Review ${media} carefully`,
+      input: [
+        {
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_text', text: `note ${media} tail` }],
+        },
+      ],
+      tools: [
+        {
+          type: 'function',
+          name: 'read_file',
+          description: `Read ${media} safely`,
+          parameters: {},
+          strict: false,
+        },
+      ],
+    }
+    const response = responseSchema.parse({
+      id: 'response-media',
+      status: 'completed',
+      output: [
+        {
+          type: 'message',
+          role: 'assistant',
+          content: [{ type: 'output_text', text: `Reply ${media} done` }],
+        },
+      ],
+      usage: { input_tokens: 1, output_tokens: 1 },
+    })
+    const pre = preModelCallFields(withPastedMedia, 'request-media', 1, 0)
+    const post = postModelCallFields(withPastedMedia, response, 'request-media', 1, 0, 'session')
+    expect(pre).toMatchObject({
+      messages: [{ content: [{ text: 'note [media omitted] tail' }] }],
+      tools: [{ description: 'Read [media omitted] safely' }],
+    })
+    expect(post).toMatchObject({
+      messages: [
+        { role: 'developer', content: [{ text: 'Review [media omitted] carefully' }] },
+        { role: 'user', content: [{ text: 'note [media omitted] tail' }] },
+      ],
+      output_text_preview: 'Reply [media omitted] done',
+    })
+    expect(JSON.stringify({ pre, post })).not.toContain('data:image/png;base64,')
+    expect(withPastedMedia.instructions).toContain(media)
+  })
+
   it('keeps worst-case Unicode summaries below the hook stdin cap', () => {
     const many: CreateResponseBody = {
       ...body,

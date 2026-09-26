@@ -58,6 +58,8 @@ while they are (PLAN.md D30, D34).
   previews; media and credential fields stay out of hook stdin while the
   original MCP result still reaches the model. A required MCP server loss
   cannot be hidden by a post-tool hook stop.
+  Model-call hook text previews also remove pasted media data URLs before
+  shortening user text, instructions, tool descriptions or assistant output.
 - **Image edits** (M44, PLAN.md D37). With image generation on, the model
   can also change one workspace image, or combine up to four, by a prompt,
   into a new PNG (`edit_image`, Meta's `/images/edits`, $0.01 per image).

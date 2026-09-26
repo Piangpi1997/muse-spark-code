@@ -17,12 +17,13 @@ const REDACTED = '[redacted]'
 const MEDIA_OMITTED = '[media omitted]'
 const TRUNCATED = '[truncated]'
 
-function safeText(value: string): string {
+/** Drop inline media and bearer values before any hook-facing preview clips text. */
+export function redactHookText(value: string): string {
   return value.replaceAll(DATA_URL, '[media omitted]').replaceAll(BEARER_VALUE, '[redacted]')
 }
 
 function takeText(value: string, budget: { left: number }, max: number): string {
-  const safe = safeText(value)
+  const safe = redactHookText(value)
   const length = Math.max(0, Math.min(max, budget.left))
   const taken = safe.slice(0, length)
   budget.left -= taken.length

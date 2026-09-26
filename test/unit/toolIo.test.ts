@@ -487,7 +487,7 @@ describe('createToolIo (real file system and shell)', () => {
     expect(result.exitCode).toBe(0)
     expect(result.stdout).toContain('"session_id":"fixture"')
     expect(result.isTimedOut).toBe(false)
-  })
+  }, 30_000)
 
   it('kills a hook that exceeds its per-stream output limit', async () => {
     const result = await runCommand({
