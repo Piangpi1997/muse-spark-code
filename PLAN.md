@@ -3817,7 +3817,13 @@ translations. The order is D36's table:
 
 ### M51 — Hooks on the Model API backend (D36)
 
-**Status 2026-09-26: M48 base committed at `08a217b`; M49 memory joined and source-tree quality green; M50 joined reversibly with focused checks, while final quality and certification remain pending.** The
+Independent final review found an unchecked cast in the Model API host test's
+fake response-body helper. The review cleanup replaces it with a runtime
+array/record check. A malformed fake input failed before the change and
+passes after it; the cleanup receives its own exact-tree quality gate before
+commit.
+
+**Status 2026-09-26: M51 branch `4624552` includes merged main `fa370ee` and has exact-tree Windows `npm run quality` green on tree `6a70ef7` (2,033 tests passed, 3 skipped; 304 accessibility pages with zero violations, undecided or missing; audit, gitleaks and SAST zero). The small final-review test/doc cleanup requires its own exact-tree gate before commit; live hook parity and hosted PR certification remain open.** The
 bounded runtime wires all 17 documented event names at the Model API backend's supported operations: `SessionStart`, `UserPromptSubmit`,
 `PreToolUse`, `PermissionRequest`, `PostToolUse`, `PostToolUseFailure`,
 `PostToolBatch`, `PreCompact`, `PostCompact`, `Stop`, `StopFailure`, `SessionEnd`
@@ -3827,8 +3833,8 @@ boundary under the same paid task grant. The complete event-specific output
 contract remains open. The pre-M48 stage is pinned at
 `refs/codex-backups/m51-pre-m48-20260926`; M48 reconciliation passed 232/232
 focused tests across six hook/host/settings/tool-I/O files, host and unit
-typechecks, localization and targeted lint. The final documented-tree gate
-remains open. An
+typechecks, localization and targeted lint. At that checkpoint, the final
+documented-tree gate remained open. An
 initial duplication check failed on 11 clone pairs, then passed with zero
 clones after shared hook and write-turn helpers; no gate was weakened. An
 isolated Muse Code 1.3.0 echo-provider run
@@ -3836,6 +3842,9 @@ captured PreLLMCall/PostLLMCall success frames and a PreLLMCall block. A
 subsequent isolated echo run captured a PostLLMCall block: its run failed
 without another model request. Full Model API parity remains open; the
 captured safe subset is staged in this isolated worktree.
+The pre-PR workflow delta from merged main `10522223` is staged with the
+review cleanup for one exact candidate gate; branch dispatch remains a
+separate prerequisite to opening its PR.
 
 The first full M48-base quality run reached `security:sast` after 1,814
 passing unit tests and 304 accessible pages, then failed on unbounded
@@ -3875,8 +3884,8 @@ Prettier and duplication passed. A red mutation that sent the original
 tool arguments past `PreToolUse` changed the memory approval from
 `reviewed.md` back to `deploy.md`; restoring the effective call passed.
 M50 external MCP/IDE hook integration and the Model API Hooks picker
-were added in the reversible M50 join below. Final exact-tree quality and
-hosted review remain open.
+were added in the later M50 join. Exact local quality then passed;
+hosted M51 review remains open.
 The first exact M49-combined staged tree
 `da82047818238b6788070181406a7d9f76492d92` then passed local Windows
 `npm run quality`: 1,894 tests passed (3 skipped), all 304 accessibility
@@ -3895,9 +3904,9 @@ run, pairs returned calls with failure outputs for replay and buys no
 follow-up request, matching the isolated echo capture's failed terminal.
 Internal HTTP retries share the logical attempt's hook boundary, and the exact retry/failed-response
 hook sequence remains an explicit certification gap. The M48 child events
-passed local fake boundary tests but have no live provider claim. M50's external MCP tool dispatch and the
-Model API Hooks picker need integration tests after M50 joins; no MCP tool
-or subagent hook parity is claimed on this isolated tree.
+passed local fake boundary tests but have no live provider claim. M50's
+external MCP dispatch and the Model API Hooks picker later passed focused
+integration tests; live MCP or subagent hook parity is not claimed.
 
 **Integration map, recorded 2026-09-26; M48 child path focused-green, M50 open.** M48 creates a child
 in `ModelApiSession.spawnChild`, admits queued work in `startQueuedChildren`
@@ -3954,9 +3963,14 @@ post-review-fix tree `02c02fb314410cd20b02e2d789ac40bc888f1ab7`
 also passed Mac `quality:gates` in 121 seconds with the same 161 passed
 test files, one skipped, 14 tables, zero clones and audit advisories.
 Independent readback confirmed its Git tree and zero checkout-owned Mac
-processes. That receipt is pre-documentation and excludes browser a11y;
-the final documented tree still needs exact full Windows quality and hosted review;
-the join remains uncommitted.
+processes. That receipt preceded the documentation join and excluded
+browser a11y. The later final M50-main ancestry merge `4624552` has tree
+`6a70ef7a87f1cdf8234e1991a74896633709ff6b`, identical to the exact
+Windows full-quality candidate: 2,033 tests passed (3 skipped), 304 a11y
+pages returned with zero violations, undecided or missing pages, and audit,
+gitleaks and SAST reported zero. Independent CIM audit found zero M51-owned
+Node or Chrome processes. The branch is clean and unpushed; hosted M51
+review and the scoped review-cleanup gate remain open.
 
 Focused M48 fake checks now cover no `SubagentStart` for decline/queued
 cancel, one start context reaching only the child, natural `SubagentStop`
@@ -3964,8 +3978,8 @@ feedback under the four-request cap, explicit Stop that cannot be vetoed,
 and live hook opt-out in an open session. The M50 fake tests now cover MCP
 rewrite through normal approval, bounded hook payloads, post-tool/batch
 delivery and required-server loss at hook await boundaries. Remaining
-cross-feature IDE and denial checks, the full quality/browser gates and
-hosted review still need completion. The captured echo
+cross-feature IDE and denial checks, hosted review and live parity need
+completion. The captured echo
 frames are unchanged; no new live hook capture is claimed here.
 
 - **Source contract:** Muse Code 1.3.0's [settings-level hook guide](https://meta-models.github.io/muse-code-sdk/next/guides/extend/hooks/) and [event/payload reference](https://meta-models.github.io/muse-code-sdk/next/guides/plugins/reference/hook-events/) document the project, user and managed sources, 17 events, matcher grammar, command fields, stdin and result shapes, and execution limits. The guide includes captured runs. The shorter user guide names 15 events; the SDK reference also documents `PostToolBatch` and `StopFailure`. These are reference shapes, not a claim that this extension has executed them.
@@ -4394,6 +4408,18 @@ the extension already probes, moving on to sign-in when `muse` appears.
 The CLI itself is not bundled: it is Meta's closed-source binary.
 
 ## 7. Gates
+
+**Pre-PR delivery (2026-09-26: trigger merged at `10522223`; first manual
+branch dispatch proof pending).** The owner
+wants platform failures found and fixed before a pull request is opened.
+`ci.yml` gains `workflow_dispatch`, calling the same `build.yml` as pushes and
+pull requests. `CONTRIBUTING.md` gives the order: integrate milestones, run
+local quality on the exact tree, collect platform evidence, get an independent
+review, push, dispatch hosted CI and inspect its SHA and every job before
+opening a pull request. No build job or threshold changes. GitHub requires a
+manually dispatched workflow on the default branch, so the first pre-PR branch
+run can happen only after this trigger lands on `main`. Acceptance needs that
+branch run and its job evidence; pull-request CI and review still gate merge.
 
 | Gate                  | Command                                                                                                                                                                                                         | Status                                                                                                                                                                                                     |
 | --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

@@ -3766,9 +3766,31 @@ describe('ModelApiSession subagents (M48)', () => {
 
 /** The `function_call_output` the replay holds for one call id, from a request body. */
 function outputFor(body: Record<string, unknown> | undefined, callId: string): unknown {
-  const input = (body?.['input'] ?? []) as readonly Record<string, unknown>[]
-  return input.find((item) => item['type'] === 'function_call_output' && item['call_id'] === callId)
+  const raw = body?.['input']
+  if (!Array.isArray(raw)) {
+    return undefined
+  }
+  const input: readonly unknown[] = raw
+  return input.find(
+    (item) =>
+      typeof item === 'object' &&
+      item !== null &&
+      !Array.isArray(item) &&
+      'type' in item &&
+      item.type === 'function_call_output' &&
+      'call_id' in item &&
+      item.call_id === callId,
+  )
 }
+
+it('refuses malformed fake response input before replay inspection', () => {
+  expect(
+    outputFor({ input: { type: 'function_call_output', call_id: 'one' } }, 'one'),
+  ).toBeUndefined()
+  expect(
+    outputFor({ input: [null, 1, { type: 'function_call_output', call_id: 'one' }] }, 'one'),
+  ).toMatchObject({ call_id: 'one' })
+})
 
 describe('ModelApiSession: child hook boundaries (M51 with M48)', () => {
   it('stops dispatching stored hooks as soon as the machine opt-in turns off', async () => {
