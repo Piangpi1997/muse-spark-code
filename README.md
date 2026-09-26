@@ -1299,7 +1299,8 @@ media/                      icons, banner, social preview, README screenshots
 .github/                    workflows (ci, build, release), audit exceptions, pinned semgrep, CODEOWNERS, Dependabot
 ```
 
-**Releases.** CI (`ci.yml`, every push to `main` and every pull request) calls
+**Releases.** CI (`ci.yml`, every push to `main`, every pull request and manual
+branch dispatches) calls
 `build.yml`:
 
 - `quality:gates` on Ubuntu, Windows and macOS;

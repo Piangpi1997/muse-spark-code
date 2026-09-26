@@ -21,6 +21,30 @@ sign-in gate explains what is missing.
 
 ## Before you open a pull request
 
+Use this order for a candidate branch:
+
+1. Integrate the planned milestones onto the current `main` in order. Resolve
+   conflicts and stage the candidate with no unstaged changes. Record its
+   `git write-tree` hash.
+2. Run `npm ci` and `npm run quality` on that exact staged tree. For Windows
+   behavior, exercise the same tree on the Windows 11 host and VM in parallel
+   and record both results; collect other platform evidence where needed.
+3. Have an independent agent review the staged diff and acceptance evidence.
+   Fix findings, restage, and repeat the full local gate and affected platform
+   checks. Commit only after the final tree passes; verify the commit's tree
+   matches the tested `git write-tree` hash.
+4. Push the reviewed commit to its feature branch. Once `workflow_dispatch`
+   has reached the default branch, run `gh workflow run ci.yml --ref YOUR_BRANCH`.
+   Find the new run with
+   `gh run list --workflow ci.yml --branch YOUR_BRANCH --event workflow_dispatch`.
+5. Use `gh run watch RUN_ID --exit-status`, then
+   `gh run view RUN_ID --json headSha,jobs`. Match `headSha` to the pushed
+   commit and check every job: Ubuntu, Windows and macOS quality; Linux and
+   Windows accessibility and VS Code integration; macOS dictation; packaging;
+   gitleaks; and semgrep. Fix failures and repeat from the exact-tree gate.
+6. Open the pull request after that run is green. Pull-request CI and review
+   still gate the merge; later changes to the branch need a fresh run.
+
 - Run `npm run quality` and make it green. It runs every gate: formatting,
   ESLint (zero warnings), stylelint, type checks, dead-code and cycle
   detection, duplication, unit tests with coverage thresholds, the

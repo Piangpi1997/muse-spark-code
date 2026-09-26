@@ -12,6 +12,10 @@ while they are (PLAN.md D30, D34).
 
 ### Added
 
+- **Pre-PR branch CI.** The existing cross-platform CI can be run
+  manually on a pushed branch before a pull request. It runs the same shared
+  build as pull requests; see the sequence in `CONTRIBUTING.md`. Manual
+  dispatch becomes available after this trigger reaches `main`.
 - **Subagents on the Model API backend** (M48, PLAN.md D45). Child sessions
   run in parallel with bounded capacity, their own transcript, the existing
   tool approvals and workspace rules, and usage counted with the parent.
