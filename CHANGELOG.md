@@ -104,6 +104,34 @@ while they are (PLAN.md D30, D34).
   the Model API backend made, shows in its row. Every other tool in Muse
   Code's list has a name, an MCP tool reads "tool (server)", and any other
   result is indented JSON. All built from a live capture of Muse Code 1.3.0.
+- **MCP servers on the Model API backend** (M50, PLAN.md D42). The window
+  runs the MCP servers of Muse Code's settings file itself, local (stdio)
+  and remote (streamable HTTP), with a client of its own: their tools are
+  offered as `mcp__<server>__<tool>`, their schemas fitted to Meta's limits,
+  and their text and pictures passed to the model. A call asks like a
+  command in Manual and Auto (a tool its server marks read-only runs in
+  Auto, as in Muse Code) and Plan refuses all but read-only tools, which
+  ask; "always allow in this session" works per tool. None runs in
+  Restricted Mode; a local server sees only a short list of VS Code's
+  environment variables plus its own; `${VAR}`, timeouts and tool filters
+  from the entry are honoured. **MCP servers…** in the palette now shows,
+  on this backend, whether each server is connected and with how many
+  tools, or why it is not running; a server that fails is a warning, and a
+  required one stops the message with the fix. The extension's own
+  diagnostics tool (`getDiagnostics`) is offered on this backend too.
+  Remote error bodies and authentication challenge parameters stay out of
+  tool errors and logs; status and authentication scheme remain visible.
+  Server startup runs at most four connections at once to avoid a process burst.
+  On Windows, a hidden helper starts each stdio server suspended, assigns
+  it to a job after a private owner handshake, then runs it with binary
+  stdin, stdout and stderr passed through unchanged. Stop, server exit and
+  extension-process exit close the
+  job and end its descendants; without the helper, stdio fails closed.
+  Finite detached-child and withheld-handshake drills failed when their
+  guards were removed and passed when restored. On macOS and Linux, close also signals the
+  original process group when its MCP parent has exited. A server's final
+  response is now read before its drained stdio closes the connection, even
+  when the process itself exited first.
 - **Web search** (M33). With `museSpark.modelApiWebSearch` on, the model can
   search the web on the Model API backend ($2.50 per 1,000 searches). Each
   search is a row marked paid with its query and results, and a reply lists
@@ -152,6 +180,10 @@ while they are (PLAN.md D30, D34).
 
 ### Changed
 
+- **Windows unit test scheduling (M50).** Vitest runs test files one at a time
+  on Windows so concurrent MCP job-helper launches cannot starve the hosted
+  runner past the MCP startup deadline. Test selection, coverage, and deadlines
+  are unchanged.
 - **The Model API backend saves memory with the memory tools** (M49). It
   used to be told to write `.agents/memory` with the file tools, which as
   protected writes asked every time. The personal scopes, left out before
@@ -160,6 +192,17 @@ while they are (PLAN.md D30, D34).
 
 ### Fixed
 
+- **Windows MCP stdio startup (M50).** A compiled C# job executable now starts
+  each configured server directly. PowerShell only compiles it once, avoiding
+  per-server startup delay while retaining binary pipes, job containment and
+  owner confirmation. Preparation checks cached executables before use and
+  fails closed if one is corrupt.
+- **M50 MCP server lifecycle and names.** Closing the Model API host now
+  waits for servers still starting and launches no later startup batch. A
+  required server that stops during a reply or tool call fails the active
+  turn before more work runs. Configured server names that normalize to the
+  extension's reserved `ide` name are refused, avoiding duplicate function
+  names and unreachable tools.
 - **M46 session cleanup and resumed shell shortcut.** Releasing the last
   surface of a Muse Code session now asks the CLI to stop its background
   tasks; another surface holding that session leaves them running. Restored

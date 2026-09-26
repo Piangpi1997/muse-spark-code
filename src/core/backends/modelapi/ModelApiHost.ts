@@ -26,6 +26,7 @@ import {
   type GoalCommandVerb,
   type SubagentAction,
   HTTP_UNAUTHORIZED,
+  IDE_MCP_SERVER_NAME,
   MODEL_API_CONTEXT_WINDOW,
   MODEL_API_EFFORT_OFF,
   ISO_DATE_LENGTH,
@@ -56,14 +57,15 @@ import {
   SUBAGENT_RESULT_TEXT_MAX_CHARS,
   SUBAGENT_TASK_MAX_REQUESTS,
   THINKING_OFF_EFFORT,
+  TOOL_OUTPUT_CLIP_MARKER,
+  TOOL_OUTPUT_MAX_CHARS,
   TOOL_STATUS_INTERRUPTED,
   UI_TEXT,
   USER_SHELL_ITEM_KIND,
   USER_SHELL_TIMEOUT_MS,
 } from '../../../shared/constants'
-import { plural } from '../../../shared/l10n/text'
+import { fill, plural } from '../../../shared/l10n/text'
 import { APPROVAL_MODES, type ApprovalMode } from '../../../shared/permissionModes'
-import { fill } from '../../../shared/l10n/text'
 import {
   modelApiPaidTier,
   type SubagentTaskConfirmation,
@@ -100,6 +102,7 @@ import type { ContextIo } from '../../context/contextFiles'
 import { type SkillDefinition } from '../../context/skills'
 import { WorkspaceContext } from '../../context/workspaceContext'
 import type { CoreLogger } from '../../logging'
+import type { McpTool } from '../../mcp'
 import type { MemoryStore } from '../../memory/memoryStore'
 import {
   MissingApiKeyError,
@@ -122,6 +125,8 @@ import {
 } from './goals'
 import { type EnvironmentFacts, instructionsFor } from './instructions'
 import { type ImagePlan, prepareImageCall, runImageCall } from './imageGeneration'
+import { mcpFunctionDefinition, mcpFunctionName } from './mcp/functions'
+import type { McpPoolSnapshot, McpToolRef, McpToolSource } from './mcp/pool'
 import { isMemoryTool, placeMemoryCall, runMemoryCall } from './memoryTools'
 import {
   APPROVAL_CHOICE_IDS,
@@ -219,6 +224,13 @@ export interface ModelApiHostDeps extends ModelApiPaidHooks {
   readonly store?: SessionStore | undefined
   /** The git facts for the prompt's environment section (D15), read once per session. */
   readonly describeEnvironment: () => Promise<EnvironmentFacts>
+  /** The MCP servers of Muse Code's settings (M50, PLAN.md D42), closed with the host. */
+  readonly mcpServers?: McpToolSource | undefined
+  /**
+   * The extension's own IDE tools (`getDiagnostics`), offered in process as
+   * `mcp__ide__<tool>`, the names Muse Code sessions see them by (M50).
+   */
+  readonly ideTools?: readonly McpTool[] | undefined
   /**
    * Muse Code's memory (M49, PLAN.md D41): the memory tools and the
    * session-start snapshot; undefined leaves them out.
@@ -802,10 +814,68 @@ function imageKindOf(toolName: string): ImagePlan['kind'] | undefined {
   }
 }
 
+/**
+ * A tool that is not one of the harness's own (M50): the extension's IDE
+ * tool, run in process, or an MCP server's.
+ */
+type ExternalTool =
+  | { readonly kind: 'ide'; readonly tool: McpTool }
+  | { readonly kind: 'mcp'; readonly ref: McpToolRef }
+
+/** The IDE tool's function name: `mcp__ide__<tool>`, as Muse Code sessions call it. */
+function ideFunctionName(tool: McpTool): string {
+  return mcpFunctionName(IDE_MCP_SERVER_NAME, tool.name, new Set())
+}
+
+function clipOutput(text: string): string {
+  return text.length > TOOL_OUTPUT_MAX_CHARS
+    ? `${text.slice(0, TOOL_OUTPUT_MAX_CHARS)}${TOOL_OUTPUT_CLIP_MARKER}`
+    : text
+}
+
+/** What the MCP servers' state says to the user, each keyed so it is said once per session. */
+function mcpNotices(snapshot: McpPoolSnapshot): readonly { key: string; text: string }[] {
+  const { fault } = snapshot
+  if (fault !== undefined) {
+    switch (fault.kind) {
+      case 'keys': {
+        return [{ key: 'fault:keys', text: UI_TEXT.mcpNoServersKeys }]
+      }
+      case 'mode': {
+        const servers = fault.servers.join(', ')
+        return [{ key: `fault:mode:${servers}`, text: fill(UI_TEXT.mcpNoServersMode, { servers }) }]
+      }
+      case 'unreadable': {
+        return [
+          {
+            key: `fault:unreadable:${fault.reason}`,
+            text: fill(UI_TEXT.mcpNoServersUnreadable, { reason: fault.reason }),
+          },
+        ]
+      }
+    }
+  }
+  // A required server's failure fails the turn and says why there.
+  return snapshot.servers.flatMap((server) =>
+    server.state.status === 'failed' && !server.isRequired
+      ? [
+          {
+            key: `server:${server.name}:${server.state.reason}`,
+            text: fill(UI_TEXT.mcpServerUnavailable, {
+              name: server.name,
+              reason: server.state.reason,
+            }),
+          },
+        ]
+      : [],
+  )
+}
+
 /** What the approval card is about, in the MSP subject vocabulary. */
 function subjectFor(
   call: FunctionCallItem,
   platform: NodeJS.Platform,
+  isExternal: boolean,
   childTask?: SubagentTaskConfirmation,
 ): ApprovalSubject {
   const args = argumentsOf(call)
@@ -822,6 +892,11 @@ function subjectFor(
   if (call.name === shellToolFor(platform).name) {
     return { kind: 'shell', command: pick(args, 'command') ?? call.arguments }
   }
+  // An MCP tool is a tool, whatever its arguments say: never a `fileWrite`,
+  // which Edit automatically would answer by itself (D24).
+  if (isExternal) {
+    return { kind: 'tool', toolName: call.name }
+  }
   const paidFeature = paidFeatureOf(call.name)
   const path = pick(args, 'path')
   // Never a `fileWrite`: Edit automatically answers those itself (D24), and
@@ -837,6 +912,25 @@ function subjectFor(
   return path === undefined
     ? { kind: 'tool', toolName: call.name }
     : { kind: 'fileWrite', path, toolName: call.name }
+}
+
+/** `work`'s value, or an `AbortedError` as soon as the turn is stopped; `work` runs on. */
+async function unlessStopped<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) {
+    throw new AbortedError()
+  }
+  let onAbort: () => void = NO_UNSUBSCRIBE
+  const stopped = new Promise<never>((_resolve, reject) => {
+    onAbort = () => {
+      reject(new AbortedError())
+    }
+    signal.addEventListener('abort', onAbort, { once: true })
+  })
+  try {
+    return await Promise.race([work, stopped])
+  } finally {
+    signal.removeEventListener('abort', onAbort)
+  }
 }
 
 /** Resolves with the awaited value, or rejects as soon as the turn is cancelled. */
@@ -924,6 +1018,8 @@ export class ModelApiSession implements AgentSession {
   private active: ActiveTurn | undefined
   /** Each file as the model last read or wrote it, for `write_file`'s check (D27). */
   private readonly seenFiles = new Map<string, string>()
+  /** The MCP notices this session has shown (M50): each is said once. */
+  private readonly announcedMcp = new Set<string>()
   /** The compaction in flight (D26): it holds the session like a turn. */
   private compacting: AbortController | undefined
   private effort: string = DEFAULT_EFFORT
@@ -1043,7 +1139,7 @@ export class ModelApiSession implements AgentSession {
     }
   }
 
-  /** The in-process tools, and Meta's web search while that paid feature is on (M33). */
+  /** In-process, IDE, MCP and paid search tools offered to this request. */
   private tools(
     hasShell: boolean,
     hasSkills: boolean,
@@ -1057,9 +1153,60 @@ export class ModelApiSession implements AgentSession {
       isSubagent: this.isSubagent,
       hasMemory,
     })
+    const ide = (this.deps.ideTools ?? []).map(
+      (tool) => mcpFunctionDefinition(ideFunctionName(tool), tool).definition,
+    )
+    const mcp = hasShell ? (this.deps.mcpServers?.definitions() ?? []) : []
+    const offered = [...own, ...ide, ...mcp]
     return this.deps.isPaidFeatureOn('webSearch')
-      ? [...own, { type: MODEL_API_WEB_SEARCH_TOOL }]
-      : own
+      ? [...offered, { type: MODEL_API_WEB_SEARCH_TOOL }]
+      : offered
+  }
+
+  /** The IDE tool or MCP server tool a function name is, when it is one (M50). */
+  private externalTool(name: string): ExternalTool | undefined {
+    const tool = this.deps.ideTools?.find((candidate) => ideFunctionName(candidate) === name)
+    if (tool !== undefined) {
+      return { kind: 'ide', tool }
+    }
+    const ref = this.deps.mcpServers?.find(name)
+    return ref === undefined ? undefined : { kind: 'mcp', ref }
+  }
+
+  /**
+   * The MCP servers, started (or already running) before the turn's first
+   * request (M50): each new problem is said once as a notice, and a required
+   * server that is not running fails the turn, as Muse Code aborts its run.
+   */
+  private async prepareMcp(signal: AbortSignal): Promise<void> {
+    const servers = this.deps.mcpServers
+    if (servers === undefined) {
+      return
+    }
+    await unlessStopped(servers.start(), signal)
+    const snapshot = servers.snapshot()
+    for (const notice of mcpNotices(snapshot)) {
+      if (this.announcedMcp.has(notice.key)) {
+        continue
+      }
+      this.announcedMcp.add(notice.key)
+      this.emit({ type: 'backendNotice', level: 'warning', text: notice.text })
+    }
+    const requiredFailure = this.requiredMcpFailure(snapshot)
+    if (requiredFailure !== undefined) {
+      throw requiredFailure
+    }
+  }
+
+  private requiredMcpFailure(snapshot: McpPoolSnapshot | undefined): Error | undefined {
+    const required = snapshot?.servers.find(
+      (server) => server.isRequired && server.state.status === 'failed',
+    )
+    return required?.state.status === 'failed'
+      ? new Error(
+          fill(UI_TEXT.mcpRequiredFailed, { name: required.name, reason: required.state.reason }),
+        )
+      : undefined
   }
 
   /** The encrypted reasoning always; the search results while search is on, for the rows. */
@@ -1930,6 +2077,29 @@ export class ModelApiSession implements AgentSession {
     return { outcome: { output: MODEL_TEXT.shellMovedToBackground, visibleOutput: '' }, running }
   }
 
+  /** The IDE tool in process, or the MCP server's tool over its connection (M50). */
+  private async performExternal(
+    external: ExternalTool,
+    call: FunctionCallItem,
+    signal: AbortSignal,
+  ): Promise<ToolOutcome> {
+    if (external.kind === 'ide') {
+      const text = clipOutput(await external.tool.call(argumentsOf(call)))
+      return { output: text, visibleOutput: text }
+    }
+    const servers = this.deps.mcpServers
+    if (servers === undefined) {
+      return toolFailure(`${call.name} ${MODEL_TEXT.mcpToolUnavailable}`)
+    }
+    const outcome = await servers.call(call.name, call.arguments, signal)
+    return {
+      output: outcome.output,
+      visibleOutput: outcome.visibleOutput,
+      ...(outcome.outputParts !== undefined && { outputParts: outcome.outputParts }),
+      ...(outcome.failureReason !== undefined && { failureReason: outcome.failureReason }),
+    }
+  }
+
   /** The Agent map's row is the durable parent-side account of a child. */
   private childSnapshot(child: ChildRecord): ItemSnapshot {
     const isDone = child.state === 'result_ready' || child.state === 'closed'
@@ -2526,6 +2696,10 @@ export class ModelApiSession implements AgentSession {
     goalCommandRevision: number,
     childGrant?: ChildTaskGrant,
   ): Promise<Performed> {
+    const external = this.externalTool(call.name)
+    if (external !== undefined) {
+      return { outcome: await this.performExternal(external, call, signal) }
+    }
     if (isSubagentTool(call.name)) {
       return { outcome: await this.runSubagentTool(turnId, call, signal, childGrant) }
     }
@@ -2658,7 +2832,12 @@ export class ModelApiSession implements AgentSession {
     signal: AbortSignal,
     goalCommandRevision: number,
   ): Promise<CallResult> {
-    const toolClass = classifyTool(call.name)
+    const external = this.externalTool(call.name)
+    // The IDE tool reads VS Code's Problems panel: a read, in every mode.
+    let toolClass: ToolClass | undefined = classifyTool(call.name)
+    if (external !== undefined) {
+      toolClass = external.kind === 'ide' ? 'read' : 'mcp'
+    }
     if (toolClass === undefined) {
       return { outcome: toolFailure(`unknown tool ${call.name}`), isRejected: false }
     }
@@ -2681,10 +2860,12 @@ export class ModelApiSession implements AgentSession {
     if (childTask === undefined && call.name === MODEL_API_SUBAGENT_TOOLS.spawn) {
       return { outcome: subagentFailure('invalid subagent_spawn arguments'), isRejected: true }
     }
-    if (toolClass === 'shell' && !this.deps.isWorkspaceTrusted()) {
+    if ((toolClass === 'shell' || toolClass === 'mcp') && !this.deps.isWorkspaceTrusted()) {
       // Restricted Mode (PLAN.md D13): the tool is not offered, and a model
       // that calls it anyway is refused, never prompted.
-      return { outcome: toolFailure(MODEL_TEXT.shellRestrictedMode), isRejected: true }
+      const reason =
+        toolClass === 'mcp' ? MODEL_TEXT.mcpRestrictedMode : MODEL_TEXT.shellRestrictedMode
+      return { outcome: toolFailure(reason), isRejected: true }
     }
     if (toolClass === 'paid') {
       const prepared = await this.imagePlan(call)
@@ -2703,6 +2884,7 @@ export class ModelApiSession implements AgentSession {
       toolClass: childTask === undefined ? toolClass : 'spawn',
       command: toolClass === 'shell' ? pick(argumentsOf(call), 'command') : undefined,
       isProtected: target?.ok === true && isProtectedPath(target.canonical),
+      isReadOnly: external?.kind === 'mcp' && external.ref.isReadOnly,
     }
     const verdict = this.permissions.verdict(query)
     if (verdict === 'deny') {
@@ -2728,7 +2910,7 @@ export class ModelApiSession implements AgentSession {
         call,
         signal,
         query,
-        subjectFor(call, this.deps.platform, childTask),
+        subjectFor(call, this.deps.platform, toolClass === 'mcp', childTask),
         childTask,
       )
       if (!approval.isApproved) {
@@ -2790,7 +2972,11 @@ export class ModelApiSession implements AgentSession {
     this.rerecordTranscript(completed)
     this.replay.push({
       turnId,
-      item: { type: 'function_call_output', call_id: call.call_id, output: outcome.output },
+      item: {
+        type: 'function_call_output',
+        call_id: call.call_id,
+        output: outcome.outputParts ?? outcome.output,
+      },
     })
   }
 
@@ -2828,11 +3014,15 @@ export class ModelApiSession implements AgentSession {
         )
         throw new AbortedError()
       }
-      // A tool that threw (a disk error, a directory for a file) is a failed
-      // call the model is told about, not the end of the turn.
+      // A tool that threw (a disk error, a directory for a file, an MCP
+      // server's error or deadline) is a failed call the model is told
+      // about, not the end of the turn.
       result = { outcome: toolFailure(describe(error)), isRejected: false }
     }
-    await this.touchPath(call)
+    // An MCP tool's `path` is its own business, not a workspace file it read.
+    if (this.externalTool(call.name) === undefined) {
+      await this.touchPath(call)
+    }
     const { outcome, isRejected, running } = result
     if (running !== undefined) {
       this.continueInBackground(turnId, started, call, outcome, running)
@@ -3063,6 +3253,10 @@ export class ModelApiSession implements AgentSession {
       if (isAbortRequested(signal)) {
         throw new AbortedError()
       }
+      const requiredBeforeRound = this.requiredMcpFailure(this.deps.mcpServers?.snapshot())
+      if (requiredBeforeRound !== undefined) {
+        throw requiredBeforeRound
+      }
       this.drainSteered(turn)
       this.drainGoalWake(turn)
       const wasBudgetLimited = this.goal?.status === GOAL_STATUS.budgetLimited
@@ -3072,6 +3266,11 @@ export class ModelApiSession implements AgentSession {
         // still need outputs for valid replay, but no work or steering runs.
         this.skipCalls(turn.turnId, calls)
         throw new AbortedError()
+      }
+      const requiredAfterStream = this.requiredMcpFailure(this.deps.mcpServers?.snapshot())
+      if (requiredAfterStream !== undefined) {
+        this.skipCalls(turn.turnId, calls, MODEL_TEXT.mcpRequiredUnavailable)
+        throw requiredAfterStream
       }
       if (!wasBudgetLimited && this.goal?.status === GOAL_STATUS.budgetLimited) {
         this.skipCalls(turn.turnId, calls, MODEL_TEXT.goalBudgetReached)
@@ -3095,12 +3294,21 @@ export class ModelApiSession implements AgentSession {
           this.skipCalls(turn.turnId, calls.slice(index))
           throw new AbortedError()
         }
+        const requiredBeforeCall = this.requiredMcpFailure(this.deps.mcpServers?.snapshot())
+        if (requiredBeforeCall !== undefined) {
+          this.skipCalls(turn.turnId, calls.slice(index), MODEL_TEXT.mcpRequiredUnavailable)
+          throw requiredBeforeCall
+        }
         try {
           await this.runCall(turn.turnId, call, signal, goalCommandRevision)
         } catch (error: unknown) {
           this.skipCalls(turn.turnId, calls.slice(index + 1))
           throw error
         }
+      }
+      const requiredAfterCalls = this.requiredMcpFailure(this.deps.mcpServers?.snapshot())
+      if (requiredAfterCalls !== undefined) {
+        throw requiredAfterCalls
       }
     }
     // Input accepted during the last permitted round still needs a request
@@ -3146,6 +3354,7 @@ export class ModelApiSession implements AgentSession {
     let reason: string | undefined
     let errorKind: string | undefined
     try {
+      await this.prepareMcp(turn.abort.signal)
       await this.loop(turn)
     } catch (error: unknown) {
       if (turn.abort.signal.aborted) {
@@ -4143,6 +4352,19 @@ export class ModelApiHost implements AgentHost {
     }
   }
 
+  /**
+   * The MCP servers start with a conversation, as Muse Code starts them with
+   * its session (M50), so they are ready by the first message; that turn
+   * waits for any still starting.
+   */
+  private async startMcpServers(): Promise<void> {
+    try {
+      await this.deps.mcpServers?.start()
+    } catch (error: unknown) {
+      this.deps.log.warn(`The MCP servers could not be started: ${describe(error)}`)
+    }
+  }
+
   /** Reads the store once; this window's sessions then include the stored ones. */
   public async load(): Promise<void> {
     const { store } = this.deps
@@ -4187,7 +4409,13 @@ export class ModelApiHost implements AgentHost {
     }
     const session = this.create(options.modelId, options.approvalMode as ApprovalMode)
     this.announce(session)
+    void this.startMcpServers()
     return Promise.resolve(session)
+  }
+
+  /** The MCP servers' live state, for the MCP servers view (M50). */
+  public mcpSnapshot(): McpPoolSnapshot | undefined {
+    return this.deps.mcpServers?.snapshot()
   }
 
   public listSessions(options: ListSessionsOptions): Promise<SessionPage> {
@@ -4243,7 +4471,9 @@ export class ModelApiHost implements AgentHost {
   }
 
   public async resumeSession(sessionId: string, _modelId: string): Promise<LoadedSession> {
-    return this.loaded(await this.revive(sessionId))
+    const loaded = this.loaded(await this.revive(sessionId))
+    void this.startMcpServers()
+    return loaded
   }
 
   public async forkSession(
@@ -4300,6 +4530,7 @@ export class ModelApiHost implements AgentHost {
     for (const session of this.sessions.values()) {
       session.disposeAll()
     }
-    await this.saving
+    // The MCP servers go with the host (M50): a stdio server's process tree is killed.
+    await Promise.all([this.saving, this.deps.mcpServers?.close()])
   }
 }

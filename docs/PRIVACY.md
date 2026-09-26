@@ -28,6 +28,24 @@ security notes for contributors are in `PLAN.md` §9.
   `https://api.meta.ai/v1` directly with your key. Each turn re-sends the
   conversation so far, because requests are made with `store: false`; Meta's
   Model API terms govern retention on their side.
+- **MCP servers on the Model API backend.** In a trusted workspace, the
+  extension starts the servers configured in Muse Code's settings when a
+  conversation starts. A local server runs as a child process; a remote
+  server receives MCP requests at the URL in its settings entry, including
+  configured headers. The model can pass arguments drawn from your prompt
+  and workspace context to a server tool. The tool's text and supported
+  images return to Meta in the conversation. Approval mode controls which
+  calls need your consent; a server marked required can stop a turn if it
+  cannot start. These servers do not run in Restricted Mode. The extension
+  does not pass your Model API key to a server. A remote server's error body
+  and authentication challenge parameters are not copied into the model's
+  tool error or the extension log; those may echo a configured credential.
+  On Windows, the hidden local-server helper receives launch details in a
+  private environment value; it removes that value and gives the server
+  only the allowed environment and its configured variables. A random
+  nonce travels over a separate local control pipe to prove this window
+  still owns the launch; neither that nonce nor the pipe enters server
+  requests or its environment.
 - **Workspace rules, skills and memory.** In a trusted workspace the agent
   reads `AGENTS.md` (or `CLAUDE.md`), the skills under `.agents/skills` and
   `~/.config/muse/skills`, and Muse Code's memory (the project's
@@ -99,11 +117,11 @@ security notes for contributors are in `PLAN.md` §9.
     is needed.
 
 The extension itself has **no telemetry**, no analytics, no crash reporting
-and no server of its own. It never contacts any host other than Meta's (and,
-on macOS, Apple's for dictation as described above), and only when you send
-a message, sign in, dictate, or open a panel while signed in (it lists the
-models then, so the model pill is filled in; that request carries no
-message).
+and no hosted server of its own. It contacts Meta when you send a message,
+sign in, use a paid feature, or open a panel while signed in (to list models;
+that request carries no message). On the Model API backend it also contacts
+remote MCP servers you configured when a conversation starts or uses their
+tools. On macOS, dictation may contact Apple as described above.
 
 ## Credentials
 

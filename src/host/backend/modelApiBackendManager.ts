@@ -1,13 +1,17 @@
 // Owns the Model API host for this extension host (M7): one in-process
 // `ModelApiHost` over the real `fetch`, the stored key and the workspace's
-// files. Nothing is spawned; disposing it forgets the window's sessions.
+// files, with the MCP servers of Muse Code's settings (M50), which it starts
+// with the first conversation. Disposing it forgets the window's sessions
+// and stops those servers.
 
 import { ModelApiClient } from '../../core/backends/modelapi/client'
 import type { EnvironmentFacts } from '../../core/backends/modelapi/instructions'
+import type { McpPoolSnapshot, McpToolSource } from '../../core/backends/modelapi/mcp/pool'
 import { ModelApiHost, type ModelApiPaidHooks } from '../../core/backends/modelapi/ModelApiHost'
 import type { SessionStore } from '../../core/backends/modelapi/sessionStore'
 import type { ToolIo } from '../../core/backends/modelapi/tools'
 import type { ContextIo } from '../../core/context/contextFiles'
+import type { McpTool } from '../../core/mcp'
 import type { MemoryStore } from '../../core/memory/memoryStore'
 import { MODEL_API_BASE_URL, UI_TEXT } from '../../shared/constants'
 import type { Logger } from '../logger'
@@ -31,6 +35,11 @@ export interface ModelApiBackendManagerDeps extends ModelApiPaidHooks {
   readonly store: SessionStore | undefined
   /** The git facts for the prompt's environment section (D15). */
   readonly describeEnvironment: () => Promise<EnvironmentFacts>
+  /** The MCP servers for a host in this workspace (M50), one set per host. */
+  readonly createMcpServers?:
+    ((workspaceRoot: string) => McpToolSource | Promise<McpToolSource>) | undefined
+  /** The extension's own IDE tools, offered in process (M50). */
+  readonly ideTools?: readonly McpTool[] | undefined
   /** Muse Code's memory, shared with the Memory view (M49, PLAN.md D41). */
   readonly memory: MemoryStore | undefined
 }
@@ -97,6 +106,8 @@ export class ModelApiBackendManager {
       describeEnvironment: this.deps.describeEnvironment,
       isPaidFeatureOn: this.deps.isPaidFeatureOn,
       notePaidUse: this.deps.notePaidUse,
+      mcpServers: await this.deps.createMcpServers?.(workspaceRoot),
+      ideTools: this.deps.ideTools,
       confirmSubagentTask: this.deps.confirmSubagentTask,
       noteSubagentUsage: this.deps.noteSubagentUsage,
       memory: this.deps.memory,
@@ -117,6 +128,11 @@ export class ModelApiBackendManager {
 
   public get isRunning(): boolean {
     return this.host !== undefined || this.building !== undefined
+  }
+
+  /** The MCP servers as the running host has them; undefined before it is built (M50). */
+  public mcpSnapshot(): McpPoolSnapshot | undefined {
+    return this.host?.mcpSnapshot()
   }
 
   /** A skill file changed: the running host re-reads its catalogue. */

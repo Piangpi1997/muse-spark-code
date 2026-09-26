@@ -64,6 +64,8 @@ function setup(
       restarts += 1
       return Promise.resolve()
     },
+    modelApiMcp: () => undefined,
+    openLog: () => undefined,
     log: new FakeLogOutputChannel(),
   })
   return { features, runs, terminals, restarts: () => restarts }

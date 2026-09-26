@@ -113,7 +113,7 @@ Every change is in the [CHANGELOG](CHANGELOG.md).
   model's side kept in English so it behaves the same everywhere.
 - **Accessible and observable.** Checked against WCAG 2.2 AA in every default
   theme, and a log that records what happened without what you wrote.
-- **No telemetry, no server of its own.** What leaves your machine and where
+- **No telemetry, no hosted server of its own.** What leaves your machine and where
   it goes is written down in [PRIVACY.md](docs/PRIVACY.md).
 
 ## Screenshots
@@ -182,10 +182,10 @@ The model pill shows the model as soon as the panel opens.
 
 ## Backends
 
-| Backend                                                                      | Sign-in                                                          | Billing                | Tools                                                                                                                                                                                                                                      |
-| ---------------------------------------------------------------------------- | ---------------------------------------------------------------- | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **Muse Code CLI** (`muse serve`, Muse Session Protocol via `@muse-code/sdk`) | The CLI's own browser sign-in (`muse login`)                     | Your Muse subscription | The CLI's, inside its OS sandbox where that works (see `shellSandbox`); its bundled skills, your user rules, its own memory, subagents, and the Problems panel through the extension                                                       |
-| **Meta Model API** (`https://api.meta.ai/v1`)                                | A key from dev.meta.ai, kept in SecretStorage, sent only to Meta | Pay as you go          | The extension's own: read, edit, write, search, list, shell, `read_skill`, `ask_user` (question cards), `todo_write` (the task list), subagents and Muse Code's three memory tools, with approvals; the workspace rules, skills and memory |
+| Backend                                                                      | Sign-in                                                          | Billing                | Tools                                                                                                                                                                                                                 |
+| ---------------------------------------------------------------------------- | ---------------------------------------------------------------- | ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Muse Code CLI** (`muse serve`, Muse Session Protocol via `@muse-code/sdk`) | The CLI's own browser sign-in (`muse login`)                     | Your Muse subscription | The CLI's, inside its OS sandbox where that works (see `shellSandbox`); its bundled skills, your user rules, its own memory, subagents, and the Problems panel through the extension                                  |
+| **Meta Model API** (`https://api.meta.ai/v1`)                                | A key from dev.meta.ai, kept in SecretStorage, sent only to Meta | Pay as you go          | The extension tools: read, edit, write, search, list, shell, skills, questions, todos and diagnostics; opt-in bounded subagents; shared Muse Code memory tools and configured MCP servers; workspace rules and skills |
 
 `museSpark.backend` picks: `auto` (default) uses the CLI when it is installed
 and signed in, otherwise the Model API when a key is stored; `museCode` and
@@ -221,7 +221,9 @@ approval needs an explicit choice. Edit automatically resumes when it is
 the only panel holding that session.
 
 "Always allow in this session" on a command allows that exact command line
-again, nothing broader. The Model API backend's file tools refuse any path
+again, nothing broader; on an MCP tool, that tool. An MCP tool asks like a
+command on the Model API backend; Auto runs one its server marks read-only
+without asking, as Muse Code does, and Plan refuses all but those, which ask. The Model API backend's file tools refuse any path
 that leaves the workspace, including through a symbolic link or junction
 inside it. Muse Code refuses such a write while its sandbox runs; without
 the sandbox (`shellSandbox` set to `off`, or `auto` for a Windows workspace
@@ -279,14 +281,15 @@ else:
   only), and a short set of working rules (read before editing, no commits
   unless asked, `path:line` references).
 
-In VS Code's **Restricted Mode** (an untrusted folder) neither backend loads
-rules or skills, the Model API backend loads no memory and offers no memory
-tools, no shell command runs, and the extension runs no `git` (git reads the
-repository's own config, which can name programs to run): `@` mentions come
-from VS Code's file search and the prompt carries no git facts. Trust the
-workspace to enable them. Muse Code itself, by its documentation, still reads
-a repository's committed project memory in an untrusted workspace: treat a
-checkout's `.agents/memory/MEMORY.md` as text someone else wrote.
+In VS Code's **Restricted Mode** (an untrusted folder), neither backend loads
+rules or skills. The Model API backend loads no memory, offers no memory
+tools and starts no MCP servers. No shell command or `git` runs (git reads
+the repository's own config, which can name programs to run): `@` mentions
+come from VS Code's file search and the prompt carries no git facts. Trust
+the workspace to enable them. Muse Code itself, by its documentation,
+still reads a repository's committed project memory in an untrusted
+workspace: treat a checkout's `.agents/memory/MEMORY.md` as text someone
+else wrote.
 
 ### Memory
 
@@ -397,6 +400,45 @@ hooks from `.muse/hooks.json`. The extension shows them and never edits them:
 - **Loud warnings** for the two settings mistakes that make Muse Code load no
   server at all: both `mcpServers` and the older `mcp_servers` in one file,
   or `required` beside `mode` on a server.
+- **On the Model API backend** the window runs the same servers itself, so
+  their tools work with your key as they do in Muse Code:
+  - **When:** they start with the first conversation, and the first message
+    waits for them; they stop with the window, and **Restart the MCP
+    servers** in the view restarts them with the settings as they are then.
+    At most four start together, so a long server list can make the first
+    message wait longer. None runs in Restricted Mode.
+  - **The view** shows each one's state: connected with how many tools, still
+    starting, turned off, or not running and why. A server's row opens the
+    log, where its stderr goes. The extension's own diagnostics server is
+    listed as `ide`, built in.
+  - **Loud:** a server that is not running is a warning in the panel, once
+    per conversation; a _required_ one (the default, unless its entry says
+    `"mode": "optional"`) stops the message with the reason and how to fix
+    it, as Muse Code refuses to start without it. Both keys in one file, or
+    `required` beside `mode`, loads none, as in Muse Code, and says so.
+  - **What an entry may hold:** `command`, `args`, `env`, `cwd` and
+    `framing` (`auto`, `line_delimited_json`, `content_length`) for a
+    local server; `url` and `headers` for a remote one (streamable HTTP);
+    `enabled`, `mode`, `startup_timeout_sec`, `tool_timeout_sec`,
+    `enabled_tools` and `disabled_tools` for either. `${VAR}` reads an
+    environment variable of VS Code's; an unset one keeps the server from
+    starting. A local server sees only a short list of VS Code's environment
+    variables (`PATH`, `HOME`, `TEMP` and the like) plus its own `env`.
+    On Windows a `.cmd` launcher such as `npx` runs through `cmd.exe`, and
+    an argument with `"` or `%` is refused there. A hidden Windows job
+    helper passes stdin, stdout and stderr as binary pipes, assigns the
+    server to its job before it runs, after a private handshake confirms
+    this extension process still owns the launch. It ends descendants on Stop,
+    server exit or extension shutdown. If Windows cannot load the helper,
+    local stdio servers do not start; the view gives the reason. Remote
+    HTTP servers can still connect.
+  - **Sign-in:** `muse mcp login` signs in Muse Code only. A remote server
+    that needs a credential takes it in its entry's `headers`
+    (`"Authorization": "Bearer ${MY_TOKEN}"`).
+  - **Tools** are named `mcp__<server>__<tool>` and read "tool (server)" in
+    the transcript. Their results reach the model as text and pictures;
+    audio and files are described instead. Resources, prompts and sampling
+    are not supported.
 - **Hooks…** lists the project's, yours and your administrator's hooks, and
   opens the file behind each. A hook runs through your shell outside Muse
   Code's sandbox and approvals, so read a repository's hooks before you
@@ -477,7 +519,7 @@ palette with a filter box of its own. Its groups:
   Continue a Claude Code or Codex session (CLI backend).
 - **Model:** switch model, effort (Left and Right step it), thinking.
 - **Customize:** permission mode, Focus view, Send with Ctrl+Enter, MCP
-  servers and hooks (CLI backend), settings, keybindings.
+  servers, hooks (CLI backend), settings, keybindings.
 - **Account & usage**, **Skills** (the session's own, plus Manage and Import
   on the CLI backend), **Slash commands** and **Support**.
 
@@ -711,10 +753,12 @@ Meta does not publish the cache lifetime, so there is no "warm for N
 minutes" countdown; on the Model API the modal shows the cache-hit rate
 instead.
 
-**Diagnostics (CLI backend).** The agent can read the Problems panel through a
-`getDiagnostics` tool the extension serves on a loopback MCP server, bound to
-`127.0.0.1` with a per-window token and started when a session first needs
-it. Nothing else is exposed. It reports the workspace's files only (the
+**Diagnostics.** The agent can read the Problems panel through a
+`getDiagnostics` tool. On the CLI backend the extension serves it on a
+loopback MCP server, bound to `127.0.0.1` with a per-window token and
+started when a session first needs it; nothing else is exposed. On the
+Model API backend it runs inside the extension under the same name
+(`mcp__ide__getDiagnostics`), as a read in every mode. It reports the workspace's files only (the
 first folder), by relative path, each message cut at 1,000 characters, and
 past 200 problems a count instead of the rest.
 
@@ -939,7 +983,7 @@ What stays in English:
 | Muse Spark: Manage Skills                           | —                                                                                    | Turn Muse Code's skills on or off (`muse skills enable`/`disable`), then offer to restart it so the change takes effect                                   |
 | Muse Spark: Import Skills from Claude Code or Codex | —                                                                                    | Preview what `muse skills import` would copy, import it once you confirm, report what was imported, skipped or failed                                     |
 | Muse Spark: Export Conversation                     | —                                                                                    | Save the conversation in front of you as Markdown where you choose, and open it                                                                           |
-| Muse Spark: MCP Servers                             | —                                                                                    | Show the MCP servers Muse Code will load, sign in to or out of a remote one, open the settings file                                                       |
+| Muse Spark: MCP Servers                             | —                                                                                    | Show the MCP servers Muse Code will load (on the Model API backend, how each is running), sign in to or out of a remote one, open the settings file       |
 | Muse Spark: Hooks                                   | —                                                                                    | Show where Muse Code's hooks come from (project, yours, managed) and open each file                                                                       |
 | Muse Spark: Memory                                  | —                                                                                    | List Muse Code's memory notes for this workspace, open one to edit, create one, or delete one to the trash, keeping each `MEMORY.md` index in step        |
 | Muse Spark: New Worktree…                           | —                                                                                    | Ask for a new branch and its base, create it in its own folder beside the repository, then offer to open it in a new window                               |
@@ -1029,7 +1073,7 @@ message resumes the same session.
   carries the open file's path and any selected text (`attachOpenFile`); on
   the CLI backend each turn carries a short hidden note asking the model to
   offer choices through the question card. The extension has no telemetry
-  and no server of its own. Details: [PRIVACY.md](docs/PRIVACY.md).
+  and no hosted server of its own. Details: [PRIVACY.md](docs/PRIVACY.md).
 - A pasted Model API key lives only in VS Code's SecretStorage, is sent only
   to `api.meta.ai`, is never passed to any child process, and never reaches
   settings, logs or the CLI.
@@ -1234,8 +1278,8 @@ never sets it.
 
 ```
 src/extension.ts            activation: the view, the panel, the commands, the output and file openers
-src/host/                   VS Code-facing code: views and webview wiring, conversation, backend managers and the search worker, commands, auth, settings, mentions, editor tracking, usage trace logs, voice, the diagnostics MCP server
-src/core/                   backend-agnostic logic, no `vscode` import: MSP host, Model API client and tools, rules/skills/memory, export, worktrees, usage insights, dictation driver
+src/host/                   VS Code-facing code: views and webview wiring, conversation, backend managers and the search worker, commands, auth, settings, mentions, editor tracking, usage trace logs, voice, the diagnostics MCP server, the MCP servers' spawner
+src/core/                   backend-agnostic logic, no `vscode` import: MSP host, Model API client and tools, the MCP client, rules/skills/memory, export, worktrees, usage insights, dictation driver
 src/shared/                 constants + zod message protocol shared with the webview
 src/shared/l10n/            the English table (en.ts), the fill, plural and Intl helpers, and the table checks
 l10n/                       the translated tables (ui.<language>.json) and the gate's list of names left in English

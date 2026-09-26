@@ -6,6 +6,7 @@ import {
   showMcpServers,
 } from '../../src/host/commands/museConfigCommands'
 import type { PickItem } from '../../src/host/commands/pickItem'
+import type { McpPoolSnapshot } from '../../src/core/backends/modelapi/mcp/pool'
 
 const SETTINGS = '/home/u/.config/muse/settings.json'
 const HOOKS = '/ws/.muse/hooks.json'
@@ -19,6 +20,8 @@ interface HarnessOptions {
   readonly isTrusted?: boolean
   readonly hasCli?: boolean
   readonly projectHooksPath?: string | undefined
+  /** The window runs the Model API backend (M50): its servers' snapshot, undefined before they start. */
+  readonly modelApi?: { readonly snapshot: McpPoolSnapshot | undefined }
 }
 
 function harness(options: HarnessOptions = {}) {
@@ -29,6 +32,7 @@ function harness(options: HarnessOptions = {}) {
   const warnings: string[] = []
   let docs = 0
   let restarts = 0
+  let logs = 0
   const answers = [...(options.answers ?? [])]
   const existing = new Set(options.existing ?? [SETTINGS])
   const deps: MuseConfigDeps = {
@@ -68,6 +72,12 @@ function harness(options: HarnessOptions = {}) {
     showWarning: (message) => {
       warnings.push(message)
     },
+    ...(options.modelApi !== undefined && {
+      modelApiServers: () => options.modelApi?.snapshot,
+      openLog: () => {
+        logs += 1
+      },
+    }),
   }
   return {
     deps,
@@ -78,6 +88,7 @@ function harness(options: HarnessOptions = {}) {
     warnings,
     docs: () => docs,
     restarts: () => restarts,
+    logs: () => logs,
   }
 }
 
@@ -212,6 +223,140 @@ describe('showMcpServers', () => {
     expect(denied.picks[0]?.placeholder).toBe(
       'Muse Code’s settings file could not be read: EACCES: permission denied',
     )
+  })
+})
+
+const FIVE_SERVERS = JSON.stringify({
+  mcpServers: {
+    docs: { type: 'streamable-http', url: 'https://docs.example/mcp' },
+    local: { type: 'stdio', command: 'tool', mode: 'optional' },
+    broken: { type: 'stdio', command: 'bad' },
+    off: { type: 'stdio', command: 'x', enabled: false },
+    waiting: { type: 'stdio', command: 'slow' },
+    later: { type: 'stdio', command: 'new' },
+    locked: { type: 'stdio', command: 'y' },
+  },
+})
+
+const LIVE: McpPoolSnapshot = {
+  isStarted: true,
+  fault: undefined,
+  servers: [
+    {
+      name: 'docs',
+      isRequired: true,
+      state: { status: 'connected', toolCount: 1, unofferedCount: 0 },
+    },
+    {
+      name: 'local',
+      isRequired: false,
+      state: { status: 'connected', toolCount: 3, unofferedCount: 2 },
+    },
+    {
+      name: 'broken',
+      isRequired: true,
+      state: { status: 'failed', reason: 'it exited with code 1' },
+    },
+    { name: 'off', isRequired: true, state: { status: 'disabled' } },
+    { name: 'waiting', isRequired: true, state: { status: 'starting' } },
+    { name: 'locked', isRequired: true, state: { status: 'restricted' } },
+  ],
+}
+
+describe('showMcpServers on the Model API backend (M50)', () => {
+  it('shows each server as this window runs it, and the built-in diagnostics server', async () => {
+    const t = harness({ settings: FIVE_SERVERS, modelApi: { snapshot: LIVE } })
+    await showMcpServers(t.deps)
+    expect(t.picks[0]?.title).toBe('MCP servers on the Model API backend')
+    expect(t.picks[0]?.items.map((item) => [item.id, item.detail])).toEqual([
+      ['server:docs', 'Connected: 1 tool · required (a message stops if it is not running)'],
+      ['server:local', 'Connected: 3 tools · 2 more not offered · optional'],
+      [
+        'server:broken',
+        'Not running: it exited with code 1 · required (a message stops if it is not running)',
+      ],
+      ['server:off', 'turned off · required (a message stops if it is not running)'],
+      ['server:waiting', 'Starting… · required (a message stops if it is not running)'],
+      [
+        'server:later',
+        'Starts with your next message · required (a message stops if it is not running)',
+      ],
+      [
+        'server:locked',
+        'Not started: this workspace is in Restricted Mode · required (a message stops if it is not running)',
+      ],
+      [
+        'builtin:ide',
+        'The extension’s own getDiagnostics: the errors and warnings in VS Code’s Problems panel',
+      ],
+      ['action:openSettings', SETTINGS],
+      [
+        'action:restart',
+        'A reply that is running stops; the servers start again with your next message, from the settings as they are then',
+      ],
+      ['action:docs', undefined],
+    ])
+    expect(t.picks[0]?.items.find((item) => item.id === 'builtin:ide')).toMatchObject({
+      label: 'ide',
+      description: 'built in',
+    })
+  })
+
+  it('says a server starts with the next message before any has, and that none load after a fault', async () => {
+    const before = harness({ settings: FIVE_SERVERS, modelApi: { snapshot: undefined } })
+    await showMcpServers(before.deps)
+    expect(before.picks[0]?.items[0]?.detail).toMatch(/^Starts with your next message/)
+    const faulted = harness({
+      settings: FIVE_SERVERS,
+      modelApi: { snapshot: { isStarted: true, fault: { kind: 'keys' }, servers: [] } },
+    })
+    await showMcpServers(faulted.deps)
+    expect(faulted.picks[0]?.items[0]?.detail).toMatch(/^Not loaded: see the warning/)
+  })
+
+  it('opens the log or the entry for a server, never a Muse Code sign-in', async () => {
+    const log = harness({
+      settings: FIVE_SERVERS,
+      modelApi: { snapshot: LIVE },
+      answers: ['server:docs', 'action:log'],
+    })
+    await showMcpServers(log.deps)
+    expect(log.picks[1]?.items.map((item) => item.id)).toEqual([
+      'action:log',
+      'action:openSettings',
+    ])
+    expect(log.picks[1]?.placeholder).toBe(
+      'This window runs the server itself; a sign-in with muse mcp login is for Muse Code only',
+    )
+    expect(log.logs()).toBe(1)
+    expect(log.terminal).toEqual([])
+    const entry = harness({
+      settings: FIVE_SERVERS,
+      modelApi: { snapshot: LIVE },
+      answers: ['server:local', 'action:openSettings'],
+    })
+    await showMcpServers(entry.deps)
+    expect(entry.opened).toEqual([SETTINGS])
+    const dismissed = harness({
+      settings: FIVE_SERVERS,
+      modelApi: { snapshot: LIVE },
+      answers: ['server:local', undefined],
+    })
+    await showMcpServers(dismissed.deps)
+    expect(dismissed.opened.length + dismissed.logs()).toBe(0)
+  })
+
+  it('does nothing for the built-in server, and restarts the servers', async () => {
+    const builtIn = harness({ modelApi: { snapshot: LIVE }, answers: ['builtin:ide'] })
+    await showMcpServers(builtIn.deps)
+    expect(builtIn.picks).toHaveLength(1)
+    expect(builtIn.docs()).toBe(0)
+    const restart = harness({ modelApi: { snapshot: LIVE }, answers: ['action:restart'] })
+    await showMcpServers(restart.deps)
+    expect(restart.restarts()).toBe(1)
+    expect(restart.information).toEqual([
+      'The MCP servers stopped; your next message starts them from the settings as they are now.',
+    ])
   })
 })
 

@@ -14,6 +14,8 @@ import { revertHunks } from '../../src/core/patchApply'
 import {
   MODEL_TEXT,
   SEARCH_MAX_CANDIDATES,
+  SEARCH_MAX_FILE_BYTES,
+  SEARCH_MAX_HITS,
   TOOL_OUTPUT_ELIDED_MARKER,
   TOOL_OUTPUT_MAX_CHARS,
 } from '../../src/shared/constants'
@@ -589,6 +591,8 @@ describe('executeTool: search limits (D27)', () => {
     let searched = 0
     io.searchFiles = (job) => {
       searched = job.files.length
+      expect(job.maxFileBytes).toBe(SEARCH_MAX_FILE_BYTES)
+      expect(job.maxHits).toBe(SEARCH_MAX_HITS)
       return Promise.resolve({ ok: true, hits: [] })
     }
     const capped = await executeTool('search', JSON.stringify({ pattern: 'x' }), ctx)

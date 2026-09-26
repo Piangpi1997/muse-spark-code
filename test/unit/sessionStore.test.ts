@@ -55,6 +55,18 @@ const full: StoredSession = {
       },
     },
     { turnId: 't1', item: { type: 'function_call_output', call_id: 'c1', output: 'ok' } },
+    // An MCP tool's picture (M50): the output as content parts.
+    {
+      turnId: 't1',
+      item: {
+        type: 'function_call_output',
+        call_id: 'c2',
+        output: [
+          { type: 'input_text', text: 'a dot' },
+          { type: 'input_image', image_url: 'data:image/png;base64,AAAA', detail: 'auto' },
+        ],
+      },
+    },
     {
       turnId: 't1',
       item: {

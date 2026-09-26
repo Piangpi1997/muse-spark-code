@@ -100,6 +100,13 @@ function customizeIds(backend: PaletteContext['backend']) {
     ?.items.map((item) => item.id)
 }
 
+/** The MCP servers row's detail on a backend (M50). */
+function mcpDetailOn(backend: PaletteContext['backend']) {
+  return buildPalette({ ...context, backend })
+    .find((group) => group.id === 'customize')
+    ?.items.find((item) => item.id === 'mcpServers')?.detail
+}
+
 /** The Skills group's row ids on a backend (M30). */
 function skillIdsOn(backend: PaletteContext['backend']) {
   return buildPalette({ ...context, backend })
@@ -283,7 +290,7 @@ describe('buildPalette', () => {
     }
   })
 
-  it('offers the MCP and hooks views on Muse Code only, beside the settings (M31)', () => {
+  it('offers the MCP and hooks views on Muse Code, beside the settings (M31)', () => {
     expect(customizeIds('museCode')).toEqual([
       'permissionMode',
       'focusView',
@@ -294,8 +301,22 @@ describe('buildPalette', () => {
       'settings',
       'keybindings',
     ])
-    expect(customizeIds('modelApi')).not.toContain('mcpServers')
     expect(customizeIds(undefined)).not.toContain('hooks')
+    expect(customizeIds(undefined)).not.toContain('mcpServers')
+  })
+
+  it('offers the MCP view on the Model API backend too, which runs the servers (M50)', () => {
+    expect(customizeIds('modelApi')).toEqual([
+      'permissionMode',
+      'focusView',
+      'ctrlEnter',
+      'mcpServers',
+      'memory',
+      'settings',
+      'keybindings',
+    ])
+    expect(mcpDetailOn('modelApi')).toBe(EN.mcpItemDetailModelApi)
+    expect(mcpDetailOn('museCode')).toBe(EN.mcpItemDetail)
   })
 
   it('offers the Memory view on both backends, which share one memory (M49)', () => {

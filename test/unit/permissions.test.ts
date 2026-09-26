@@ -11,7 +11,15 @@ import {
 } from '../../src/core/backends/modelapi/permissions'
 import { APPROVAL_MODES, type ApprovalMode } from '../../src/shared/permissionModes'
 
-const CLASSES: readonly ToolClass[] = ['read', 'edit', 'shell', 'interactive', 'paid', 'spawn']
+const CLASSES: readonly ToolClass[] = [
+  'read',
+  'edit',
+  'shell',
+  'interactive',
+  'paid',
+  'mcp',
+  'spawn',
+]
 
 /** One PowerShell call as the engine judges it. */
 function shell(command: string) {
@@ -27,6 +35,7 @@ describe('verdictFor', () => {
         shell: 'allow',
         interactive: 'allow',
         paid: 'ask',
+        mcp: 'allow',
         spawn: 'ask',
       },
       onRequest: {
@@ -35,6 +44,7 @@ describe('verdictFor', () => {
         shell: 'ask',
         interactive: 'allow',
         paid: 'ask',
+        mcp: 'ask',
         spawn: 'ask',
       },
       promptUnmatched: {
@@ -43,6 +53,7 @@ describe('verdictFor', () => {
         shell: 'ask',
         interactive: 'allow',
         paid: 'ask',
+        mcp: 'ask',
         spawn: 'ask',
       },
       denyUnmatched: {
@@ -51,6 +62,7 @@ describe('verdictFor', () => {
         shell: 'deny',
         interactive: 'allow',
         paid: 'deny',
+        mcp: 'deny',
         spawn: 'deny',
       },
     }
@@ -66,6 +78,25 @@ describe('verdictFor', () => {
     expect(verdictFor('onRequest', 'edit', true)).toBe('ask')
     expect(verdictFor('promptUnmatched', 'edit', true)).toBe('ask')
     expect(verdictFor('denyUnmatched', 'edit', true)).toBe('deny')
+  })
+
+  it('eases an MCP tool its server marks read-only: runs in Auto, asks in Plan (M50)', () => {
+    expect(verdictFor('allowAll', 'mcp', false, true)).toBe('allow')
+    expect(verdictFor('onRequest', 'mcp', false, true)).toBe('allow')
+    expect(verdictFor('promptUnmatched', 'mcp', false, true)).toBe('ask')
+    expect(verdictFor('denyUnmatched', 'mcp', false, true)).toBe('ask')
+  })
+
+  it('remembers "always allow" for an MCP tool, and not for another (M50)', () => {
+    const engine = new PermissionEngine('promptUnmatched')
+    const query = { toolName: 'mcp__docs__search', toolClass: 'mcp' } as const
+    expect(engine.verdict(query)).toBe('ask')
+    engine.allowForSession('mcp__docs__search')
+    expect(engine.verdict(query)).toBe('allow')
+    expect(engine.verdict({ ...query, toolName: 'mcp__docs__write' })).toBe('ask')
+    engine.setMode('denyUnmatched')
+    expect(engine.verdict(query)).toBe('deny')
+    expect(engine.verdict({ ...query, isReadOnly: true })).toBe('allow')
   })
 })
 
