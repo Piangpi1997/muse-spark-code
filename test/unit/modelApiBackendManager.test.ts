@@ -43,6 +43,7 @@ function managerOn(
       ...disabledPaidFeatures,
       hookSettingsPath: '/cfg/muse/settings.json',
       isHooksEnabled: () => hooks?.enabled ?? false,
+      memory: undefined,
     }),
   }
 }
