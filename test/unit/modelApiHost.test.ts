@@ -1,5 +1,8 @@
 import { Buffer } from 'node:buffer'
-import { describe, expect, it, vi } from 'vitest'
+import { mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
+import { afterAll, describe, expect, it, vi } from 'vitest'
 import * as z from 'zod/mini'
 import type { AgentEvent } from '../../src/shared/agentEvents'
 import {
@@ -12,6 +15,7 @@ import {
   UI_TEXT,
 } from '../../src/shared/constants'
 import type { AgentSession } from '../../src/core/agent/agentBackend'
+import { ModelApiClient } from '../../src/core/backends/modelapi/client'
 import {
   ModelApiHost,
   type ModelApiHostDeps,
@@ -21,6 +25,7 @@ import { FakeLogOutputChannel } from './helpers/fakes'
 import { EN } from '../../src/shared/l10n/en'
 import { BASE_LOCALE, setUiText } from '../../src/shared/l10n/text'
 import {
+  FAKE_MODEL_API_ACCOUNT_ID,
   fakeModelApi,
   fakeModelApiClient,
   type ScriptedReply,
@@ -30,6 +35,13 @@ import { memoryContextIo } from './helpers/fakeContextIo'
 import { memorySessionStore } from './helpers/fakeSessionStore'
 import { parseStoredSession } from '../../src/core/backends/modelapi/sessionStore'
 import { heldShellToolIo, type MemoryToolIo, memoryToolIo } from './helpers/fakeToolIo'
+import { createFileScheduleStore } from '../../src/host/backend/fileScheduleStore'
+import type {
+  ScheduledPrompt,
+  ScheduleRunConfirmation,
+  ScheduleStore,
+} from '../../src/shared/schedule'
+import { removeFolder } from './helpers/temporaryFolders'
 
 const ROOT = '/ws'
 
@@ -45,6 +57,9 @@ function setup(
     paid?: readonly PaidFeature[]
     /** The tools' files and shell, when a test needs its own (M46: a held shell). */
     io?: MemoryToolIo
+    scheduleStore?: ScheduleStore
+    getAccountId?: () => Promise<string | undefined>
+    apiKey?: () => Promise<string | undefined>
   } = {},
 ) {
   const paidUses: { readonly feature: PaidFeature; readonly units: number }[] = []
@@ -53,7 +68,18 @@ function setup(
   const io = options.io ?? memoryToolIo(options.files ?? {}, ROOT)
   let ids = 0
   let clock = 1_000_000
-  const client = fakeModelApiClient(api, log)
+  const client =
+    options.apiKey === undefined
+      ? fakeModelApiClient(api, log)
+      : new ModelApiClient({
+          fetch: api.fetch,
+          baseUrl: 'https://api.example.test/v1',
+          apiKey: options.apiKey,
+          sleep: () => Promise.resolve(),
+          now: () => 0,
+          random: () => 0,
+          log,
+        })
   const host = new ModelApiHost({
     client,
     workspaceRoot: ROOT,
@@ -73,13 +99,27 @@ function setup(
     personalSkillsRoot: options.personalSkillsRoot,
     isWorkspaceTrusted: () => options.isTrusted ?? true,
     store: options.store,
+    scheduleStore: options.scheduleStore,
+    getAccountId: options.getAccountId,
     describeEnvironment: options.describeEnvironment ?? (() => Promise.resolve({ git: undefined })),
     isPaidFeatureOn: (feature) => options.paid?.includes(feature) === true,
     notePaidUse: (feature, units) => {
       paidUses.push({ feature, units })
     },
   })
-  return { api, client, host, log, io, files: io.files, shellCalls: io.shellCalls, paidUses }
+  return {
+    api,
+    client,
+    host,
+    log,
+    io,
+    files: io.files,
+    shellCalls: io.shellCalls,
+    paidUses,
+    advanceClock: (ms: number) => {
+      clock += ms
+    },
+  }
 }
 
 async function startSession(
@@ -288,6 +328,289 @@ describe('ModelApiHost: catalogue and sessions', () => {
     expect(whole.history.items).toHaveLength(4)
     await t.host.close()
     expect(t.host.sessionCount).toBe(0)
+  })
+})
+
+const scheduleRoot = mkdtempSync(path.join(tmpdir(), 'muse-model-schedules-'))
+afterAll(() => removeFolder(scheduleRoot))
+
+function confirmedRun(job: ScheduledPrompt, session: ModelApiSession): ScheduleRunConfirmation {
+  return { sessionId: session.sessionId, modelId: session.modelId, prompt: job.prompt }
+}
+
+async function dueSchedule(t: ReturnType<typeof setup>, session: ModelApiSession) {
+  const schedules = session.schedules
+  if (schedules === undefined) {
+    throw new Error('expected local schedules')
+  }
+  const job = await schedules.create({ kind: 'interval', everyMs: 60_000 }, 'Review tests')
+  t.advanceClock(65_000)
+  return { schedules, job }
+}
+
+describe('Model API scheduled prompts (M52)', () => {
+  it('creates locally without a paid request and keeps key identity out of the panel event', async () => {
+    const t = setup({
+      store: memorySessionStore(),
+      scheduleStore: createFileScheduleStore({
+        directory: path.join(scheduleRoot, 'identity'),
+        now: () => 1_000_000,
+        log: new FakeLogOutputChannel(),
+      }),
+      getAccountId: () => Promise.resolve(FAKE_MODEL_API_ACCOUNT_ID),
+    })
+    const { session, events } = await startSession(t)
+    const schedules = session.schedules
+    if (schedules === undefined) {
+      throw new Error('expected local schedules')
+    }
+    const created = await schedules.create({ kind: 'interval', everyMs: 60_000 }, 'Review tests')
+    expect(created.prompt).toBe('Review tests')
+    expect(t.api.responseBodies()).toEqual([])
+    const event = events.findLast((entry) => entry.type === 'schedulesChanged')
+    if (event?.type !== 'schedulesChanged') {
+      throw new Error('expected schedule event')
+    }
+    expect(event.jobs[0]).toMatchObject({ id: created.id, prompt: 'Review tests' })
+    expect(JSON.stringify(event)).not.toContain(FAKE_MODEL_API_ACCOUNT_ID)
+    expect(JSON.stringify(event)).not.toContain(ROOT)
+    await t.host.close()
+  })
+
+  it('refuses a due run while its paid gate is off, then admits one explicit run and marks it paid', async () => {
+    let now = 1_000_000
+    const paid: PaidFeature[] = []
+    const sessionStore = memorySessionStore()
+    const store = createFileScheduleStore({
+      directory: path.join(scheduleRoot, 'paid'),
+      now: () => now,
+      log: new FakeLogOutputChannel(),
+    })
+    const t = setup({
+      store: sessionStore,
+      scheduleStore: store,
+      getAccountId: () => Promise.resolve(FAKE_MODEL_API_ACCOUNT_ID),
+      paid,
+    })
+    // `allowAll` is Bypass permissions; paid admission still refuses.
+    const { session, turnDone } = await startSession(t, 'allowAll')
+    const { schedules, job } = await dueSchedule(t, session)
+    now = job.nextFireAtMs + 1
+    await expect(
+      schedules.run(job.id, job.nextFireAtMs, confirmedRun(job, session)),
+    ).rejects.toThrow(UI_TEXT.schedulePaidOff)
+    expect(t.api.responseBodies()).toHaveLength(0)
+    const beforeRun = await store.list(session.sessionId)
+    expect(beforeRun[0]?.fireCount).toBe(0)
+    paid.push('scheduledPrompts')
+    t.api.script({ text: 'Tests look good' })
+    const completed = turnDone()
+    await schedules.run(job.id, job.nextFireAtMs, confirmedRun(job, session))
+    await completed
+    expect(t.api.responseBodies()).toHaveLength(1)
+    const requestJson = JSON.stringify(t.api.responseBodies())
+    expect(requestJson).not.toContain(FAKE_MODEL_API_ACCOUNT_ID)
+    expect(requestJson).not.toContain('confirmedRequest')
+    expect(t.paidUses).toContainEqual({ feature: 'scheduledPrompts', units: 1 })
+    expect(session.history().items).toContainEqual(
+      expect.objectContaining({ tool: 'scheduled_prompt', paid: 'scheduledPrompts' }),
+    )
+    const afterRun = await store.list(session.sessionId)
+    expect(afterRun[0]?.fireCount).toBe(1)
+    await t.host.flush()
+    const savedJson = JSON.stringify(sessionStore.saved.get(session.sessionId))
+    expect(savedJson).not.toContain(FAKE_MODEL_API_ACCOUNT_ID)
+    expect(savedJson).not.toContain('confirmedRequest')
+    const logJson = JSON.stringify([
+      ...t.log.trace.mock.calls,
+      ...t.log.debug.mock.calls,
+      ...t.log.info.mock.calls,
+      ...t.log.warn.mock.calls,
+      ...t.log.error.mock.calls,
+    ])
+    expect(logJson).not.toContain(FAKE_MODEL_API_ACCOUNT_ID)
+    expect(logJson).not.toContain('confirmedRequest')
+    expect(t.io.shellCalls).toEqual([])
+    await expect(
+      schedules.run(job.id, job.nextFireAtMs, confirmedRun(job, session)),
+    ).rejects.toThrow(UI_TEXT.scheduleNotDue)
+    expect(t.api.responseBodies()).toHaveLength(1)
+    await t.host.close()
+  })
+
+  it('refuses a model switch while the confirmed occurrence waits for its receipt', async () => {
+    let now = 1_000_000
+    const disk = createFileScheduleStore({
+      directory: path.join(scheduleRoot, 'delayed-admission-model'),
+      now: () => now,
+      log: new FakeLogOutputChannel(),
+    })
+    const claimStarted = Promise.withResolvers<undefined>()
+    const releaseClaim = Promise.withResolvers<undefined>()
+    const delayed: ScheduleStore = {
+      ...disk,
+      claim: async (job, occurrenceMs) => {
+        claimStarted.resolve(undefined)
+        await releaseClaim.promise
+        return await disk.claim(job, occurrenceMs)
+      },
+    }
+    const t = setup({
+      store: memorySessionStore(),
+      scheduleStore: delayed,
+      getAccountId: () => Promise.resolve(FAKE_MODEL_API_ACCOUNT_ID),
+      paid: ['scheduledPrompts'],
+    })
+    try {
+      const { session } = await startSession(t)
+      const { schedules, job } = await dueSchedule(t, session)
+      now = job.nextFireAtMs + 1
+      const run = schedules.run(job.id, job.nextFireAtMs, confirmedRun(job, session))
+      await claimStarted.promise
+      await session.setModel('muse-spark-1.2')
+      releaseClaim.resolve(undefined)
+      await expect(run).rejects.toThrow(UI_TEXT.scheduleConfirmationExpired)
+      expect(t.api.responseBodies()).toEqual([])
+    } finally {
+      releaseClaim.resolve(undefined)
+      await t.host.close()
+    }
+  })
+
+  it('refuses a changed key at the last request boundary after admission', async () => {
+    let now = 1_000_000
+    let key = 'LLM|1|secret'
+    const keyReadStarted = Promise.withResolvers<undefined>()
+    const releaseKeyRead = Promise.withResolvers<undefined>()
+    const t = setup({
+      store: memorySessionStore(),
+      scheduleStore: createFileScheduleStore({
+        directory: path.join(scheduleRoot, 'key-before-http'),
+        now: () => now,
+        log: new FakeLogOutputChannel(),
+      }),
+      getAccountId: () => Promise.resolve(FAKE_MODEL_API_ACCOUNT_ID),
+      paid: ['scheduledPrompts'],
+      apiKey: async () => {
+        keyReadStarted.resolve(undefined)
+        await releaseKeyRead.promise
+        return key
+      },
+    })
+    try {
+      const { session, turnDone } = await startSession(t)
+      const { schedules, job } = await dueSchedule(t, session)
+      now = job.nextFireAtMs + 1
+      const completed = turnDone()
+      await schedules.run(job.id, job.nextFireAtMs, confirmedRun(job, session))
+      await keyReadStarted.promise
+      key = 'LLM|1|changed'
+      releaseKeyRead.resolve(undefined)
+      await completed
+      expect(t.api.responseBodies()).toEqual([])
+      expect(t.paidUses).toEqual([])
+      expect(session.history().items.some((item) => item.tool === 'scheduled_prompt')).toBe(false)
+    } finally {
+      releaseKeyRead.resolve(undefined)
+      await t.host.close()
+    }
+  })
+
+  it('shows jobs only while the creating Model API key identity is current', async () => {
+    let account = FAKE_MODEL_API_ACCOUNT_ID
+    const t = setup({
+      store: memorySessionStore(),
+      scheduleStore: createFileScheduleStore({
+        directory: path.join(scheduleRoot, 'key-change'),
+        now: () => 1_000_000,
+        log: new FakeLogOutputChannel(),
+      }),
+      getAccountId: () => Promise.resolve(account),
+    })
+    const { session } = await startSession(t)
+    const schedules = session.schedules
+    if (schedules === undefined) {
+      throw new Error('expected local schedules')
+    }
+    await schedules.create({ kind: 'interval', everyMs: 60_000 }, 'Review tests')
+    account = 'account-b'
+    expect(await schedules.list()).toEqual([])
+    account = FAKE_MODEL_API_ACCOUNT_ID
+    expect(await schedules.list()).toHaveLength(1)
+    await t.host.close()
+  })
+
+  it('does not publish an old account’s jobs after a delayed schedule read', async () => {
+    let account = FAKE_MODEL_API_ACCOUNT_ID
+    let isNextListDelayed = false
+    const listed = Promise.withResolvers<undefined>()
+    const release = Promise.withResolvers<undefined>()
+    const disk = createFileScheduleStore({
+      directory: path.join(scheduleRoot, 'account-read-race'),
+      now: () => 1_000_000,
+      log: new FakeLogOutputChannel(),
+    })
+    const scheduleStore: ScheduleStore = {
+      ...disk,
+      list: async (sessionId) => {
+        const jobs = await disk.list(sessionId)
+        if (isNextListDelayed) {
+          isNextListDelayed = false
+          listed.resolve(undefined)
+          await release.promise
+        }
+        return jobs
+      },
+    }
+    const t = setup({
+      store: memorySessionStore(),
+      scheduleStore,
+      getAccountId: () => Promise.resolve(account),
+    })
+    const { session, events } = await startSession(t)
+    const schedules = session.schedules
+    if (schedules === undefined) {
+      throw new Error('expected local schedules')
+    }
+    await schedules.create({ kind: 'interval', everyMs: 60_000 }, 'Private account prompt')
+    isNextListDelayed = true
+    const pending = schedules.list()
+    await listed.promise
+    account = 'another-account'
+    release.resolve(undefined)
+    expect(await pending).toEqual([])
+    expect(events.findLast((event) => event.type === 'schedulesChanged')).toMatchObject({
+      jobs: [],
+    })
+    await t.host.close()
+  })
+
+  it('hides a same-session job stored for another workspace', async () => {
+    const scheduleStore = createFileScheduleStore({
+      directory: path.join(scheduleRoot, 'workspace-scope'),
+      now: () => 1_000_000,
+      log: new FakeLogOutputChannel(),
+    })
+    const t = setup({
+      store: memorySessionStore(),
+      scheduleStore,
+      getAccountId: () => Promise.resolve(FAKE_MODEL_API_ACCOUNT_ID),
+    })
+    const { session } = await startSession(t)
+    const schedules = session.schedules
+    if (schedules === undefined) {
+      throw new Error('expected local schedules')
+    }
+    const own = await schedules.create({ kind: 'interval', everyMs: 60_000 }, 'Own workspace')
+    await scheduleStore.create({
+      ...own,
+      id: 'foreign-workspace',
+      workspaceRoot: '/elsewhere',
+      prompt: 'Foreign workspace',
+    })
+    const visible = await schedules.list()
+    expect(visible.map((job) => job.id)).toEqual([own.id])
+    await t.host.close()
   })
 })
 

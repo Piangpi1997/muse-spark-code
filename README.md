@@ -93,6 +93,9 @@ Every change is in the [CHANGELOG](CHANGELOG.md).
   sources, image files made on request, and Meta's Muse Voice for
   dictation. Each is off until you turn it on and accept its price, marked
   paid wherever it is used, and tallied in Account & usage.
+- **Scheduled prompts under your control.** On the Model API backend,
+  `/loop` saves a recurring prompt in this conversation. A due prompt waits
+  for you to run and confirm it; your key is never spent unattended.
 - **Two backends, never mixed.** Your Muse subscription through the Muse Code
   CLI, or a Meta Model API key (pay as you go) with the extension's own
   tools. The pasted key is never handed to the CLI.
@@ -299,6 +302,8 @@ the ones that answer in JSON are shown as what they mean:
   next, and the tokens spent against any budget.
 - **Scheduled prompts** (`/loop` and cron): each prompt with its schedule,
   whether it repeats, its next run and how often it has run.
+  These rows report Muse Code's native cron tools, not the extension's Model
+  API schedules described below.
 - **Web search**: the results as links that open in your browser, with
   their snippets. Search rows on the Model API backend look the same.
 - **Background work**: a command Muse Code moved to the background shows
@@ -394,6 +399,40 @@ both backends, as Muse Code's `/goal` does.
   its own, so your key pays for nothing you did not ask for. A token budget
   the agent gives a goal stops it once spent.
 
+## Scheduled prompts (Model API)
+
+On the Model API backend, `/loop 10m Review the build` saves a prompt in the
+current conversation to become due every ten minutes. Use `m`, `h`, or `d`
+for minutes, hours, or days; `/loop "0 9 * * 1-5" Summarize new bugs` uses
+a five-field cron expression in your machine's local time. `/loop <prompt>`
+defaults to ten minutes. `/loop list` refreshes the panel's schedule list,
+and `/loop cancel <id>` removes one. The list above the composer shows each
+prompt, cadence, next run or due state, run count, and ID, with **Run now**
+and **Cancel schedule** controls.
+
+Each job belongs to this workspace, conversation, and stored Model API key.
+It expires after seven days. Only a loaded conversation checks for due work;
+closing VS Code stops checks. A missed recurring interval leaves one due
+occurrence, without a backlog. A due prompt **never runs by itself**: turn
+on **Scheduled prompts (paid)** and accept the published token rates, then
+choose **Run now** and confirm that occurrence's prompt, model and rates in
+a separate modal. Declining leaves it due and makes no API call. Bypass
+permissions does not skip either confirmation. A changed model, prompt,
+conversation or paid setting refuses an old confirmation; the client checks
+the key it actually reads before HTTP. A receipt claimed just before such a
+change is never replayed, so that occurrence may be skipped without a charge.
+A run that reaches its first Model API request has a paid row
+in the transcript and a count in Account & usage; its token cost is already
+in that conversation's token estimate. A run admitted just before a crash
+is not replayed, even if its result was never seen. Cancel does not stop a
+turn that already began.
+
+Muse Code has its own subscription-backed `cron_create`, `cron_list` and
+`cron_delete` tools. Ask it in chat to schedule, list or cancel its jobs;
+those are not the Model API jobs shown by this panel. Muse Code 1.3.0 does
+not expose scheduler controls over MSP or a `muse cron` CLI command, so the
+panel cannot present an authoritative native job list or direct cancel.
+
 ## The panel
 
 **Composer.**
@@ -433,7 +472,8 @@ commands narrowed as you type: `/agents`, `/clear`, `/compact`, `/config`,
 `/usage`, `/mcp` and `/hooks` (CLI backend), and the session's skills. Names
 that start with your letters come first. Up and Down move, `Enter` runs a
 command (a skill, or `/goal`, is completed so you can add what follows it),
-`Tab` completes the name and `Esc` closes the list. With nothing matching,
+`Tab` completes the name and `Esc` closes the list. `/loop` is offered on
+the Model API backend. With nothing matching,
 `Enter` sends the text as it is.
 
 **Transcript.**
@@ -733,9 +773,17 @@ subscription):
 | Image generation | $0.01 per image               | The model may create a PNG file in the workspace with `muse-image-1.0`, or edit workspace images into a new one, asking you each time |
 | Muse Voice       | $0.18 per hour of audio       | The microphone uses Meta's Muse Voice Transcribe instead of your computer's own recogniser                                            |
 
+Scheduled prompts use ordinary Model API tokens, rather than an extra
+per-run service fee. The off-by-default paid gate names the standard model
+rates ($1.25 per million input tokens, $0.15 per million cached input tokens,
+$4.25 per million output tokens; contributor models cost less). Every due
+run asks again before any model call. Other paid tools you have enabled may
+add their own charges during that confirmed turn.
+
 Turn one on from the palette (**Account & usage** group, where the backend
 can use it) or with its setting (`museSpark.modelApiWebSearch`,
-`modelApiImageGeneration`, `modelApiVoice`). Either way a confirmation
+`modelApiImageGeneration`, `modelApiVoice`,
+`modelApiScheduledPrompts`). Either way a confirmation
 names the price first; declining it turns the setting back off, and turning
 a setting off means the next time asks again. The settings are
 machine-scoped, so a repository cannot turn one on.
@@ -746,7 +794,7 @@ While one is on, you can always tell:
   search, Images"), with the prices in its tooltip; it opens Account &
   usage.
 - **Every use is its own row** marked _paid_: each search, with its query
-  and results, and each image, with its path.
+  and results; each image, with its path; and each admitted scheduled run.
 - **Every image asks first**, in every permission mode, Bypass included,
   with the prompt, the images an edit starts from, and the price on the
   card and no "always allow". Plan refuses it (it writes a file), and a
@@ -762,8 +810,9 @@ While one is on, you can always tell:
   leaves the extension, and the row is marked paid as on the Model API.
 - **The microphone says so**: ringed, and named "Record voice with Muse
   Voice (paid)" with the price in its tooltip.
-- **Account & usage keeps the tally**: this window's searches, images and
-  seconds of audio, each with its estimated cost at the published prices.
+- **Account & usage keeps the tally**: this window's searches, images,
+  seconds of audio and scheduled runs. Scheduled-run tokens are included in
+  the session token estimate rather than added to the extra-features total.
   The dev.meta.ai dashboard is the bill.
 
 Web search's count errs high: Meta does not say how it bills a search with
@@ -908,6 +957,7 @@ Bypass at once.
 | `modelApiWebSearch`               | `false`  | [Paid](#paid-features): web search on the Model API backend, $2.50 per 1,000 searches; asks you to confirm the price when turned on                                                                                                                                                                                                    |
 | `modelApiImageGeneration`         | `false`  | [Paid](#paid-features): image files on the Model API backend, $0.01 per image; every image asks first, in every mode                                                                                                                                                                                                                   |
 | `modelApiVoice`                   | `false`  | [Paid](#paid-features): Muse Voice as the microphone's engine on the Model API backend, $0.18 per hour of audio                                                                                                                                                                                                                        |
+| `modelApiScheduledPrompts`        | `false`  | [Paid](#scheduled-prompts-model-api): a due prompt can run only after this machine-scoped gate and a separate confirmation of that occurrence's Model API token rates; never unattended                                                                                                                                                |
 | `environmentVariables`            | `[]`     | `{ name, value }` pairs for the Muse Code process (an `XDG_CONFIG_HOME` here is where the extension looks for the CLI's sign-in and settings too). Never put API keys here; use Sign in. Changing it restarts the host                                                                                                                 |
 
 Muse Code also gets VS Code's `http.proxy` (and `http.noProxy`) as

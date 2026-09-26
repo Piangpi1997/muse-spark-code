@@ -13,6 +13,7 @@ import {
   type DictationAction,
   type EffortLevel,
   GOAL_SLASH_COMMAND,
+  LOOP_SLASH_COMMAND,
   type GoalCommandVerb,
   MUSE_DELEGATION_ENABLED,
   type SubagentAction,
@@ -21,6 +22,7 @@ import {
 import { editorContextLabel } from '../shared/editorContext'
 import { effortAt, effortIndex, effortLabel, effortLevelsFor } from '../shared/effort'
 import { parseGoalPrompt, requiresObjective } from '../shared/goalCommand'
+import { parseLoopPrompt } from '../core/backends/modelapi/schedules'
 import { fill, formatPercent, templateParts } from '../shared/l10n/text'
 import {
   availablePermissionModes,
@@ -37,6 +39,7 @@ import { Composer, type ImageData, type SlashPaletteSlot } from './components/Co
 import { EffortSlider } from './components/EffortSlider'
 import { EmptyState } from './components/EmptyState'
 import { GoalPanel } from './components/GoalPanel'
+import { SchedulePanel } from './components/SchedulePanel'
 import { Header } from './components/Header'
 import { HistoryDialog } from './components/HistoryDialog'
 import { UsageDialog } from './components/UsageDialog'
@@ -95,6 +98,7 @@ const KEEPS_PALETTE_OPEN: ReadonlySet<PaletteAction['type']> = new Set([
 
 // What choosing `/goal` leaves in the prompt: the command, ready for the objective (M45).
 const GOAL_PROMPT_START = `/${GOAL_SLASH_COMMAND} `
+const LOOP_PROMPT_START = `/${LOOP_SLASH_COMMAND} `
 const GATED_STATUSES = new Set(['noCli', 'signedOut', 'signingIn', 'error'])
 const ATTACH_UPLOAD = 'upload'
 const ATTACH_CONTEXT = 'context'
@@ -193,6 +197,23 @@ function modesHint(): ReactNode {
 // effect (and re-post `ready`) on every render.
 const defaultLocalId = () => crypto.randomUUID()
 const defaultNow = () => Date.now()
+
+function promptStartFor(action: PaletteAction): string | undefined {
+  switch (action.type) {
+    case 'insertSkill': {
+      return `/${action.selector} `
+    }
+    case 'startGoal': {
+      return GOAL_PROMPT_START
+    }
+    case 'startLoop': {
+      return LOOP_PROMPT_START
+    }
+    default: {
+      return undefined
+    }
+  }
+}
 
 export function App({
   postMessage,
@@ -350,6 +371,21 @@ export function App({
     },
     [store, onGoalCommand],
   )
+  const onScheduleRun = useCallback(
+    (id: string, occurrenceMs: number) => {
+      postMessage({ type: 'scheduleRun', id, occurrenceMs })
+    },
+    [postMessage],
+  )
+  const onScheduleCancel = useCallback(
+    (id: string) => {
+      postMessage({ type: 'scheduleCancel', id })
+    },
+    [postMessage],
+  )
+  const onScheduleEnable = useCallback(() => {
+    postMessage({ type: 'setPaidFeature', feature: 'scheduledPrompts', isOn: true })
+  }, [postMessage])
   const onSubmit = useCallback(() => {
     const current = store.getState()
     if (!canSend(current)) {
@@ -377,6 +413,35 @@ export function App({
       }
       onGoalCommand(goal.verb, goal.objective, 'composer')
       setIsPinnedToEnd(true)
+      return
+    }
+    // Model API schedules are extension-owned. Muse Code's cron remains a
+    // model-mediated ordinary turn because MSP has no scheduler verbs (M52).
+    const loop = current.auth.backend === 'modelApi' ? parseLoopPrompt(text) : undefined
+    if (loop !== undefined) {
+      if (!loop.ok) {
+        dispatch({ type: 'noticeRaised', level: 'warning', text: UI_TEXT.loopSyntax })
+        return
+      }
+      dispatch({ type: 'draftChanged', draft: '' })
+      switch (loop.command.verb) {
+        case 'create': {
+          postMessage({
+            type: 'scheduleCreate',
+            cadence: loop.command.cadence,
+            prompt: loop.command.prompt,
+          })
+          break
+        }
+        case 'list': {
+          postMessage({ type: 'scheduleList' })
+          break
+        }
+        case 'cancel': {
+          postMessage({ type: 'scheduleCancel', id: loop.command.id })
+          break
+        }
+      }
       return
     }
     const localId = newLocalId()
@@ -894,6 +959,11 @@ export function App({
           closeOverlay()
           break
         }
+        case 'startLoop': {
+          dispatch({ type: 'draftChanged', draft: LOOP_PROMPT_START })
+          closeOverlay()
+          break
+        }
         case 'compact': {
           postMessage({ type: 'compact' })
           closeOverlay()
@@ -972,8 +1042,8 @@ export function App({
   const slashPaletteKeys = useRef<PaletteKeys>(null)
   const onPromptAction = useCallback(
     (action: PaletteAction) => {
-      if (action.type === 'insertSkill' || action.type === 'startGoal') {
-        const start = action.type === 'startGoal' ? GOAL_PROMPT_START : `/${action.selector} `
+      const start = promptStartFor(action)
+      if (start !== undefined) {
         dispatch({ type: 'draftChanged', draft: start })
         dispatch({ type: 'focusRequested' })
         return
@@ -1326,6 +1396,15 @@ export function App({
           onCancel: onGoalEditCanceled,
           onSave: onGoalEditSaved,
         }}
+      />
+      <SchedulePanel
+        jobs={state.schedules}
+        nowMs={now()}
+        isPaidOn={state.paid.features.includes('scheduledPrompts')}
+        isInert={isModalOpen}
+        onRun={onScheduleRun}
+        onCancel={onScheduleCancel}
+        onEnable={onScheduleEnable}
       />
       <TodoPanel items={state.todos} isInert={isModalOpen} />
       <div className="composer-area" inert={isModalOpen}>

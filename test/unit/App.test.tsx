@@ -1764,3 +1764,72 @@ describe('App: the session goal (M45)', () => {
     expect(screen.queryByRole('region', { name: 'Session goal' })).toBeNull()
   })
 })
+
+describe('App: Model API scheduled prompts (M52)', () => {
+  it('routes /loop create, list and cancel locally, with no sendMessage', () => {
+    const postMessage = renderReady()
+    deliver({ type: 'authState', status: 'signedIn', backend: 'modelApi' })
+    send('/loop 10m Review tests')
+    expect(postMessage).toHaveBeenLastCalledWith({
+      type: 'scheduleCreate',
+      cadence: { kind: 'interval', everyMs: 600_000 },
+      prompt: 'Review tests',
+    })
+    send('/loop list')
+    expect(postMessage).toHaveBeenLastCalledWith({ type: 'scheduleList' })
+    send('/loop cancel job-a')
+    expect(postMessage).toHaveBeenLastCalledWith({ type: 'scheduleCancel', id: 'job-a' })
+    expect(postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'sendMessage' }))
+  })
+
+  it('shows a due job, opens the paid gate, and only sends Run after it is on', () => {
+    const postMessage = renderReady()
+    deliver({ type: 'authState', status: 'signedIn', backend: 'modelApi' })
+    deliver({
+      type: 'agentEvent',
+      event: {
+        type: 'schedulesChanged',
+        jobs: [
+          {
+            id: 'job-a',
+            prompt: 'Review tests',
+            cadence: { kind: 'interval', everyMs: 600_000 },
+            nextFireAtMs: 0,
+            fireCount: 0,
+          },
+        ],
+      },
+    })
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Enable paid runs for scheduled prompt job-a' }),
+    )
+    expect(postMessage).toHaveBeenLastCalledWith({
+      type: 'setPaidFeature',
+      feature: 'scheduledPrompts',
+      isOn: true,
+    })
+    deliver({
+      type: 'paidState',
+      state: {
+        features: ['scheduledPrompts'],
+        tally: { webSearches: 0, images: 0, voiceSeconds: 0, scheduledRuns: 0 },
+        isKeyStored: true,
+      },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Run scheduled prompt job-a' }))
+    expect(postMessage).toHaveBeenLastCalledWith({
+      type: 'scheduleRun',
+      id: 'job-a',
+      occurrenceMs: 0,
+    })
+  })
+
+  it('passes Muse Code /loop text to its model-mediated cron tools', () => {
+    const postMessage = renderReady()
+    deliver({ type: 'authState', status: 'signedIn', backend: 'museCode' })
+    send('/loop 10m Review tests')
+    expect(postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'sendMessage', text: '/loop 10m Review tests' }),
+    )
+  })
+})

@@ -210,6 +210,9 @@ function paidUseText(feature: PaidFeature, tally: PaidTally): string {
         duration: formatDurationMs(tally.voiceSeconds * MILLISECONDS_PER_SECOND),
       })
     }
+    case 'scheduledPrompts': {
+      return plural(UI_TEXT.usagePaidScheduled, tally.scheduledRuns)
+    }
   }
 }
 
@@ -247,7 +250,9 @@ function PaidRow({ feature, paid }: { readonly feature: PaidFeature; readonly pa
     <>
       <dt>{`${paidFeatureName(feature)} (${state})`}</dt>
       <dd>
-        {`${paidUseText(feature, paid.tally)} · ${formatUsd(paidCostUsd(feature, paid.tally))}`}
+        {feature === 'scheduledPrompts'
+          ? `${paidUseText(feature, paid.tally)} · ${UI_TEXT.usageScheduledIncluded}`
+          : `${paidUseText(feature, paid.tally)} · ${formatUsd(paidCostUsd(feature, paid.tally))}`}
       </dd>
     </>
   )

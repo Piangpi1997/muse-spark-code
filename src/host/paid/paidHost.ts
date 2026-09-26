@@ -17,6 +17,7 @@ import {
 } from '../../shared/constants'
 import { fill } from '../../shared/l10n/text'
 import { paidFeatureName, paidFeaturePrice, type PaidState } from '../../shared/paid'
+import type { ScheduledPrompt } from '../../shared/schedule'
 import type { Logger } from '../logger'
 
 // What an earlier version (or a hand edit) stored is validated, never trusted.
@@ -45,6 +46,7 @@ function confirmationDetail(feature: PaidFeature): string {
     webSearch: UI_TEXT.paidConfirmWebSearch,
     imageGeneration: UI_TEXT.paidConfirmImage,
     voice: UI_TEXT.paidConfirmVoice,
+    scheduledPrompts: UI_TEXT.paidConfirmScheduled,
   }
   return fill(details[feature], { price: paidFeaturePrice(feature) })
 }
@@ -77,6 +79,27 @@ export async function isImagePurchaseConfirmed(plan: ImagePlan): Promise<boolean
     fill(UI_TEXT.imageBuyBilling, { price }),
   ].join('\n\n')
   const answer = await vscode.window.showWarningMessage(title, { modal: true, detail }, accept)
+  return answer === accept
+}
+
+/** One due occurrence: the same native VS Code price dialog in the panel and live proof. */
+export async function isScheduledRunConfirmed(
+  job: Pick<ScheduledPrompt, 'prompt'>,
+  modelId: string,
+): Promise<boolean> {
+  const accept = UI_TEXT.scheduleRunConfirmAccept
+  const answer = await vscode.window.showWarningMessage(
+    fill(UI_TEXT.scheduleRunConfirmTitle, { model: modelId }),
+    {
+      modal: true,
+      detail: [
+        fill(UI_TEXT.scheduleRunConfirmPrompt, { prompt: job.prompt }),
+        fill(UI_TEXT.scheduleRunConfirmPrice, { price: paidFeaturePrice('scheduledPrompts') }),
+        UI_TEXT.scheduleRunConfirmExtras,
+      ].join('\n\n'),
+    },
+    accept,
+  )
   return answer === accept
 }
 

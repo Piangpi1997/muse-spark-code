@@ -7,6 +7,7 @@
 // before any of the response has been read; everything else surfaces as a
 // `ModelApiError`. `fetch`, the clock and the key are injected.
 
+import { createHash } from 'node:crypto'
 import {
   MODEL_API_MAX_RETRIES,
   HTTP_TOO_MANY_REQUESTS,
@@ -146,6 +147,20 @@ export interface RetryBudget {
   retriesUsed: number
 }
 
+/** In-memory identity of an explicitly confirmed scheduled Model API run. */
+export interface ConfirmedModelRequest {
+  readonly modelId: string
+  readonly keyDigest: string
+  /** The paid gate and session model must still match before every HTTP try. */
+  readonly isStillAllowed: () => boolean
+  /** Only after identity and gate checks, immediately before the first HTTP try. */
+  readonly onRequestStarted: () => void
+}
+
+function isAborted(signal: AbortSignal | undefined): boolean {
+  return signal?.aborted === true
+}
+
 /** Rejects as soon as `signal` aborts, instead of sleeping the retry delay out. */
 function whenAborted(signal: AbortSignal): { readonly promise: Promise<never>; dispose(): void } {
   let onAbort: (() => void) | undefined
@@ -188,10 +203,16 @@ export class ModelApiClient {
     }
   }
 
-  private async headers(): Promise<Record<string, string>> {
+  private async headers(confirmed?: ConfirmedModelRequest): Promise<Record<string, string>> {
     const key = await this.deps.apiKey()
     if (key === undefined) {
       throw new MissingApiKeyError()
+    }
+    if (
+      confirmed !== undefined &&
+      createHash('sha256').update(key).digest('hex') !== confirmed.keyDigest
+    ) {
+      throw new Error(UI_TEXT.scheduleConfirmationExpired)
     }
     return { Authorization: `Bearer ${key}`, 'Content-Type': JSON_MEDIA_TYPE }
   }
@@ -223,9 +244,10 @@ export class ModelApiClient {
     signal: AbortSignal | undefined,
     onRetry?: (notice: RetryNotice) => void,
     budget?: RetryBudget,
+    confirmed?: ConfirmedModelRequest,
   ): Promise<Response> {
     const isRateLimitOnly = init.retries === 'rateLimitOnly'
-    const headers = { ...(await this.headers()), Accept: init.accept }
+    const headers = { ...(await this.headers(confirmed)), Accept: init.accept }
     const url = `${this.deps.baseUrl}${path}`
     const retry = async (attempt: number, delay: number, reason: string) => {
       if (budget !== undefined) {
@@ -242,6 +264,15 @@ export class ModelApiClient {
     // How long the answer took, retries included, at trace level (M39).
     const startedAt = this.deps.now()
     for (let attempt = budget?.retriesUsed ?? 0; ; attempt += 1) {
+      // Stop may have won while SecretStorage was reading the key. No paid
+      // receipt, row or fetch belongs to a cancelled attempt.
+      if (isAborted(signal)) {
+        throw new ModelApiError('cancelled', NETWORK_FAILURE_STATUS, undefined, undefined)
+      }
+      if (confirmed !== undefined && !confirmed.isStillAllowed()) {
+        throw new Error(UI_TEXT.scheduleConfirmationExpired)
+      }
+      confirmed?.onRequestStarted()
       let response: Response
       try {
         response = await this.deps.fetch(url, {
@@ -361,7 +392,14 @@ export class ModelApiClient {
     signal: AbortSignal,
     onRetry?: (notice: RetryNotice) => void,
     budget?: RetryBudget,
+    confirmed?: ConfirmedModelRequest,
   ): AsyncGenerator<StreamEvent> {
+    if (
+      confirmed !== undefined &&
+      (body.model !== confirmed.modelId || !confirmed.isStillAllowed())
+    ) {
+      throw new Error(UI_TEXT.scheduleConfirmationExpired)
+    }
     // Nothing from the server for this long, headers or a frame, ends the
     // turn (M39); the request is aborted too, which frees the connection.
     const idleMs = this.deps.streamIdleMs ?? MODEL_API_STREAM_IDLE_MS
@@ -387,6 +425,7 @@ export class ModelApiClient {
         AbortSignal.any([signal, stall.signal]),
         onRetry,
         budget,
+        confirmed,
       ),
     )
     if (response.body === null) {

@@ -3,6 +3,7 @@ import type { AgentEvent, ItemSnapshot } from '../../src/shared/agentEvents'
 import { UI_TEXT } from '../../src/shared/constants'
 import type { HostToWebviewMessage } from '../../src/shared/protocol'
 import { restoredUiState, webviewStateOf } from '../../src/webview/state/snapshot'
+import type { ScheduleView } from '../../src/shared/schedule'
 import {
   canSend,
   agentsOf,
@@ -1999,7 +2000,7 @@ describe('uiReducer: paid features (M33, PLAN.md D30)', () => {
   it('keeps the host’s paid state', () => {
     const paid = {
       features: ['voice' as const],
-      tally: { webSearches: 1, images: 0, voiceSeconds: 3 },
+      tally: { webSearches: 1, images: 0, voiceSeconds: 3, scheduledRuns: 0 },
       isKeyStored: false,
     }
     expect(reduceAll([host({ type: 'paidState', state: paid })]).paid).toEqual(paid)
@@ -2236,6 +2237,44 @@ describe('uiReducer: the session goal (M45)', () => {
       pending,
       host({ type: 'historyLoaded', sessionId: 's2', items: [], todos: [] }),
     )
+    expect(switched.pendingGoalCommand).toBeUndefined()
+  })
+
+  it('keeps schedules and goal edits on a gap reload, then clears both on a session switch', () => {
+    const job: ScheduleView = {
+      id: 'job-a',
+      prompt: 'Check status',
+      cadence: { kind: 'interval', everyMs: 600_000 },
+      nextFireAtMs: 1_000_000,
+      fireCount: 0,
+    }
+    const scheduled = uiReducer(withGoal, agent({ type: 'schedulesChanged', jobs: [job] }))
+    const editing = uiReducer(scheduled, { type: 'goalEditStarted', objective: goal.objective })
+    const pending = uiReducer(editing, { type: 'goalSubmitted', requestId: 'goal-a' })
+    const same = uiReducer(
+      pending,
+      host({
+        type: 'historyLoaded',
+        sessionId: 's1',
+        items: [],
+        todos: [],
+        goal: { ...goal, objective: 'Recovered objective' },
+      }),
+    )
+    expect(same.schedules).toEqual([job])
+    expect(same.goalEdit?.draft).toBe('Recovered objective')
+    expect(same.pendingGoalCommand?.requestId).toBe('goal-a')
+    const switched = uiReducer(
+      same,
+      host({
+        type: 'historyLoaded',
+        sessionId: 's2',
+        items: [],
+        todos: [],
+      }),
+    )
+    expect(switched.schedules).toEqual([])
+    expect(switched.goalEdit).toBeUndefined()
     expect(switched.pendingGoalCommand).toBeUndefined()
   })
 

@@ -28,6 +28,7 @@ import {
 import { AuthService } from './host/auth/authService'
 import { CredentialStore, isValidModelApiKey } from './host/auth/credentialStore'
 import { ModelApiBackendManager } from './host/backend/modelApiBackendManager'
+import { createFileScheduleStore } from './host/backend/fileScheduleStore'
 import { MuseCodeBackendManager } from './host/backend/museCodeBackendManager'
 import { type ProcessResult, SandboxSetup } from './host/backend/sandboxSetup'
 import { fileContextIo } from './host/backend/contextIo'
@@ -74,7 +75,11 @@ import type { ChatSurface, WebviewHostContext } from './host/views/webviewSetup'
 import { loadUiTable } from './host/l10n'
 import { createInsightsReader } from './host/usage/traceLogs'
 import { createDictationSetup, createMuseVoiceSetup } from './host/voice/dictationHost'
-import { isImagePurchaseConfirmed, createPaidFeatures } from './host/paid/paidHost'
+import {
+  createPaidFeatures,
+  isImagePurchaseConfirmed,
+  isScheduledRunConfirmed,
+} from './host/paid/paidHost'
 import {
   BACKEND_SETTING,
   BYPASS_SETTING,
@@ -95,6 +100,7 @@ import {
   DICTATION_HELPER_DIR,
   FIND_FILES_GLOB,
   MODEL_API_BASE_URL,
+  MODEL_API_SCHEDULES_DIR,
   MODEL_API_SESSIONS_DIR,
   PAID_FEATURE_SETTINGS,
   PERSONAL_SKILLS_GLOB,
@@ -852,6 +858,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
                 setTimeout(resolve, ms)
               }),
           }),
+    scheduleStore:
+      context.storageUri === undefined
+        ? undefined
+        : createFileScheduleStore({
+            directory: path.join(context.storageUri.fsPath, MODEL_API_SCHEDULES_DIR),
+            now: () => Date.now(),
+            log,
+          }),
     describeEnvironment: () =>
       describeEnvironment({
         runGit,
@@ -1168,6 +1182,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         },
         isWorkspaceTrusted: () => vscode.workspace.isTrusted,
         onForegroundTasksChanged: refreshTaskContext,
+        isScheduledPaidOn: () => paid.gate.isOn('scheduledPrompts'),
+        confirmScheduledRun: isScheduledRunConfirmed,
         now: () => Date.now(),
         log,
       })

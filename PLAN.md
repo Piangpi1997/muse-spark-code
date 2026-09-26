@@ -3707,15 +3707,11 @@ hosted CI remains the merge gate.
 
 ### M47 — Workflows: captured run and agents (D40)
 
-**Status 2026-09-26: captured presentation increment locally gated; owner
-controls deferred** (`docs/certification/m47.md`). The branch sits on M46
-merge commit `e219d04`. Live capture proved the run card and one child's
-updates and rejected owner commands; accepted control shapes remain
-uncaptured. The read-only candidate passed local `npm run quality`; a
-current-head review then found a sparse history replay loss. Its correction
-passed local `npm run quality` on staged tree
-`0edaadb6bca8846487d7964a25dd9b7cffffeb9b`; this receipt changed
-the documentation, so a final exact-tree rerun and hosted CI remain.
+**Status 2026-09-26: captured read-only presentation merged; owner controls
+deferred** (`docs/certification/m47.md`). PR #34 merged into main as
+`34002ab` after exact-tree local quality, all seven hosted checks and review.
+Live capture proved the run card and one child's updates plus rejected
+owner commands; accepted control shapes remain uncaptured.
 
 - **Goal**: a workflow Muse Code runs reads as what it is, a run of agents
   going on in the background, with its captured progress and result.
@@ -3749,9 +3745,9 @@ the documentation, so a final exact-tree rerun and hosted CI remain.
   the applicable rendering drills (the old control drills remain historical
   in the certification record), harness
   scenarios `muse-workflow` and `muse-workflow-map` in the accessibility
-  gate. The reduced candidate passed `npm run quality` on staged tree
-  `e5fe0228643bfc54ef9753d1319064b91498d728`; hosted CI and review
-  remain. Claude's M47 source worktree
+  gate. The final candidate passed `npm run quality` on tree
+  `7390e3b2fc080aef5fcaa1ad4226f688e0f5ed75`, all seven hosted
+  checks and review; PR #34 merged. Claude's M47 source worktree
   passed `quality:gates` but its accessibility run had four Chrome pages
   without a result and exited 1; secrets and SAST did not run.
 - **Left out, by Muse Code or evidence**: pausing and resuming a run (no MSP
@@ -3762,6 +3758,121 @@ the documentation, so a final exact-tree rerun and hosted CI remain.
   a live accepted-command and outcome capture; the captured refusal probes
   alone do not certify usable controls. A child `phase` and saved workflow
   display name also wait for live evidence.
+
+### M52 — Scheduled prompts (D36)
+
+**Status 2026-09-26: staged on merged M47 main, certification open.** The
+isolated M52 worktree is based on `34002ab`; its pre-M47 79-path staged tree
+is pinned at `refs/backup/m52-before-m47`. Sixteen M47-base fake schedule,
+paid guard, UI and workflow suites passed 622/622; all five TypeScript
+projects and localization passed. On the exact later pre-integration tree
+`a248d9c18b51818e5e95234ee13d7a1f4c02a4b3`, WIN-11-VM ran full
+`npm run quality` with exit 0 (1,728 tests passed, three skipped; 288
+accessibility pages with zero findings; audit, secret and SAST checks clean).
+Kubuntu ran `npm run quality:gates` with exit 0 (1,724 passed, seven skipped;
+build and audit clean). Linux browser accessibility was not certified.
+The later native-proof tree `e4e5a8f24ce513e6eb24e0aa463ccefb2f7647c4`
+also passed full Windows `npm run quality` with exit 0: 1,730 tests passed,
+three skipped, 288 accessibility pages with zero findings, and clean build,
+audit, secret and SAST gates. Its log and process audit are recorded in
+`docs/certification/m52.md`. This receipt precedes the ordered join.
+The following documentation-only tree
+`9e293770599794a2a7b95ad8780b12fc6885577a` passed Mac mini
+`npm run quality:gates` with exit 0: 1,726 tests passed, seven skipped,
+and build, localization, lint, type, duplication and audit gates clean.
+PSScriptAnalyzer is Windows-only; Mac browser accessibility, secret scan and
+SAST were not part of that run. Its exact log and process audit are in the
+same certification record.
+Ordered M48–M51 integration and the exact integrated-tree gates remain open.
+The native price-modal decline was observed with a fake Model API in an
+ordinary VS Code development window; see the receipt below. Meta's [interactive
+guide](https://dev.meta.ai/docs/muse-code/interactive) defines `/loop` as a
+recurring prompt with an interval or local five-field cron expression. Its
+[loop and cron recipe](https://dev.meta.ai/docs/cookbook/loop-and-cron) says
+jobs are session-scoped, need a running process, skip a fire during an active
+run, recover at most one missed recurring fire, and expire after seven days.
+The captured Muse Code 1.3.0 `cron_create`, `cron_list`, and `cron_delete`
+tool rows are in `docs/certification/m43.md`; MSP exposes no cron verb, and
+the CLI exposes no `muse cron` command. A panel could ask the model to list or
+cancel native jobs, but could not prove that its answer is authoritative.
+
+- **Model API scope**: `/loop <interval> <prompt>` and `/loop "<five-field
+cron>" <prompt>` create local, session-scoped schedules; `/loop list` opens
+  the stored jobs, and `/loop cancel <id>` removes one. The panel lists prompt,
+  cadence, next eligible time, run count, and pending state, with accessible
+  run and cancel controls. A schedule belongs to the workspace and the stored
+  Model API key identity that created it. It persists with its session and
+  survives a window restart. Only a loaded session observes due work; no
+  external or hidden process runs after VS Code closes.
+- **Money boundary**: scheduling, listing, and cancelling make no Model API
+  call. A due occurrence stays pending until the user explicitly chooses Run,
+  accepts that occurrence's prompt and published Model API token prices in a
+  modal, and the machine-scoped, off-by-default scheduled-prompts paid gate
+  is on with its price accepted. Bypass cannot skip this. A declined or closed
+  dialog leaves it pending and spends nothing. A paid transcript row and
+  Account & usage count identify every admitted scheduled run; its tokens
+  remain in the session's token-cost estimate, not added twice. A price
+  confirmation names one model and session; if either changes while the
+  dialog is open, that approval expires without a claim or request. A
+  cancelled job is rechecked after the dialog too. Admission carries the
+  confirmed model and account digest into the turn; the client compares the
+  key it actually reads from SecretStorage with that digest before HTTP,
+  and a changed model fails before each scheduled request. Stop during the
+  key read refuses before the paid row, tally or HTTP request. No raw key is
+  stored in a schedule, transcript or receipt. A local receipt alone does
+  not count as paid use; the paid row and tally appear when the first HTTP
+  attempt begins, after the final guard.
+- **Account isolation during reads**: a list or poll reads the stored jobs
+  before resolving the current key identity. An older, delayed read cannot
+  publish a previous account's prompts after a key switch.
+- **Delivery**: an occurrence is atomically claimed in the workspace store
+  before its turn starts. A failed or interrupted turn is recorded as attempted
+  and never silently replayed. A recurring job computes its next eligible
+  time without a backlog; a one-time job ends after its attempt. An active
+  turn leaves the occurrence pending. The run is refused if the API key has
+  changed, the workspace differs, the paid gate is off, the session is no
+  longer loaded, or the claim cannot be recorded. Resume restores the job
+  list before any due notification. Cancel is idempotent and never cancels a
+  turn already admitted. A receipt claimed just before a model, key or gate
+  change is retained even if the client refuses before HTTP: the missed
+  occurrence is skipped rather than risk a replay of a possibly billed one.
+- **Muse Code boundary**: its native cron tools remain available through
+  ordinary model turns, including the captured tool rows. The panel does not
+  claim a native job list or issue a direct cancel until Meta exposes a
+  schedulers API over MSP or the CLI; add that wire shape only from a live
+  capture. The panel's `/loop` management applies only to the extension's
+  Model API schedules, with backend/account/workspace scope shown in the UI.
+- **Acceptance**: pure schedule parsing and local-time next-fire tests,
+  restart/due/cancel/active-turn tests, atomic-claim and cross-window race
+  tests, changed-key and workspace isolation, gate-off/decline/Bypass drills,
+  paid row and tally, all translations, accessibility harness, and the full
+  `npm run quality` gate. Record red drills and exact evidence in
+  `docs/certification/m52.md` before certification.
+
+**Native modal proof plan and result (2026-09-26).** Reuse the same VS Code
+`showWarningMessage` helper in production and a disposable ordinary VS Code
+development extension. `@vscode/test-cli` explicitly refuses modal dialogs
+while it runs extension tests, as the session-1 test-mode attempt showed, so its test
+mode cannot certify this gate. The probe uses an in-memory key identity, fake
+Model API fetch, session and schedule stores, and an injected clock; it never
+reads or stores the owner's key or calls Meta. For Manual and Bypass, make a
+job due, open the native per-run price modal, dismiss it in the active WIN-11-VM
+console session, and assert zero fake fetches, zero paid-run tally, no receipt
+and unchanged fire count. First prove a disposable user-scope interactive task
+actually runs in session 1 and can inspect VS Code's UI Automation tree.
+Wait for other VM gates to finish before opening a window; remove only the
+identified temporary task and helper afterward. If session-1 UI access is
+unavailable, leave this acceptance gate open rather than treating a mocked
+modal as proof. The disposable task ran in session 1 and UI Automation saw
+the actual modal, including the prompt, standard token prices, and Cancel
+control. Cancel declined Manual and Bypass runs. The fake host recorded zero
+HTTP fetches, paid-run tallies, schedule claims and fire counts in both cases;
+the owner key was never read. `@vscode/test-cli` refused the modal in test
+mode, and injected Escape did not dismiss the ordinary VS Code modal, so
+keyboard Escape is not certified. The temporary task, helper files, private
+Code process, profile and extensions directory were removed after a process
+audit. The capture and red drill are in `docs/certification/m52.md`; ordered
+integration and full gates on the later tree remain open.
 
 ### M41 — Install Muse Code from the panel (folded into M55)
 

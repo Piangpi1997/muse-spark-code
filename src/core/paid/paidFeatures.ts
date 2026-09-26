@@ -193,6 +193,10 @@ export class PaidUsage {
         this.tally = { ...tally, voiceSeconds: tally.voiceSeconds + units }
         break
       }
+      case 'scheduledPrompts': {
+        this.tally = { ...tally, scheduledRuns: tally.scheduledRuns + units }
+        break
+      }
     }
     this.log.info(`Paid use: ${feature} +${String(units)}`)
     for (const listener of this.listeners) {

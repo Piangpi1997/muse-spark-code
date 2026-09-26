@@ -3,9 +3,11 @@
 // files. Nothing is spawned; disposing it forgets the window's sessions.
 
 import { ModelApiClient } from '../../core/backends/modelapi/client'
+import { createHash } from 'node:crypto'
 import type { EnvironmentFacts } from '../../core/backends/modelapi/instructions'
 import { ModelApiHost } from '../../core/backends/modelapi/ModelApiHost'
 import type { SessionStore } from '../../core/backends/modelapi/sessionStore'
+import type { ScheduleStore } from '../../shared/schedule'
 import type { ToolIo } from '../../core/backends/modelapi/tools'
 import type { ContextIo } from '../../core/context/contextFiles'
 import { MODEL_API_BASE_URL, type PaidFeature, UI_TEXT } from '../../shared/constants'
@@ -28,6 +30,7 @@ export interface ModelApiBackendManagerDeps {
   readonly isWorkspaceTrusted: () => boolean
   /** Sessions between windows (PLAN.md D14); undefined without workspace storage. */
   readonly store: SessionStore | undefined
+  readonly scheduleStore?: ScheduleStore | undefined
   /** The git facts for the prompt's environment section (D15). */
   readonly describeEnvironment: () => Promise<EnvironmentFacts>
   /** Whether a paid feature is on (M33–M35, PLAN.md D30). */
@@ -95,6 +98,11 @@ export class ModelApiBackendManager {
       personalSkillsRoot: this.deps.personalSkillsRoot,
       isWorkspaceTrusted: this.deps.isWorkspaceTrusted,
       store: this.deps.store,
+      scheduleStore: this.deps.scheduleStore,
+      getAccountId: async () => {
+        const key = await this.deps.getApiKey()
+        return key === undefined ? undefined : createHash('sha256').update(key).digest('hex')
+      },
       describeEnvironment: this.deps.describeEnvironment,
       isPaidFeatureOn: this.deps.isPaidFeatureOn,
       notePaidUse: this.deps.notePaidUse,

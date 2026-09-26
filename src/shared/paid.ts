@@ -7,6 +7,7 @@
 import * as z from 'zod/mini'
 import {
   MUSE_CODE_PAID_FEATURES,
+  MODEL_API_PRICES_PER_MILLION,
   PAID_FEATURES,
   PAID_PRICES_USD,
   type PaidFeature,
@@ -22,10 +23,16 @@ export const paidTallySchema = z.object({
   webSearches: z.number(),
   images: z.number(),
   voiceSeconds: z.number(),
+  scheduledRuns: z.number(),
 })
 export type PaidTally = z.infer<typeof paidTallySchema>
 
-export const EMPTY_PAID_TALLY: PaidTally = { webSearches: 0, images: 0, voiceSeconds: 0 }
+export const EMPTY_PAID_TALLY: PaidTally = {
+  webSearches: 0,
+  images: 0,
+  voiceSeconds: 0,
+  scheduledRuns: 0,
+}
 
 /** The features that are on (setting on and price accepted), and the tally. */
 export const paidStateSchema = z.object({
@@ -63,6 +70,11 @@ export function paidCostUsd(feature: PaidFeature, tally: PaidTally): number {
     case 'voice': {
       return (tally.voiceSeconds * PAID_PRICES_USD.voicePerHour) / SECONDS_PER_HOUR
     }
+    case 'scheduledPrompts': {
+      // Scheduled runs use ordinary Model API tokens. UsageDialog prices those
+      // tokens already; adding them to the extra-features total doubles them.
+      return 0
+    }
   }
 }
 
@@ -76,7 +88,10 @@ export function listedPaidFeatures(
   tally: PaidTally,
 ): readonly PaidFeature[] {
   return PAID_FEATURES.filter(
-    (feature) => usable.includes(feature) || paidCostUsd(feature, tally) > 0,
+    (feature) =>
+      usable.includes(feature) ||
+      paidCostUsd(feature, tally) > 0 ||
+      (feature === 'scheduledPrompts' && tally.scheduledRuns > 0),
   )
 }
 
@@ -94,6 +109,7 @@ export function paidFeatureName(feature: PaidFeature): string {
     webSearch: UI_TEXT.paidWebSearchName,
     imageGeneration: UI_TEXT.paidImageGenerationName,
     voice: UI_TEXT.paidVoiceName,
+    scheduledPrompts: UI_TEXT.paidScheduledName,
   }
   return names[feature]
 }
@@ -111,6 +127,14 @@ export function paidFeaturePrice(feature: PaidFeature): string {
     }
     case 'voice': {
       return fill(UI_TEXT.paidVoicePrice, { price: formatUsd(PAID_PRICES_USD.voicePerHour, 2) })
+    }
+    case 'scheduledPrompts': {
+      const prices = MODEL_API_PRICES_PER_MILLION.standard
+      return fill(UI_TEXT.paidScheduledPrice, {
+        input: formatUsd(prices.input, 2),
+        cached: formatUsd(prices.cachedInput, 2),
+        output: formatUsd(prices.output, 2),
+      })
     }
   }
 }

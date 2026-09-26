@@ -70,6 +70,7 @@ import {
 import { effortForThinking, effortLevelsFor, isEffortLevel } from '../../shared/effort'
 import type { AgentEvent, ApprovalChoice, ItemSnapshot } from '../../shared/agentEvents'
 import { fill, plural } from '../../shared/l10n/text'
+import type { ScheduleCadence, ScheduledPrompt } from '../../shared/schedule'
 import { formatMention, parseSkillInvocation } from '../../shared/mentions'
 import { approvalModeFor } from '../../shared/permissionModes'
 import type {
@@ -254,6 +255,9 @@ export interface ConversationDeps {
    * running here (M46): the keybinding's context key follows.
    */
   readonly onForegroundTasksChanged: () => void
+  /** A separate yes for each due Model API turn, naming prompt and token price (M52). */
+  readonly confirmScheduledRun?: (job: ScheduledPrompt, modelId: string) => Promise<boolean>
+  readonly isScheduledPaidOn?: () => boolean
   readonly now: () => number
   readonly log: Logger
 }
@@ -1508,6 +1512,11 @@ export class ConversationController {
     this.noteActivity()
     await this.applyEffort(session)
     void this.refreshSkills(session)
+    if (session.schedules !== undefined) {
+      void session.schedules.list().catch((error: unknown) => {
+        this.deps.log.warn(`Scheduled prompts could not be loaded: ${describe(error)}`)
+      })
+    }
   }
 
   /**
@@ -2076,6 +2085,119 @@ export class ConversationController {
       }
       this.notice('error', `${UI_TEXT.goalCommandFailed}: ${describe(error)}`)
       result(false)
+    }
+  }
+
+  private async scheduleSession(): Promise<AgentSession | undefined> {
+    const session = await this.sessionForAction()
+    if (session !== undefined && session.schedules === undefined) {
+      this.notice('warning', UI_TEXT.scheduleModelApiOnly)
+    }
+    return session?.schedules === undefined ? undefined : session
+  }
+
+  private async createSchedule(cadence: ScheduleCadence, prompt: string): Promise<void> {
+    try {
+      const session = await this.scheduleSession()
+      const job = await session?.schedules?.create(cadence, prompt)
+      if (job !== undefined) {
+        this.say('info', fill(UI_TEXT.scheduleCreated, { id: job.id }))
+      }
+    } catch (error: unknown) {
+      this.notice('error', `${UI_TEXT.scheduleCommandFailed}: ${describe(error)}`)
+    }
+  }
+
+  private async listSchedules(): Promise<void> {
+    try {
+      const session = await this.scheduleSession()
+      const jobs = await session?.schedules?.list()
+      if (jobs?.length === 0) {
+        this.say('info', UI_TEXT.scheduleNone)
+      }
+    } catch (error: unknown) {
+      this.notice('error', `${UI_TEXT.scheduleCommandFailed}: ${describe(error)}`)
+    }
+  }
+
+  private async cancelSchedule(id: string): Promise<void> {
+    try {
+      const session = await this.scheduleSession()
+      if (session?.schedules === undefined) {
+        return
+      }
+      const isRemoved = await session.schedules.cancel(id)
+      this.say(
+        isRemoved ? 'info' : 'warning',
+        fill(isRemoved ? UI_TEXT.scheduleCancelled : UI_TEXT.scheduleUnknown, { id }),
+      )
+    } catch (error: unknown) {
+      this.notice('error', `${UI_TEXT.scheduleCommandFailed}: ${describe(error)}`)
+    }
+  }
+
+  private scheduleRunChanged(): void {
+    this.notice(
+      'warning',
+      this.deps.isScheduledPaidOn?.() === true
+        ? UI_TEXT.scheduleConfirmationExpired
+        : UI_TEXT.schedulePaidOff,
+    )
+  }
+
+  private async runSchedule(id: string, occurrenceMs: number): Promise<void> {
+    try {
+      const session = await this.scheduleSession()
+      if (session?.schedules === undefined) {
+        return
+      }
+      if (this.deps.isScheduledPaidOn?.() !== true) {
+        this.notice('warning', UI_TEXT.schedulePaidOff)
+        return
+      }
+      const jobs = await session.schedules.list()
+      const job = jobs.find((entry) => entry.id === id)
+      if (job?.nextFireAtMs !== occurrenceMs || occurrenceMs > this.deps.now()) {
+        this.notice('warning', UI_TEXT.scheduleNotDue)
+        return
+      }
+      if (this.deps.confirmScheduledRun === undefined) {
+        return
+      }
+      const confirmed = {
+        sessionId: session.sessionId,
+        modelId: session.modelId,
+        backend: this.deps.auth.current.backend,
+        prompt: job.prompt,
+      }
+      if (!(await this.deps.confirmScheduledRun(job, confirmed.modelId))) {
+        return
+      }
+      const isContextChanged = () =>
+        this.isDisposed ||
+        this.session !== session ||
+        session.sessionId !== confirmed.sessionId ||
+        this.sessionKind !== 'modelApi' ||
+        this.deps.auth.current.backend !== confirmed.backend ||
+        session.modelId !== confirmed.modelId ||
+        this.deps.isScheduledPaidOn?.() !== true
+      if (isContextChanged()) {
+        this.scheduleRunChanged()
+        return
+      }
+      const currentJobs = await session.schedules.list()
+      const current = currentJobs.find((entry) => entry.id === id)
+      if (
+        isContextChanged() ||
+        current?.nextFireAtMs !== occurrenceMs ||
+        current.prompt !== confirmed.prompt
+      ) {
+        this.scheduleRunChanged()
+        return
+      }
+      await session.schedules.run(id, occurrenceMs, confirmed)
+    } catch (error: unknown) {
+      this.notice('error', `${UI_TEXT.scheduleCommandFailed}: ${describe(error)}`)
     }
   }
 
@@ -2659,6 +2781,22 @@ export class ConversationController {
       }
       case 'goalCommand': {
         await this.controlGoal(message.requestId, message.verb, message.objective)
+        break
+      }
+      case 'scheduleCreate': {
+        await this.createSchedule(message.cadence, message.prompt)
+        break
+      }
+      case 'scheduleList': {
+        await this.listSchedules()
+        break
+      }
+      case 'scheduleCancel': {
+        await this.cancelSchedule(message.id)
+        break
+      }
+      case 'scheduleRun': {
+        await this.runSchedule(message.id, message.occurrenceMs)
         break
       }
       case 'exportConversation': {
