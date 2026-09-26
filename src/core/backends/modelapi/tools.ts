@@ -48,7 +48,7 @@ import {
 import { GOAL_TOOL_DEFINITIONS } from './goals'
 
 import type { ToolClass } from './permissions'
-import type { FunctionToolDefinition } from './schemas'
+import type { FunctionOutputPart, FunctionToolDefinition } from './schemas'
 
 export interface ShellResult {
   readonly stdout: string
@@ -191,6 +191,8 @@ const FINGERPRINT_HASH = 'sha256'
 export interface ToolOutcome {
   /** What the model receives as the function result. */
   readonly output: string
+  /** The result as content parts instead, when it holds pictures (an MCP tool's, M50). */
+  readonly outputParts?: readonly FunctionOutputPart[]
   /** What the transcript row shows. */
   readonly visibleOutput: string
   readonly failureReason?: string

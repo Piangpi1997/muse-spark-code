@@ -121,7 +121,8 @@ const inputMessageSchema = z.object({
 const functionCallOutputSchema = z.object({
   type: z.literal('function_call_output'),
   call_id: z.string(),
-  output: z.string(),
+  // Content parts when an MCP tool returned pictures (M50).
+  output: z.union([z.string(), z.array(z.union([inputTextPartSchema, inputImagePartSchema]))]),
 })
 const webSearchCallReplaySchema = z.object({
   type: z.literal('web_search_call'),

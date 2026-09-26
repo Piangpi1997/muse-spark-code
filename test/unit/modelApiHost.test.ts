@@ -19,7 +19,7 @@ import {
 } from '../../src/core/backends/modelapi/ModelApiHost'
 import { FakeLogOutputChannel } from './helpers/fakes'
 import { EN } from '../../src/shared/l10n/en'
-import { BASE_LOCALE, setUiText } from '../../src/shared/l10n/text'
+import { BASE_LOCALE, fill, setUiText } from '../../src/shared/l10n/text'
 import {
   fakeModelApi,
   fakeModelApiClient,
@@ -30,6 +30,9 @@ import { memoryContextIo } from './helpers/fakeContextIo'
 import { memorySessionStore } from './helpers/fakeSessionStore'
 import { parseStoredSession } from '../../src/core/backends/modelapi/sessionStore'
 import { heldShellToolIo, type MemoryToolIo, memoryToolIo } from './helpers/fakeToolIo'
+import { type FakeMcpSource, fakeMcpSource } from './helpers/fakeMcpSource'
+import { countLogged } from './helpers/logText'
+import type { McpTool } from '../../src/core/mcp'
 
 const ROOT = '/ws'
 
@@ -45,6 +48,9 @@ function setup(
     paid?: readonly PaidFeature[]
     /** The tools' files and shell, when a test needs its own (M46: a held shell). */
     io?: MemoryToolIo
+    /** The MCP servers and the IDE tools (M50). */
+    mcpServers?: ModelApiHostDeps['mcpServers']
+    ideTools?: ModelApiHostDeps['ideTools']
   } = {},
 ) {
   const paidUses: { readonly feature: PaidFeature; readonly units: number }[] = []
@@ -78,6 +84,8 @@ function setup(
     notePaidUse: (feature, units) => {
       paidUses.push({ feature, units })
     },
+    mcpServers: options.mcpServers,
+    ideTools: options.ideTools,
   })
   return { api, client, host, log, io, files: io.files, shellCalls: io.shellCalls, paidUses }
 }
@@ -3363,5 +3371,348 @@ describe('ModelApiSession: an explanation instead of an answer (M46)', () => {
         output: `${MODEL_TEXT.clarificationLead}\nNeither: I prefer green.`,
       }),
     )
+  })
+})
+
+/** The tool rows as they completed. */
+function toolRows(events: readonly AgentEvent[]) {
+  return events.flatMap((event) =>
+    event.type === 'itemCompleted' && event.item.kind === 'toolCall' ? [event.item] : [],
+  )
+}
+
+/** Every function output the fake API was sent, in order (each request replays the earlier ones). */
+function outputs(t: ReturnType<typeof setup>): readonly unknown[] {
+  const last = t.api.responseBodies().at(-1)?.['input'] as { type: string; output?: unknown }[]
+  return last.filter((item) => item.type === 'function_call_output').map((item) => item.output)
+}
+
+describe('ModelApiHost: MCP servers and the IDE tool (M50)', () => {
+  const DIAGNOSTICS: McpTool = {
+    name: 'getDiagnostics',
+    description: 'Problems',
+    inputSchema: { type: 'object', properties: { uri: { type: 'string' } } },
+    call: (args) =>
+      args['uri'] === 'bad'
+        ? Promise.reject(new Error('no such file'))
+        : Promise.resolve('No diagnostics.'),
+  }
+  const TOOLS = [
+    { server: 'docs', tool: 'search' },
+    { server: 'docs', tool: 'lookup', isReadOnly: true },
+  ]
+
+  /** A session on a host with the fake servers, scripted to call `calls` and then answer. */
+  async function mcpTurn(
+    options: {
+      mode?: string
+      isTrusted?: boolean
+      mcp?: FakeMcpSource
+      calls?: readonly { name: string; arguments: string }[]
+    } = {},
+  ) {
+    const mcp = options.mcp ?? fakeMcpSource(TOOLS)
+    const t = setup({
+      mcpServers: mcp,
+      ideTools: [DIAGNOSTICS],
+      isTrusted: options.isTrusted ?? true,
+    })
+    const started = await startSession(t, options.mode)
+    t.api.script({ calls: options.calls ?? [] }, { text: 'done' })
+    await started.session.sendTurn([{ type: 'text', text: 'go' }])
+    return { ...started, t, mcp }
+  }
+
+  it('offers the IDE tool always, and the MCP tools in a trusted workspace', async () => {
+    const trusted = await mcpTurn()
+    await trusted.turnDone()
+    const names = (trusted.t.api.responseBodies()[0]?.['tools'] as { name?: string }[]).map(
+      (tool) => tool.name,
+    )
+    expect(names).toEqual(
+      expect.arrayContaining([
+        'mcp__ide__getDiagnostics',
+        'mcp__docs__search',
+        'mcp__docs__lookup',
+      ]),
+    )
+    expect(trusted.mcp.starts).toBeGreaterThan(0)
+    const restricted = await mcpTurn({ isTrusted: false })
+    await restricted.turnDone()
+    const offered = (restricted.t.api.responseBodies()[0]?.['tools'] as { name?: string }[]).map(
+      (tool) => tool.name,
+    )
+    expect(offered).toContain('mcp__ide__getDiagnostics')
+    expect(offered).not.toContain('mcp__docs__search')
+  })
+
+  it('asks before an MCP tool in Manual, as a tool, and remembers "always allow"', async () => {
+    const { session, events, turnDone, t, mcp } = await mcpTurn({
+      calls: [
+        { name: 'mcp__docs__search', arguments: '{"path":"notes.md"}' },
+        { name: 'mcp__docs__search', arguments: '{"q":2}' },
+      ],
+    })
+    const request = await approvalRequest(events, 0)
+    expect(request).toMatchObject({
+      toolName: 'mcp__docs__search',
+      subject: { kind: 'tool', toolName: 'mcp__docs__search' },
+    })
+    expect(request.availableChoices.map((choice) => choice.choiceId)).toEqual([
+      'allow_once',
+      'allow_session',
+      'abort',
+    ])
+    await session.decideApproval({
+      approvalId: request.approvalId,
+      choiceId: 'allow_session',
+      requirementId: request.requirementId,
+    })
+    await turnDone()
+    expect(events.filter((event) => event.type === 'approvalRequested')).toHaveLength(1)
+    expect(mcp.calls).toEqual([
+      { name: 'mcp__docs__search', args: '{"path":"notes.md"}' },
+      { name: 'mcp__docs__search', args: '{"q":2}' },
+    ])
+    expect(outputs(t)).toEqual(['mcp ok', 'mcp ok'])
+    expect(toolRows(events).map((row) => [row.tool, row.status])).toEqual([
+      ['mcp__docs__search', 'completed'],
+      ['mcp__docs__search', 'completed'],
+    ])
+  })
+
+  it('runs a read-only tool without a card in Auto, and asks for the rest', async () => {
+    const { session, events, turnDone, mcp } = await mcpTurn({
+      mode: 'onRequest',
+      calls: [
+        { name: 'mcp__docs__lookup', arguments: '{}' },
+        { name: 'mcp__docs__search', arguments: '{}' },
+      ],
+    })
+    const request = await approvalRequest(events, 0)
+    expect(request.toolName).toBe('mcp__docs__search')
+    expect(mcp.calls.map((call) => call.name)).toEqual(['mcp__docs__lookup'])
+    await session.decideApproval({
+      approvalId: request.approvalId,
+      choiceId: 'abort',
+      requirementId: request.requirementId,
+    })
+    await turnDone()
+    expect(toolRows(events).map((row) => row.status)).toEqual(['completed', 'rejected'])
+  })
+
+  it('refuses an MCP tool in Plan unless its server marks it read-only, which asks', async () => {
+    const { session, events, turnDone, mcp } = await mcpTurn({
+      mode: 'denyUnmatched',
+      calls: [
+        { name: 'mcp__docs__search', arguments: '{}' },
+        { name: 'mcp__docs__lookup', arguments: '{}' },
+        { name: 'mcp__ide__getDiagnostics', arguments: '{}' },
+      ],
+    })
+    const request = await approvalRequest(events, 0)
+    expect(request.toolName).toBe('mcp__docs__lookup')
+    await session.decideApproval({
+      approvalId: request.approvalId,
+      choiceId: 'allow_once',
+      requirementId: request.requirementId,
+    })
+    await turnDone()
+    const rows = toolRows(events)
+    expect(rows.map((row) => [row.tool, row.status])).toEqual([
+      ['mcp__docs__search', 'rejected'],
+      ['mcp__docs__lookup', 'completed'],
+      ['mcp__ide__getDiagnostics', 'completed'],
+    ])
+    expect(rows[0]?.failureReason).toBe(`mcp__docs__search ${MODEL_TEXT.toolRefusedByMode}`)
+    expect(rows[2]?.visibleOutput).toBe('No diagnostics.')
+    expect(mcp.calls.map((call) => call.name)).toEqual(['mcp__docs__lookup'])
+  })
+
+  it('runs MCP tools without asking in Bypass', async () => {
+    const { events, turnDone, mcp } = await mcpTurn({
+      mode: 'allowAll',
+      calls: [{ name: 'mcp__docs__search', arguments: '{}' }],
+    })
+    await turnDone()
+    expect(events.some((event) => event.type === 'approvalRequested')).toBe(false)
+    expect(mcp.calls).toHaveLength(1)
+  })
+
+  it('refuses an MCP tool in Restricted Mode without a card', async () => {
+    const { events, turnDone, mcp } = await mcpTurn({
+      isTrusted: false,
+      calls: [{ name: 'mcp__docs__search', arguments: '{}' }],
+    })
+    await turnDone()
+    expect(events.some((event) => event.type === 'approvalRequested')).toBe(false)
+    expect(toolRows(events)[0]).toMatchObject({
+      status: 'rejected',
+      failureReason: MODEL_TEXT.mcpRestrictedMode,
+    })
+    expect(mcp.calls).toEqual([])
+  })
+
+  it('hands the model pictures as content parts, and marks a tool error failed', async () => {
+    const mcp = fakeMcpSource(TOOLS)
+    const parts = [
+      { type: 'input_text', text: 'a dot' },
+      { type: 'input_image', image_url: 'data:image/png;base64,AAAA', detail: 'auto' },
+    ] as const
+    mcp.outcomes = [
+      { output: 'a dot', outputParts: parts, visibleOutput: 'a dot\n[image image/png]' },
+      { output: 'Error: it broke', visibleOutput: 'it broke', failureReason: 'it broke' },
+      new Error('the connection closed: it exited with code 1'),
+    ]
+    const { events, turnDone, t, session } = await mcpTurn({
+      mode: 'allowAll',
+      mcp,
+      calls: [
+        { name: 'mcp__docs__search', arguments: '{}' },
+        { name: 'mcp__docs__search', arguments: '{}' },
+        { name: 'mcp__docs__search', arguments: '{}' },
+      ],
+    })
+    await turnDone()
+    expect(outputs(t)).toEqual([
+      parts,
+      'Error: it broke',
+      'Error: the connection closed: it exited with code 1',
+    ])
+    expect(toolRows(events).map((row) => [row.status, row.visibleOutput])).toEqual([
+      ['completed', 'a dot\n[image image/png]'],
+      ['failed', 'it broke'],
+      ['failed', 'the connection closed: it exited with code 1'],
+    ])
+    const stored = parseStoredSession(structuredClone(session.snapshot()))
+    expect(stored.ok).toBe(true)
+  })
+
+  it('cancels an MCP call on Stop', async () => {
+    const mcp = fakeMcpSource(TOOLS)
+    mcp.gate = new Promise(() => undefined)
+    const { session, events, turnDone } = await mcpTurn({
+      mode: 'allowAll',
+      mcp,
+      calls: [{ name: 'mcp__docs__search', arguments: '{}' }],
+    })
+    await vi.waitFor(() => {
+      expect(mcp.calls).toHaveLength(1)
+    })
+    await session.cancel()
+    await turnDone()
+    expect(toolRows(events)[0]?.status).toBe('cancelled')
+  })
+
+  it('reports a failed IDE tool call as a failed row', async () => {
+    const { events, turnDone } = await mcpTurn({
+      calls: [{ name: 'mcp__ide__getDiagnostics', arguments: '{"uri":"bad"}' }],
+    })
+    await turnDone()
+    expect(toolRows(events)[0]).toMatchObject({ status: 'failed', failureReason: 'no such file' })
+  })
+
+  it('says once per session that an optional server is not running', async () => {
+    const mcp = fakeMcpSource(TOOLS, {
+      servers: [
+        {
+          name: 'flaky',
+          isRequired: false,
+          state: { status: 'failed', reason: 'it exited with code 1' },
+        },
+        {
+          name: 'docs',
+          isRequired: true,
+          state: { status: 'connected', toolCount: 2, unofferedCount: 0 },
+        },
+      ],
+    })
+    const { session, events, turnDone, t } = await mcpTurn({ mcp })
+    await turnDone()
+    t.api.script({ text: 'again' })
+    await session.sendTurn([{ type: 'text', text: 'again' }])
+    await turnDone()
+    const notices = events.filter((event) => event.type === 'backendNotice')
+    expect(notices).toEqual([
+      {
+        type: 'backendNotice',
+        level: 'warning',
+        text: fill(UI_TEXT.mcpServerUnavailable, {
+          name: 'flaky',
+          reason: 'it exited with code 1',
+        }),
+      },
+    ])
+  })
+
+  it('fails the turn while a required server is not running, saying how to fix it', async () => {
+    const mcp = fakeMcpSource(TOOLS, {
+      servers: [{ name: 'must', isRequired: true, state: { status: 'failed', reason: 'boom' } }],
+    })
+    const { events, turnDone, t } = await mcpTurn({ mcp })
+    await turnDone()
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: 'turnCompleted',
+        terminal: 'failed',
+        reason: fill(UI_TEXT.mcpRequiredFailed, { name: 'must', reason: 'boom' }),
+      }),
+    )
+    expect(t.api.responseBodies()).toHaveLength(0)
+  })
+
+  it('says why no server of the settings is loaded', async () => {
+    const cases = [
+      [{ kind: 'keys' }, UI_TEXT.mcpNoServersKeys],
+      [{ kind: 'mode', servers: ['a', 'b'] }, fill(UI_TEXT.mcpNoServersMode, { servers: 'a, b' })],
+      [
+        { kind: 'unreadable', reason: 'EACCES' },
+        fill(UI_TEXT.mcpNoServersUnreadable, { reason: 'EACCES' }),
+      ],
+    ] as const
+    for (const [fault, text] of cases) {
+      const { events, turnDone } = await mcpTurn({ mcp: fakeMcpSource([], { fault }) })
+      await turnDone()
+      expect(events.filter((event) => event.type === 'backendNotice')).toEqual([
+        { type: 'backendNotice', level: 'warning', text },
+      ])
+    }
+  })
+
+  it('ends the wait for the servers on Stop', async () => {
+    const mcp = fakeMcpSource(TOOLS)
+    mcp.start = () => new Promise(() => undefined)
+    const t = setup({ mcpServers: mcp })
+    const { session, events, turnDone } = await startSession(t)
+    await session.sendTurn([{ type: 'text', text: 'go' }])
+    await session.cancel()
+    await turnDone()
+    expect(events).toContainEqual(
+      expect.objectContaining({ type: 'turnCompleted', terminal: 'cancelled' }),
+    )
+  })
+
+  it('starts the servers with a conversation, shows their state, and stops them with the host', async () => {
+    const mcp = fakeMcpSource(TOOLS)
+    const t = setup({ mcpServers: mcp })
+    expect(t.host.mcpSnapshot()).toEqual(mcp.snapshotValue)
+    const { session, turnDone } = await startSession(t)
+    expect(mcp.starts).toBe(1)
+    await answerFirst(t, session, turnDone)
+    await t.host.resumeSession(session.sessionId, 'muse-spark-1.3')
+    expect(mcp.starts).toBe(3)
+    await t.host.close()
+    expect(mcp.isClosed).toBe(true)
+    expect(setup().host.mcpSnapshot()).toBeUndefined()
+  })
+
+  it('logs a start that failed outright', async () => {
+    const mcp = fakeMcpSource(TOOLS)
+    mcp.start = () => Promise.reject(new Error('nope'))
+    const t = setup({ mcpServers: mcp })
+    await startSession(t)
+    await vi.waitFor(() => {
+      expect(countLogged(t.log, 'The MCP servers could not be started: nope')).toBe(1)
+    })
   })
 })

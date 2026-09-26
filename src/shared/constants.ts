@@ -864,6 +864,96 @@ export const IDE_MCP_TOKEN_BYTES = 32
 export const IDE_MCP_TOOL_DIAGNOSTICS = 'getDiagnostics'
 // Newest MCP revision the server answers with when the client names none.
 export const MCP_PROTOCOL_VERSION = '2025-06-18'
+// --- MCP servers on the Model API backend (M50, PLAN.md D42) ---
+//
+// The client asks for MCP_PROTOCOL_VERSION, as Muse Code does (its 1.2.1
+// changelog: "the MCP handshake advertises protocol version 2025-06-18 on
+// both transports"), and accepts a server that answers with one of these.
+export const MCP_SUPPORTED_PROTOCOL_VERSIONS: ReadonlySet<string> = new Set([
+  '2025-06-18',
+  '2025-03-26',
+  '2024-11-05',
+])
+export const MCP_CLIENT_NAME = 'muse-spark-code'
+// The transports Muse Code accepts (its settings types, 1.3.0 binary:
+// `McpTransportSetting` is `stdio` or `streamable_http`), as museConfigView
+// names them.
+export const MCP_TRANSPORTS = { stdio: 'stdio', streamableHttp: 'streamable-http' } as const
+// Muse Code's stdio framings (`McpStdioFramingSetting`, 1.3.0 binary): `auto`
+// probes line-delimited JSON and falls back to Content-Length.
+export const MCP_FRAMINGS = ['auto', 'content_length', 'line_delimited_json'] as const
+export type McpFraming = (typeof MCP_FRAMINGS)[number]
+// A tool is offered as `mcp__<server>__<tool>`, Muse Code's own name for it
+// (`mcp__ide__getDiagnostics`, captured 2026-09-22), so its row reads "tool
+// (server)" (M43). Meta allows `[A-Za-z0-9_.-]` and at most one dot
+// (tool-calling, "Function name rules") and names no length limit; the
+// extension keeps names to 64 characters, the OpenAI-compatible limit.
+export const MCP_FUNCTION_PREFIX = 'mcp__'
+export const MCP_FUNCTION_SEPARATOR = '__'
+export const MCP_FUNCTION_NAME_MAX_CHARS = 64
+export const MCP_FUNCTION_HASH_CHARS = 8
+export const MCP_TOOL_DESCRIPTION_MAX_CHARS = 2048
+// Past these a server's tools are not all offered (the view says how many were).
+export const MCP_TOOLS_MAX_PER_SERVER = 128
+export const MCP_TOOLS_LIST_MAX_PAGES = 20
+// Meta's limits on a function's `parameters` schema (structured-output,
+// "Stay within schema constraints", read 2026-09-25): a request that breaks
+// one is a 400 for the whole turn, so a schema is cut to fit first.
+export const MCP_SCHEMA_LIMITS = {
+  depth: 10,
+  properties: 5000,
+  stringChars: 120_000,
+  enumValues: 1000,
+  largeEnumValues: 250,
+  largeEnumChars: 15_000,
+  nodes: 200_000,
+} as const
+// Muse Code's `startup_timeout_sec` and `tool_timeout_sec`, when the entry
+// sets none; a value is capped at the hour.
+export const MCP_STARTUP_TIMEOUT_MS = 30_000
+export const MCP_START_CONCURRENCY = 4
+export const MCP_TOOL_TIMEOUT_MS = 300_000
+export const MCP_TIMEOUT_MAX_SECONDS = 3600
+// `tools/list` and the other short requests after the handshake.
+export const MCP_REQUEST_TIMEOUT_MS = 30_000
+// Closing: a stdio server gets this long to leave after its input closes
+// before its process tree is killed; a remote session's DELETE this long.
+export const MCP_SHUTDOWN_GRACE_MS = 1500
+export const MCP_HTTP_CLOSE_TIMEOUT_MS = 2000
+// One message either way, a line, a Content-Length body or an HTTP reply:
+// room for a 10 MiB image in base64 and its text.
+export const MCP_MESSAGE_MAX_BYTES = 20 * 1024 * 1024
+// A stdio server's last words, kept for the reason its exit is reported with.
+export const MCP_STDERR_TAIL_CHARS = 500
+// What a stdio server inherits from the extension host's environment besides
+// its entry's own `env`: the allowlist Muse Code 1.3.0 starts its servers with
+// (its migrate skill: "only a small fixed allowlist of the user's environment
+// (HOME, PATH, USER, LANG, TERM and similar)"; the list itself read from the
+// binary), plus the Windows profile folders npm and Python look for.
+export const MCP_STDIO_ENV_ALLOWLIST: readonly string[] = [
+  'HOME',
+  'PATH',
+  'USER',
+  'LOGNAME',
+  'TMPDIR',
+  'TEMP',
+  'TMP',
+  'SHELL',
+  'LANG',
+  'LC_ALL',
+  'TERM',
+  'COMSPEC',
+  'PATHEXT',
+  'SystemRoot',
+  'WINDIR',
+  'USERPROFILE',
+  'APPDATA',
+  'LOCALAPPDATA',
+]
+/** A private nonce proves the extension still owns a new Windows MCP job. */
+export const MCP_JOB_NONCE_BYTES = 24
+/** Reject an oversized READY line before it can hold the private pipe. */
+export const MCP_JOB_HANDSHAKE_MAX_CHARS = 128
 // Diagnostics beyond this many are summarised as a count.
 export const DIAGNOSTICS_MAX_ENTRIES = 200
 // One diagnostic's message is cut here (PLAN.md D27): a TypeScript type
@@ -881,6 +971,7 @@ export const HTTP_STATUS = {
   accepted: 202,
   badRequest: 400,
   unauthorized: 401,
+  forbidden: 403,
   notFound: 404,
   methodNotAllowed: 405,
   internalServerError: 500,
@@ -1179,6 +1270,15 @@ export const MODEL_TEXT = {
   userShellLead:
     '[The user ran this shell command in the workspace themselves. Its output is context for you, not a request]',
   clarificationLead: 'The user chose none of the options and explained instead:',
+  // M50: MCP tools on the Model API backend.
+  mcpRestrictedMode:
+    'MCP servers do not run while the workspace is in Restricted Mode; trust the workspace to enable them',
+  mcpSchemaReplaced:
+    "(This tool's argument schema is beyond what the Model API accepts; send the arguments its description names, as a JSON object.)",
+  mcpTextAndImagesOnly: 'the Model API backend passes text and images only',
+  mcpNoContent: '(the tool returned no content)',
+  mcpToolUnavailable: 'is not available: its MCP server is not connected',
+  mcpArgumentsNotObject: 'arguments must be a JSON object',
 } as const
 
 // What the user reads, in the display language (PLAN.md D33).

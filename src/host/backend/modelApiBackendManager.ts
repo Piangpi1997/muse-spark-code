@@ -1,13 +1,17 @@
 // Owns the Model API host for this extension host (M7): one in-process
 // `ModelApiHost` over the real `fetch`, the stored key and the workspace's
-// files. Nothing is spawned; disposing it forgets the window's sessions.
+// files, with the MCP servers of Muse Code's settings (M50), which it starts
+// with the first conversation. Disposing it forgets the window's sessions
+// and stops those servers.
 
 import { ModelApiClient } from '../../core/backends/modelapi/client'
 import type { EnvironmentFacts } from '../../core/backends/modelapi/instructions'
+import type { McpPoolSnapshot, McpToolSource } from '../../core/backends/modelapi/mcp/pool'
 import { ModelApiHost } from '../../core/backends/modelapi/ModelApiHost'
 import type { SessionStore } from '../../core/backends/modelapi/sessionStore'
 import type { ToolIo } from '../../core/backends/modelapi/tools'
 import type { ContextIo } from '../../core/context/contextFiles'
+import type { McpTool } from '../../core/mcp'
 import { MODEL_API_BASE_URL, type PaidFeature, UI_TEXT } from '../../shared/constants'
 import type { Logger } from '../logger'
 
@@ -34,6 +38,11 @@ export interface ModelApiBackendManagerDeps {
   readonly isPaidFeatureOn: (feature: PaidFeature) => boolean
   /** Counts paid uses for the window's tally. */
   readonly notePaidUse: (feature: PaidFeature, units: number) => void
+  /** The MCP servers for a host in this workspace (M50), one set per host. */
+  readonly createMcpServers?:
+    ((workspaceRoot: string) => McpToolSource | Promise<McpToolSource>) | undefined
+  /** The extension's own IDE tools, offered in process (M50). */
+  readonly ideTools?: readonly McpTool[] | undefined
 }
 
 const MANAGER_DISPOSED = 'The Model API backend was stopped while it was starting'
@@ -98,6 +107,8 @@ export class ModelApiBackendManager {
       describeEnvironment: this.deps.describeEnvironment,
       isPaidFeatureOn: this.deps.isPaidFeatureOn,
       notePaidUse: this.deps.notePaidUse,
+      mcpServers: await this.deps.createMcpServers?.(workspaceRoot),
+      ideTools: this.deps.ideTools,
     })
     await host.load()
     this.deps.log.info('Model API backend ready (api.meta.ai/v1, stateless reasoning replay)')
@@ -115,6 +126,11 @@ export class ModelApiBackendManager {
 
   public get isRunning(): boolean {
     return this.host !== undefined || this.building !== undefined
+  }
+
+  /** The MCP servers as the running host has them; undefined before it is built (M50). */
+  public mcpSnapshot(): McpPoolSnapshot | undefined {
+    return this.host?.mcpSnapshot()
   }
 
   /** A skill file changed: the running host re-reads its catalogue. */

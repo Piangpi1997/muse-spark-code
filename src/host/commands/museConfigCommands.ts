@@ -4,14 +4,21 @@
 // can be signed in to or out of through `muse mcp login|logout` in a
 // terminal, and every file is one click away. Every VS Code and process
 // interaction is injected.
+//
+// On the Model API backend the window runs the same servers itself (M50,
+// PLAN.md D42): each row says whether it is connected and with how many
+// tools, or why it is not running; the extension's own diagnostics server
+// has a row too; a server opens the log (its stderr) instead of a sign-in,
+// since `muse mcp login` signs in Muse Code only.
 
+import type { McpPoolSnapshot } from '../../core/backends/modelapi/mcp/pool'
 import {
   type McpServerView,
   type McpSettingsView,
   readHookSources,
   readMcpServers,
 } from '../../core/backends/musecode/museConfigView'
-import { UI_TEXT } from '../../shared/constants'
+import { IDE_MCP_SERVER_NAME, UI_TEXT } from '../../shared/constants'
 import { fill, plural } from '../../shared/l10n/text'
 import type { PickItem, PickOne } from './pickItem'
 
@@ -34,12 +41,22 @@ export interface MuseConfigDeps {
   readonly restart: () => Promise<void>
   readonly showInformation: (message: string) => void
   readonly showWarning: (message: string) => void
+  /**
+   * The Model API backend's servers as this window runs them (M50):
+   * undefined while the window runs Muse Code, which starts its own; the
+   * function answers undefined until they have been started.
+   */
+  readonly modelApiServers?: (() => McpPoolSnapshot | undefined) | undefined
+  /** The extension's log, where a server's stderr goes. */
+  readonly openLog?: (() => void) | undefined
 }
 
 const OPEN_SETTINGS = 'action:openSettings'
 const RESTART = 'action:restart'
 const DOCS = 'action:docs'
+const SHOW_LOG = 'action:log'
 const SERVER_PREFIX = 'server:'
+const BUILT_IN_PREFIX = 'builtin:'
 const PROJECT_HOOKS = 'hooks:project'
 const USER_HOOKS = 'hooks:user'
 const MANAGED_HOOKS = 'hooks:managed'
@@ -61,9 +78,51 @@ function settingsText(deps: MuseConfigDeps): { readonly text?: string; readonly 
   }
 }
 
-function serverDetail(server: McpServerView): string {
-  const parts: string[] = [server.mode === 'optional' ? UI_TEXT.mcpOptional : UI_TEXT.mcpRequired]
+/** A server's state as the Model API backend runs it, in words (M50). */
+function liveState(server: McpServerView, snapshot: McpPoolSnapshot | undefined): string {
   if (!server.isEnabled) {
+    return UI_TEXT.mcpDisabled
+  }
+  if (snapshot?.isStarted !== true) {
+    return UI_TEXT.mcpStateNotStarted
+  }
+  if (snapshot.fault !== undefined) {
+    return UI_TEXT.mcpStateNotLoaded
+  }
+  const state = snapshot.servers.find((candidate) => candidate.name === server.name)?.state
+  switch (state?.status) {
+    case undefined: {
+      return UI_TEXT.mcpStateNotStarted
+    }
+    case 'starting': {
+      return UI_TEXT.mcpStateStarting
+    }
+    case 'connected': {
+      const connected = plural(UI_TEXT.mcpStateConnected, state.toolCount)
+      return state.unofferedCount > 0
+        ? `${connected}${DETAIL_SEPARATOR}${plural(UI_TEXT.mcpStateUnoffered, state.unofferedCount)}`
+        : connected
+    }
+    case 'failed': {
+      return fill(UI_TEXT.mcpStateFailed, { reason: state.reason })
+    }
+    case 'disabled': {
+      return UI_TEXT.mcpDisabled
+    }
+    case 'restricted': {
+      return UI_TEXT.mcpStateRestricted
+    }
+  }
+}
+
+/** The detail line; `live` is the Model API backend's state of the server, first when given. */
+function serverDetail(server: McpServerView, live: string | undefined): string {
+  let mode: string = UI_TEXT.mcpOptional
+  if (server.mode !== 'optional') {
+    mode = live === undefined ? UI_TEXT.mcpRequired : UI_TEXT.mcpRequiredModelApi
+  }
+  const parts: string[] = live === undefined ? [mode] : [live, mode]
+  if (live === undefined && !server.isEnabled) {
     parts.push(UI_TEXT.mcpDisabled)
   }
   if (server.envNames.length > 0) {
@@ -78,12 +137,22 @@ function serverDetail(server: McpServerView): string {
   return parts.join(DETAIL_SEPARATOR)
 }
 
-function serverItem(server: McpServerView): PickItem {
+function serverItem(server: McpServerView, live: string | undefined): PickItem {
   return {
     id: `${SERVER_PREFIX}${server.name}`,
     label: server.name,
     description: `${server.transport}${DETAIL_SEPARATOR}${server.target}`,
-    detail: serverDetail(server),
+    detail: serverDetail(server, live),
+  }
+}
+
+/** The extension's own diagnostics server, which the Model API backend runs in process. */
+function builtInItem(): PickItem {
+  return {
+    id: `${BUILT_IN_PREFIX}${IDE_MCP_SERVER_NAME}`,
+    label: IDE_MCP_SERVER_NAME,
+    description: UI_TEXT.mcpBuiltIn,
+    detail: UI_TEXT.mcpBuiltInDetail,
   }
 }
 
@@ -128,7 +197,30 @@ async function openSettings(deps: MuseConfigDeps): Promise<void> {
   deps.showInformation(fill(UI_TEXT.museSettingsMissing, { path: deps.settingsPath }))
 }
 
+/** A server the Model API backend runs: its log, or its entry (M50). */
+async function modelApiServerActions(deps: MuseConfigDeps, server: McpServerView): Promise<void> {
+  const choice = await deps.pick(
+    [
+      ...(deps.openLog === undefined
+        ? []
+        : [{ id: SHOW_LOG, label: UI_TEXT.mcpShowLog, detail: UI_TEXT.mcpShowLogDetail }]),
+      { id: OPEN_SETTINGS, label: UI_TEXT.mcpOpenSettings },
+    ],
+    server.name,
+    UI_TEXT.mcpModelApiPlaceholder,
+  )
+  if (choice === SHOW_LOG) {
+    deps.openLog?.()
+  } else if (choice === OPEN_SETTINGS) {
+    await openSettings(deps)
+  }
+}
+
 async function serverActions(deps: MuseConfigDeps, server: McpServerView): Promise<void> {
+  if (deps.modelApiServers !== undefined) {
+    await modelApiServerActions(deps, server)
+    return
+  }
   const isRemote = server.transport === STREAMABLE_HTTP
   const items: PickItem[] = [
     ...(isRemote
@@ -163,17 +255,29 @@ export async function showMcpServers(deps: MuseConfigDeps): Promise<void> {
       : { status: 'unreadable', reason: read.error }
   warnAboutFaults(deps, view)
   const servers = view.status === 'read' ? view.servers : []
+  const isModelApi = deps.modelApiServers !== undefined
+  const snapshot = deps.modelApiServers?.()
   const choice = await deps.pick(
     [
-      ...servers.map((server) => serverItem(server)),
+      ...servers.map((server) =>
+        serverItem(server, isModelApi ? liveState(server, snapshot) : undefined),
+      ),
+      ...(isModelApi ? [builtInItem()] : []),
       { id: OPEN_SETTINGS, label: UI_TEXT.mcpOpenSettings, detail: deps.settingsPath },
-      { id: RESTART, label: UI_TEXT.mcpRestart, detail: UI_TEXT.mcpRestartDetail },
+      isModelApi
+        ? {
+            id: RESTART,
+            label: UI_TEXT.mcpRestartModelApi,
+            detail: UI_TEXT.mcpRestartModelApiDetail,
+          }
+        : { id: RESTART, label: UI_TEXT.mcpRestart, detail: UI_TEXT.mcpRestartDetail },
       { id: DOCS, label: UI_TEXT.mcpDocs },
     ],
-    UI_TEXT.mcpTitle,
+    isModelApi ? UI_TEXT.mcpTitleModelApi : UI_TEXT.mcpTitle,
     mcpSummary(view, deps.settingsPath),
   )
-  if (choice === undefined) {
+  // Nothing to do for the built-in server: it has no entry and no process.
+  if (choice === undefined || choice.startsWith(BUILT_IN_PREFIX)) {
     return
   }
   if (choice.startsWith(SERVER_PREFIX)) {
@@ -191,7 +295,7 @@ export async function showMcpServers(deps: MuseConfigDeps): Promise<void> {
     }
     case RESTART: {
       await deps.restart()
-      deps.showInformation(UI_TEXT.mcpRestarted)
+      deps.showInformation(isModelApi ? UI_TEXT.mcpRestartedModelApi : UI_TEXT.mcpRestarted)
       break
     }
     default: {

@@ -1227,7 +1227,7 @@ milestone that closes each gap:
 | Workflows                         | captured run and agents render as a read-only card (M47, D40); owner controls wait for a live accepted-command capture                                                                                    | none (Muse Code's own engine)                                                                | M47        |
 | Subagents                         | map and controls (M14, M18); `reopen` and `readResult` not wired                                                                                                                                          | none (D17)                                                                                   | M48        |
 | Memory                            | Muse Code's memory tools; no view                                                                                                                                                                         | the index is read (M10); no tools                                                            | M49        |
-| MCP servers                       | loaded by Muse Code; read-only view (M31)                                                                                                                                                                 | none                                                                                         | M50        |
+| MCP servers                       | loaded by Muse Code; read-only view (M31)                                                                                                                                                                 | built: the same servers, run by the window, live in the view (D42)                           | M50        |
 | Hooks                             | run by Muse Code; read-only view (M31)                                                                                                                                                                    | none                                                                                         | M51        |
 | Scheduled prompts (`/loop`, cron) | the agent's `cron_*` tools only; no list or cancel                                                                                                                                                        | none                                                                                         | M52        |
 | Rewind a conversation, side chat  | TUI only; the panel has fork and code rewind                                                                                                                                                              | fork and code rewind                                                                         | M53        |
@@ -1611,6 +1611,110 @@ The choices:
   (MSP's limit, held by the box, the protocol schema and the Model API
   session); the Model API's `ask_user` returns the text to the model as
   Muse Code's clarify does, and the row reads "Explained: …".
+
+### D42 — MCP servers on the Model API backend (2026-09-25)
+
+M50 of D36: the key backend runs the MCP servers Muse Code would, with a
+client of its own and no new dependency. What Muse Code does was read from
+its public pages (extending: `mcp_servers`, `transport`, `mode`, `framing`,
+`${VAR}`; the 1.2.1 changelog: read-only tools run without a prompt under
+on-request approvals, `startup_timeout_sec`, `tool_timeout_sec`, `cwd`,
+protocol 2025-06-18 on both transports) and from its 1.3.0 binary (the
+settings types `McpTransportSetting` = `stdio` | `streamable_http` and
+`McpStdioFramingSetting` = `auto` | `content_length` |
+`line_delimited_json`, "Probe line-delimited JSON, then fall back to
+Content-Length framing", the validation messages, the migrate skill's
+settings contract and its environment allowlist). No model call was made:
+the backend is tested against a fake stdio server and a fake HTTP server.
+
+- **The same servers.** M31's reader, extended to hand each entry whole
+  (`readMcpServerEntries`); the view it feeds stays secret-free. The two
+  faults that make Muse Code load no user server (both keys in one file,
+  `required` beside `mode`) load none here either, and say so.
+- **One set per window.** The servers belong to the Model API host: they
+  start with the first conversation (`session/start` or a resume, as Muse
+  Code starts them with a session), the first turn waits for them, and they
+  stop with the host (a restart, sign-out, the window closing). Muse Code
+  gives each stdio server `MUSE_SESSION_ID`; these serve every session of
+  the window, so none is given.
+- **Trust.** Nothing starts in Restricted Mode, stdio or remote; the next
+  message after the workspace is trusted starts them.
+- **Required and optional.** A required server (the default; only `mode:
+optional` is optional) that is not running fails the turn with the reason
+  and the fix, as Muse Code aborts its run. An optional one is a warning
+  notice, once per session. The palette's **MCP servers…** row now shows
+  on the Model API backend too, with each server's live state.
+- **Transports.** stdio: the command started directly (absolute `PATH`
+  entries only, D24); a `.cmd` or `.bat` (npx's launcher on Windows)
+  through `cmd.exe /d /s /c` with every part quoted and `"`, `%` and line
+  breaks refused; its stderr to the log; closing ends its input, waits
+  1.5 s, then ends its process tree (D25). On Windows the hidden job helper
+  inherits only three binary stdio handles from the extension, creates the
+  server suspended, assigns it to a kill-on-close job, then resumes it. The
+  helper holds a handle to the creating extension process and closes the job
+  when the server or extension exits. A separate private pipe carries a
+  nonce-bearing READY/GO exchange after the helper binds that process handle;
+  a dead creator cannot authorize a server even if its PID is recycled
+  before the bind. The pipe and nonce never enter MCP stdio or the server's
+  environment. If the M27 assembly cannot be compiled
+  or loaded, stdio fails closed instead of starting without containment;
+  streamable HTTP remains available. `auto` framing writes lines and
+  switches to Content-Length when the server's first bytes are that header;
+  a server that never answers a line fails its start-up with the hint to set
+  `content_length`. Streamable HTTP: POST with JSON or event-stream replies,
+  the session id and protocol version sent back, a server request (`ping`)
+  answered, a 404 on a known session starting a new one, DELETE on close, a
+  redirect refused so no header follows it.
+- **Environment.** A stdio server gets the allowlist Muse Code uses (HOME,
+  PATH, USER, LOGNAME, TMPDIR, TEMP, TMP, SHELL, LANG, LC_ALL, TERM,
+  COMSPEC, PATHEXT, SystemRoot, WINDIR) plus USERPROFILE, APPDATA and
+  LOCALAPPDATA, which npm and Python look for on Windows, then its entry's
+  `env`. `${VAR}` in any string is read from the extension host's
+  environment; an unset one keeps the server from starting and is named,
+  never its value. (The binary's migrate skill says Muse Code does not
+  expand `${VAR}`; its public changelog says it does; the public statement
+  was followed.)
+- **Sign-in.** `muse mcp login` tokens are Muse Code's and never read here.
+  A remote server that needs a credential takes it as a header in its
+  entry; a 401 or 403 says so.
+- **Names and schemas.** `mcp__<server>__<tool>`, Meta's characters only
+  (every other one, and every dot, becomes `_`), the server's part never
+  holding `__`, 64 characters at most with a hash where a name is cut or
+  taken. A schema is cut to Meta's documented limits (depth 10, 5,000
+  properties, 120,000 characters of names and values, 1,000 enum values, a
+  large string enum capped, 200,000 nodes after `$ref`s are written out);
+  local `$ref`s are written out and a recursive one cut, since Meta refuses
+  recursion; a schema still past the limits is offered as "an object" and
+  the model is told so. The server checks the arguments either way.
+- **Results.** Text, and pictures as `input_image` parts of the function's
+  output (the Responses schema allows content parts there), each checked to
+  be a PNG, JPEG, GIF or WebP within 10 MiB first, since a picture Meta
+  cannot read would fail every later request of the conversation. Audio,
+  links and binary resources are described in words; structured content
+  stands in when there is no text; a tool error is a failed row.
+- **Approvals.** An MCP tool is arbitrary code:
+
+  | Mode                       | A tool  | A tool its server marks read-only |
+  | -------------------------- | ------- | --------------------------------- |
+  | Bypass                     | runs    | runs                              |
+  | Auto                       | asks    | runs (Muse Code's on-request)     |
+  | Manual, Edit automatically | asks    | asks                              |
+  | Plan                       | refused | asks                              |
+
+  "Always allow in this session" is kept per tool. The card is a tool's,
+  never a file write's, whatever the arguments hold, so Edit automatically
+  never answers it.
+
+- **The IDE tool.** `getDiagnostics`, which Muse Code sessions reach as
+  `mcp__ide__getDiagnostics` over loopback, runs in process here under the
+  same name, as a read in every mode. A user's server named `ide` is refused.
+- **Limits.** Start-up 30 s and a call 300 s unless the entry says (capped
+  at an hour); a message 20 MiB either way; 128 tools a server and 20
+  pages of them; a description 2,048 characters; a result 64,000.
+- **Not done.** Resources, prompts, sampling, roots and elicitation (the
+  client declares no capabilities and refuses such requests), OAuth, the
+  servers' `instructions`, and the server-initiated event stream over HTTP
+  (a tool list that changes between replies is seen at the next one).
 
 ## 3. Open questions (need the owner)
 
@@ -3616,7 +3720,7 @@ translations. The order is D36's table:
 
 ### M46 — Background work and stop; the `!` user shell; clarifying questions (D39)
 
-**Status 2026-09-25: PR #33 under review; certification pending**
+**Status 2026-09-26: PR #33 merged into main at `e219d04` after local and hosted gates**
 (`docs/certification/m46.md`). A full local gate passed on M45 base
 `5581fe2` with the Windows accessibility runner capped at two workers;
 M46 was then reconciled onto M45 candidates `502684c`, `ec5db58`,
@@ -3668,8 +3772,8 @@ before postMessage. The seventh correction passed the local full gate.
 Its review found one export gap: a Muse `userShell` ending by signal had
 the signal in its row but not Markdown. The existing localized signal
 label now appears in export too, with a failing-before/passing-after test.
-The final export correction passed the local full gate; current-head
-hosted CI remains the merge gate.
+The final export correction passed the local and current-head hosted
+quality matrix, with no open review threads, before PR #33 merged.
 
 - **Goal**: what Muse Code's TUI does with Ctrl+B, `/stop` and `!`, and its
   "let me explain" answer to a question, from the panel, on both backends.
@@ -3707,15 +3811,15 @@ hosted CI remains the merge gate.
 
 ### M47 — Workflows: captured run and agents (D40)
 
-**Status 2026-09-26: captured presentation increment locally gated; owner
-controls deferred** (`docs/certification/m47.md`). The branch sits on M46
-merge commit `e219d04`. Live capture proved the run card and one child's
+**Status 2026-09-26: merged on main at `34002ab`; owner controls deferred**
+(`docs/certification/m47.md`). Live capture proved the run card and one child's
 updates and rejected owner commands; accepted control shapes remain
 uncaptured. The read-only candidate passed local `npm run quality`; a
 current-head review then found a sparse history replay loss. Its correction
 passed local `npm run quality` on staged tree
-`0edaadb6bca8846487d7964a25dd9b7cffffeb9b`; this receipt changed
-the documentation, so a final exact-tree rerun and hosted CI remain.
+`0edaadb6bca8846487d7964a25dd9b7cffffeb9b`. At that checkpoint, a
+final exact-tree rerun and hosted CI remained; M47 subsequently merged on
+main at `34002ab`.
 
 - **Goal**: a workflow Muse Code runs reads as what it is, a run of agents
   going on in the background, with its captured progress and result.
@@ -3751,7 +3855,7 @@ the documentation, so a final exact-tree rerun and hosted CI remain.
   scenarios `muse-workflow` and `muse-workflow-map` in the accessibility
   gate. The reduced candidate passed `npm run quality` on staged tree
   `e5fe0228643bfc54ef9753d1319064b91498d728`; hosted CI and review
-  remain. Claude's M47 source worktree
+  were pending at that checkpoint. Claude's M47 source worktree
   passed `quality:gates` but its accessibility run had four Chrome pages
   without a result and exited 1; secrets and SAST did not run.
 - **Left out, by Muse Code or evidence**: pausing and resuming a run (no MSP
@@ -3762,6 +3866,56 @@ the documentation, so a final exact-tree rerun and hosted CI remain.
   a live accepted-command and outcome capture; the captured refusal probes
   alone do not certify usable controls. A child `phase` and saved workflow
   display name also wait for live evidence.
+
+### M50 — MCP servers on the Model API backend (D36, D42)
+
+**Status 2026-09-26: staged on merged M47; provisional M46-base local quality passed,
+certification pending**
+(`docs/certification/m50.md`). The isolated M50 branch now rests on main's
+M47 merge `34002ab`. Its first local `npm run quality` passed on M46-base staged tree
+`d044d6f1`: 1,780 unit tests passed (3 skipped), 272 accessibility pages
+had zero violated or undecided rules, and secret/SAST scans found zero
+issues. The M47 reconciliation passed 302 focused MCP/backend/process tests,
+all five TypeScript projects, localization, lint and formatting; its process
+audit found no leftover fixtures. M48–M49 ancestry and an exact delivery-tree
+gate still precede PR.
+
+- **Goal**: the key backend runs the MCP servers Muse Code would, from the
+  same settings, with Muse Code's names for their tools and its approvals,
+  loudly when one does not run; and offers the extension's own diagnostics
+  tool, which only Muse Code sessions had.
+- **Research first**: Muse Code's public pages and changelog, and its 1.3.0
+  binary's settings types, framings, validation messages and migrate skill
+  (D42); Meta's function name rules, schema limits and the Responses
+  schema's content parts for a function's output (the saved API docs). No
+  live capture: nothing on the wire is Muse Code's, and there is no key.
+- **Scope**: an MCP client of the extension's own (JSON-RPC 2.0, the
+  handshake, paged `tools/list`, `tools/call` with deadlines and
+  cancellation) over stdio (line-delimited or Content-Length, the process
+  spawner with its environment allowlist and batch-file quoting, the tree
+  kill) and streamable HTTP (JSON and event-stream replies, sessions,
+  headers); the server set per host with its live states; tool names,
+  schema fitting and result conversion; the approvals (D42's table); the
+  in-process IDE tool; the MCP servers view and palette row on the Model
+  API backend; 23 strings in fourteen
+  languages; tests with a fake stdio server and a fake HTTP server.
+- **Acceptance**: every rule of D42 has a test; drills M1–M24 fail a test
+  in Claude's source worktree. The integrated branch's focused real stdio,
+  pool and HTTP suites pass. The Windows job-assignment drill fails when
+  assignment is disabled and passes when restored; a withheld-GO drill fails
+  when owner confirmation is disabled and passes when restored. Real binary,
+  batch, Stop, exited-parent and extension-parent death fixtures pass. Provisional local quality passed on
+  M46 base; it still needs an exact-tree quality gate and review after the
+  preceding M48–M49 milestones join it.
+- **Remote error boundary**: HTTP response bodies, malformed event payloads and authentication challenge parameters are untrusted. Errors and logs keep status and the authentication scheme, not raw server text that could echo a configured header or token.
+- **Windows batch launch**: `cmd.exe /v:off` disables delayed `!` expansion even when the machine default enables it; `/d` continues to bypass AutoRun. The configured command and arguments remain quoted and percent signs refused.
+- **Startup pressure**: connect at most four configured servers at once. Keep the settings order and start every enabled server, but avoid a simultaneous burst of child processes when a settings file has many entries.
+- **Windows stdio containment**: the extension's three binary pipes are inherited unchanged by a configured MCP server. The hidden PowerShell/C# helper (compiled into M27's assembly) binds a real handle to the creating Node process, then waits on a separate private pipe for a nonce-bearing GO from that still-live creator. Only then does it create the server suspended, assign a no-breakaway, kill-on-close Job Object and resume it, checking the bound parent handle once more immediately before resume. A dead creator cannot send GO even if its PID was recycled before the bind. Stop ends only the owned helper, closing its job; a server or extension that exits naturally also closes it. Missing job support fails stdio closed. Finite detached children, byte values `00` and `ff`, a `.cmd` launcher, withheld GO and both sides of parent death are covered by real local fixtures; disabling assignment and confirmation made their respective drills fail before restoration. No PID-only process kill is used on this path.
+- **Final stdio response**: Node can report a server process's `exit` before its stdout has drained. M50 starts the job/orphan cleanup at `exit`, but tells the MCP transport the server ended only at Node's `close`. A deterministic exit → final JSON-RPC frame → close test failed when notification was moved back to `exit` and passed when restored; a real server writing its final reply synchronously before immediate exit also passed.
+- **POSIX exited parent**: its detached MCP server leads a process group. If that server exits before `close()`, signal its group while descendants still retain the group ID. A finite-lifetime real child failed without this cleanup and passed with it under WSL Arch. A child that deliberately creates a new process group remains outside this guarantee; the POSIX Vitest run still needs a Linux/macOS native dependency install in CI.
+- **PowerShell identity pairs**: the earlier Windows sweep drill found that `@(@(pid, ticks))` flattens the pair, so it fed a FILETIME timestamp to `Get-Process -Id` and missed a child. Its hashtable records remain for the M27 fallback and POSIX/legacy cases; M50's Windows stdio path no longer relies on the sweep or a PID at teardown.
+- **Left for later**: resources, prompts, sampling, roots, elicitation and
+  OAuth for remote servers; a server's own event stream over HTTP.
 
 ### M41 — Install Muse Code from the panel (folded into M55)
 
@@ -3815,16 +3969,19 @@ remain available.
 
 Every suppression, cast, or ignored error must be listed here with its reason.
 
-| File                               | Construct                                                          | Reason                                                                                                                                                                                                                                                                                                                                                                                                  | Added      |
-| ---------------------------------- | ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------- |
-| `src/host/backend/toolIo.ts`       | `nosemgrep` on `spawn` (`detect-child-process`)                    | The command line is the tool's payload by design: the user approved it on a card, and it runs through PowerShell / bash as an argument array, never a shell string.                                                                                                                                                                                                                                     | 2026-09-22 |
-| `src/host/backend/searchWorker.ts` | `nosemgrep` on `new RegExp(pattern)` (`detect-non-literal-regexp`) | The model's search pattern is evaluated on a worker thread that `toolIo.searchOnWorker` terminates at `SEARCH_TIMEOUT_MS`, and the pattern is capped at `SEARCH_PATTERN_MAX_LENGTH`; a runaway match cannot hang the host.                                                                                                                                                                              | 2026-09-22 |
-| `src/host/voice/dictationHost.ts`  | `nosemgrep` on two `spawn` calls (`detect-child-process`)          | The dictation and capture helpers' command lines are fixed by `helperLocation.ts` (Windows PowerShell under `%SystemRoot%` with a bundled script, or the bundled macOS binary with VS Code's own app name (`--app-name`)); M35's Linux recorder is `arecord` or `parec` found by absolute path on PATH, with fixed arguments. Argument arrays; no user, model or workspace input reaches them.          | 2026-09-25 |
-| `native/darwin/Dictation.swift`    | `unsafeBitCast(symbol, to: SetDisclaim.self)`                      | `responsibility_spawnattrs_setdisclaim` is a private libsystem call with no header, so it is resolved with `dlsym` and cast to its C signature, `int (posix_spawnattr_t *, int)`, the one Chromium and Qt declare (M28). A missing symbol is handled before the cast (the helper then asks as before); the signature has been stable since macOS 10.14.                                                 |
-| `src/host/backend/shellJob.ts`     | `catch { }` in the join statement each Windows command starts with | A command whose job cannot be joined (the assembly removed since the self-test, a policy change) must still run as it would without one; its kill then finds no job, logs that, and falls back to taskkill and the sweep (M27), so the failure is reported where it matters.                                                                                                                            |
-| `test/unit/App.test.tsx`           | `as unknown as Selection` (four stubs)                             | jsdom offers no usable `Selection`; the quote-menu tests stub the two members the code reads (`toString`, `anchorNode`) and nothing else, so a structural cast is the honest shape. Test-only.                                                                                                                                                                                                          | 2026-09-23 |
-| `scripts/capture-themes.mjs`       | `nosemgrep` on `spawn` (`detect-child-process`)                    | A developer script (M37): it starts the VS Code build `@vscode/test-electron` downloaded, with its own fixed arguments, as an argument array with no shell. Nothing from a user, the model or a workspace reaches it, and it never ships.                                                                                                                                                               | 2026-09-24 |
-| `scripts/sast.mjs`                 | `nosemgrep` on two `spawnSync` calls (`detect-child-process`)      | The SAST gate's own launcher (M40): it runs `semgrep` or the semgrep executable found in a Python's user Scripts folder, and asks the interpreters in a fixed list (`python`, `python3`, `py`) where that folder is. Every command and argument is the script's own, passed as an argument array with no shell; nothing from a user, the model or a workspace reaches them, and the script never ships. | 2026-09-25 |
+| File                                  | Construct                                                          | Reason                                                                                                                                                                                                                                                                                                                                                                                                           | Added      |
+| ------------------------------------- | ------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------- |
+| `src/host/backend/toolIo.ts`          | `nosemgrep` on `spawn` (`detect-child-process`)                    | The command line is the tool's payload by design: the user approved it on a card, and it runs through PowerShell / bash as an argument array, never a shell string.                                                                                                                                                                                                                                              | 2026-09-22 |
+| `src/host/backend/searchWorker.ts`    | `nosemgrep` on `new RegExp(pattern)` (`detect-non-literal-regexp`) | The model's search pattern is evaluated on a worker thread that `toolIo.searchOnWorker` terminates at `SEARCH_TIMEOUT_MS`, and the pattern is capped at `SEARCH_PATTERN_MAX_LENGTH`; a runaway match cannot hang the host.                                                                                                                                                                                       | 2026-09-22 |
+| `src/host/voice/dictationHost.ts`     | `nosemgrep` on two `spawn` calls (`detect-child-process`)          | The dictation and capture helpers' command lines are fixed by `helperLocation.ts` (Windows PowerShell under `%SystemRoot%` with a bundled script, or the bundled macOS binary with VS Code's own app name (`--app-name`)); M35's Linux recorder is `arecord` or `parec` found by absolute path on PATH, with fixed arguments. Argument arrays; no user, model or workspace input reaches them.                   | 2026-09-25 |
+| `native/darwin/Dictation.swift`       | `unsafeBitCast(symbol, to: SetDisclaim.self)`                      | `responsibility_spawnattrs_setdisclaim` is a private libsystem call with no header, so it is resolved with `dlsym` and cast to its C signature, `int (posix_spawnattr_t *, int)`, the one Chromium and Qt declare (M28). A missing symbol is handled before the cast (the helper then asks as before); the signature has been stable since macOS 10.14.                                                          |
+| `src/host/backend/shellJob.ts`        | `catch { }` in the join statement each Windows command starts with | A command whose job cannot be joined (the assembly removed since the self-test, a policy change) must still run as it would without one; its kill then finds no job, logs that, and falls back to taskkill and the sweep (M27), so the failure is reported where it matters.                                                                                                                                     |
+| `test/unit/App.test.tsx`              | `as unknown as Selection` (four stubs)                             | jsdom offers no usable `Selection`; the quote-menu tests stub the two members the code reads (`toString`, `anchorNode`) and nothing else, so a structural cast is the honest shape. Test-only.                                                                                                                                                                                                                   | 2026-09-23 |
+| `scripts/capture-themes.mjs`          | `nosemgrep` on `spawn` (`detect-child-process`)                    | A developer script (M37): it starts the VS Code build `@vscode/test-electron` downloaded, with its own fixed arguments, as an argument array with no shell. Nothing from a user, the model or a workspace reaches it, and it never ships.                                                                                                                                                                        | 2026-09-24 |
+| `scripts/sast.mjs`                    | `nosemgrep` on two `spawnSync` calls (`detect-child-process`)      | The SAST gate's own launcher (M40): it runs `semgrep` or the semgrep executable found in a Python's user Scripts folder, and asks the interpreters in a fixed list (`python`, `python3`, `py`) where that folder is. Every command and argument is the script's own, passed as an argument array with no shell; nothing from a user, the model or a workspace reaches them, and the script never ships.          | 2026-09-25 |
+| `src/host/backend/mcpProcess.ts`      | `nosemgrep` on `spawn` (`detect-child-process`)                    | A stdio MCP server the user configured in Muse Code's own settings file (M50, D42), started only in a trusted workspace: its command found by absolute path (D24), its arguments passed as an array. A `.cmd`/`.bat` launcher goes through `cmd.exe /d /s /c` with every part quoted and `"`, `%` and line breaks refused. Nothing the model writes reaches the command line.                                    | 2026-09-25 |
+| `src/host/backend/mcpJobLaunch.ts`    | `nosemgrep` on `spawn` (`detect-child-process`)                    | On Windows M50 starts only `%SystemRoot%`'s hidden PowerShell with a fixed script and the extension's compiled job assembly path on the command line. The configured command, arguments and allowlisted environment are in a private encoded environment value; C# removes it and builds the server's exact environment before `CreateProcessW`. The server is assigned to its job before its first instruction. | 2026-09-26 |
+| `test/unit/helpers/fakeMcpOrphan.mjs` | `nosemgrep` on `spawn` (`detect-child-process`)                    | The M50 Windows regression fixture starts only this Node with its own fixed file to test an MCP server whose child outlives it. The child self-exits after 12 seconds; no model or workspace input reaches its command line, and the fixture never ships.                                                                                                                                                        | 2026-09-25 |
 
 ## 9. Security assumptions and accepted residual risk
 
@@ -3857,9 +4014,34 @@ Every suppression, cast, or ignored error must be listed here with its reason.
   apart in one PowerShell run rather than one atomic call. A process that
   breaks away from a job on purpose (`CREATE_BREAKAWAY_FROM_JOB` is refused
   without a limit this job does not set) is not a residual.
+- M50's Windows stdio server inherits the extension's three binary pipes
+  unchanged. A hidden helper creates it suspended, assigns it to a fresh
+  kill-on-close job and resumes it only after a nonce READY/GO exchange over
+  a separate private pipe proves the creating Node process still lives after
+  its real process handle was bound. The handle is checked again immediately
+  before resume. Normal exit, Stop, batch launch, detached-child, parent-death
+  and withheld-GO fixtures passed; assignment-off and confirmation-off red
+  drills failed as intended.
+  When the job assembly cannot run, stdio fails closed rather than using the
+  taskkill fallback. After the initial binding, all waits and cleanup use
+  handles; a recycled PID cannot authorize a launch because it has no GO
+  pipe. The private nonce and launch payload never reach the MCP server's
+  environment or protocol streams. On POSIX, an exited parent causes its original process
+  group to be signalled; descendants that form a new process group can
+  escape it.
 - The pasted Model API key is used only by the Model API backend and is
   never handed to the Muse Code CLI (D1 amendment): subscription work is
   never billed to the key, and the key never reaches another process.
+- MCP servers on the Model API backend (M50, D42) are the user's own code,
+  unsandboxed, as they are under Muse Code: the controls are that none runs
+  in Restricted Mode, every call asks in Manual and Auto (a tool its server
+  marks read-only runs in Auto, as Muse Code runs it) and Plan refuses all
+  but read-only tools, a stdio server inherits only an allowlist of the
+  extension host's environment (never the key, which is in SecretStorage,
+  not the environment), and remote servers get only their entry's headers,
+  never across a redirect. Residual risk: a server's own `readOnlyHint` is
+  trusted, as Muse Code trusts it; a result's text reaches the model as
+  data it may be steered by (prompt injection), as a web page's would.
 - Contributor-tier models send content Meta may train on; guarded by opt-in
   dialog and `confidentialWorkspace` setting.
 - The Marketplace token (M28, 2026-09-23): the publish job runs in the

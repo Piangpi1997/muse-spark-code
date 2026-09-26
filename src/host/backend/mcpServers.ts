@@ -1,0 +1,51 @@
+// The Model API backend's MCP servers as this window runs them (M50, PLAN.md
+// D42): Muse Code's settings file read by M31's reader each time they start,
+// stdio servers started by the real spawner (mcpProcess.ts), remote ones
+// reached with the extension host's `fetch`, and `${VAR}` read from the
+// extension host's environment.
+
+import { McpServerPool, type McpToolSource } from '../../core/backends/modelapi/mcp/pool'
+import { environmentValue } from '../../core/backends/musecode/launch'
+import { readMcpServerEntries } from '../../core/backends/musecode/museConfigView'
+import { readTextIfPresent } from '../cliFeatures'
+import type { Logger } from '../logger'
+import { isExistingDirectory, isExistingFile, mcpServerSpawner } from './mcpProcess'
+
+export interface ModelApiMcpDeps {
+  readonly workspaceRoot: string
+  /** Muse Code's settings file where `muse serve` would read it. */
+  readonly settingsPath: () => string
+  readonly isWorkspaceTrusted: () => boolean
+  /** The extension's version, sent as the client's in `initialize`. */
+  readonly clientVersion: string
+  readonly platform: NodeJS.Platform
+  /** Windows: a tested M27 job assembly; absent means stdio fails closed. */
+  readonly jobAssemblyPath?: string | undefined
+  readonly env: () => NodeJS.ProcessEnv
+  readonly fetch: typeof fetch
+  readonly log: Logger
+}
+
+export function createModelApiMcpServers(deps: ModelApiMcpDeps): McpToolSource {
+  return new McpServerPool({
+    readSettings: () => readMcpServerEntries(readTextIfPresent(deps.settingsPath())),
+    lookupEnv: (name) => environmentValue(deps.env(), deps.platform, name),
+    isWorkspaceTrusted: deps.isWorkspaceTrusted,
+    workspaceRoot: deps.workspaceRoot,
+    platform: deps.platform,
+    spawn: mcpServerSpawner({
+      platform: deps.platform,
+      systemRoot: environmentValue(deps.env(), deps.platform, 'SystemRoot'),
+      jobAssemblyPath: deps.jobAssemblyPath,
+      env: deps.env,
+      isExistingFile,
+      isExistingDirectory,
+      log: (message) => {
+        deps.log.warn(message)
+      },
+    }),
+    fetch: deps.fetch,
+    clientVersion: deps.clientVersion,
+    log: deps.log,
+  })
+}

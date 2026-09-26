@@ -33,6 +33,7 @@ import { type ProcessResult, SandboxSetup } from './host/backend/sandboxSetup'
 import { fileContextIo } from './host/backend/contextIo'
 import { describeEnvironment } from './host/backend/environment'
 import { createFileSessionStore } from './host/backend/fileSessionStore'
+import { createModelApiMcpServers } from './host/backend/mcpServers'
 import {
   museSettingsPath,
   readDelegationMode,
@@ -356,7 +357,7 @@ function runProcess(
   })
 }
 
-/** The shell tool's job helper on Windows (PLAN.md M27); nothing elsewhere. */
+/** The shell tool and MCP stdio servers' tested Windows job assembly (M27, M50). */
 function windowsShellJobs(
   storageDir: string,
   log: Logger,
@@ -577,6 +578,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     museSettingsPath: () => museSettingsPath(museConfig()),
     workspaceRoot,
     restartBackend: () => restartBackend('asked for after a skills or MCP change'),
+    // On the Model API backend the MCP servers view shows them as this
+    // window runs them (M50).
+    modelApiMcp: () =>
+      auth.current.backend === 'modelApi' ? () => modelApi.mcpSnapshot() : undefined,
+    openLog: () => {
+      channel.show(true)
+    },
     log,
   })
   const worktrees = createWorktreeFeatures({ workspaceRoot, runGit, log })
@@ -661,6 +669,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     findFiles: findWorkspaceFiles,
     log,
   })
+  const windowsJobAssembly = windowsShellJobs(context.globalStorageUri.fsPath, log)
   // The workspace's files and a shell (M7): the Model API backend's tools,
   // and the files the ide server's image tools read and write (M44).
   const toolIo = createToolIo({
@@ -684,7 +693,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     },
     // Each Windows command in a job object of its own, so a Stop ends
     // everything it started (PLAN.md M27).
-    shellJobAssembly: windowsShellJobs(context.globalStorageUri.fsPath, log),
+    shellJobAssembly: windowsJobAssembly,
     // An open editor with unsaved changes to the file (PLAN.md D27).
     hasUnsavedChanges: (absolutePath) =>
       vscode.workspace.textDocuments.some(
@@ -714,6 +723,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     random: () => Math.random(),
     log,
   })
+  const ideTools = [diagnostics]
   const ideServer = new IdeMcpServer(
     () => [
       diagnostics,
@@ -864,6 +874,22 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     notePaidUse: (feature, units) => {
       paid.usage.add(feature, units)
     },
+    // Muse Code's MCP servers, run by this window for the Model API backend
+    // (M50, PLAN.md D42): started in a trusted workspace only, stopped with
+    // the host.
+    createMcpServers: async (root) =>
+      createModelApiMcpServers({
+        workspaceRoot: root,
+        settingsPath: () => museSettingsPath(museConfig()),
+        isWorkspaceTrusted: () => vscode.workspace.isTrusted,
+        clientVersion: version,
+        platform: process.platform,
+        jobAssemblyPath: await windowsJobAssembly?.(),
+        env: () => process.env,
+        fetch: globalThis.fetch.bind(globalThis),
+        log,
+      }),
+    ideTools,
   })
   const watchedHosts = new WeakSet<AgentHost>()
   let chosenBackend: BackendKind | undefined

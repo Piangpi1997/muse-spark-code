@@ -89,10 +89,11 @@ src/extension.ts      activation: the view, the panel, the commands, the openers
 src/host/**           VS Code adapters (views, conversation, backend managers and
                       the search worker, commands, auth, settings, mentions,
                       editor tracking, usage trace logs, voice, the diagnostics
-                      MCP server)
+                      MCP server, the MCP servers' spawner)
 src/core/**           backend-agnostic logic; must not import `vscode`
-                      (MSP host, Model API client, tools, context, export,
-                      worktrees, usage, dictation, Muse Voice, the paid gate)
+                      (MSP host, Model API client, tools, the MCP client,
+                      context, export, worktrees, usage, dictation, Muse
+                      Voice, the paid gate)
 src/shared/**         constants + zod protocol shared by host and webview
 src/shared/l10n/**    the English table (en.ts), fill/plural/Intl helpers, the
                       table checks and the list of translated languages

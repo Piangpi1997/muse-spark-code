@@ -117,6 +117,22 @@ fakes (`test/unit/helpers/fakeModelApi.ts` and `fakeVoiceServer.ts`, a
 small RFC 6455 server over Node's own `http`). A live check bills the
 owner's key: say what it will cost first and ask.
 
+## MCP servers on the Model API backend
+
+The MCP client (`src/core/backends/modelapi/mcp/`, PLAN.md D42) is tested
+against two fakes, never a real server: `test/unit/helpers/fakeMcpServer.mjs`,
+a stdio server the tests start as a child process through the extension's
+own spawner (its behaviour is chosen by `FAKE_MCP_*` variables in the
+entry's `env`), and `fakeMcpHttpServer.ts`, a streamable-HTTP server on
+loopback. A new MCP behaviour gets a case in one of them first.
+On Windows the real-process tests also compile the M27 job assembly in an
+isolated temporary folder. `fakeMcpBinary.mjs` checks raw stdio bytes,
+`fakeMcpOrphan.mjs` checks a finite detached child, and
+`fakeMcpLauncherParent.mjs` checks cleanup when the extension-side Node
+process exits, and `fakeMcpPrebindParent.mjs` checks death before the job
+helper binds that process. The withheld-GO test's marker must never start.
+The test-owned fixture PIDs must be gone after the suite.
+
 ## Reporting bugs and proposing features
 
 Use the issue templates. For a bug, run **Muse Spark: Diagnostics** from
