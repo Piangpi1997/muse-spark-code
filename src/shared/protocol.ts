@@ -23,6 +23,7 @@ import {
   EFFORT_LEVELS,
   EXPORT_FORMATS,
   GOAL_COMMANDS,
+  MAX_ATTACHMENT_BASE64_CHARS,
   PAID_FEATURES,
   PERMISSION_MODES,
   PREFERRED_LOCATIONS,
@@ -151,13 +152,16 @@ const skillOptionSchema = z.object({
 })
 export type SkillOption = z.infer<typeof skillOptionSchema>
 
+// An image, or (M54, PLAN.md D47) a PDF: no pixel size, and its page count
+// when the page tree could be read.
 const attachmentSchema = z.object({
   id: z.string(),
   name: z.string(),
   mediaType: z.string(),
-  width: z.number(),
-  height: z.number(),
+  width: z.optional(z.number()),
+  height: z.optional(z.number()),
   sizeBytes: z.number(),
+  pageCount: z.optional(z.number()),
 })
 export type AttachmentSummary = z.infer<typeof attachmentSchema>
 
@@ -244,17 +248,18 @@ const webviewToHostMessageSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('listSkills') }),
   // @-mention menu: `requestId` lets the webview drop stale answers.
   z.object({ type: z.literal('searchMentions'), requestId: z.number(), query: z.string() }),
-  // "+" / "Attach file…": native open dialog; images become attachments,
-  // other files become `@path` mentions.
+  // "+" / "Attach file…": native open dialog; images (and, on the Model API
+  // backend, PDFs: M54) become attachments, other files `@path` mentions.
   z.object({ type: z.literal('pickFile') }),
   // "Mention file from this project…": QuickPick over the workspace index.
   z.object({ type: z.literal('pickMentionFile') }),
-  // An image pasted or dropped into the composer.
+  // An image pasted or dropped into the composer, or (M54) a PDF: the name
+  // stays for the wire's sake; the host tells them apart by their bytes.
   z.object({
     type: z.literal('attachImageData'),
     name: z.string(),
     mediaType: z.string(),
-    base64: z.string(),
+    base64: z.string().check(z.maxLength(MAX_ATTACHMENT_BASE64_CHARS)),
   }),
   z.object({ type: z.literal('removeAttachment'), id: z.string() }),
   // Editor resources dropped onto the composer (`text/uri-list`).

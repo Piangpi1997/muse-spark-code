@@ -5,6 +5,7 @@
 // leave a patch document shaped like Muse Code's so the transcript rows,
 // Open diff and Revert (M5) work unchanged.
 
+import { Buffer } from 'node:buffer'
 import { createHash } from 'node:crypto'
 import path from 'node:path'
 import * as z from 'zod/mini'
@@ -15,9 +16,14 @@ import {
   todoItemSchema,
 } from '../../../shared/agentEvents'
 import {
+  IMAGE_EXTENSIONS,
   LIST_FILES_DEFAULT_LIMIT,
+  MAX_DOCUMENT_BYTES,
+  MAX_IMAGE_BYTES,
   MODEL_API_TOOLS,
   MODEL_TEXT,
+  PDF_EXTENSION,
+  PDF_MEDIA_TYPE,
   READ_FILE_DEFAULT_LIMIT,
   READ_FILE_MAX_LINE_CHARS,
   SEARCH_MAX_CANDIDATES,
@@ -38,6 +44,10 @@ import {
   type PatchHunk,
   REMOVE_MARKER,
 } from '../../../shared/patchDocument'
+import { fill } from '../../../shared/l10n/text'
+import type { DocumentPart, ImagePart } from '../../agent/agentBackend'
+import { readImageInfo } from '../../imageDimensions'
+import { isPdf, pdfPageCount } from '../../pdf'
 import { compileGlob } from './glob'
 import {
   EDIT_IMAGE_DESCRIPTION,
@@ -188,6 +198,13 @@ export interface ToolContext {
 
 const FINGERPRINT_HASH = 'sha256'
 
+/** A PDF or an image `read_file` read whole for the model to see (M54, PLAN.md D47). */
+export interface VisibleFile {
+  /** Workspace-relative, as the model named it. */
+  readonly path: string
+  readonly part: ImagePart | DocumentPart
+}
+
 export interface ToolOutcome {
   /** What the model receives as the function result. */
   readonly output: string
@@ -196,6 +213,8 @@ export interface ToolOutcome {
   readonly failureReason?: string
   /** Edit-family tools: the stored patch document and its summary. */
   readonly patch?: { readonly document: string; readonly summary: PatchSummary }
+  /** `read_file` of a PDF or an image: the file itself, sent after the round's outputs. */
+  readonly visibleFile?: VisibleFile
 }
 
 const TOOL_CLASSES: Readonly<Record<string, ToolClass>> = {
@@ -295,7 +314,7 @@ export function toolDefinitions(
   return [
     define(
       MODEL_API_TOOLS.readFile,
-      'Read a text file from the workspace, numbered by line. Use offset and limit for long files.',
+      'Read a file from the workspace. A text file comes back numbered by line (use offset and limit for long files); a PDF or an image (PNG, JPEG, GIF, WebP) comes back whole, for you to see.',
       {
         path: PATH_PROPERTY,
         offset: { type: 'integer', description: '1-based first line to return' },
@@ -724,6 +743,94 @@ function patchOutcome(
 
 // --- executors ---
 
+/** What `read_file` sends whole by the path's name (M54): a PDF, an image, or neither. */
+function visualKindOf(relative: string): 'pdf' | 'image' | undefined {
+  const extension = path.extname(relative).toLowerCase()
+  if (extension === PDF_EXTENSION) {
+    return 'pdf'
+  }
+  return Object.hasOwn(IMAGE_EXTENSIONS, extension) ? 'image' : undefined
+}
+
+/** The PDF, checked by its header, for the model to read whole (M54). */
+function pdfOutcome(relative: string, bytes: Uint8Array): ToolOutcome {
+  if (!isPdf(bytes)) {
+    return failure(`${relative} ${MODEL_TEXT.notPdf}`)
+  }
+  const pageCount = pdfPageCount(bytes)
+  const text = fill(MODEL_TEXT.readPdf, {
+    path: relative,
+    pages:
+      pageCount === undefined
+        ? MODEL_TEXT.pagesUnknown
+        : fill(MODEL_TEXT.pagesKnown, { count: String(pageCount) }),
+    bytes: String(bytes.byteLength),
+  })
+  return {
+    output: text,
+    visibleOutput: text,
+    visibleFile: {
+      path: relative,
+      part: {
+        type: 'file',
+        base64Data: Buffer.from(bytes).toString('base64'),
+        mediaType: PDF_MEDIA_TYPE,
+        name: path.basename(relative),
+        sizeBytes: bytes.byteLength,
+        pageCount,
+      },
+    },
+  }
+}
+
+/** The image, checked by its header, for the model to see (M54). */
+function imageOutcome(relative: string, bytes: Uint8Array): ToolOutcome {
+  const info = readImageInfo(bytes)
+  if (info === undefined) {
+    return failure(`${relative} ${MODEL_TEXT.notImage}`)
+  }
+  const text = fill(MODEL_TEXT.readImage, {
+    path: relative,
+    mediaType: info.mediaType,
+    width: String(info.width),
+    height: String(info.height),
+    bytes: String(bytes.byteLength),
+  })
+  return {
+    output: text,
+    visibleOutput: text,
+    visibleFile: {
+      path: relative,
+      part: {
+        type: 'image',
+        base64Data: Buffer.from(bytes).toString('base64'),
+        mediaType: info.mediaType,
+        width: info.width,
+        height: info.height,
+      },
+    },
+  }
+}
+
+/**
+ * A PDF or an image read whole (M54, PLAN.md D47), within what an attachment
+ * of its kind may be; the file itself reaches the model after the round.
+ */
+async function readVisual(
+  file: { readonly relative: string; readonly absolute: string },
+  kind: 'pdf' | 'image',
+  context: ToolContext,
+): Promise<ToolOutcome> {
+  const bytes = await context.io.readBytes(
+    file.absolute,
+    kind === 'pdf' ? MAX_DOCUMENT_BYTES : MAX_IMAGE_BYTES,
+  )
+  if (bytes === undefined) {
+    return failure(`file not found: ${file.relative}`)
+  }
+  return kind === 'pdf' ? pdfOutcome(file.relative, bytes) : imageOutcome(file.relative, bytes)
+}
+
 async function readFile(
   args: z.infer<typeof readFileArgs>,
   context: ToolContext,
@@ -736,6 +843,10 @@ async function readFile(
   )
   if (!resolved.ok) {
     return failure(resolved.reason)
+  }
+  const visual = visualKindOf(resolved.relative)
+  if (visual !== undefined) {
+    return await readVisual(resolved, visual, context)
   }
   const raw = await context.io.readFile(resolved.absolute)
   if (raw === undefined) {

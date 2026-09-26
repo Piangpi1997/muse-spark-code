@@ -1,3 +1,4 @@
+import { Buffer } from 'node:buffer'
 import { describe, expect, it, vi } from 'vitest'
 import type { SessionMcpHttpServer } from '../../src/core/agent/agentBackend'
 import { ModelApiHost, type ModelApiHostDeps } from '../../src/core/backends/modelapi/ModelApiHost'
@@ -340,7 +341,11 @@ function setup(
     files: {
       showOpenDialog: () => Promise.resolve(picked),
       readFile: (fsPath: string) =>
-        fsPath.endsWith('.png') ? Promise.resolve(PNG) : Promise.resolve(Uint8Array.from([1])),
+        fsPath.endsWith('.png')
+          ? Promise.resolve(PNG)
+          : Promise.resolve(new TextEncoder().encode('example text')),
+      canonicalRelativePath: (fsPath: string) =>
+        Promise.resolve(fsPath.startsWith('/ws/') ? fsPath.slice('/ws/'.length) : undefined),
       pickMentionFile: () => Promise.resolve(mentionChoice),
       toRelativePath: (uri: string) =>
         uri.startsWith('file:///ws/') ? uri.slice('file:///ws/'.length) : undefined,
@@ -1024,6 +1029,60 @@ describe('ConversationController: context', () => {
     ])
   })
 
+  it('attaches an indexed UTF-8 file as named text, while refusing a private file', async () => {
+    const t = setup()
+    t.setPicked([{ name: 'a.ts', fsPath: '/ws/src/a.ts', relativePath: 'src/a.ts' }])
+    await t.controller.handle({ type: 'pickFile' })
+    expect(t.surface.posted).toMatchObject([
+      { type: 'attachmentAdded', attachment: { name: 'a.ts', mediaType: 'text/plain' } },
+    ])
+    await t.send('text-file', 'Explain this', ['att-1'])
+    expect(t.server.requestsFor('turn/start')[0]?.params).toMatchObject({
+      input: [
+        { type: 'text', text: 'Explain this' },
+        { type: 'text', text: expect.stringContaining('Attached text file "a.ts"') },
+        NOTE,
+      ],
+      displayText: 'Explain this\na.ts',
+    })
+    const privateFile = setup({ indexed: ['credentials.json'] })
+    privateFile.setPicked([
+      {
+        name: 'credentials.json',
+        fsPath: '/ws/credentials.json',
+        relativePath: 'credentials.json',
+      },
+    ])
+    await privateFile.controller.handle({ type: 'pickFile' })
+    expect(privateFile.surface.posted).toEqual([
+      {
+        type: 'attachmentRejected',
+        name: 'credentials.json',
+        reason: UI_TEXT.textFilePrivate,
+      },
+    ])
+  })
+
+  it('keeps text as a path mention without reading it in an untrusted workspace', async () => {
+    const t = setup({ isWorkspaceTrusted: false, indexed: ['src/a.ts'] })
+    const read = vi.spyOn(t.deps.files, 'readFile')
+    t.setPicked([{ name: 'a.ts', fsPath: '/ws/src/a.ts', relativePath: 'src/a.ts' }])
+    await t.controller.handle({ type: 'pickFile' })
+    expect(t.surface.posted).toEqual([{ type: 'insertText', text: '@src/a.ts ' }])
+    expect(read).not.toHaveBeenCalled()
+  })
+
+  it('refuses a picked binary type without reading its bytes', async () => {
+    const t = setup()
+    const read = vi.spyOn(t.deps.files, 'readFile')
+    t.setPicked([{ name: 'draft.docx', fsPath: '/ws/draft.docx', relativePath: 'draft.docx' }])
+    await t.controller.handle({ type: 'pickFile' })
+    expect(t.surface.posted).toEqual([
+      { type: 'attachmentRejected', name: 'draft.docx', reason: UI_TEXT.binaryFileUnsupported },
+    ])
+    expect(read).not.toHaveBeenCalled()
+  })
+
   it('rejects unsupported image data with the reason', async () => {
     const t = setup()
     await t.controller.handle({
@@ -1039,6 +1098,20 @@ describe('ConversationController: context', () => {
         reason: 'Only PNG, JPEG, GIF and WebP images can be attached.',
       },
     ])
+  })
+
+  it('refuses a PDF on Muse Code before turn/start can receive an unsupported part', async () => {
+    const t = setup()
+    await t.controller.handle({
+      type: 'attachImageData',
+      name: 'report.pdf',
+      mediaType: 'application/pdf',
+      base64: Buffer.from('%PDF-1.4').toString('base64'),
+    })
+    expect(t.surface.posted).toEqual([
+      { type: 'attachmentRejected', name: 'report.pdf', reason: UI_TEXT.pdfNeedsModelApi },
+    ])
+    expect(t.server.requestsFor('turn/start')).toEqual([])
   })
 
   it('removes attachments and drops the parts from later sends', async () => {

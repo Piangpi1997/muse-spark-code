@@ -1612,6 +1612,55 @@ The choices:
   session); the Model API's `ask_user` returns the text to the model as
   Muse Code's clarify does, and the row reads "Explained: …".
 
+### D47 — File input follows each backend's proven wire (2026-09-25)
+
+Meta's [file handling guide](https://dev.meta.ai/docs/file-handling) permits
+`input_file` with inline `file_data` on Responses requests, and says PDF text
+comes from the first 100 pages, with page images from the first 50 sharing a
+50-image request budget. The pinned Muse Code SDK 1.3.0 defines only text,
+image and skill input parts. Its [file input request](https://github.com/meta-models/muse-code-sdk/issues/48)
+tracks the missing MSP feature. We do not send an invented part to Muse Code.
+
+- **Model API:** PDF bytes, checked by header, may be attached from the file
+  picker, clipboard or drop, up to 32 MB each; the inline base64 stays below
+  Meta's 50 MB limit. No persistent Files API upload or new dependency.
+  Images still work. A bounded UTF-8 text file picked from the trusted workspace and
+  visible in its file index becomes a named `input_text` part after its real
+  path is checked against symlink escapes; protected/private paths are
+  refused. Binary file types are refused, never decoded as text. The
+  Model API `read_file` tool reads UTF-8 text, PDFs and images from confined
+  workspace paths. A PDF or image read by that tool travels as a user content
+  part after its function-output round, so the model actually sees it.
+- **Muse Code:** images retain their MSP path. A PDF attachment gets a clear
+  refusal naming the Model API backend, including when its extension is
+  disguised. A bounded text attachment becomes an MSP text part with the
+  file's name and content; no invented file part. Other unsupported types
+  remain path mentions or explicit refusals. Native file parts wait for an
+  MSP release and a captured wire shape.
+- **Budget and history:** attached images and countable PDF page images share
+  50 slots per new message. An uncountable PDF reserves all 50. The Model API
+  page counter reads only the page-tree dictionary's direct `/Count`; a
+  nested dictionary's unrelated `/Count` must not shrink that reservation.
+  If the direct count cannot be established, the PDF is uncountable here.
+  The Model API
+  extension also caps base64 media to 48 million characters per new message
+  and replay request. This is a conservative aggregate memory/request bound,
+  separate from Meta's 50 MB **per-file** inline limit. An over-cap new
+  attachment is refused with a localized banner. The Model API replay,
+  including compaction, keeps newest visible media within both budgets and
+  replaces older media with a plain explanation; the panel announces that
+  older media was left out. Stored history retains the original parts. The
+  `read_file` tool also stops collecting media in one tool round at the same
+  encoded-size cap, returning a failed tool result for the excess file before
+  it is retained; a burst of reads must not fill host memory before replay
+  fitting runs. The
+  UI shows PDF names as file chips and restores them from Model API session
+  history. This does not claim the older bytes remain visible to the model
+  after either budget clips them.
+  If a tool round stops or fails before its media is delivered, replay keeps
+  a path-only explanation. Stop also removes a read-file media message from
+  future replay when it interrupts that message's delivery request.
+
 ## 3. Open questions (need the owner)
 
 | #   | Question                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            | Default until answered                                                |
@@ -3707,15 +3756,15 @@ hosted CI remains the merge gate.
 
 ### M47 — Workflows: captured run and agents (D40)
 
-**Status 2026-09-26: captured presentation increment locally gated; owner
-controls deferred** (`docs/certification/m47.md`). The branch sits on M46
-merge commit `e219d04`. Live capture proved the run card and one child's
+**Status 2026-09-26: merged on main at `34002ab`; owner controls deferred**
+(`docs/certification/m47.md`). Live capture proved the run card and one child's
 updates and rejected owner commands; accepted control shapes remain
 uncaptured. The read-only candidate passed local `npm run quality`; a
 current-head review then found a sparse history replay loss. Its correction
 passed local `npm run quality` on staged tree
-`0edaadb6bca8846487d7964a25dd9b7cffffeb9b`; this receipt changed
-the documentation, so a final exact-tree rerun and hosted CI remain.
+`0edaadb6bca8846487d7964a25dd9b7cffffeb9b`. At that checkpoint, a
+final exact-tree rerun and hosted CI remained; M47 subsequently merged on
+main at `34002ab`.
 
 - **Goal**: a workflow Muse Code runs reads as what it is, a run of agents
   going on in the background, with its captured progress and result.
@@ -3751,7 +3800,7 @@ the documentation, so a final exact-tree rerun and hosted CI remain.
   scenarios `muse-workflow` and `muse-workflow-map` in the accessibility
   gate. The reduced candidate passed `npm run quality` on staged tree
   `e5fe0228643bfc54ef9753d1319064b91498d728`; hosted CI and review
-  remain. Claude's M47 source worktree
+  were pending at that checkpoint. Claude's M47 source worktree
   passed `quality:gates` but its accessibility run had four Chrome pages
   without a result and exited 1; secrets and SAST did not run.
 - **Left out, by Muse Code or evidence**: pausing and resuming a run (no MSP
@@ -3762,6 +3811,80 @@ the documentation, so a final exact-tree rerun and hosted CI remain.
   a live accepted-command and outcome capture; the captured refusal probes
   alone do not certify usable controls. A child `phase` and saved workflow
   display name also wait for live evidence.
+
+### M54 — PDFs and other files as input (D47)
+
+**Status 2026-09-26: staged on merged M47 main; certification pending.** The
+isolated M54 worktree is based on `34002ab`; its pre-M46 50-path staged tree
+is pinned at `refs/codex-backups/m54-pre-m46-20260926`. Focused PDF and
+replay checks passed; the M47-base reconciliation passed 724 focused
+attachment, replay, workflow and backend tests, all five TypeScript projects,
+localization and lint. Earlier M48–M53 integration and full quality/browser
+gates on their combined tree remain open. A compressed or encrypted page tree with
+unknown count still reserves all 50 image slots (D47).
+After the M54 Stop replay fix, nine focused suites passed 531/531 and all
+five TypeScript projects passed on this tree. M54-on-M47 passed full Windows
+`npm run quality` on staged tree `9b01560` (see receipt below); that result
+does not certify the ordered combined tree.
+
+- **Goal:** a user can send a PDF to the Model API backend from the picker,
+  paste or drop, then see it in the sent card and restored history; the agent
+  can read a workspace PDF or image through `read_file` and receive its bytes.
+  A bounded UTF-8 file picked from a trusted, indexed workspace can be attached on
+  both backends as a named text part; binary files remain path mentions or
+  explicit refusals. Muse Code gives a direct refusal for a PDF while MSP
+  1.3.0 has no file input part.
+- **Research:** Meta's `input_file` example and page, size and image budgets
+  in the file handling guide; SDK `TurnInputPartType`; SDK issue #48. No live
+  Meta API key is present for a paid live call; test against the fake client.
+- **Acceptance:** valid PDF byte signature and bounded page counting; size,
+  count, aggregate bytes and backend refusal; composer and history chips;
+  exact Responses payload, tool read and replay budget; translated text in fourteen languages;
+  meaningful red drills and `npm run quality` green. Record evidence in
+  `docs/certification/m54.md` before changing status to certified.
+- **Stop edge:** a tool-read PDF or image from a stopped/failed turn is not
+  sent again with the next user turn; replay says why its bytes are absent.
+- **Pending ordered joins (M48–M53):** check M48 child-session isolation and
+  paid attempt accounting for PDF reads; M49 memory-path protections beside
+  named text attachments; M50 MCP image parts in function outputs against
+  the same page and encoded-media budgets; M51 hook stops after `read_file`
+  and hook previews without media bytes; M52 confirmed paid runs with PDFs
+  already in replay; M53 rewind of PDF/text chips and Plan-mode side chats
+  with inherited PDF context. These are watchpoints from separate staged
+  trees, not acceptance evidence. Add focused tests before calling M54
+  integrated, then run exact-tree quality and browser gates.
+- **Kubuntu exact-tree gate attempt:** the private `10.10.11.212` checkout of
+  staged tree `7cd2d8d` passed `npm ci`, then `npm run quality:gates` stopped
+  at its first step: Prettier flagged one formatting line in
+  `test/unit/modelApiHost.test.ts`. Later gates did not run. The test line is
+  formatted in the next staged tree; its remote gate rerun is pending.
+- **Second Kubuntu attempt:** staged tree `8c4f36d` passed formatting, then
+  stopped at JS lint: the new held-PDF test used the forbidden
+  `Promise.withResolvers<void>()` type. Later gates did not run. The test now
+  uses the existing `<undefined>` and `resolve(undefined)` convention; a new
+  exact-tree gate rerun is pending.
+- **Third Kubuntu attempt:** staged tree `ed1035b` passed formatting, lint,
+  all five TypeScript projects, localization, dead-code and cycle checks.
+  Duplication then found the repeated next-turn assertions in M54's two
+  Stop/PDF tests. Their shared request step now lives in one test helper;
+  the remaining gates and a new exact-tree rerun are pending.
+- **Fourth Kubuntu attempt:** staged tree `a1731ff` passed
+  `npm run quality:gates` (exit 0): 1,724 tests passed, 7 skipped, no
+  duplication or localization issues, and no audit advisories. This is
+  M54-on-M47 Linux gate evidence only. PowerShell analysis was skipped on
+  Linux; browser/accessibility, secrets/SAST, live Model API and M48–M53
+  ordered-integration gates remain open. The receipt in the docs was added
+  after the tested tree, so it is not a claim about a later combined tree.
+- **WIN-11-VM full gate:** staged tree `9b01560` passed literal
+  `npm.cmd run quality` on `10.10.11.183` (Windows npm entrypoint, exit 0):
+  1,728 tests passed, 3 skipped; 280 accessibility pages had zero rule
+  violations; PSScriptAnalyzer, Gitleaks and Semgrep found zero issues.
+  A first runner invocation of `npm` was blocked by PowerShell's
+  `npm.ps1` execution policy and falsely appeared to exit 0; it ran no
+  gate and is not counted. The real gate log, independent remote exit 0,
+  unchanged tree and post-gate process audit 0 are in `m54.md`. The green
+  receipt is a later docs-only edit, and M48–M53 integration plus live Model
+  API verification remain open.
 
 ### M41 — Install Muse Code from the panel (folded into M55)
 

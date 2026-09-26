@@ -966,6 +966,37 @@ describe('uiReducer: session history (M6)', () => {
     expect(state.title).toBeUndefined()
   })
 
+  it('restores a PDF name from the stored user message', () => {
+    const state = reduceAll([
+      host({
+        type: 'historyLoaded',
+        sessionId: 'pdf-session',
+        todos: [],
+        items: [
+          {
+            itemId: 'pdf-user',
+            kind: 'userMessage',
+            status: 'completed',
+            text: 'Summarize this',
+            attachments: [
+              {
+                type: 'file',
+                mediaType: 'application/pdf',
+                name: 'report.pdf',
+                sizeBytes: 1024,
+                pageCount: 2,
+              },
+            ],
+          },
+        ],
+      }),
+    ])
+    expect(state.transcript[0]).toMatchObject({
+      kind: 'user',
+      attachments: [{ name: 'report.pdf' }],
+    })
+  })
+
   it('keeps the turn id on a sent card so a fork can cut before it', () => {
     const state = reduceAll([
       { type: 'submitted', localId: 'l1', text: 'one', attachments: [], contextLabel: undefined },

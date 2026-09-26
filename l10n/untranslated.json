@@ -33,7 +33,8 @@
       "goalItem",
       "composerShellMode",
       "onboardingShortcuts.shell",
-      "onboardingShortcuts.moveToBackground"
+      "onboardingShortcuts.moveToBackground",
+      "pdfLabel"
     ],
     "cs": [
       "groupModel",

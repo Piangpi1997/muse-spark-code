@@ -6,6 +6,7 @@
 import path from 'node:path'
 import { Buffer } from 'node:buffer'
 import { AttachmentStore } from '../../core/attachments'
+import { isProtectedPath } from '../../core/backends/modelapi/permissions'
 import {
   type AgentHost,
   type AgentSession,
@@ -48,6 +49,12 @@ import {
   type GoalCommandVerb,
   IDE_MCP_SERVER_NAME,
   IMAGE_EXTENSIONS,
+  MAX_DOCUMENT_BYTES,
+  MAX_IMAGE_BYTES,
+  MAX_TEXT_ATTACHMENT_BYTES,
+  PDF_EXTENSION,
+  PRIVATE_ATTACHMENT_EXTENSIONS,
+  PRIVATE_ATTACHMENT_NAMES,
   MENTION_RESULT_LIMIT,
   MSP_REQUESTED_CAPABILITIES,
   OUTPUT_DOCUMENT_MAX_PAGES,
@@ -63,6 +70,8 @@ import {
   SESSION_RESTORE_WINDOW_MS,
   SHELL_TOOLS,
   type SubagentAction,
+  TEXT_ATTACHMENT_EXTENSIONS,
+  UNSUPPORTED_BINARY_ATTACHMENT_EXTENSIONS,
   UI_TEXT,
   USER_SHELL_ITEM_KIND,
   USER_SHELL_SANDBOX_FAILURE_MARKER,
@@ -130,7 +139,10 @@ export interface PickedFile {
 export interface FileAccess {
   /** Native open dialog; resolves to [] when cancelled. */
   showOpenDialog(): Promise<readonly PickedFile[]>
-  readFile(fsPath: string): Promise<Uint8Array>
+  /** Reads no file that is already over the attachment limit. */
+  readFile(fsPath: string, maxBytes: number): Promise<Uint8Array | undefined>
+  /** Canonical path inside the first workspace root; undefined on an escape or unresolved path. */
+  canonicalRelativePath(fsPath: string): Promise<string | undefined>
   /** QuickPick over the mention index; resolves to the chosen relative path. */
   pickMentionFile(): Promise<string | undefined>
   /** Relative path for a dropped `file:` URI; undefined outside the workspace. */
@@ -1958,8 +1970,14 @@ export class ConversationController {
       const note: readonly TurnPart[] =
         host.info.kind === 'museCode' ? [{ type: 'text', text: CHOICE_STEERING_NOTE }] : []
       const parts = [...typed, ...referenced, ...(context === undefined ? [] : [context]), ...note]
-      // With extra parts the durable transcript keeps the typed text only.
-      const displayText = parts.length === typed.length ? undefined : text
+      // MSP stores no text-file attachment metadata: keep each name in the
+      // durable card while the full content travels only to the model (M54).
+      const textFileNames = typed.flatMap((part) => (part.type === 'textFile' ? [part.name] : []))
+      const contextText = parts.length === typed.length ? undefined : text
+      const displayText =
+        textFileNames.length > 0
+          ? [text, ...textFileNames].filter((line) => line !== '').join('\n')
+          : contextText
       const submission = await this.runResuming(host, session, (current) =>
         this.submit(current, parts, displayText),
       )
@@ -2238,8 +2256,13 @@ export class ConversationController {
     }
   }
 
-  private addImage(name: string, bytes: Uint8Array): void {
-    const result = this.attachments.add(name, bytes)
+  private async addAttachment(
+    name: string,
+    bytes: Uint8Array,
+    canAcceptText = false,
+  ): Promise<void> {
+    const host = await this.deps.ensureHost()
+    const result = this.attachments.add(name, bytes, host.info.kind === 'modelApi', canAcceptText)
     if (result.ok) {
       this.post({ type: 'attachmentAdded', attachment: result.attachment })
     } else {
@@ -2251,14 +2274,95 @@ export class ConversationController {
     this.post({ type: 'insertText', text: `${formatMention(relativePath)} ` })
   }
 
+  /** Text bytes need a trusted, indexed, canonical workspace path; path mentions stay available. */
+  private async textFileDisposition(file: PickedFile): Promise<'attach' | 'mention' | 'refuse'> {
+    if (!this.deps.isWorkspaceTrusted()) {
+      return 'mention'
+    }
+    let canonical: string | undefined
+    try {
+      canonical = await this.deps.files.canonicalRelativePath(file.fsPath)
+    } catch (error: unknown) {
+      this.deps.log.warn(`text attachment path check failed: ${describe(error)}`)
+      return 'mention'
+    }
+    if (canonical === undefined) {
+      return 'mention'
+    }
+    const segments = canonical.toLowerCase().split('/')
+    const name = segments.at(-1) ?? ''
+    if (
+      isProtectedPath(canonical) ||
+      name.startsWith('.env.') ||
+      PRIVATE_ATTACHMENT_NAMES.has(name) ||
+      PRIVATE_ATTACHMENT_EXTENSIONS.has(path.extname(name))
+    ) {
+      this.post({ type: 'attachmentRejected', name: file.name, reason: UI_TEXT.textFilePrivate })
+      return 'refuse'
+    }
+    return (await this.deps.mentions.contains(canonical)) ? 'attach' : 'mention'
+  }
+
   private async pickFile(): Promise<void> {
     const picked = await this.deps.files.showOpenDialog()
     for (const file of picked) {
       const extension = path.extname(file.name).toLowerCase()
-      if (Object.hasOwn(IMAGE_EXTENSIONS, extension)) {
-        this.addImage(file.name, await this.deps.files.readFile(file.fsPath))
+      const lowerName = file.name.toLowerCase()
+      if (
+        lowerName.startsWith('.env.') ||
+        PRIVATE_ATTACHMENT_NAMES.has(lowerName) ||
+        PRIVATE_ATTACHMENT_EXTENSIONS.has(extension)
+      ) {
+        this.post({ type: 'attachmentRejected', name: file.name, reason: UI_TEXT.textFilePrivate })
+        continue
+      }
+      const isTextFile = TEXT_ATTACHMENT_EXTENSIONS.has(extension)
+      if (isTextFile) {
+        const disposition = await this.textFileDisposition(file)
+        if (disposition === 'refuse') {
+          continue
+        }
+        if (disposition === 'mention') {
+          this.insertMention(file.relativePath ?? file.fsPath.replaceAll('\\', '/'))
+          continue
+        }
+      }
+      if (isTextFile || extension === PDF_EXTENSION || Object.hasOwn(IMAGE_EXTENSIONS, extension)) {
+        const isPdfFile = extension === PDF_EXTENSION
+        const otherMaxBytes = isTextFile ? MAX_TEXT_ATTACHMENT_BYTES : MAX_IMAGE_BYTES
+        const maxBytes = isPdfFile ? MAX_DOCUMENT_BYTES : otherMaxBytes
+        let bytes: Uint8Array | undefined
+        try {
+          bytes = await this.deps.files.readFile(file.fsPath, maxBytes)
+        } catch (error: unknown) {
+          this.deps.log.warn(`attachment read failed: ${describe(error)}`)
+          this.post({
+            type: 'attachmentRejected',
+            name: file.name,
+            reason: UI_TEXT.attachmentUnreadable,
+          })
+          continue
+        }
+        if (bytes === undefined || bytes.byteLength > maxBytes) {
+          const otherTooLarge = isTextFile ? UI_TEXT.textFileTooLarge : UI_TEXT.attachmentTooLarge
+          this.post({
+            type: 'attachmentRejected',
+            name: file.name,
+            reason: isPdfFile ? UI_TEXT.documentTooLarge : otherTooLarge,
+          })
+        } else {
+          await this.addAttachment(file.name, bytes, isTextFile)
+        }
       } else {
-        this.insertMention(file.relativePath ?? file.fsPath.replaceAll('\\', '/'))
+        if (UNSUPPORTED_BINARY_ATTACHMENT_EXTENSIONS.has(extension)) {
+          this.post({
+            type: 'attachmentRejected',
+            name: file.name,
+            reason: UI_TEXT.binaryFileUnsupported,
+          })
+        } else {
+          this.insertMention(file.relativePath ?? file.fsPath.replaceAll('\\', '/'))
+        }
       }
     }
   }
@@ -2682,7 +2786,10 @@ export class ConversationController {
         break
       }
       case 'attachImageData': {
-        this.addImage(message.name, new Uint8Array(Buffer.from(message.base64, 'base64')))
+        await this.addAttachment(
+          message.name,
+          new Uint8Array(Buffer.from(message.base64, 'base64')),
+        )
         break
       }
       case 'removeAttachment': {

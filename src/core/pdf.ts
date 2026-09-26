@@ -1,0 +1,186 @@
+// What the extension reads of a PDF (M54, PLAN.md D47): that it is one, by
+// its header rather than its name, and how many pages it has when that is
+// cheap to learn. The count names the chip and weighs the PDF against
+// Meta's 50 images per request (its first 50 pages each become one); an
+// unknown count reserves all 50 slots in the attachment store.
+//
+// The count comes from a directly visible `/Type /Pages` dictionary's
+// `/Count`, the largest of them. Compressed or encrypted page trees have no
+// count here and reserve the full request budget. This inspection never
+// decompresses untrusted file content on the extension host thread.
+
+import { Buffer } from 'node:buffer'
+import {
+  PDF_DICTIONARY_SCAN_CHARS,
+  PDF_HEADER_WINDOW_BYTES,
+  PDF_PAGE_COUNT_MAX,
+} from '../shared/constants'
+
+const PDF_HEADER = '%PDF-'
+const DICTIONARY_OPEN = '<<'
+const DICTIONARY_CLOSE = '>>'
+// A name ends where a regular character does not follow (PDF names are
+// letters, digits and a few marks; the next token starts with a delimiter).
+const PAGES_TYPE = /\/Type\s*\/Pages(?![A-Za-z0-9])/g
+const COUNT_VALUE = /^\s+(\d+)(?![A-Za-z0-9])/
+
+function latin1(bytes: Uint8Array): string {
+  return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString('latin1')
+}
+
+/** Whether the bytes are a PDF: its header within the first 1024 bytes. */
+export function isPdf(bytes: Uint8Array): boolean {
+  return latin1(bytes.subarray(0, PDF_HEADER_WINDOW_BYTES)).includes(PDF_HEADER)
+}
+
+/** Where the dictionary around `index` opens, looking back at most the scan window. */
+function dictionaryStart(text: string, index: number): number | undefined {
+  const floor = Math.max(index - PDF_DICTIONARY_SCAN_CHARS, 0)
+  let depth = 0
+  let at = index - DICTIONARY_OPEN.length
+  while (at >= floor) {
+    if (text.startsWith(DICTIONARY_CLOSE, at)) {
+      depth += 1
+      // A delimiter pair is two characters: the next one ends before it.
+      at -= DICTIONARY_CLOSE.length
+    } else if (text.startsWith(DICTIONARY_OPEN, at)) {
+      if (depth === 0) {
+        return at
+      }
+      depth -= 1
+      at -= DICTIONARY_OPEN.length
+    } else {
+      at -= 1
+    }
+  }
+  return undefined
+}
+
+/** Where the dictionary opening at `start` closes (just past its `>>`), within the scan window. */
+function dictionaryEnd(text: string, start: number): number | undefined {
+  const ceiling = Math.min(start + PDF_DICTIONARY_SCAN_CHARS, text.length)
+  let depth = 0
+  let at = start
+  while (at < ceiling) {
+    if (text.startsWith(DICTIONARY_OPEN, at)) {
+      depth += 1
+      at += DICTIONARY_OPEN.length
+    } else if (text.startsWith(DICTIONARY_CLOSE, at)) {
+      depth -= 1
+      at += DICTIONARY_CLOSE.length
+      if (depth === 0) {
+        return at
+      }
+    } else {
+      at += 1
+    }
+  }
+  return undefined
+}
+
+/** The dictionary that holds `index`, with where it ends; undefined when none is found. */
+function enclosingDictionary(
+  text: string,
+  index: number,
+): { readonly body: string; readonly end: number } | undefined {
+  const start = dictionaryStart(text, index)
+  const end = start === undefined ? undefined : dictionaryEnd(text, start)
+  return start === undefined || end === undefined
+    ? undefined
+    : { body: text.slice(start, end), end }
+}
+
+/** Just past a literal string, including nested parentheses and escapes. */
+function afterString(body: string, start: number): number {
+  let depth = 1
+  let at = start + 1
+  while (at < body.length && depth > 0) {
+    if (body[at] === '\\') {
+      at += 2
+      continue
+    }
+    if (body[at] === '(') {
+      depth += 1
+      at += 1
+      continue
+    }
+    if (body[at] === ')') {
+      depth -= 1
+      at += 1
+      continue
+    }
+    at += 1
+  }
+  return at
+}
+
+/** A `/Count` at this dictionary's own depth, not one in a nested value. */
+function directCount(body: string): number | undefined {
+  let dictionaryDepth = 0
+  let arrayDepth = 0
+  let at = 0
+  while (at < body.length) {
+    if (body.startsWith(DICTIONARY_OPEN, at)) {
+      dictionaryDepth += 1
+      at += DICTIONARY_OPEN.length
+      continue
+    }
+    if (body.startsWith(DICTIONARY_CLOSE, at)) {
+      dictionaryDepth -= 1
+      at += DICTIONARY_CLOSE.length
+      continue
+    }
+    if (body[at] === '%') {
+      while (at < body.length && body[at] !== '\n' && body[at] !== '\r') {
+        at += 1
+      }
+      continue
+    }
+    if (body[at] === '(') {
+      at = afterString(body, at)
+      continue
+    }
+    if (body[at] === '[') {
+      arrayDepth += 1
+      at += 1
+      continue
+    }
+    if (body[at] === ']') {
+      arrayDepth -= 1
+      at += 1
+      continue
+    }
+    if (dictionaryDepth === 1 && arrayDepth === 0 && body.startsWith('/Count', at)) {
+      const value = COUNT_VALUE.exec(body.slice(at + '/Count'.length))
+      if (value !== null) {
+        return Number(value[1])
+      }
+    }
+    at += 1
+  }
+  return undefined
+}
+
+/** The largest page-tree `/Count` in the text; undefined when there is none. */
+function pageTreeCount(text: string): number | undefined {
+  let best: number | undefined
+  for (const match of text.matchAll(PAGES_TYPE)) {
+    const dictionary = enclosingDictionary(text, match.index)
+    const count = directCount(dictionary?.body ?? '')
+    if (
+      count !== undefined &&
+      Number.isSafeInteger(count) &&
+      count > 0 &&
+      count <= PDF_PAGE_COUNT_MAX
+    ) {
+      best = Math.max(best ?? 0, count)
+    }
+  }
+  return best
+}
+
+/** The PDF's page count, when its page tree can be read cheaply; undefined otherwise. */
+export function pdfPageCount(bytes: Uint8Array): number | undefined {
+  const text = latin1(bytes)
+  return pageTreeCount(text)
+}

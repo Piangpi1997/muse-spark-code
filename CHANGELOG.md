@@ -12,6 +12,22 @@ while they are (PLAN.md D30, D34).
 
 ### Added
 
+- **PDF input on the Model API backend** (M54, PLAN.md D47). Pick, paste or
+  drop a PDF up to 32 MB; its name appears in the composer and sent history.
+  The Model API agent can also read workspace PDFs and images through
+  `read_file`. The request stays within Meta's shared 50 image and PDF-page
+  budget and a local 48-million-character combined encoded-media limit;
+  excess new attachments are refused, and omitted older replay media is
+  announced while its local history remains. Excess `read_file` media in one
+  tool round gets a failed tool result before the host retains it. Muse Code's
+  MSP 1.3.0 has no file input part, so PDF attachments
+  give a clear refusal there. A picked UTF-8 text file up to 1 MiB in a
+  trusted, indexed workspace becomes a named text attachment on both
+  backends; excluded and outside files stay path mentions, and private files
+  are refused. The PDF page budget reads the page tree's own count even
+  when nested metadata has another count, preventing an oversized request.
+  Stop removes tool-read media from future replay if its turn ends early.
+
 - **Image edits** (M44, PLAN.md D37). With image generation on, the model
   can also change one workspace image, or combine up to four, by a prompt,
   into a new PNG (`edit_image`, Meta's `/images/edits`, $0.01 per image).

@@ -35,7 +35,10 @@ import {
   GOAL_SLASH_COMMAND,
   IME_PROCESS_KEY,
   MAX_ATTACHMENTS_PER_MESSAGE,
+  MAX_DOCUMENT_BYTES,
   MAX_IMAGE_BYTES,
+  PDF_EXTENSION,
+  PDF_MEDIA_TYPE,
   type PermissionMode,
   UI_TEXT,
 } from '../../shared/constants'
@@ -213,8 +216,13 @@ function keepMenuFocus(event: MouseEvent<HTMLButtonElement>): void {
   event.preventDefault()
 }
 
-function imageFiles(list: FileList | undefined): readonly File[] {
-  return [...(list ?? [])].filter((file) => file.type.startsWith(IMAGE_TYPE_PREFIX))
+function attachableFiles(list: FileList | undefined): readonly File[] {
+  return [...(list ?? [])].filter(
+    (file) =>
+      file.type.startsWith(IMAGE_TYPE_PREFIX) ||
+      file.type === PDF_MEDIA_TYPE ||
+      file.name.toLowerCase().endsWith(PDF_EXTENSION),
+  )
 }
 
 /** Ctrl+D (Cmd+D on a Mac): the microphone from the keyboard. */
@@ -697,8 +705,9 @@ export function Composer(props: ComposerProps) {
     let count = attachments.length
     for (const file of files) {
       const name = file.name === '' ? PASTED_IMAGE_NAME : file.name
-      if (file.size > MAX_IMAGE_BYTES) {
-        onRefuseFile(name, UI_TEXT.attachmentTooLarge)
+      const isDocument = file.type === PDF_MEDIA_TYPE || name.toLowerCase().endsWith(PDF_EXTENSION)
+      if (file.size > (isDocument ? MAX_DOCUMENT_BYTES : MAX_IMAGE_BYTES)) {
+        onRefuseFile(name, isDocument ? UI_TEXT.documentTooLarge : UI_TEXT.attachmentTooLarge)
         continue
       }
       if (count >= MAX_ATTACHMENTS_PER_MESSAGE) {
@@ -719,17 +728,17 @@ export function Composer(props: ComposerProps) {
   }
 
   const handlePaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
-    const images = imageFiles(event.clipboardData.files)
-    if (images.length === 0) {
+    const files = attachableFiles(event.clipboardData.files)
+    if (files.length === 0) {
       return
     }
     event.preventDefault()
-    attachFiles(images)
+    attachFiles(files)
   }
 
   const handleDrop = (event: DragEvent<HTMLElement>) => {
     event.preventDefault()
-    attachFiles(imageFiles(event.dataTransfer.files))
+    attachFiles(attachableFiles(event.dataTransfer.files))
     const uris = parseUriList(event.dataTransfer.getData(URI_LIST_TYPE))
     if (uris.length > 0) {
       onDroppedUris(uris)

@@ -97,7 +97,7 @@ Every change is in the [CHANGELOG](CHANGELOG.md).
   CLI, or a Meta Model API key (pay as you go) with the extension's own
   tools. The pasted key is never handed to the CLI.
 - **Context the way you work.** `@` mentions with `.gitignore`-aware fuzzy
-  search, the open file or selection as a chip, images pasted or dropped, and
+  search, the open file or selection as a chip, images and PDFs pasted or dropped, and
   `Alt+K` to mention the editor selection. On the CLI backend the agent can
   also read the Problems panel.
 - **History that survives the window.** Every conversation in the workspace,
@@ -403,10 +403,23 @@ both backends, as Muse Code's `/goal` does.
   scrolls inside.
 - While a turn runs, `Enter` steers it and Stop cancels it; Stop also drops
   messages still queued, which read "Not sent".
-- The `+` button uploads images (PNG, JPEG, GIF, WebP; other files become `@`
-  mentions) or starts a mention; images also paste and drop. An upload the
-  panel cannot take shows a dismissible banner: other files go in as `@`
-  mentions, or by absolute path for files outside the workspace.
+- The `+` button attaches images (PNG, JPEG, GIF, WebP), PDFs on the Model
+  API backend, and UTF-8 text files up to 1 MB from trusted, indexed workspace
+  paths. Text files travel with their names as text on both backends. Files
+  outside that set become `@` path mentions; known binary types and private
+  files are refused.
+  Images and PDFs also paste and drop. The panel reports a refused file in a dismissible
+  banner. Muse Code's MSP 1.3.0 cannot take a PDF part, so a PDF attachment
+  there names the Model API backend instead. The Model API agent can read a
+  workspace PDF or image through `read_file`; other workspace files use its
+  existing UTF-8 text reader. Excluded text files share only a path mention,
+  and the Model API reader confines paths to the workspace. Combined image
+  and PDF data URLs are capped at 48 million encoded characters per message;
+  an excess attachment is refused. Replayed requests use the same cap and
+  keep newer media, announcing when older media is omitted from the request.
+  The original attachments remain in local history. A batch of Model API
+  `read_file` tool calls uses the same media cap; a file over that batch cap
+  gets a failed tool result before its bytes are retained.
 - A path with a space, `#` or `"` is written in quotes,
   `@"my notes/a b.md"#5-10`, and the menu searches what you type after `@"`.
 - The model pill reads `model effort` (effort tiers Minimal to Max, each
@@ -824,16 +837,19 @@ What stays in English:
 
 ## Limits
 
-| What                             | Limit                                                                                                            |
-| -------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| Images                           | 10 MB each, 20 per message                                                                                       |
-| A message to Muse Code           | 10 MiB, images counting a third more than their file size                                                        |
-| Model API: tool rounds           | 50 per turn                                                                                                      |
-| Model API: shell commands        | 2 minutes by default, 10 at most                                                                                 |
-| Model API: retries               | Up to 5 attempts on 429, 500 and 503, honouring `Retry-After`, shown in the transcript; Stop cuts the wait short |
-| Model API: a silent reply stream | Ended after 5 minutes with nothing from the server; send again to retry                                          |
-| Model API: file tools            | Files up to 10 MiB; the search tool skips files over 1 MiB                                                       |
-| Opened tool outputs              | 16 MiB each; the latest 20, and 32 million characters together                                                   |
+| What                             | Limit                                                                                                                                                                                    |
+| -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Images                           | 10 MB each, 20 per message                                                                                                                                                               |
+| PDFs on the Model API backend    | 32 MB each locally (Meta allows 50 MB per inline file); images and PDF page images together: 50 per message. Meta reads text from the first 100 pages and page images from the first 50. |
+| Model API encoded media          | 48 million data URL characters total per new message and replay request; older replayed media is named but omitted when over the cap.                                                    |
+| Picked UTF-8 text attachments    | 1 MiB each, from trusted and indexed workspace paths only                                                                                                                                |
+| A message to Muse Code           | 10 MiB, images counting a third more than their file size                                                                                                                                |
+| Model API: tool rounds           | 50 per turn                                                                                                                                                                              |
+| Model API: shell commands        | 2 minutes by default, 10 at most                                                                                                                                                         |
+| Model API: retries               | Up to 5 attempts on 429, 500 and 503, honouring `Retry-After`, shown in the transcript; Stop cuts the wait short                                                                         |
+| Model API: a silent reply stream | Ended after 5 minutes with nothing from the server; send again to retry                                                                                                                  |
+| Model API: file tools            | Text and images up to 10 MiB, PDFs up to 32 MB; the search tool skips files over 1 MiB                                                                                                   |
+| Opened tool outputs              | 16 MiB each; the latest 20, and 32 million characters together                                                                                                                           |
 
 ## Commands and keybindings
 

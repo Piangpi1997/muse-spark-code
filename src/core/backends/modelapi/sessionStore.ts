@@ -111,12 +111,20 @@ const inputImagePartSchema = z.object({
   image_url: z.string(),
   detail: z.literal('auto'),
 })
+// A PDF the conversation carries (M54): replayed as it went, so its bytes stay with the session.
+const inputFilePartSchema = z.object({
+  type: z.literal('input_file'),
+  filename: z.string(),
+  file_data: z.string(),
+})
 const outputTextPartSchema = z.object({ type: z.literal('output_text'), text: z.string() })
 const inputMessageSchema = z.object({
   type: z.literal('message'),
   role: z.enum(['user', 'assistant', 'developer']),
   phase: z.optional(z.enum(MESSAGE_PHASES)),
-  content: z.array(z.union([inputTextPartSchema, inputImagePartSchema, outputTextPartSchema])),
+  content: z.array(
+    z.union([inputTextPartSchema, inputImagePartSchema, inputFilePartSchema, outputTextPartSchema]),
+  ),
 })
 const functionCallOutputSchema = z.object({
   type: z.literal('function_call_output'),

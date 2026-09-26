@@ -26,6 +26,10 @@ describe('parseWebviewToHostMessage', () => {
       'attachImageData',
       { type: 'attachImageData', name: 'a.png', mediaType: 'image/png', base64: 'AAAA' },
     ],
+    [
+      'PDF attachment data',
+      { type: 'attachImageData', name: 'report.pdf', mediaType: 'application/pdf', base64: 'AAAA' },
+    ],
     ['removeAttachment', { type: 'removeAttachment', id: 'att-1' }],
     ['droppedUris', { type: 'droppedUris', uris: ['file:///a.ts'] }],
     ['hostAction', { type: 'hostAction', action: 'openSettings' }],

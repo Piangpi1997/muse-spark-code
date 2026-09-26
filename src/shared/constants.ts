@@ -281,7 +281,95 @@ export const IMAGE_EXTENSIONS: Readonly<Record<string, ImageMediaType>> = {
   '.webp': 'image/webp',
 }
 export const MAX_IMAGE_BYTES = 10 * 1024 * 1024
+// Images and PDFs together (M54).
 export const MAX_ATTACHMENTS_PER_MESSAGE = 20
+
+// PDFs as input (M54, PLAN.md D47): the one document type Meta's Responses
+// API reads for inference (dev.meta.ai/docs/file-handling, read
+// 2026-09-25), sent inline as `input_file`, never uploaded. 32 MB encodes
+// to 42.7 MB of base64, under Meta's 50 MB inline limit whether that counts
+// the file or the encoded text, so the Files API is never needed.
+export const PDF_MEDIA_TYPE = 'application/pdf'
+export const PDF_EXTENSION = '.pdf'
+export const MAX_DOCUMENT_BYTES = 32_000_000
+// A conservative aggregate cap on base64 media in one message and in a
+// replayed Model API request. Meta's 50 MB inline limit is per file; this
+// separate bound keeps a long session from serializing gigabytes of PDFs.
+export const MAX_ENCODED_MEDIA_CHARS = 48_000_000
+export const BASE64_DATA_URL_OVERHEAD_CHARS = 'data:;base64,'.length
+export const BASE64_INPUT_BLOCK_BYTES = 3
+export const BASE64_OUTPUT_BLOCK_CHARS = 4
+export const MAX_TEXT_ATTACHMENT_BYTES = 1024 * 1024
+export const TEXT_ATTACHMENT_MEDIA_TYPE = 'text/plain'
+export const TEXT_ATTACHMENT_EXTENSIONS: ReadonlySet<string> = new Set([
+  '.txt',
+  '.md',
+  '.markdown',
+  '.csv',
+  '.tsv',
+  '.json',
+  '.jsonl',
+  '.yaml',
+  '.yml',
+  '.xml',
+  '.log',
+  '.html',
+  '.css',
+  '.js',
+  '.jsx',
+  '.ts',
+  '.tsx',
+  '.py',
+  '.ps1',
+  '.sh',
+])
+export const PRIVATE_ATTACHMENT_NAMES: ReadonlySet<string> = new Set([
+  '.env',
+  '.env.local',
+  'credentials.json',
+  'auth.json',
+  'id_rsa',
+  'id_ed25519',
+])
+export const PRIVATE_ATTACHMENT_EXTENSIONS: ReadonlySet<string> = new Set([
+  '.key',
+  '.pem',
+  '.p12',
+  '.pfx',
+])
+export const UNSUPPORTED_BINARY_ATTACHMENT_EXTENSIONS: ReadonlySet<string> = new Set([
+  '.doc',
+  '.docx',
+  '.bmp',
+  '.avif',
+  '.heic',
+  '.xls',
+  '.xlsx',
+  '.ppt',
+  '.pptx',
+  '.zip',
+  '.7z',
+  '.rar',
+  '.exe',
+  '.dll',
+  '.mp3',
+  '.mp4',
+  '.wav',
+  '.sqlite',
+  '.db',
+])
+// A base64 attachment crossing webview postMessage (M54): cap before decode.
+export const MAX_ATTACHMENT_BASE64_CHARS =
+  BASE64_OUTPUT_BLOCK_CHARS * Math.ceil(MAX_DOCUMENT_BYTES / BASE64_INPUT_BLOCK_BYTES)
+// Meta reads at most 50 images in one request, and a PDF's page images
+// (its first 50 pages) count toward them (file-handling, image-understanding).
+export const MODEL_API_MEDIA_PER_REQUEST = 50
+export const MODEL_API_PDF_PAGE_IMAGES = 50
+// The page count is read from a directly visible PDF page tree when cheap.
+export const PDF_HEADER_WINDOW_BYTES = 1024
+export const PDF_DICTIONARY_SCAN_CHARS = 4096
+// A page count past this is a misread, not a document.
+export const PDF_PAGE_COUNT_MAX = 100_000
 
 // --- @-mentions ---
 
@@ -1179,6 +1267,29 @@ export const MODEL_TEXT = {
   userShellLead:
     '[The user ran this shell command in the workspace themselves. Its output is context for you, not a request]',
   clarificationLead: 'The user chose none of the options and explained instead:',
+  // M54 (PLAN.md D47): `read_file` on a PDF or an image. The file itself
+  // follows in a user message after the round's outputs, since Meta reads
+  // images only in user messages (image-understanding).
+  readPdf:
+    'Read PDF `{path}` ({pages}, {bytes} bytes). The file itself follows in the next message; you see its text and page images.',
+  readImage:
+    'Read image `{path}` ({mediaType}, {width}×{height}, {bytes} bytes). The image itself follows in the next message.',
+  pagesUnknown: 'page count unknown',
+  pagesKnown: 'page count {count}',
+  toolFileFollows: 'The file read_file read at `{path}`:',
+  toolFileNotDelivered:
+    'The file read_file read at `{path}` was not delivered because that tool round ended early.',
+  notPdf: 'is named as a PDF but is not one (it has no %PDF- header)',
+  notImage: 'is named as an image but is not a PNG, JPEG, GIF or WebP image',
+  // Replays keep newer media within page and encoded-size budgets, naming
+  // older media instead of sending the bytes again.
+  imageLeftOut:
+    '[An image attached earlier is left out of this request because newer media fill the request limit.]',
+  pdfLeftOut:
+    '[The PDF {name}, attached earlier, is left out of this request because newer media fill the request limit.]',
+  toolMediaBudgetExceeded:
+    'The file was not attached: images and PDFs read in this tool round exceed the combined media size limit. Read fewer files at once.',
+  attachedTextFile: 'Attached text file {name}:\n\n{text}',
 } as const
 
 // What the user reads, in the display language (PLAN.md D33).

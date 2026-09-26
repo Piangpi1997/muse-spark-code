@@ -940,7 +940,7 @@ function replayedUserEntry(item: ItemSnapshot, seq: number): TranscriptEntry {
     status: 'sent',
     attachments: (item.attachments ?? []).map((attachment, index) => ({
       id: `${item.itemId}:${String(index)}`,
-      name: attachment.mediaType,
+      name: attachment.name ?? attachment.mediaType,
       ...(attachment.width !== undefined && { width: attachment.width }),
       ...(attachment.height !== undefined && { height: attachment.height }),
     })),

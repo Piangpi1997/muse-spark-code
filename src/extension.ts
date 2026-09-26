@@ -9,6 +9,7 @@ import * as vscode from 'vscode'
 import * as z from 'zod/mini'
 import type { AgentHost, BackendKind } from './core/agent/agentBackend'
 import { environmentValue } from './core/backends/musecode/launch'
+import { confineWorkspacePath } from './core/backends/modelapi/tools'
 import { selectBackend } from './core/backendSelection'
 import { personalSkillsRoot } from './core/context/skills'
 import { isSamePath } from './core/paths'
@@ -932,7 +933,22 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         relativePath: relativePathInWorkspace(uri),
       }))
     },
-    readFile: async (fsPath) => await vscode.workspace.fs.readFile(vscode.Uri.file(fsPath)),
+    readFile: async (fsPath, maxBytes) => {
+      const uri = vscode.Uri.file(fsPath)
+      const stat = await vscode.workspace.fs.stat(uri)
+      if (stat.size > maxBytes) {
+        return
+      }
+      const bytes = await vscode.workspace.fs.readFile(uri)
+      return bytes.byteLength > maxBytes ? undefined : bytes
+    },
+    canonicalRelativePath: async (fsPath) => {
+      if (workspaceRoot === undefined) {
+        return
+      }
+      const resolved = await confineWorkspacePath(workspaceRoot, fsPath, process.platform, toolIo)
+      return resolved.ok ? resolved.canonical : undefined
+    },
     pickMentionFile: () =>
       pickMentionFile({
         createQuickPick: () => vscode.window.createQuickPick(),

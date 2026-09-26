@@ -1,9 +1,11 @@
 // @vitest-environment jsdom
+import { Buffer } from 'node:buffer'
 import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import {
   DICTATION_HOLD_MS,
   MAX_ATTACHMENTS_PER_MESSAGE,
+  MAX_DOCUMENT_BYTES,
   MAX_IMAGE_BYTES,
   UI_TEXT,
 } from '../../src/shared/constants'
@@ -289,6 +291,51 @@ describe('Composer attachments', () => {
     expect(screen.getByText('686×695')).toBeInTheDocument()
     fireEvent.click(screen.getByLabelText('Remove shot.png'))
     expect(props.onRemoveAttachment).toHaveBeenCalledWith('att-1')
+  })
+
+  it('renders a PDF as a file chip with its name', () => {
+    renderComposer({
+      attachments: [
+        {
+          id: 'pdf-1',
+          name: 'report.pdf',
+          mediaType: 'application/pdf',
+          sizeBytes: 512,
+          pageCount: 2,
+        },
+        {
+          id: 'text-1',
+          name: 'notes.md',
+          mediaType: 'text/plain',
+          sizeBytes: 8,
+        },
+      ],
+    })
+    expect(screen.getByText('report.pdf')).toBeInTheDocument()
+    expect(screen.getByText('PDF')).toBeInTheDocument()
+    expect(screen.getByText('notes.md')).toBeInTheDocument()
+    expect(screen.getByText(UI_TEXT.textFileLabel)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Remove report.pdf' })).toBeInTheDocument()
+  })
+
+  it('attaches a pasted PDF and refuses one over the limit before encoding it', async () => {
+    const { props, textarea } = renderComposer()
+    const pdf = new File([new TextEncoder().encode('%PDF-1.4')], 'report.pdf', {
+      type: 'application/pdf',
+    })
+    expect(fireEvent.paste(textarea, { clipboardData: { files: [pdf] } })).toBe(false)
+    await act(async () => {
+      await Promise.resolve()
+    })
+    expect(props.onAttachImage).toHaveBeenCalledWith({
+      name: 'report.pdf',
+      mediaType: 'application/pdf',
+      base64: Buffer.from('%PDF-1.4').toString('base64'),
+    })
+    const huge = new File([new Uint8Array([1])], 'huge.pdf', { type: 'application/pdf' })
+    Object.defineProperty(huge, 'size', { value: MAX_DOCUMENT_BYTES + 1 })
+    fireEvent.paste(textarea, { clipboardData: { files: [huge] } })
+    expect(props.onRefuseFile).toHaveBeenCalledWith('huge.pdf', UI_TEXT.documentTooLarge)
   })
 
   it('attaches pasted images and lets text pastes through', async () => {

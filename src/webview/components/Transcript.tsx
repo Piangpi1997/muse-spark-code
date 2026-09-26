@@ -185,7 +185,7 @@ const UserCard = memo(function UserCard({
           )}
           {entry.attachments.map((attachment) => (
             <li key={attachment.id} className="chip">
-              <ImageIcon />
+              {attachment.width === undefined ? <FileIcon /> : <ImageIcon />}
               <span className="chip-name">{attachment.name}</span>
               {attachment.width === undefined || attachment.height === undefined ? null : (
                 <span className="chip-size">
