@@ -1214,29 +1214,29 @@ serve` probe (logged out, so no model call); the Model API from every page
 of its documentation. What reaches the panel today, what does not, and the
 milestone that closes each gap:
 
-| Capability                        | Muse Code (subscription)                                                                                                                                                                                  | Model API (key)                                                                              | Milestone  |
-| --------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- | ---------- |
-| Replay Meta accepts               | the CLI's own                                                                                                                                                                                             | fixed: commentary phase, reasoning summary, reasoning-only turns, stream retries             | M42        |
-| Tool rows for every tool          | memory, goal, cron, workflow, web, work, input and reminder tools render as raw names; tool-result images unseen                                                                                          | the extension's own tools render                                                             | M43        |
-| Web search                        | Muse Code's own `web_search`, covered by the subscription (ran in `muse serve`, 2026-09-22)                                                                                                               | paid, opt in (M33)                                                                           | M43 (rows) |
-| Images                            | Muse Code's `image_generation` is gated off (no switch found)                                                                                                                                             | paid, opt in (M34); edits missing                                                            | M44        |
-| Web fetch (read a page)           | Muse Code's `web_fetch` is gated off                                                                                                                                                                      | none                                                                                         | M44        |
-| Goals                             | MSP `goal/*`, `session/goalChanged` and the resumed snapshot's goal: the goal strip and `/goal` (M45)                                                                                                     | Muse Code's four goal tools, stored, pinned; no loop turns of its own (M45, D38)             | M45        |
-| Background work, stop             | MSP `task/background`, `task/stop`, `task/stopAll` wired to rows, Agent map and Ctrl+B (M46)                                                                                                              | shell calls can move to the background and be stopped; output reaches the next request (M46) | M46        |
-| `!` user shell                    | MSP `session/userShell` with the `userShell` grant; `!` prompt and row (M46)                                                                                                                              | the shell runner, outside turns, with output in replay (M46)                                 | M46        |
-| Workflows                         | captured run and agents render as a read-only card (M47, D40); owner controls wait for a live accepted-command capture                                                                                    | none (Muse Code's own engine)                                                                | M47        |
-| Subagents                         | map and controls (M14, M18); `reopen` and `readResult` not wired                                                                                                                                          | none (D17)                                                                                   | M48        |
-| Memory                            | Muse Code's memory tools; no view                                                                                                                                                                         | the index is read (M10); no tools                                                            | M49        |
-| MCP servers                       | loaded by Muse Code; read-only view (M31)                                                                                                                                                                 | built: the same servers, run by the window, live in the view (D42)                           | M50        |
-| Hooks                             | run by Muse Code; read-only view (M31)                                                                                                                                                                    | none                                                                                         | M51        |
-| Scheduled prompts (`/loop`, cron) | the agent's `cron_*` tools only; no list or cancel                                                                                                                                                        | none                                                                                         | M52        |
-| Rewind a conversation, side chat  | TUI only; the panel has fork and code rewind                                                                                                                                                              | fork and code rewind                                                                         | M53        |
-| PDFs and files as input           | MSP takes text, images and skills only                                                                                                                                                                    | images only                                                                                  | M54        |
-| Questions: clarify                | `userInput/clarify` wired to Explain instead (M46)                                                                                                                                                        | `ask_user` accepts the explanation (M46)                                                     | M46        |
-| Sign-in in the panel, install     | experimental `account/*` not used; install links out                                                                                                                                                      | key pasted                                                                                   | M55 (M41)  |
-| Network posture, enterprise       | `--sandbox-network`, `--no-session-log` not offered; `muse config status` not shown                                                                                                                       | proxy and certificates unverified for fetch and the voice socket; cache key per session      | M56        |
-| Voice                             | the OS recogniser (free); Muse Code's own voice is TUI-only and not on Windows                                                                                                                            | the OS recogniser, or Muse Voice (paid, M35)                                                 | —          |
-| Everything else already at parity | sessions, history, fork, rename, compaction, export, steering, queue, approvals with stages and scopes, questions, todos, usage, model, effort, modes, skills, rules, worktrees, attachments, diagnostics | the same, through the extension's own harness                                                | —          |
+| Capability                        | Muse Code (subscription)                                                                                                                                                                                  | Model API (key)                                                                              | Milestone    |
+| --------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- | ------------ |
+| Replay Meta accepts               | the CLI's own                                                                                                                                                                                             | fixed: commentary phase, reasoning summary, reasoning-only turns, stream retries             | M42          |
+| Tool rows for every tool          | memory, goal, cron, workflow, web, work, input and reminder tools render as raw names; tool-result images unseen                                                                                          | the extension's own tools render                                                             | M43          |
+| Web search                        | Muse Code's own `web_search`, covered by the subscription (ran in `muse serve`, 2026-09-22)                                                                                                               | paid, opt in (M33)                                                                           | M43 (rows)   |
+| Images                            | Muse Code's `image_generation` is gated off (no switch found)                                                                                                                                             | paid, opt in (M34); edits missing                                                            | M44          |
+| Web fetch (read a page)           | Muse Code's `web_fetch` is gated off                                                                                                                                                                      | none                                                                                         | M44          |
+| Goals                             | MSP `goal/*`, `session/goalChanged` and the resumed snapshot's goal: the goal strip and `/goal` (M45)                                                                                                     | Muse Code's four goal tools, stored, pinned; no loop turns of its own (M45, D38)             | M45          |
+| Background work, stop             | MSP `task/background`, `task/stop`, `task/stopAll` wired to rows, Agent map and Ctrl+B (M46)                                                                                                              | shell calls can move to the background and be stopped; output reaches the next request (M46) | M46          |
+| `!` user shell                    | MSP `session/userShell` with the `userShell` grant; `!` prompt and row (M46)                                                                                                                              | the shell runner, outside turns, with output in replay (M46)                                 | M46          |
+| Workflows                         | captured run and agents render as a read-only card (M47, D40); owner controls wait for a live accepted-command capture                                                                                    | none (Muse Code's own engine)                                                                | M47          |
+| Subagents                         | map and controls (M14, M18); native `reopen` and `readResult` wait for live success captures                                                                                                              | opt-in paid child tasks with one-use consent and four-request cap (M48, D45)                 | M48 (merged) |
+| Memory                            | Muse Code memory tools and the shared Memory view (M49, D41)                                                                                                                                              | memory tools and snapshot over the same notes; native writer-lock parity remains unproved    | M49 (merged) |
+| MCP servers                       | loaded by Muse Code; read-only view (M31)                                                                                                                                                                 | extension MCP client staged locally, with Windows job containment; combined gate pending     | M50          |
+| Hooks                             | run by Muse Code; read-only view (M31)                                                                                                                                                                    | none                                                                                         | M51          |
+| Scheduled prompts (`/loop`, cron) | the agent's `cron_*` tools only; no list or cancel                                                                                                                                                        | none                                                                                         | M52          |
+| Rewind a conversation, side chat  | TUI only; the panel has fork and code rewind                                                                                                                                                              | fork and code rewind                                                                         | M53          |
+| PDFs and files as input           | MSP takes text, images and skills only                                                                                                                                                                    | images only                                                                                  | M54          |
+| Questions: clarify                | `userInput/clarify` wired to Explain instead (M46)                                                                                                                                                        | `ask_user` accepts the explanation (M46)                                                     | M46          |
+| Sign-in in the panel, install     | experimental `account/*` not used; install links out                                                                                                                                                      | key pasted                                                                                   | M55 (M41)    |
+| Network posture, enterprise       | `--sandbox-network`, `--no-session-log` not offered; `muse config status` not shown                                                                                                                       | proxy and certificates unverified for fetch and the voice socket; cache key per session      | M56          |
+| Voice                             | the OS recogniser (free); Muse Code's own voice is TUI-only and not on Windows                                                                                                                            | the OS recogniser, or Muse Voice (paid, M35)                                                 | —            |
+| Everything else already at parity | sessions, history, fork, rename, compaction, export, steering, queue, approvals with stages and scopes, questions, todos, usage, model, effort, modes, skills, rules, worktrees, attachments, diagnostics | the same, through the extension's own harness                                                | —            |
 
 Rulings carried: the subscription never pays for a Model API call, and the
 key is never handed to `muse serve` (D1); a paid call is opt in and loud
@@ -1612,6 +1612,112 @@ The choices:
   session); the Model API's `ask_user` returns the text to the model as
   Muse Code's clarify does, and the row reads "Explained: …".
 
+### D41 — One memory for both backends (M49, 2026-09-25)
+
+Muse Code has no MSP method for memory (`memory/list` is `methodNotFound`)
+and no CLI subcommand (the saved `--help` output has none); its memory is
+Markdown files its agent tools read and write. What was established, and
+how:
+
+- **Where the notes live.** Found on disk (names only) and confirmed by a
+  live capture with the data home moved into a throwaway folder
+  (`docs/certification/m49.md`): `project` is `<workspace>/.agents/memory`;
+  `personal` is `$XDG_DATA_HOME/muse/memory/personal`; `personal_project` is
+  `$XDG_DATA_HOME/muse/memory/projects/<slug>-<key>`, where the data home
+  is `~/.local/share` when `XDG_DATA_HOME` is unset (Windows included). The
+  key is the FNV-1a 64-bit hash of the UTF-8 workspace path as Rust's
+  `canonicalize` spells it (`\\?\C:\…` on Windows, the operating system's
+  own letter case, so VS Code's lower-case drive letter is not used), in
+  16 hex digits; the slug keeps ASCII letters, digits and hyphens, turns
+  anything else into a hyphen and trims the ends. Both rules were checked
+  against the two folders Muse Code made (`C:\muse-live-m43` →
+  `C--muse-live-m43-7bdb42d98a06c29b`; `C:\muse-live-m49\My Proj.v2_x+é` →
+  `C--muse-live-m49-My-Proj-v2-x-0175e6b82ee81b32`). A folder that already
+  ends in the key is used whatever its slug, so a slug rule the capture
+  could not show (a POSIX leading slash, a UNC path, a very long path)
+  costs nothing once Muse Code has made the folder. Each scope root holds
+  Muse Code's `.muse-memory.lock` (`pid=<n>`), an operating-system lock.
+- **What the tools do** (the capture and the binary's strings): arguments
+  `{path, scope}` plus `content`, optional `type` (`user`, `feedback`,
+  `project`, `reference`) and `description` for `add_memory`; `offset`
+  (default 1) and `limit` (default 500) for `read_memory`; `old_str` and
+  `new_str` for `edit_memory`. A new note with `type` or `description` gets
+  them as front matter (`---\ntype: …\ndescription: …\n---\n\n` before the
+  content); an append joins after a blank line and leaves the front matter
+  as it was; no trailing line break is added. A read's `content` is the
+  window's lines with their own breaks, `truncated` when lines follow.
+  Results are JSON (`{success, scope, path, operation, message}`; a read
+  `{success, scope, path, start_line_number, content, truncated}`); a
+  failure is a failed item whose reason is in Muse Code's own words, such
+  as "memory file not found" or "old_str not found". Muse Code does not
+  write `MEMORY.md` itself: the model keeps it.
+- **Approvals in Muse Code.** In `promptUnmatched` its memory writes ran
+  without a card; only calls whose path it then refused asked first.
+
+The decisions:
+
+1. **One store, two users.** `src/core/memory/memoryStore.ts` places,
+   validates, reads and writes notes by Muse Code's rules; the Model API
+   backend's tools and the Memory view both use it, in the data home
+   `muse serve` sees (`museSpark.environmentVariables` included). A note
+   written on one backend is read on the other.
+2. **The Model API tools are Muse Code's**: same names, arguments,
+   descriptions (the binary's), refusals and JSON, so the M43 rows render
+   them unchanged. They are offered in a trusted workspace only (D13); in
+   Restricted Mode they are not offered and a call is refused. D13's point
+   3 (personal memory not loaded) is superseded: its location is now known.
+3. **Approval like an edit, not like Muse Code.** A write asks in Manual,
+   runs in Auto and Edit automatically (its card is a `fileWrite` naming the
+   note), and is refused in Plan; a read never asks. It is never a protected
+   write although project notes sit under `.agents`: the tools can write
+   only Markdown notes in the memory roots, while the file tools keep
+   `.agents` protected. Muse Code writes without asking in Manual; asking
+   is the safer default for notes that reach every later session (the
+   personal scope, every project). A path Muse Code would refuse is refused
+   before any card.
+4. **The index kept true by the extension.** A note the Model API tool or
+   the Memory view creates gets `- [name](path) | hook` in its scope's
+   `MEMORY.md` (the description, else the note's first line) unless a line
+   already links to it; a note the view deletes loses its lines. Muse
+   Code's own tool leaves this to the model, which on the Model API backend
+   is told the tool does it. A failed index write leaves the note written
+   and is logged.
+5. **The session-start snapshot**, as Muse Code's docs describe it: each
+   scope's `MEMORY.md` (200 lines, 32 KB, Muse Code's marker) and the paths
+   of up to 48 other notes, in the instructions, read once per session.
+   Notes must be UTF-8 (Muse Code: "memory file must be valid UTF-8"); the
+   M10 loader's UTF-16 index support is dropped with it.
+6. **No link, no hidden file.** A path through any link below the workspace
+   or data-home anchor, including the scope's root itself, is refused (Muse
+   Code: "memory path contains a symlink"); the listing never enters a link
+   or a hidden entry. Windows device names and streams are refused as the
+   file tools refuse them.
+7. **Muse Code's lock is not taken.** A read-only local audit found a
+   persistent `.muse-memory.lock` containing `pid=<n>` even after that PID
+   exited. Muse Code 1.3.0's binary places the lock name beside `memory
+lock busy: a native write holds the view` and `memory lock failed:`, and
+   imports `LockFileEx`/`UnlockFileEx` on Windows. A read-only disassembly
+   of 1.3.0's generic locking helpers shows shared/exclusive try-locks over
+   a zero-based `0xffffffffffffffff`-byte range. It does not prove which
+   helper the memory writer calls, how long that guard is held, or the
+   cross-platform protocol; Node 24.20 exposes no file-lock API. A lock
+   file's presence or PID is not ownership. Without proven interoperation
+   the extension does not take or imitate that lock (no new native
+   dependency). Existing-note writes replace the file whole (temporary file,
+   rename), so a note is never half written; two writers on one note in the
+   same instant may lose one write (§9). A new note needs a separate
+   no-clobber publication: write and sync a hidden stage in the same folder,
+   then hard-link the complete file into the target name. A filesystem that
+   cannot link refuses the create; it must not fall back to a visible partial
+   `wx` write or an overwriting rename. Add the index line only after the
+   target has been published successfully. This does not solve the native
+   lock or concurrent updates to an existing note or index.
+8. **The view** is a quick pick on both backends, as M31's views are:
+   up to 500 notes per scope, nested up to eight folders, with their
+   summaries; open in an editor, new note (scope,
+   name checked by the store's rules, `.md` added, description), delete to
+   the trash after a modal. Muse Code's own settings are never written.
+
 ### D42 — MCP servers on the Model API backend (2026-09-25)
 
 M50 of D36: the key backend runs the MCP servers Muse Code would, with a
@@ -1715,6 +1821,65 @@ optional` is optional) that is not running fails the turn with the reason
   client declares no capabilities and refuses such requests), OAuth, the
   servers' `instructions`, and the server-initiated event stream over HTTP
   (a tool list that changes between replies is seen at the next one).
+
+### D45 — Subagents on both backends (M48, 2026-09-25)
+
+The Model API backend runs bounded child sessions with their own conversation
+and the parent's workspace rules, tool permissions and model. The initial
+prototype let Bypass spawn a child without a paid card. M48 now requires a
+machine-scoped gate, price acceptance, one-use consent and a four-request
+ceiling for every new child task, including retries. Certification remains
+pending. Each child
+has a row and transcript in the Agent map, receives a note or follow-up, and
+can be stopped. Child model calls use the stored Model API key and count in
+the parent's token usage. The parent may continue while children work; a
+limit bounds the number running and the number a conversation can create.
+The child cannot spawn further children or ask the user directly. A closed
+child's result remains readable. No child writes outside the existing tool
+confinement and approval rules.
+
+**Paid child admission (owner-cost rule, 2026-09-26).** The initial spawn-mode
+prototype was not delivery consent for extra BYOK calls. Subagents are a
+machine-scoped paid feature, off until its price is accepted. Every new
+child task—spawn, follow-up, reopen or resume—requires a one-use approval
+in every mode, Bypass included; Plan refuses it. The approval names the
+objective, selected model and its Standard or Contributor input, cached
+input and output prices, and a hard ceiling of four actual Model API
+response POST attempts for that task. HTTP and whole-stream retries and
+tool rounds spend the same ceiling. A note to a child already running uses
+the remaining grant; it never renews it. No grant survives a process
+restart. A queued task starts only while its gate, consent, key, model and
+originating goal are still valid. After SecretStorage reads the key and
+immediately before each child HTTP attempt, the client rechecks these and
+consumes one attempt; a failed or unanswered attempt still counts, with
+unknown cost if Meta supplies no usage. A spent cap, revoked gate, changed
+key or model, switch to Plan, or exhausted originating goal ends the child
+task with a localized visible refusal. Stop or disposal while a key read or
+owner modal waits invalidates admission. A child request carrying paid web
+search is refused if that gate turned off before the request is sent. A
+removed key after approval receives the same localized changed-key refusal.
+For a restored queued child, the new price decision names every retained
+pending note in the exact task that the child will receive; changing that
+task while the modal is open invalidates the decision. A
+failed response with reported usage charges that usage once; a failed
+attempt without usage keeps unknown cost. The output cap remains 32,768 tokens per
+request; four attempts are a request ceiling, not a dollar or token-cost
+maximum. Child tokens already appear in the parent's conversation total,
+so their estimated cost is a subset, never added to it again. Other paid
+tools keep their own separate gates and approvals.
+
+An approval a child is awaiting is replayed to a newly attached panel as
+pending, with the same no-auto-decision marker as a parent approval; a
+late panel can answer it through the parent session. A child's token-usage
+delta counts once in the parent's total and against the goal active when
+that child turn began, while that same goal still exists. Replacing the
+goal before the child answers never charges the replacement goal.
+
+Muse Code's SDK lists `subagent/reopen` and `subagent/readResult`, but M48
+captured neither an accepted command nor its resulting item update. The
+Agent map keeps the captured M18 controls; those two verbs remain unavailable
+until a bounded live owner-command capture establishes their success shapes.
+The Model API backend's local read and reopen actions are separate from MSP.
 
 ## 3. Open questions (need the owner)
 
@@ -3634,7 +3799,7 @@ translations. The order is D36's table:
 | M45       | Goals: set, see, pause, clear                                                                                                         |
 | M46       | Background work and stop; the `!` user shell; clarifying questions                                                                    |
 | M47       | Workflows: captured run and children as read-only cards; owner controls deferred until a live success capture                         |
-| M48       | Subagents on the Model API backend; reopen and read a result on Muse Code                                                             |
+| M48       | Model API subagents with staged paid child admission; Muse Code read/reopen deferred until live success capture and certification     |
 | M49       | Memory: see and edit; memory tools on the Model API backend                                                                           |
 | M50       | MCP servers on the Model API backend                                                                                                  |
 | M51       | Hooks on the Model API backend                                                                                                        |
@@ -3811,15 +3976,11 @@ quality matrix, with no open review threads, before PR #33 merged.
 
 ### M47 — Workflows: captured run and agents (D40)
 
-**Status 2026-09-26: merged on main at `34002ab`; owner controls deferred**
-(`docs/certification/m47.md`). Live capture proved the run card and one child's
-updates and rejected owner commands; accepted control shapes remain
-uncaptured. The read-only candidate passed local `npm run quality`; a
-current-head review then found a sparse history replay loss. Its correction
-passed local `npm run quality` on staged tree
-`0edaadb6bca8846487d7964a25dd9b7cffffeb9b`. At that checkpoint, a
-final exact-tree rerun and hosted CI remained; M47 subsequently merged on
-main at `34002ab`.
+**Status 2026-09-26: captured read-only presentation merged; owner controls
+deferred** (`docs/certification/m47.md`). PR #34 merged into main as
+`34002ab` after exact-tree local quality, all seven hosted checks and review.
+Live capture proved the run card and one child's updates plus rejected
+owner commands; accepted control shapes remain uncaptured.
 
 - **Goal**: a workflow Muse Code runs reads as what it is, a run of agents
   going on in the background, with its captured progress and result.
@@ -3853,9 +4014,9 @@ main at `34002ab`.
   the applicable rendering drills (the old control drills remain historical
   in the certification record), harness
   scenarios `muse-workflow` and `muse-workflow-map` in the accessibility
-  gate. The reduced candidate passed `npm run quality` on staged tree
-  `e5fe0228643bfc54ef9753d1319064b91498d728`; hosted CI and review
-  were pending at that checkpoint. Claude's M47 source worktree
+  gate. The final candidate passed `npm run quality` on tree
+  `7390e3b2fc080aef5fcaa1ad4226f688e0f5ed75`, all seven hosted
+  checks and review; PR #34 merged. Claude's M47 source worktree
   passed `quality:gates` but its accessibility run had four Chrome pages
   without a result and exited 1; secrets and SAST did not run.
 - **Left out, by Muse Code or evidence**: pausing and resuming a run (no MSP
@@ -3867,18 +4028,114 @@ main at `34002ab`.
   alone do not certify usable controls. A child `phase` and saved workflow
   display name also wait for live evidence.
 
+### M48 — Model API subagents and captured Muse Code controls (D45)
+
+**Status 2026-09-26: merged as PR #35** (`docs/certification/m48.md`).
+Child requests use a default-off paid gate, one-use task consent and a final
+HTTP admission check with a four-attempt limit. The two P1 review threads (a
+child's `turnStarted` stealing the parent's steering; the persist guard
+missing nested child replays) were fixed with failing-before/passing-after
+tests; local quality and all seven hosted checks passed on the final commit.
+No real paid request or subscription turn was made. Native read/reopen have
+no callable panel path until a bounded live success capture is available.
+
+- **Goal**: the Model API backend can delegate bounded independent work to
+  child sessions, with the Agent map and parent context showing the result.
+  Muse Code's remaining `reopen` and `readResult` owner commands wait for
+  a live success capture.
+- **Research**: Muse Code's MSP `SubagentTargetParams` and the method schema
+  say `readResult` consumes an already visible result and `reopen` starts a
+  later attempt. The 2026-09-23 captured `subagent_spawn` and
+  `subagent_wait` calls give their names and core arguments. A live capture
+  of the two MSP owner commands is still required under rule 13; SDK types
+  alone do not justify a callable panel control.
+- **Scope**: six Model API subagent tools; child sessions with their own
+  replay and transcript, capacity and idempotent spawn; owner controls;
+  child results queued into the parent's next model request; persistence,
+  usage and approval routing; Agent map controls and all translations;
+  `agents-result` and `agents-closed` harness scenarios.
+- **Cancellation boundary**: stopping a queued child discards messages it
+  never saw. A later reopen starts the retained objective without replaying
+  that cancelled queue; persisted child state carries no cancelled note.
+- **Cross-surface and goal boundary**: a child approval pending when another
+  panel attaches is replayed with the no-auto-decision marker, and the
+  parent routes its decision back to that child. Child usage contributes to
+  the parent total once and charges only the goal active at the child turn's
+  start, never a later replacement goal.
+- **Paid child acceptance**: default-off machine gate and price
+  confirmation, one-use child-task cards in every mode, four-attempt
+  admission budget checked at the final HTTP boundary on all child paths,
+  paid row/badge/tally without double-counting conversation token cost,
+  fake-key red drills and localization. No live billed request was needed
+  for this acceptance; the Muse Code owner-command capture remains separate.
+- **Acceptance for the delivered subset**: unit and protocol tests, each
+  new check seen failing in a red drill, local quality gate green, hosted
+  checks green, and the certification record under `docs/certification/m48.md`.
+  Muse Code `readResult` and `reopen` remain removed and require a later
+  bounded live success capture before they can be offered.
+
+### M49 — Memory: see and edit; memory tools on the Model API backend (D36, D41)
+
+**Status 2026-09-26: merged as PR #36 at `4694803`; native writer-lock
+parity unproved** (`docs/certification/m49.md`). The isolated M49 worktree was based on M47's
+main merge `34002ab` (pre-move index tree preserved at
+`refs/codex-backups/m49-pre-m47-20260926`), then merged with M48 (`a9dec5a`).
+The first full local quality gate
+passed on staged M46-base tree `7c39e088` (1,736 unit tests, 272 browser
+pages, zero security findings). The M47-base focused set passed 450 tests;
+the later ordered-tree gate and review preceded its merge.
+New-note atomic publication passed 69 focused memory tests and a two-process
+local collision drill; the earlier quality receipt predates that change.
+Muse Code's native `.muse-memory.lock` writer protocol remains unproven, so cross-process writes
+to an existing note can lose an update (D41, §9). Claude's original M49
+worktree had no commit or green `npm run quality` run; its three recorded
+attempts stopped in unit tests.
+
+- **Goal**: the notes Muse Code keeps are visible and editable from the
+  panel on both backends, and the Model API backend saves and reads them
+  with Muse Code's own tools, so both backends share one memory.
+- **Research first**: the personal-project note the M43 capture wrote was
+  found on disk (names only); a two-turn live capture (`C:\muse-live-m49`,
+  contributor model, 25 model attempts, the data home redirected so the
+  owner's personal memory was untouched) gave the personal scope's folder,
+  the folder-name rule, the front matter, the append separator, the read
+  window, the refusals and Muse Code's approvals; the binary's strings gave
+  the tool schemas and messages. No MSP method or CLI command exists (D41).
+- **Scope**: `src/core/memory/` (locations, index, store);
+  `read_memory`/`add_memory`/`edit_memory` on the Model API backend with
+  Muse Code's shapes, approvals as edits, the session-start snapshot in the
+  instructions, not offered in Restricted Mode; the Memory view
+  (`museSpark.memory`, palette "Memory…", `/memory`) with open, new and
+  delete, keeping `MEMORY.md` true; 26 strings and one command title in
+  fourteen languages; README, PRIVACY, CHANGELOG, this file.
+- **Acceptance**: tests from the captured shapes and both captured folder
+  names; the store on the real file system with a junction; drills M1–M21;
+  the gate green.
+- **New-note race**: `add_memory` and the Memory view must create a missing
+  note exclusively. If another writer takes its path after the first read,
+  report the collision and keep that writer's bytes; never replace them.
+- **Index links**: a note with spaces, parentheses, brackets or percent signs
+  must get a valid Markdown link in `MEMORY.md`; finding and removing that
+  line must recover the note's actual path, without creating duplicates.
+- **Left**: the snapshot is read once per session, as Muse Code's is; a
+  note is not re-read into the instructions when it changes mid-session.
+  The memory rows do not yet open their note (the view does).
+
 ### M50 — MCP servers on the Model API backend (D36, D42)
 
-**Status 2026-09-26: staged on merged M47; provisional M46-base local quality passed,
-certification pending**
-(`docs/certification/m50.md`). The isolated M50 branch now rests on main's
-M47 merge `34002ab`. Its first local `npm run quality` passed on M46-base staged tree
-`d044d6f1`: 1,780 unit tests passed (3 skipped), 272 accessibility pages
-had zero violated or undecided rules, and secret/SAST scans found zero
-issues. The M47 reconciliation passed 302 focused MCP/backend/process tests,
-all five TypeScript projects, localization, lint and formatting; its process
-audit found no leftover fixtures. M48–M49 ancestry and an exact delivery-tree
-gate still precede PR.
+**Status 2026-09-26: reconciled onto merged M49; combined local quality
+passed, hosted review pending** (`docs/certification/m50.md`). The
+isolated M50 branch passed `npm run quality` on exact M47-base staged tree
+`9a2399aa4b15f401c5e0c73d5f21846af3fff06c`: 1,820 unit tests passed
+(3 skipped), 280 accessibility pages had no violated or undecided rules,
+and secret/SAST scans found zero findings. An independent Windows audit
+found no leftover fixture processes. That receipt predates the merged M48
+and M49 tree (`4694803`). The combined staged tree
+`28eea6f74ef17c7a9c72bf00325ce3a6d5737f96` passed `npm run quality`:
+1,967 unit tests passed (3 skipped), 304 accessibility pages had zero
+violations/undecided rules, the production bundles met budgets, audit found
+zero advisories, and secret/SAST scans found zero findings. Hosted checks and
+review remain before merge.
 
 - **Goal**: the key backend runs the MCP servers Muse Code would, from the
   same settings, with Muse Code's names for their tools and its approvals,
@@ -4014,6 +4271,16 @@ Every suppression, cast, or ignored error must be listed here with its reason.
   apart in one PowerShell run rather than one atomic call. A process that
   breaks away from a job on purpose (`CREATE_BREAKAWAY_FROM_JOB` is refused
   without a limit this job does not set) is not a residual.
+- Memory (M49, D41): the Model API backend and the Memory view write Muse
+  Code's notes without taking its native `.muse-memory.lock` (the memory
+  writer's use of the observed Windows locking helper, hold lifetime and
+  portable protocol have not been proved; a stale PID file remains
+  after the owner exits). Each write replaces the
+  file whole, so no note is ever half written; residual risk: Muse Code and
+  the extension writing the same note in the same instant keep only one of
+  the two writes. Notes reach every later session, the personal scope every
+  project, so a model's write asks in Manual (Muse Code's does not).
+
 - M50's Windows stdio server inherits the extension's three binary pipes
   unchanged. A hidden helper creates it suspended, assigns it to a fresh
   kill-on-close job and resumes it only after a nonce READY/GO exchange over

@@ -297,6 +297,7 @@ describe('buildPalette', () => {
       'ctrlEnter',
       'mcpServers',
       'hooks',
+      'memory',
       'settings',
       'keybindings',
     ])
@@ -310,11 +311,27 @@ describe('buildPalette', () => {
       'focusView',
       'ctrlEnter',
       'mcpServers',
+      'memory',
       'settings',
       'keybindings',
     ])
     expect(mcpDetailOn('modelApi')).toBe(EN.mcpItemDetailModelApi)
     expect(mcpDetailOn('museCode')).toBe(EN.mcpItemDetail)
+  })
+
+  it('offers the Memory view on both backends, which share one memory (M49)', () => {
+    for (const backend of ['museCode', 'modelApi', undefined] as const) {
+      const row = buildPalette({ ...context, backend })
+        .find((group) => group.id === 'customize')
+        ?.items.find((item) => item.id === 'memory')
+      expect(row, String(backend)).toEqual({
+        id: 'memory',
+        label: 'Memory…',
+        slashName: 'memory',
+        detail: 'The notes Muse keeps for later sessions',
+        action: { type: 'showMemory' },
+      })
+    }
   })
 
   it('offers skill management on Muse Code only, where the CLI owns skills (M30)', () => {
@@ -392,6 +409,7 @@ describe('slashCommandsOf', () => {
       'permissions',
       'mcp',
       'hooks',
+      'memory',
       'config',
       'fix-bug',
       'acme:deploy',
@@ -496,6 +514,13 @@ describe('buildPalette: paid features (M33, PLAN.md D30)', () => {
         '$0.18 per hour of audio',
         { kind: 'toggle', isOn: false },
         { type: 'setPaidFeature', feature: 'voice', isOn: true },
+      ],
+      [
+        'Subagents (paid)',
+        'muse-spark-1.3: $1.250 input, $0.150 cached input, $4.250 output per million tokens; up to 4 requests per task, including retries.\n' +
+          'muse-spark-1.3-contributor: $0.100 input, $0.002 cached input, $0.200 output per million tokens; up to 4 requests per task, including retries.',
+        { kind: 'toggle', isOn: false },
+        { type: 'setPaidFeature', feature: 'subagents', isOn: true },
       ],
     ])
   })

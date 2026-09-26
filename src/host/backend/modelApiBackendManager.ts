@@ -7,15 +7,16 @@
 import { ModelApiClient } from '../../core/backends/modelapi/client'
 import type { EnvironmentFacts } from '../../core/backends/modelapi/instructions'
 import type { McpPoolSnapshot, McpToolSource } from '../../core/backends/modelapi/mcp/pool'
-import { ModelApiHost } from '../../core/backends/modelapi/ModelApiHost'
+import { ModelApiHost, type ModelApiPaidHooks } from '../../core/backends/modelapi/ModelApiHost'
 import type { SessionStore } from '../../core/backends/modelapi/sessionStore'
 import type { ToolIo } from '../../core/backends/modelapi/tools'
 import type { ContextIo } from '../../core/context/contextFiles'
 import type { McpTool } from '../../core/mcp'
-import { MODEL_API_BASE_URL, type PaidFeature, UI_TEXT } from '../../shared/constants'
+import type { MemoryStore } from '../../core/memory/memoryStore'
+import { MODEL_API_BASE_URL, UI_TEXT } from '../../shared/constants'
 import type { Logger } from '../logger'
 
-export interface ModelApiBackendManagerDeps {
+export interface ModelApiBackendManagerDeps extends ModelApiPaidHooks {
   readonly log: Logger
   readonly getApiKey: () => Promise<string | undefined>
   readonly workspaceRoot: string | undefined
@@ -34,15 +35,13 @@ export interface ModelApiBackendManagerDeps {
   readonly store: SessionStore | undefined
   /** The git facts for the prompt's environment section (D15). */
   readonly describeEnvironment: () => Promise<EnvironmentFacts>
-  /** Whether a paid feature is on (M33–M35, PLAN.md D30). */
-  readonly isPaidFeatureOn: (feature: PaidFeature) => boolean
-  /** Counts paid uses for the window's tally. */
-  readonly notePaidUse: (feature: PaidFeature, units: number) => void
   /** The MCP servers for a host in this workspace (M50), one set per host. */
   readonly createMcpServers?:
     ((workspaceRoot: string) => McpToolSource | Promise<McpToolSource>) | undefined
   /** The extension's own IDE tools, offered in process (M50). */
   readonly ideTools?: readonly McpTool[] | undefined
+  /** Muse Code's memory, shared with the Memory view (M49, PLAN.md D41). */
+  readonly memory: MemoryStore | undefined
 }
 
 const MANAGER_DISPOSED = 'The Model API backend was stopped while it was starting'
@@ -109,6 +108,9 @@ export class ModelApiBackendManager {
       notePaidUse: this.deps.notePaidUse,
       mcpServers: await this.deps.createMcpServers?.(workspaceRoot),
       ideTools: this.deps.ideTools,
+      confirmSubagentTask: this.deps.confirmSubagentTask,
+      noteSubagentUsage: this.deps.noteSubagentUsage,
+      memory: this.deps.memory,
     })
     await host.load()
     this.deps.log.info('Model API backend ready (api.meta.ai/v1, stateless reasoning replay)')

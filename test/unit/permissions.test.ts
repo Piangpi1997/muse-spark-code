@@ -11,7 +11,15 @@ import {
 } from '../../src/core/backends/modelapi/permissions'
 import { APPROVAL_MODES, type ApprovalMode } from '../../src/shared/permissionModes'
 
-const CLASSES: readonly ToolClass[] = ['read', 'edit', 'shell', 'interactive', 'paid', 'mcp']
+const CLASSES: readonly ToolClass[] = [
+  'read',
+  'edit',
+  'shell',
+  'interactive',
+  'paid',
+  'mcp',
+  'spawn',
+]
 
 /** One PowerShell call as the engine judges it. */
 function shell(command: string) {
@@ -28,6 +36,7 @@ describe('verdictFor', () => {
         interactive: 'allow',
         paid: 'ask',
         mcp: 'allow',
+        spawn: 'ask',
       },
       onRequest: {
         read: 'allow',
@@ -36,6 +45,7 @@ describe('verdictFor', () => {
         interactive: 'allow',
         paid: 'ask',
         mcp: 'ask',
+        spawn: 'ask',
       },
       promptUnmatched: {
         read: 'allow',
@@ -44,6 +54,7 @@ describe('verdictFor', () => {
         interactive: 'allow',
         paid: 'ask',
         mcp: 'ask',
+        spawn: 'ask',
       },
       denyUnmatched: {
         read: 'allow',
@@ -52,6 +63,7 @@ describe('verdictFor', () => {
         interactive: 'allow',
         paid: 'deny',
         mcp: 'deny',
+        spawn: 'deny',
       },
     }
     for (const mode of APPROVAL_MODES) {
@@ -161,6 +173,15 @@ describe('PermissionEngine', () => {
       'ask',
     )
     expect(engine.verdict({ toolName: 'edit_file', toolClass: 'edit' })).toBe('allow')
+  })
+
+  it('never lets Bypass or a session rule approve a new paid child task', () => {
+    const bypass = new PermissionEngine('allowAll')
+    const manual = new PermissionEngine('promptUnmatched')
+    const spawn = { toolName: 'subagent_spawn', toolClass: 'spawn' } as const
+    expect(bypass.verdict(spawn)).toBe('ask')
+    manual.allowForSession('subagent_spawn')
+    expect(manual.verdict(spawn)).toBe('ask')
   })
 })
 
