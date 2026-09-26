@@ -1371,6 +1371,7 @@ export const MODEL_TEXT = {
   mcpTextAndImagesOnly: 'the Model API backend passes text and images only',
   mcpNoContent: '(the tool returned no content)',
   mcpToolUnavailable: 'is not available: its MCP server is not connected',
+  mcpRequiredUnavailable: 'cancelled: a required MCP server is not connected',
   mcpArgumentsNotObject: 'arguments must be a JSON object',
   // M49 (PLAN.md D41): the memory tools' results and refusals in Muse Code's
   // own words (its 1.3.0 binary's strings, and the live capture of 2026-09-25).

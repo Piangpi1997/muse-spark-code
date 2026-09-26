@@ -1742,12 +1742,15 @@ the backend is tested against a fake stdio server and a fake HTTP server.
   Code starts them with a session), the first turn waits for them, and they
   stop with the host (a restart, sign-out, the window closing). Muse Code
   gives each stdio server `MUSE_SESSION_ID`; these serve every session of
-  the window, so none is given.
+  the window, so none is given. Closing while servers start waits for the
+  active batch to shut down and starts no later batch.
 - **Trust.** Nothing starts in Restricted Mode, stdio or remote; the next
   message after the workspace is trusted starts them.
 - **Required and optional.** A required server (the default; only `mode:
 optional` is optional) that is not running fails the turn with the reason
-  and the fix, as Muse Code aborts its run. An optional one is a warning
+  and the fix, as Muse Code aborts its run. Its state is checked after each
+  model stream and tool call, and before more work in the turn; calls left
+  unrun still get replay outputs. An optional one is a warning
   notice, once per session. The palette's **MCP servers…** row now shows
   on the Model API backend too, with each server's live state.
 - **Transports.** stdio: the command started directly (absolute `PATH`
@@ -1786,7 +1789,9 @@ optional` is optional) that is not running fails the turn with the reason
 - **Names and schemas.** `mcp__<server>__<tool>`, Meta's characters only
   (every other one, and every dot, becomes `_`), the server's part never
   holding `__`, 64 characters at most with a hash where a name is cut or
-  taken. A schema is cut to Meta's documented limits (depth 10, 5,000
+  taken. A configured name that normalizes to the extension's reserved
+  `ide` server name is refused, so no function can collide with its IDE tool.
+  A schema is cut to Meta's documented limits (depth 10, 5,000
   properties, 120,000 characters of names and values, 1,000 enum values, a
   large string enum capped, 200,000 nodes after `$ref`s are written out);
   local `$ref`s are written out and a recursive one cut, since Meta refuses
@@ -4124,7 +4129,8 @@ attempts stopped in unit tests.
 ### M50 — MCP servers on the Model API backend (D36, D42)
 
 **Status 2026-09-26: reconciled onto merged M49; combined local quality
-passed, hosted review pending** (`docs/certification/m50.md`). The
+passed after review fixes, hosted recheck pending**
+(`docs/certification/m50.md`). The
 isolated M50 branch passed `npm run quality` on exact M47-base staged tree
 `9a2399aa4b15f401c5e0c73d5f21846af3fff06c`: 1,820 unit tests passed
 (3 skipped), 280 accessibility pages had no violated or undecided rules,
@@ -4134,8 +4140,26 @@ and M49 tree (`4694803`). The combined staged tree
 `28eea6f74ef17c7a9c72bf00325ce3a6d5737f96` passed `npm run quality`:
 1,967 unit tests passed (3 skipped), 304 accessibility pages had zero
 violations/undecided rules, the production bundles met budgets, audit found
-zero advisories, and secret/SAST scans found zero findings. Hosted checks and
-review remain before merge.
+zero advisories, and secret/SAST scans found zero findings. Hosted rechecks
+and review of the fixes remain before merge. Corrected staged tree
+`8ce10a01a2aeb5f01d9bf33108d7ebaf9f8563dd` passed `npm run quality`
+after review fixes: 1,970 unit tests passed (3 skipped), 304 accessibility
+pages had zero violations or undecided rules, and audit, secret and SAST
+scans found zero findings. PR #37's first hosted run passed Linux and macOS
+quality but failed 13 Windows MCP stdio tests: overlapping real-process test
+files delayed PowerShell job-helper launches beyond the existing 10 s MCP
+initialize and 30 s pool startup deadlines. Windows Vitest files now run
+serially while keeping every test, coverage threshold, and deadline. Hosted
+Windows recheck remains open.
+
+PR #37's Codex review found three valid faults: closing during a batch of
+more than four servers could launch a later batch after shutdown; a required
+server lost during a model reply or tool call did not stop the active turn;
+and `_ide` normalized to the reserved `ide` function name. All three are
+fixed locally. The new tests failed **3/3** on the reviewed code; removing
+the new mid-call loss checks made its test fail **1/1** before restoration.
+The affected suites passed **194/194** after the fixes. The corrected tree
+still needs its full quality gate and hosted recheck.
 
 - **Goal**: the key backend runs the MCP servers Muse Code would, from the
   same settings, with Muse Code's names for their tools and its approvals,
@@ -4161,9 +4185,9 @@ review remain before merge.
   pool and HTTP suites pass. The Windows job-assignment drill fails when
   assignment is disabled and passes when restored; a withheld-GO drill fails
   when owner confirmation is disabled and passes when restored. Real binary,
-  batch, Stop, exited-parent and extension-parent death fixtures pass. Provisional local quality passed on
-  M46 base; it still needs an exact-tree quality gate and review after the
-  preceding M48–M49 milestones join it.
+  batch, Stop, exited-parent and extension-parent death fixtures pass. The
+  combined M48–M49 tree passed local quality before PR #37's review fixes;
+  the corrected tree needs an exact-tree gate and hosted recheck.
 - **Remote error boundary**: HTTP response bodies, malformed event payloads and authentication challenge parameters are untrusted. Errors and logs keep status and the authentication scheme, not raw server text that could echo a configured header or token.
 - **Windows batch launch**: `cmd.exe /v:off` disables delayed `!` expansion even when the machine default enables it; `/d` continues to bypass AutoRun. The configured command and arguments remain quoted and percent signs refused.
 - **Startup pressure**: connect at most four configured servers at once. Keep the settings order and start every enabled server, but avoid a simultaneous burst of child processes when a settings file has many entries.

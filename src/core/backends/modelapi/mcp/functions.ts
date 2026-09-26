@@ -62,7 +62,7 @@ function isObject(value: unknown): value is JsonObject {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
-function serverPart(server: string): string {
+export function mcpServerPart(server: string): string {
   const part = server
     .replaceAll(NOT_ALLOWED_IN_NAME, '_')
     .replaceAll(UNDERSCORES, '_')
@@ -79,7 +79,7 @@ function toolPart(tool: string): string {
 
 /** The function name for a server's tool, unique among `taken`. */
 export function mcpFunctionName(server: string, tool: string, taken: ReadonlySet<string>): string {
-  const plain = `${MCP_FUNCTION_PREFIX}${serverPart(server)}${MCP_FUNCTION_SEPARATOR}${toolPart(tool)}`
+  const plain = `${MCP_FUNCTION_PREFIX}${mcpServerPart(server)}${MCP_FUNCTION_SEPARATOR}${toolPart(tool)}`
   if (plain.length <= MCP_FUNCTION_NAME_MAX_CHARS && !taken.has(plain)) {
     return plain
   }

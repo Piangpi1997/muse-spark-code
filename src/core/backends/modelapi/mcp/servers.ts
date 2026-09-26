@@ -35,6 +35,7 @@ import {
   MILLISECONDS_PER_SECOND,
 } from '../../../../shared/constants'
 import type { McpSettingsEntries, McpServerView } from '../../musecode/museConfigView'
+import { mcpServerPart } from './functions'
 
 export interface McpStdioLaunch {
   readonly transport: typeof MCP_TRANSPORTS.stdio
@@ -249,7 +250,7 @@ function launchOf(
   entry: JsonObject,
   lookupEnv: (name: string) => string | undefined,
 ): McpLaunch {
-  if (view.name === IDE_MCP_SERVER_NAME) {
+  if (mcpServerPart(view.name) === IDE_MCP_SERVER_NAME) {
     throw new EntryProblem(
       `the name ${IDE_MCP_SERVER_NAME} is the extension's own diagnostics server; rename this entry`,
     )

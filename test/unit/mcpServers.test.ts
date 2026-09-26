@@ -125,13 +125,18 @@ describe('planMcpServers (M50)', () => {
   })
 
   it('leaves the name ide to the extension, and a server turned off stays off', () => {
-    const [ide, off] = specs({
-      mcpServers: { ide: { command: 'srv' }, off: { command: 'srv', enabled: false } },
+    const [ide, alias, off] = specs({
+      mcpServers: {
+        ide: { command: 'srv' },
+        _ide: { command: 'srv' },
+        off: { command: 'srv', enabled: false },
+      },
     })
     expect(ide?.launch).toEqual({
       ok: false,
       reason: "the name ide is the extension's own diagnostics server; rename this entry",
     })
+    expect(alias?.launch).toEqual(ide?.launch)
     expect(off?.isEnabled).toBe(false)
   })
 

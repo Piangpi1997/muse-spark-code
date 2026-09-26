@@ -24,6 +24,9 @@ export default defineConfig({
     include: ['test/unit/**/*.test.{ts,tsx}', 'test/e2e/**/*.test.ts'],
     environment: 'node',
     setupFiles: ['test/unit/setup.ts'],
+    // Windows MCP process suites start PowerShell job helpers. On the small
+    // hosted runner, concurrent files delayed launches past real MCP deadlines.
+    fileParallelism: process.platform !== 'win32',
     coverage: {
       provider: 'v8',
       // Source files only: a bare `src/**` also feeds src/webview/tsconfig.json

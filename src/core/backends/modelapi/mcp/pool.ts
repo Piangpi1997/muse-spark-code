@@ -185,6 +185,9 @@ export class McpServerPool implements McpToolSource {
     }
     const starting = this.servers.filter((server) => server.state.status === 'starting')
     for (let index = 0; index < starting.length; index += MCP_START_CONCURRENCY) {
+      if (this.isClosed) {
+        break
+      }
       await Promise.all(
         starting.slice(index, index + MCP_START_CONCURRENCY).map((server) => this.connect(server)),
       )
@@ -439,6 +442,10 @@ export class McpServerPool implements McpToolSource {
       this.withdraw(server)
       return connection === undefined ? [] : [connection]
     })
-    await Promise.all([...connections.map((connection) => connection.close()), ...this.closing])
+    await Promise.all([
+      ...connections.map((connection) => connection.close()),
+      ...this.closing,
+      ...(this.starting === undefined ? [] : [this.starting]),
+    ])
   }
 }

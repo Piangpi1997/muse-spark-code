@@ -1192,14 +1192,21 @@ export class ModelApiSession implements AgentSession {
       this.announcedMcp.add(notice.key)
       this.emit({ type: 'backendNotice', level: 'warning', text: notice.text })
     }
-    const required = snapshot.servers.find(
+    const requiredFailure = this.requiredMcpFailure(snapshot)
+    if (requiredFailure !== undefined) {
+      throw requiredFailure
+    }
+  }
+
+  private requiredMcpFailure(snapshot: McpPoolSnapshot | undefined): Error | undefined {
+    const required = snapshot?.servers.find(
       (server) => server.isRequired && server.state.status === 'failed',
     )
-    if (required?.state.status === 'failed') {
-      throw new Error(
-        fill(UI_TEXT.mcpRequiredFailed, { name: required.name, reason: required.state.reason }),
-      )
-    }
+    return required?.state.status === 'failed'
+      ? new Error(
+          fill(UI_TEXT.mcpRequiredFailed, { name: required.name, reason: required.state.reason }),
+        )
+      : undefined
   }
 
   /** The encrypted reasoning always; the search results while search is on, for the rows. */
@@ -3246,6 +3253,10 @@ export class ModelApiSession implements AgentSession {
       if (isAbortRequested(signal)) {
         throw new AbortedError()
       }
+      const requiredBeforeRound = this.requiredMcpFailure(this.deps.mcpServers?.snapshot())
+      if (requiredBeforeRound !== undefined) {
+        throw requiredBeforeRound
+      }
       this.drainSteered(turn)
       this.drainGoalWake(turn)
       const wasBudgetLimited = this.goal?.status === GOAL_STATUS.budgetLimited
@@ -3255,6 +3266,11 @@ export class ModelApiSession implements AgentSession {
         // still need outputs for valid replay, but no work or steering runs.
         this.skipCalls(turn.turnId, calls)
         throw new AbortedError()
+      }
+      const requiredAfterStream = this.requiredMcpFailure(this.deps.mcpServers?.snapshot())
+      if (requiredAfterStream !== undefined) {
+        this.skipCalls(turn.turnId, calls, MODEL_TEXT.mcpRequiredUnavailable)
+        throw requiredAfterStream
       }
       if (!wasBudgetLimited && this.goal?.status === GOAL_STATUS.budgetLimited) {
         this.skipCalls(turn.turnId, calls, MODEL_TEXT.goalBudgetReached)
@@ -3278,12 +3294,21 @@ export class ModelApiSession implements AgentSession {
           this.skipCalls(turn.turnId, calls.slice(index))
           throw new AbortedError()
         }
+        const requiredBeforeCall = this.requiredMcpFailure(this.deps.mcpServers?.snapshot())
+        if (requiredBeforeCall !== undefined) {
+          this.skipCalls(turn.turnId, calls.slice(index), MODEL_TEXT.mcpRequiredUnavailable)
+          throw requiredBeforeCall
+        }
         try {
           await this.runCall(turn.turnId, call, signal, goalCommandRevision)
         } catch (error: unknown) {
           this.skipCalls(turn.turnId, calls.slice(index + 1))
           throw error
         }
+      }
+      const requiredAfterCalls = this.requiredMcpFailure(this.deps.mcpServers?.snapshot())
+      if (requiredAfterCalls !== undefined) {
+        throw requiredAfterCalls
       }
     }
     // Input accepted during the last permitted round still needs a request

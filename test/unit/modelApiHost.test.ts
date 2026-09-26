@@ -5202,6 +5202,23 @@ function outputs(t: ReturnType<typeof setup>): readonly unknown[] {
   return last.filter((item) => item.type === 'function_call_output').map((item) => item.output)
 }
 
+function loseRequiredMcp(mcp: FakeMcpSource): void {
+  mcp.snapshotValue = {
+    ...mcp.snapshotValue,
+    servers: [{ name: 'docs', isRequired: true, state: { status: 'failed', reason: 'gone' } }],
+  }
+}
+
+function expectRequiredMcpLoss(events: readonly AgentEvent[]): void {
+  expect(events).toContainEqual(
+    expect.objectContaining({
+      type: 'turnCompleted',
+      terminal: 'failed',
+      reason: fill(UI_TEXT.mcpRequiredFailed, { name: 'docs', reason: 'gone' }),
+    }),
+  )
+}
+
 describe('ModelApiHost: MCP servers and the IDE tool (M50)', () => {
   const DIAGNOSTICS: McpTool = {
     name: 'getDiagnostics',
@@ -5236,6 +5253,31 @@ describe('ModelApiHost: MCP servers and the IDE tool (M50)', () => {
     t.api.script({ calls: options.calls ?? [] }, { text: 'done' })
     await started.session.sendTurn([{ type: 'text', text: 'go' }])
     return { ...started, t, mcp }
+  }
+
+  function connectedRequiredMcp(): FakeMcpSource {
+    return fakeMcpSource(TOOLS, {
+      servers: [
+        {
+          name: 'docs',
+          isRequired: true,
+          state: { status: 'connected', toolCount: 2, unofferedCount: 0 },
+        },
+      ],
+    })
+  }
+
+  async function heldMcpCall(mcp: FakeMcpSource, gate: Promise<void>) {
+    mcp.gate = gate
+    const started = await mcpTurn({
+      mode: 'allowAll',
+      mcp,
+      calls: [{ name: 'mcp__docs__search', arguments: '{}' }],
+    })
+    await vi.waitFor(() => {
+      expect(mcp.calls).toHaveLength(1)
+    })
+    return started
   }
 
   it('offers the IDE tool always, and the MCP tools in a trusted workspace', async () => {
@@ -5405,15 +5447,10 @@ describe('ModelApiHost: MCP servers and the IDE tool (M50)', () => {
 
   it('cancels an MCP call on Stop', async () => {
     const mcp = fakeMcpSource(TOOLS)
-    mcp.gate = new Promise(() => undefined)
-    const { session, events, turnDone } = await mcpTurn({
-      mode: 'allowAll',
+    const { session, events, turnDone } = await heldMcpCall(
       mcp,
-      calls: [{ name: 'mcp__docs__search', arguments: '{}' }],
-    })
-    await vi.waitFor(() => {
-      expect(mcp.calls).toHaveLength(1)
-    })
+      new Promise<never>(() => undefined),
+    )
     await session.cancel()
     await turnDone()
     expect(toolRows(events)[0]?.status).toBe('cancelled')
@@ -5474,6 +5511,40 @@ describe('ModelApiHost: MCP servers and the IDE tool (M50)', () => {
       }),
     )
     expect(t.api.responseBodies()).toHaveLength(0)
+  })
+
+  it('fails the active turn when a required server stops during the model stream', async () => {
+    for (const reply of [
+      { text: 'done' },
+      { calls: [{ name: 'mcp__docs__search', arguments: '{}' }] },
+    ]) {
+      const release = Promise.withResolvers<undefined>()
+      const mcp = connectedRequiredMcp()
+      const t = setup({ mcpServers: mcp, ideTools: [DIAGNOSTICS] })
+      const { session, events, turnDone } = await startSession(t)
+      t.api.script({ ...reply, hold: release.promise }, { text: 'second' })
+      await session.sendTurn([{ type: 'text', text: 'go' }])
+      await vi.waitFor(() => {
+        expect(t.api.responseBodies()).toHaveLength(1)
+      })
+      loseRequiredMcp(mcp)
+      release.resolve(undefined)
+      await turnDone()
+      expectRequiredMcpLoss(events)
+      expect(mcp.calls).toEqual([])
+      expect(t.api.responseBodies()).toHaveLength(1)
+    }
+  })
+
+  it('does not start another model round after a required server stops during a tool call', async () => {
+    const release = Promise.withResolvers<undefined>()
+    const mcp = connectedRequiredMcp()
+    const { events, turnDone, t } = await heldMcpCall(mcp, release.promise)
+    loseRequiredMcp(mcp)
+    release.resolve(undefined)
+    await turnDone()
+    expectRequiredMcpLoss(events)
+    expect(t.api.responseBodies()).toHaveLength(1)
   })
 
   it('says why no server of the settings is loaded', async () => {

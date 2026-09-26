@@ -57,37 +57,56 @@ const stateOf = (created: McpServerPool, name: string) =>
 const SPAWN_TIMEOUT_MS = 60_000
 const WAIT_TIMEOUT_MS = 20_000
 
+/** Five silent servers: hold the first four until their timeout or pool close. */
+function silentStartupBatch(): { pool: McpServerPool; starts: string[] } {
+  const starts: string[] = []
+  const spawn: McpPoolDeps['spawn'] = () => {
+    starts.push('started')
+    let onExit: ((how: string) => void) | undefined
+    return {
+      write: () => undefined,
+      endInput: () => onExit?.('closed'),
+      onStdout: () => undefined,
+      onStderr: () => undefined,
+      onExit: (listener) => {
+        onExit = listener
+      },
+      kill: () => {
+        onExit?.('killed')
+        return Promise.resolve()
+      },
+    }
+  }
+  const silent = fake({ startup_timeout_sec: 1 })
+  return {
+    pool: pool({ a: silent, b: silent, c: silent, d: silent, e: silent }, { spawn }).pool,
+    starts,
+  }
+}
+
 describe('McpServerPool (M50)', { timeout: SPAWN_TIMEOUT_MS }, () => {
   it('starts at most four servers together, then starts the next batch', async () => {
-    const starts: string[] = []
-    const spawn: McpPoolDeps['spawn'] = (_launch, cwd) => {
-      starts.push(cwd)
-      let onExit: ((how: string) => void) | undefined
-      return {
-        write: () => undefined,
-        endInput: () => {
-          onExit?.('closed')
-        },
-        onStdout: () => undefined,
-        onStderr: () => undefined,
-        onExit: (listener) => {
-          onExit = listener
-        },
-        kill: () => {
-          onExit?.('killed')
-          return Promise.resolve()
-        },
-      }
-    }
-    const silent = fake({ startup_timeout_sec: 1 })
-    const { pool: servers } = pool(
-      { a: silent, b: silent, c: silent, d: silent, e: silent },
-      { spawn },
-    )
+    const { pool: servers, starts } = silentStartupBatch()
     const starting = servers.start()
     expect(starts).toHaveLength(4)
     await starting
     expect(starts).toHaveLength(5)
+  })
+
+  it('finishes startup shutdown before close returns and never starts a later batch', async () => {
+    const { pool: servers, starts } = silentStartupBatch()
+    const starting = servers.start()
+    expect(starts).toHaveLength(4)
+    let hasStartupFinished = false
+    void starting.then(() => {
+      hasStartupFinished = true
+    })
+    await servers.close()
+    const wasFinishedAtClose = hasStartupFinished
+    await starting
+    expect(wasFinishedAtClose).toBe(true)
+    expect(starts).toHaveLength(4)
+    expect(servers.definitions()).toEqual([])
   })
 
   it('starts a stdio server and offers its tools under Muse Code names', async () => {

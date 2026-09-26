@@ -180,6 +180,10 @@ while they are (PLAN.md D30, D34).
 
 ### Changed
 
+- **Windows unit test scheduling (M50).** Vitest runs test files one at a time
+  on Windows so concurrent MCP job-helper launches cannot starve the hosted
+  runner past the MCP startup deadline. Test selection, coverage, and deadlines
+  are unchanged.
 - **The Model API backend saves memory with the memory tools** (M49). It
   used to be told to write `.agents/memory` with the file tools, which as
   protected writes asked every time. The personal scopes, left out before
@@ -188,6 +192,12 @@ while they are (PLAN.md D30, D34).
 
 ### Fixed
 
+- **M50 MCP server lifecycle and names.** Closing the Model API host now
+  waits for servers still starting and launches no later startup batch. A
+  required server that stops during a reply or tool call fails the active
+  turn before more work runs. Configured server names that normalize to the
+  extension's reserved `ide` name are refused, avoiding duplicate function
+  names and unreachable tools.
 - **M46 session cleanup and resumed shell shortcut.** Releasing the last
   surface of a Muse Code session now asks the CLI to stop its background
   tasks; another surface holding that session leaves them running. Restored
