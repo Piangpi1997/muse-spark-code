@@ -4234,6 +4234,17 @@ The CLI itself is not bundled: it is Meta's closed-source binary.
 
 ## 7. Gates
 
+**Pre-PR delivery (2026-09-26: prepared; hosted proof pending).** The owner
+wants platform failures found and fixed before a pull request is opened.
+`ci.yml` gains `workflow_dispatch`, calling the same `build.yml` as pushes and
+pull requests. `CONTRIBUTING.md` gives the order: integrate milestones, run
+local quality on the exact tree, collect platform evidence, get an independent
+review, push, dispatch hosted CI and inspect its SHA and every job before
+opening a pull request. No build job or threshold changes. GitHub requires a
+manually dispatched workflow on the default branch, so the first pre-PR branch
+run can happen only after this trigger lands on `main`. Acceptance needs that
+branch run and its job evidence; pull-request CI and review still gate merge.
+
 | Gate                  | Command                                                                                                                                                                                                         | Status                                                                                                                                                                                                     |
 | --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Format                | `prettier --check .`                                                                                                                                                                                            | M0 ✓                                                                                                                                                                                                       |
