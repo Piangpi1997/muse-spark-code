@@ -9,13 +9,12 @@ import { pathToFileURL } from 'node:url'
 import { setTimeout } from 'node:timers'
 
 const bundle = env.M50_JOB_BUNDLE
-const assembly = env.M50_JOB_ASSEMBLY
+const executable = env.M50_JOB_EXECUTABLE
 const fixture = env.M50_JOB_ORPHAN
-if (!bundle || !assembly || !fixture || !env.SystemRoot) exit(2)
+if (!bundle || !executable || !fixture || !env.SystemRoot) exit(2)
 const { spawnMcpJob } = await import(pathToFileURL(bundle).href)
 const helper = spawnMcpJob({
-  assemblyPath: assembly,
-  systemRoot: env.SystemRoot,
+  executablePath: executable,
   file: execPath,
   args: [fixture],
   isVerbatim: false,

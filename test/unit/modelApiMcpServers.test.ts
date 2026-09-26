@@ -33,7 +33,7 @@ function servers(settings: string | undefined, settingsPath?: string) {
     isWorkspaceTrusted: () => true,
     clientVersion: '0.8.0',
     platform: process.platform,
-    jobAssemblyPath: jobState.path,
+    jobExecutablePath: jobState.path,
     env: () => ({ ...process.env, M50_MARK: 'from-env' }),
     fetch: globalThis.fetch.bind(globalThis),
     log: new FakeLogOutputChannel(),

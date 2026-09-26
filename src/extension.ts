@@ -36,6 +36,7 @@ import { fileContextIo } from './host/backend/contextIo'
 import { describeEnvironment } from './host/backend/environment'
 import { createFileSessionStore } from './host/backend/fileSessionStore'
 import { createModelApiMcpServers } from './host/backend/mcpServers'
+import { mcpJobExecutable } from './host/backend/mcpJobExecutable'
 import { createMemoryIo, systemPath } from './host/backend/memoryIo'
 import {
   museSettingsPath,
@@ -365,7 +366,7 @@ function runProcess(
   })
 }
 
-/** The shell tool and MCP stdio servers' tested Windows job assembly (M27, M50). */
+/** The shell tool's tested Windows job assembly (M27). */
 function windowsShellJobs(
   storageDir: string,
   log: Logger,
@@ -373,6 +374,23 @@ function windowsShellJobs(
   const systemRoot = process.env['SystemRoot']
   return systemRoot !== undefined && process.platform === 'win32'
     ? shellJobAssembly({
+        storageDir,
+        systemRoot,
+        log: (message) => {
+          log.warn(message)
+        },
+      })
+    : undefined
+}
+
+/** The direct Windows MCP stdio job launcher, compiled once (M50). */
+function windowsMcpJobs(
+  storageDir: string,
+  log: Logger,
+): (() => Promise<string | undefined>) | undefined {
+  const systemRoot = process.env['SystemRoot']
+  return systemRoot !== undefined && process.platform === 'win32'
+    ? mcpJobExecutable({
         storageDir,
         systemRoot,
         log: (message) => {
@@ -678,6 +696,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     log,
   })
   const windowsJobAssembly = windowsShellJobs(context.globalStorageUri.fsPath, log)
+  const windowsMcpJob = windowsMcpJobs(context.globalStorageUri.fsPath, log)
   // The workspace's files and a shell (M7): the Model API backend's tools,
   // and the files the ide server's image tools read and write (M44).
   const toolIo = createToolIo({
@@ -919,7 +938,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         isWorkspaceTrusted: () => vscode.workspace.isTrusted,
         clientVersion: version,
         platform: process.platform,
-        jobAssemblyPath: await windowsJobAssembly?.(),
+        jobExecutablePath: await windowsMcpJob?.(),
         env: () => process.env,
         fetch: globalThis.fetch.bind(globalThis),
         log,

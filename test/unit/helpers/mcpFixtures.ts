@@ -12,7 +12,7 @@ import {
   isExistingFile,
   mcpServerSpawner,
 } from '../../../src/host/backend/mcpProcess'
-import { shellJobAssembly } from '../../../src/host/backend/shellJob'
+import { mcpJobExecutable } from '../../../src/host/backend/mcpJobExecutable'
 import type { FakeLogOutputChannel } from './fakes'
 import { removeFolder } from './temporaryFolders'
 
@@ -33,12 +33,12 @@ export function fakeServerLaunch(env: Readonly<Record<string, string>> = {}): Mc
 /** The extension's own spawner, over a host environment that holds a secret. */
 export function realSpawner(
   log: FakeLogOutputChannel,
-  jobAssemblyPath?: string,
+  jobExecutablePath?: string,
 ): (launch: McpStdioLaunch, cwd: string) => McpChildProcess {
   return mcpServerSpawner({
     platform: process.platform,
     systemRoot: process.env['SystemRoot'],
-    jobAssemblyPath,
+    jobExecutablePath,
     env: () => ({ ...process.env, META_API_KEY: 'must-not-leak' }),
     isExistingFile,
     isExistingDirectory,
@@ -48,8 +48,8 @@ export function realSpawner(
   })
 }
 
-/** The actual M27 assembly for real Windows fixture processes, isolated per test file. */
-async function fixtureMcpJobAssembly(): Promise<{
+/** The actual M50 executable for real Windows fixture processes, isolated per test file. */
+async function fixtureMcpJobExecutable(): Promise<{
   readonly path: string | undefined
   readonly dispose: () => Promise<void>
 }> {
@@ -58,24 +58,24 @@ async function fixtureMcpJobAssembly(): Promise<{
   }
   const storageDir = await mkdtemp(path.join(tmpdir(), 'muse-mcp-job-test-'))
   try {
-    const assembly = await shellJobAssembly({
+    const executable = await mcpJobExecutable({
       storageDir,
       systemRoot: process.env['SystemRoot'] ?? '',
       log: (message) => {
         throw new Error(message)
       },
     })()
-    if (assembly === undefined) {
-      throw new Error('Windows MCP job assembly was unavailable in the real fixture')
+    if (executable === undefined) {
+      throw new Error('Windows MCP job executable was unavailable in the real fixture')
     }
-    return { path: assembly, dispose: () => removeFolder(storageDir) }
+    return { path: executable, dispose: () => removeFolder(storageDir) }
   } catch (error: unknown) {
     await removeFolder(storageDir)
     throw error
   }
 }
 
-/** Each real-process test file owns one assembly and its cleanup. */
+/** Each real-process test file owns one executable and its cleanup. */
 export function fixtureJobLifecycle() {
   const state: { path: string | undefined; dispose: () => Promise<void> } = {
     path: undefined,
@@ -86,7 +86,7 @@ export function fixtureJobLifecycle() {
       return state.path
     },
     async setup(): Promise<void> {
-      const job = await fixtureMcpJobAssembly()
+      const job = await fixtureMcpJobExecutable()
       state.path = job.path
       state.dispose = job.dispose
     },

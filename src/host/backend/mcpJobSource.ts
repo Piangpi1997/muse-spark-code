@@ -1,5 +1,5 @@
-// The binary-safe Windows MCP launcher (M50): source compiled into the existing
-// M27 job helper assembly. Its process and job handles, not a PID sweep, own
+// The binary-safe Windows MCP launcher (M50): source compiled into its own
+// console executable and M27's separate DLL. Its process and job handles own
 // the server and every descendant from before the first instruction runs.
 export const MCP_JOB_SOURCE = String.raw`
 

@@ -13,8 +13,8 @@
 //   part of the line is quoted, and a part that holds `"`, `%` or a line
 //   break is refused, since cmd.exe would read it as syntax: arguments come
 //   from the user's settings, never the model, and are never re-read.
-// - **Stopping.** The whole process tree is killed (processTree.ts, D25): a
-//   process group on POSIX, taskkill and the orphan sweep on Windows.
+// - **Stopping.** A POSIX process group or a Windows kill-on-close job owns
+//   the entire process tree; the Windows helper exits on Stop or owner death.
 
 import { type ChildProcessWithoutNullStreams, spawn } from 'node:child_process'
 import { statSync } from 'node:fs'
@@ -31,8 +31,8 @@ import { spawnMcpJob } from './mcpJobLaunch'
 export interface McpSpawnDeps {
   readonly platform: NodeJS.Platform
   readonly systemRoot: string | undefined
-  /** Windows: M27's compiled helper, which assigns the server to a job before it runs. */
-  readonly jobAssemblyPath?: string | undefined
+  /** Windows: M50's compiled executable, which jobs the server before it runs. */
+  readonly jobExecutablePath?: string | undefined
   /** The extension host's environment, read per server. */
   readonly env: () => NodeJS.ProcessEnv
   readonly isExistingFile: (filePath: string) => boolean
@@ -355,12 +355,11 @@ export function mcpServerSpawner(
     const line = spawnLine(file, launch.args, deps)
     const startedAt = Date.now()
     if (deps.platform === 'win32') {
-      if (deps.jobAssemblyPath === undefined || deps.systemRoot === undefined) {
+      if (deps.jobExecutablePath === undefined || deps.systemRoot === undefined) {
         throw new Error('Windows job containment is unavailable; the MCP server was not started')
       }
       const child = spawnMcpJob({
-        assemblyPath: deps.jobAssemblyPath,
-        systemRoot: deps.systemRoot,
+        executablePath: deps.jobExecutablePath,
         file: line.file,
         args: line.args,
         isVerbatim: line.isVerbatim,

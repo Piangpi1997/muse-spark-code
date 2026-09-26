@@ -1,7 +1,7 @@
 // Windows MCP stdio launcher (M50): the configured server inherits Node's
-// binary pipe handles directly. The hidden PowerShell helper loads M27's
-// compiled C# assembly, creates the server suspended, assigns its no-breakaway
-// kill-on-close job, and only then resumes it. It holds an actual handle to
+// binary pipe handles directly. The compiled C# executable creates the server
+// suspended, assigns its no-breakaway kill-on-close job, and only then resumes
+// it. It holds an actual handle to
 // this extension process; when either it or the server exits, the job closes.
 
 import { type ChildProcessWithoutNullStreams, spawn } from 'node:child_process'
@@ -9,20 +9,11 @@ import { Buffer } from 'node:buffer'
 import { randomBytes, randomUUID } from 'node:crypto'
 import { createServer } from 'node:net'
 import { setEnvironmentVariable } from '../../core/backends/musecode/launch'
-import { powerShellQuoted } from '../../core/shellQuote'
-import {
-  MCP_JOB_HANDSHAKE_MAX_CHARS,
-  MCP_JOB_NONCE_BYTES,
-  WINDOWS_POWERSHELL_COMMAND_ARGS,
-} from '../../shared/constants'
-import { windowsPowerShell } from '../processTree'
+import { MCP_JOB_HANDSHAKE_MAX_CHARS, MCP_JOB_NONCE_BYTES } from '../../shared/constants'
 
 const CONFIG_ENV = 'MUSE_SPARK_MCP_JOB_CONFIG'
-const LAUNCHER_TYPE = 'MuseSparkMcpJob'
-
 export interface McpJobLaunch {
-  readonly assemblyPath: string
-  readonly systemRoot: string
+  readonly executablePath: string
   readonly file: string
   readonly args: readonly string[]
   readonly isVerbatim: boolean
@@ -30,24 +21,6 @@ export interface McpJobLaunch {
   /** Only the allowlisted and explicitly configured variables reach the server. */
   readonly env: NodeJS.ProcessEnv
   readonly log: (message: string) => void
-}
-
-/** The script has no configured command, arguments or secrets in its command line. */
-export function mcpJobScript(assemblyPath: string): string {
-  return [
-    "$ErrorActionPreference = 'Stop'",
-    'try {',
-    `Add-Type -Path ${powerShellQuoted(assemblyPath)}`,
-    ` $config = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:${CONFIG_ENV})) | ConvertFrom-Json`,
-    ` Remove-Item Env:${CONFIG_ENV}`,
-    " $pairs = @($config.env.PSObject.Properties | ForEach-Object { $_.Name + '=' + [string]$_.Value })",
-    ` exit [${LAUNCHER_TYPE}]::Run([string]$config.file, [string[]]$config.args, [string]$config.cwd, [uint32]$config.parentPid, [string[]]$pairs, [bool]$config.isVerbatim, [string]$config.controlPipe, [string]$config.controlNonce)`,
-    '} catch {',
-    ' $cause = $_.Exception.GetBaseException()',
-    " if ($cause -is [ComponentModel.Win32Exception]) { [Console]::Error.WriteLine('MCP launcher Win32 error ' + $cause.NativeErrorCode) } else { [Console]::Error.WriteLine('MCP launcher failed: ' + $cause.GetType().Name) }",
-    ' exit 1',
-    '}',
-  ].join('\n')
 }
 
 /** The raw pipes belong to this ChildProcess; no text relay touches MCP frames. */
@@ -111,15 +84,14 @@ export function spawnMcpJob(launch: McpJobLaunch): ChildProcessWithoutNullStream
   ).toString('base64')
   const helperEnv = { ...launch.env }
   setEnvironmentVariable(helperEnv, 'win32', CONFIG_ENV, payload)
-  const powershell = windowsPowerShell(launch.systemRoot, helperEnv)
   try {
     child = spawn(
-      // nosemgrep: javascript.lang.security.detect-child-process.detect-child-process -- this executable is the fixed SystemRoot Windows PowerShell, and the command line contains only a fixed script plus M27's compiled assembly path. Configured MCP input stays in a private environment value (PLAN.md §8).
-      powershell.file,
-      [...WINDOWS_POWERSHELL_COMMAND_ARGS, mcpJobScript(launch.assemblyPath)],
+      // nosemgrep: javascript.lang.security.detect-child-process.detect-child-process -- this executable is compiled from fixed M50 source into extension storage; configured MCP input stays in a private environment value (PLAN.md §8).
+      launch.executablePath,
+      [],
       {
         cwd: launch.cwd,
-        env: powershell.env,
+        env: helperEnv,
         stdio: ['pipe', 'pipe', 'pipe'],
         windowsHide: true,
       },

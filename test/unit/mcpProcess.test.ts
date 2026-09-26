@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
+import { once } from 'node:events'
 import { existsSync, readFileSync } from 'node:fs'
 import { rm } from 'node:fs/promises'
 import { createServer } from 'node:net'
@@ -22,9 +23,7 @@ import {
   type McpProcessHandle,
 } from '../../src/host/backend/mcpProcess'
 import { FakeLogOutputChannel } from './helpers/fakes'
-import { mcpJobScript } from '../../src/host/backend/mcpJobLaunch'
-import { windowsPowerShell } from '../../src/host/processTree'
-import { WINDOWS_POWERSHELL_COMMAND_ARGS } from '../../src/shared/constants'
+import { spawnMcpJob } from '../../src/host/backend/mcpJobLaunch'
 import {
   FAKE_MCP_SERVER,
   fakeServerLaunch,
@@ -348,6 +347,31 @@ describe('mcpServerSpawner (M50)', { timeout: 60_000 }, () => {
     return { child, connection, exits, log }
   }
 
+  it.skipIf(process.platform !== 'win32')(
+    'starts the prepared MCP executable directly',
+    async () => {
+      if (jobState.path === undefined || process.env['SystemRoot'] === undefined) {
+        throw new Error('Windows MCP job fixture unavailable')
+      }
+      const helper = spawnMcpJob({
+        executablePath: jobState.path,
+        file: process.execPath,
+        args: [BINARY_FIXTURE],
+        isVerbatim: false,
+        cwd: HERE,
+        env: { SystemRoot: process.env['SystemRoot'], Path: process.env['Path'] },
+        log: () => undefined,
+      })
+      const closed = once(helper, 'close')
+      try {
+        expect(helper.spawnfile).toBe(jobState.path)
+      } finally {
+        helper.kill()
+        await closed
+      }
+    },
+  )
+
   it('starts the server in its folder with the allowlisted environment and its own', async () => {
     const { connection } = start({ FAKE_MCP_MARK: 'yes' })
     await connection.initialize(10_000)
@@ -401,13 +425,13 @@ describe('mcpServerSpawner (M50)', { timeout: 60_000 }, () => {
   it.skipIf(process.platform !== 'win32')(
     'ends the job and detached grandchild when the owning Node process exits',
     async () => {
-      if (jobState.path === undefined) throw new Error('Windows job assembly missing')
+      if (jobState.path === undefined) throw new Error('Windows job executable missing')
       const bundle = await bundledJobLauncher(jobState.path)
       const owner = spawn(process.execPath, [LAUNCHER_PARENT_FIXTURE], {
         env: {
           ...process.env,
           M50_JOB_BUNDLE: bundle,
-          M50_JOB_ASSEMBLY: jobState.path,
+          M50_JOB_EXECUTABLE: jobState.path,
           M50_JOB_ORPHAN: ORPHAN_FIXTURE,
         },
         stdio: ['ignore', 'pipe', 'pipe'],
@@ -449,14 +473,14 @@ describe('mcpServerSpawner (M50)', { timeout: 60_000 }, () => {
   it.skipIf(process.platform !== 'win32')(
     'never resumes a server when the creating Node process dies before binding',
     async () => {
-      if (jobState.path === undefined) throw new Error('Windows job assembly missing')
+      if (jobState.path === undefined) throw new Error('Windows job executable missing')
       const bundle = await bundledJobLauncher(jobState.path)
       const marker = path.join(path.dirname(jobState.path), 'prebind-parent.marker')
       const owner = spawn(process.execPath, [PREBIND_PARENT_FIXTURE], {
         env: {
           ...process.env,
           M50_JOB_BUNDLE: bundle,
-          M50_JOB_ASSEMBLY: jobState.path,
+          M50_JOB_EXECUTABLE: jobState.path,
           M50_JOB_MARKER_FIXTURE: START_MARKER_FIXTURE,
           M50_JOB_MARKER: marker,
         },
@@ -531,12 +555,12 @@ describe('mcpServerSpawner (M50)', { timeout: 60_000 }, () => {
       ).toString('base64')
       const helperEnv = { ...childEnv }
       setEnvironmentVariable(helperEnv, 'win32', 'MUSE_SPARK_MCP_JOB_CONFIG', payload)
-      const powershell = windowsPowerShell(process.env['SystemRoot'], helperEnv)
-      const helper = spawn(
-        powershell.file,
-        [...WINDOWS_POWERSHELL_COMMAND_ARGS, mcpJobScript(jobState.path)],
-        { cwd: HERE, env: powershell.env, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true },
-      )
+      const helper = spawn(jobState.path, [], {
+        cwd: HERE,
+        env: helperEnv,
+        stdio: ['pipe', 'pipe', 'pipe'],
+        windowsHide: true,
+      })
       try {
         const code = await new Promise<number | null>((resolve) => helper.once('exit', resolve))
         expect(existsSync(marker)).toBe(false)
@@ -556,7 +580,7 @@ describe('mcpServerSpawner (M50)', { timeout: 60_000 }, () => {
   })
 
   it.skipIf(process.platform !== 'win32')(
-    'fails closed when its job assembly is unavailable',
+    'fails closed when its job executable is unavailable',
     () => {
       const launcher = mcpServerSpawner({
         platform: 'win32',
@@ -577,7 +601,7 @@ describe('mcpServerSpawner (M50)', { timeout: 60_000 }, () => {
     const spawn = mcpServerSpawner({
       platform: process.platform,
       systemRoot: process.env['SystemRoot'],
-      jobAssemblyPath: jobState.path,
+      jobExecutablePath: jobState.path,
       env: () => process.env,
       isExistingFile: () => true,
       isExistingDirectory,

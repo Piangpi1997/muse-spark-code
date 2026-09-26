@@ -7,14 +7,13 @@ import { env, execPath, exit, stderr, stdout } from 'node:process'
 import { pathToFileURL } from 'node:url'
 
 const bundle = env.M50_JOB_BUNDLE
-const assembly = env.M50_JOB_ASSEMBLY
+const executable = env.M50_JOB_EXECUTABLE
 const fixture = env.M50_JOB_MARKER_FIXTURE
 const marker = env.M50_JOB_MARKER
-if (!bundle || !assembly || !fixture || !marker || !env.SystemRoot) exit(2)
+if (!bundle || !executable || !fixture || !marker || !env.SystemRoot) exit(2)
 const { spawnMcpJob } = await import(pathToFileURL(bundle).href)
 const helper = spawnMcpJob({
-  assemblyPath: assembly,
-  systemRoot: env.SystemRoot,
+  executablePath: executable,
   file: execPath,
   args: [fixture],
   isVerbatim: false,

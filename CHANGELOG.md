@@ -192,6 +192,11 @@ while they are (PLAN.md D30, D34).
 
 ### Fixed
 
+- **Windows MCP stdio startup (M50).** A compiled C# job executable now starts
+  each configured server directly. PowerShell only compiles it once, avoiding
+  per-server startup delay while retaining binary pipes, job containment and
+  owner confirmation. Preparation checks cached executables before use and
+  fails closed if one is corrupt.
 - **M50 MCP server lifecycle and names.** Closing the Model API host now
   waits for servers still starting and launches no later startup batch. A
   required server that stops during a reply or tool call fails the active

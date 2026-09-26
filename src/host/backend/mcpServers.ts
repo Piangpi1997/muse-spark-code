@@ -19,8 +19,8 @@ export interface ModelApiMcpDeps {
   /** The extension's version, sent as the client's in `initialize`. */
   readonly clientVersion: string
   readonly platform: NodeJS.Platform
-  /** Windows: a tested M27 job assembly; absent means stdio fails closed. */
-  readonly jobAssemblyPath?: string | undefined
+  /** Windows: the compiled M50 job executable; absent means stdio fails closed. */
+  readonly jobExecutablePath?: string | undefined
   readonly env: () => NodeJS.ProcessEnv
   readonly fetch: typeof fetch
   readonly log: Logger
@@ -36,7 +36,7 @@ export function createModelApiMcpServers(deps: ModelApiMcpDeps): McpToolSource {
     spawn: mcpServerSpawner({
       platform: deps.platform,
       systemRoot: environmentValue(deps.env(), deps.platform, 'SystemRoot'),
-      jobAssemblyPath: deps.jobAssemblyPath,
+      jobExecutablePath: deps.jobExecutablePath,
       env: deps.env,
       isExistingFile,
       isExistingDirectory,
