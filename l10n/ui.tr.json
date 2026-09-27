@@ -1057,7 +1057,7 @@
   "scheduleRunConfirmAccept": "Bu kez çalıştır",
   "scheduleConfirmationExpired": "Onay sırasında model, konuşma veya istem değişti. Zamanlamayı gözden geçirip yeniden Çalıştır'ı seçin.",
   "paidScheduledName": "Zamanlanmış istemler",
-  "paidScheduledPrice": "1 milyon giriş tokenı başına {input}, 1 milyon önbelleğe alınmış giriş tokenı başına {cached}, 1 milyon çıkış tokenı başına {output} (standart katman; katkıda bulunan katmanı daha ucuzdur)",
+  "paidScheduledPrice": "1 milyon giriş tokenı başına {input}, 1 milyon önbelleğe alınmış giriş tokenı başına {cached}, 1 milyon çıkış tokenı başına {output}",
   "paidConfirmScheduled": "Zamanı gelen zamanlanmış istem, çalıştırmanızı bekler. Her çalıştırma, Model API çağrısından önce yeniden onay ister. {price}. Model API anahtarınıza faturalandırılır; toplam, kullanılan tokenlara göre değişir.",
   "usagePaidScheduled": {
     "one": "{count} zamanlanmış çalıştırma",

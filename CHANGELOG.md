@@ -85,6 +85,10 @@ while they are (PLAN.md D30, D34).
   prompts from the panel immediately. Replacing the Model API key also clears
   the old account's prompts before the backend restarts; a temporary CLI
   sign-in attempt keeps the still-active Model API list.
+  A seven-day cadence with no fire before expiry is refused; an already due
+  prompt can be claimed only before expiry. Feature enable shows both verified
+  token tiers, and each run quotes its selected model's exact tier, including
+  the contributor cached-input rate; an unknown model cannot gain consent.
 
 - **Image edits** (M44, PLAN.md D37). With image generation on, the model
   can also change one workspace image, or combine up to four, by a prompt,

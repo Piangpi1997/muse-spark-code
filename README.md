@@ -539,12 +539,16 @@ and **Cancel schedule** controls.
 Each job belongs to this workspace, conversation, and stored Model API key.
 Signing out or switching backends hides its prompts immediately; a temporary
 CLI sign-in attempt leaves the still-active Model API list in place.
-It expires after seven days. Only a loaded conversation checks for due work;
+It expires after seven days; `/loop 7d ...` has no run before that deadline
+and is refused. A due prompt stays pending until Run, Cancel or expiry.
+Only a loaded conversation checks for due work;
 closing VS Code stops checks. A missed recurring interval leaves one due
 occurrence, without a backlog. A due prompt **never runs by itself**: turn
-on **Scheduled prompts (paid)** and accept the published token rates, then
-choose **Run now** and confirm that occurrence's prompt, model and rates in
-a separate modal. Declining leaves it due and makes no API call. Bypass
+on **Scheduled prompts (paid)** and accept both published standard and
+contributor token rates, then choose **Run now** and confirm that
+occurrence's prompt, model and exact tier rates in a separate modal. An
+unpriced model cannot be approved. Declining leaves it due until expiry and
+makes no API call. Bypass
 permissions does not skip either confirmation. A changed model, prompt,
 conversation or paid setting refuses an old confirmation; the client checks
 the key it actually reads before HTTP. A receipt claimed just before such a

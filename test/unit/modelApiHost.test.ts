@@ -12,6 +12,7 @@ import {
   MODEL_API_MAX_TOOL_ROUNDS,
   GOAL_OBJECTIVE_MAX_CHARS,
   MODEL_TEXT,
+  SCHEDULE_LIFETIME_MS,
   type PaidFeature,
   UI_TEXT,
 } from '../../src/shared/constants'
@@ -525,6 +526,23 @@ async function startAccountScopedSchedules(
 }
 
 describe('Model API scheduled prompts (M52)', () => {
+  it('refuses a seven-day cadence before storing a never-runnable job', async () => {
+    const scheduleStore = createFileScheduleStore({
+      directory: path.join(scheduleRoot, 'seven-day-boundary'),
+      now: () => 1_000_000,
+      log: new FakeLogOutputChannel(),
+    })
+    const { t, session, schedules } = await startAccountScopedSchedules(scheduleStore, () =>
+      Promise.resolve(FAKE_MODEL_API_ACCOUNT_ID),
+    )
+    await expect(
+      schedules.create({ kind: 'interval', everyMs: SCHEDULE_LIFETIME_MS }, 'Review tests'),
+    ).rejects.toThrow(UI_TEXT.scheduleNoFire)
+    expect(await scheduleStore.list(session.sessionId)).toEqual([])
+    expect(t.api.responseBodies()).toEqual([])
+    await t.host.close()
+  })
+
   it('creates locally without a paid request and keeps key identity out of the panel event', async () => {
     const t = setup({
       store: memorySessionStore(),

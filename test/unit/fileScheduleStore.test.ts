@@ -140,4 +140,63 @@ describe('workspace schedule store (M52)', () => {
     expect(await readdir(directory)).toEqual(['corrupt.json'])
     expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('corrupt skipped'))
   })
+
+  it('removes an old stored seven-day job whose first fire is expiry', async () => {
+    const directory = path.join(root, 'equal-expiry')
+    const store = createFileScheduleStore({
+      directory,
+      now: () => START + MINUTE,
+      log: new FakeLogOutputChannel(),
+    })
+    await store.create(
+      job('equal-expiry', {
+        cadence: { kind: 'interval', everyMs: 7 * MILLISECONDS_PER_DAY },
+        nextFireAtMs: START + 7 * MILLISECONDS_PER_DAY,
+      }),
+    )
+    expect(await store.list('session-1')).toEqual([])
+    expect(await readdir(directory)).toEqual([])
+  })
+
+  it('admits a final due fire before expiry and refuses a late claim at expiry', async () => {
+    const directory = path.join(root, 'expiry-boundary')
+    const expiry = START + 7 * MILLISECONDS_PER_DAY
+    let now = expiry - 1
+    const store = createFileScheduleStore({
+      directory,
+      now: () => now,
+      log: new FakeLogOutputChannel(),
+    })
+    const due = job('final-due', { nextFireAtMs: expiry - MINUTE })
+    const late = job('too-late', { nextFireAtMs: expiry - MINUTE })
+    await store.create(due)
+    await store.create(late)
+    expect(await store.list('session-1')).toHaveLength(2)
+    expect(await store.claim(due, due.nextFireAtMs)).toBe(true)
+    expect(await store.claim(due, due.nextFireAtMs)).toBe(false)
+    now = expiry
+    expect(await store.claim(late, late.nextFireAtMs)).toBe(false)
+    expect(await store.list('session-1')).toEqual([])
+    const names = await readdir(directory)
+    expect(names).toEqual([`${due.id}.${String(due.nextFireAtMs)}.claim`])
+  })
+
+  it('refuses a claim whose receipt write crosses the expiry boundary', async () => {
+    const directory = path.join(root, 'expiry-during-claim')
+    const expiry = START + 7 * MILLISECONDS_PER_DAY
+    let reads = 0
+    const store = createFileScheduleStore({
+      directory,
+      now: () => {
+        reads += 1
+        return reads < 4 ? expiry - 1 : expiry
+      },
+      log: new FakeLogOutputChannel(),
+    })
+    const due = job('crossing', { nextFireAtMs: expiry - MINUTE })
+    await store.create(due)
+    expect(await store.claim(due, due.nextFireAtMs)).toBe(false)
+    expect(await readdir(directory)).toContain(`${due.id}.${String(due.nextFireAtMs)}.claim`)
+    expect(await store.list(due.sessionId)).toEqual([])
+  })
 })

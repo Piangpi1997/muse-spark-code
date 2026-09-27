@@ -1087,7 +1087,7 @@
   "scheduleRunConfirmAccept": "Exécuter cette fois",
   "scheduleConfirmationExpired": "Le modèle, la conversation ou la demande a changé pendant la confirmation. Vérifiez la programmation et choisissez de nouveau Exécuter.",
   "paidScheduledName": "Prompts planifiés",
-  "paidScheduledPrice": "{input}/1 M de jetons d’entrée, {cached}/1 M de jetons d’entrée en cache, {output}/1 M de jetons de sortie (tarif standard ; le tarif contributeur est inférieur)",
+  "paidScheduledPrice": "{input}/1 M de jetons d’entrée, {cached}/1 M de jetons d’entrée en cache, {output}/1 M de jetons de sortie",
   "paidConfirmScheduled": "Un prompt planifié arrivé à échéance attend votre intervention. Chaque exécution demande une nouvelle confirmation avant tout appel Model API. {price}. Facturé sur votre clé Model API ; le total dépend des jetons utilisés.",
   "usagePaidScheduled": {
     "one": "{count} exécution planifiée",

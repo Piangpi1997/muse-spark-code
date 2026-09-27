@@ -3,6 +3,7 @@ import { createPaidFeatures, isSubagentTaskConfirmed } from '../../src/host/paid
 import {
   GLOBAL_STATE_KEYS,
   SUBAGENT_PRICE_ACCEPTANCE_VERSION,
+  type PaidFeature,
   UI_TEXT,
 } from '../../src/shared/constants'
 import { FakeLogOutputChannel } from './helpers/fakes'
@@ -20,6 +21,21 @@ beforeEach(() => {
   window.state.focused = true
   vi.mocked(confirmModal).mockReset()
 })
+
+function paidWithSetting(data: Map<string, unknown>, enabledFeature: PaidFeature) {
+  return createPaidFeatures({
+    globalState: {
+      get: (key) => data.get(key),
+      update: (key, value) => {
+        data.set(key, value)
+        return Promise.resolve()
+      },
+    },
+    isSettingOn: (feature) => feature === enabledFeature,
+    isKeyStored: () => true,
+    log: new FakeLogOutputChannel(),
+  })
+}
 
 describe('M48 paid child task confirmation', () => {
   it('shows the selected model, actual rates, objective and retry-inclusive cap before approval', async () => {
@@ -56,22 +72,27 @@ describe('M48 paid child task confirmation', () => {
 
   it('requires the current price revision in addition to the setting and accepted feature', () => {
     const data = new Map<string, unknown>([[GLOBAL_STATE_KEYS.paidConfirmations, ['subagents']]])
-    const paid = createPaidFeatures({
-      globalState: {
-        get: (key) => data.get(key),
-        update: (key, value) => {
-          data.set(key, value)
-          return Promise.resolve()
-        },
-      },
-      isSettingOn: (feature) => feature === 'subagents',
-      isKeyStored: () => true,
-      log: new FakeLogOutputChannel(),
-    })
+    const paid = paidWithSetting(data, 'subagents')
     expect(paid.gate.isOn('subagents')).toBe(false)
     data.set(GLOBAL_STATE_KEYS.subagentPriceAcceptance, 'old-price')
     expect(paid.gate.isOn('subagents')).toBe(false)
     data.set(GLOBAL_STATE_KEYS.subagentPriceAcceptance, SUBAGENT_PRICE_ACCEPTANCE_VERSION)
     expect(paid.gate.isOn('subagents')).toBe(true)
+  })
+})
+
+describe('M52 scheduled feature acceptance', () => {
+  it('shows both verified tariff tiers before enabling the feature', async () => {
+    const data = new Map<string, unknown>()
+    const paid = paidWithSetting(data, 'scheduledPrompts')
+    vi.mocked(confirmModal).mockResolvedValueOnce(UI_TEXT.paidConfirmAccept)
+    await paid.gate.review()
+    const detail = vi.mocked(confirmModal).mock.calls[0]?.[1]?.detail
+    expect(detail).toContain('muse-spark-1.3:')
+    expect(detail).toContain('muse-spark-1.3-contributor:')
+    expect(detail).toContain('$1.250/1M input')
+    expect(detail).toContain('$0.100/1M input')
+    expect(detail).toContain('$0.002/1M cached input')
+    expect(paid.gate.isOn('scheduledPrompts')).toBe(true)
   })
 })

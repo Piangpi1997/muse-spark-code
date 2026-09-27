@@ -1087,7 +1087,7 @@
   "scheduleRunConfirmAccept": "Ejecutar esta vez",
   "scheduleConfirmationExpired": "El modelo, la conversación o la instrucción cambiaron durante la confirmación. Revisa la programación y elige Ejecutar de nuevo.",
   "paidScheduledName": "Prompts programados",
-  "paidScheduledPrice": "{input}/1 M de tokens de entrada, {cached}/1 M de tokens de entrada en caché, {output}/1 M de tokens de salida (tarifa estándar; la tarifa para colaboradores es menor)",
+  "paidScheduledPrice": "{input}/1 M de tokens de entrada, {cached}/1 M de tokens de entrada en caché, {output}/1 M de tokens de salida",
   "paidConfirmScheduled": "Un prompt programado vencido espera a que lo ejecutes. Cada ejecución vuelve a pedir confirmación antes de cualquier llamada a Model API. {price}. Se factura a tu clave de Model API; el total varía según los tokens usados.",
   "usagePaidScheduled": {
     "one": "{count} ejecución programada",

@@ -21,6 +21,7 @@ import {
   modelApiPaidTier,
   paidFeatureName,
   paidFeaturePrice,
+  scheduledRunPrice,
   subagentTaskPrice,
   type PaidState,
   type SubagentTaskConfirmation,
@@ -106,7 +107,7 @@ export async function isScheduledRunConfirmed(
       modal: true,
       detail: [
         fill(UI_TEXT.scheduleRunConfirmPrompt, { prompt: job.prompt }),
-        fill(UI_TEXT.scheduleRunConfirmPrice, { price: paidFeaturePrice('scheduledPrompts') }),
+        fill(UI_TEXT.scheduleRunConfirmPrice, { price: scheduledRunPrice(modelId) }),
         UI_TEXT.scheduleRunConfirmExtras,
       ].join('\n\n'),
     },

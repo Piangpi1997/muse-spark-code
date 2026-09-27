@@ -4498,7 +4498,7 @@ later passed its exact-tree local and hosted gates before merge.
 
 ### M52 — Scheduled prompts (D36)
 
-**Status 2026-09-26: M51 join staged; combined certification open.** The
+**Status 2026-09-26: PR #40 expiry and tariff fixes staged; final gate open.** The
 isolated M52 worktree is based on `34002ab`; its pre-M47 79-path staged tree
 is pinned at `refs/backup/m52-before-m47`. Sixteen M47-base fake schedule,
 paid guard, UI and workflow suites passed 622/622; all five TypeScript
@@ -4574,6 +4574,32 @@ emits an empty schedule list before the asynchronous restart, while a CLI
 sign-in attempt that keeps the session live does not drop it. The focused
 test passed after the fix; no real key or Model API call was used. This
 change requires its own exact-tree full gate before a commit.
+PR #40 review exposed two M52 boundaries. A seven-day interval first fires
+exactly at the seven-day expiry, so normal polling after that instant prunes
+the job without a runnable occurrence. Treat expiry as exclusive when
+calculating fires; reject a cadence with no eligible fire before creating
+storage. An eligible due occurrence remains pending until Run, Cancel or the
+seven-day expiry, whichever comes first. Prune and refuse claims at expiry,
+including old stored jobs whose first fire equals it. The scheduled
+feature-enable price currently quotes
+only standard token rates, and the per-run modal reuses those rates even for
+a contributor model. Show both verified tariff tiers at feature enable and
+the selected model's exact tier in each run modal; an unpriced model cannot
+gain consent. Preserve all other paid gates and the zero-request decline.
+Add red/green expiry, contributor, and unknown-model tests, update all
+localized rate templates and docs, then rerun the exact-tree full gate before
+updating PR #40.
+Seven focused cases failed before the expiry/tariff fix and then passed;
+one more test caught a receipt write crossing expiry and passed after the
+post-write guard. Six affected suites pass 273/273, all TypeScript projects,
+localization, targeted ESLint, Prettier and zero-clone duplication pass.
+No live Model API attempt was used. Full exact-tree quality and hosted PR
+checks remain open at this checkpoint.
+The first frozen candidate `f215881a` passed static, type, localization and
+duplication gates but its full unit gate failed one stale palette expectation
+for the old standard-only price (2,089 other tests passed, three skipped).
+The palette's new two-tier output is intended; update that explicit test,
+prove it green, and rerun full quality on the next exact tree.
 The native price-modal decline was observed with a fake Model API in an
 ordinary VS Code development window; see the receipt below. Meta's [interactive
 guide](https://dev.meta.ai/docs/muse-code/interactive) defines `/loop` as a
@@ -4595,11 +4621,12 @@ cron>" <prompt>` create local, session-scoped schedules; `/loop list` opens
   survives a window restart. Only a loaded session observes due work; no
   external or hidden process runs after VS Code closes.
 - **Money boundary**: scheduling, listing, and cancelling make no Model API
-  call. A due occurrence stays pending until the user explicitly chooses Run,
-  accepts that occurrence's prompt and published Model API token prices in a
+  call. A due occurrence stays pending until Run, Cancel or seven-day expiry,
+  whichever comes first. When the user chooses Run, they accept that
+  occurrence's prompt and published Model API token prices in a
   modal, and the machine-scoped, off-by-default scheduled-prompts paid gate
   is on with its price accepted. Bypass cannot skip this. A declined or closed
-  dialog leaves it pending and spends nothing. A paid transcript row and
+  dialog leaves it pending until expiry and spends nothing. A paid transcript row and
   Account & usage count identify every admitted scheduled run; its tokens
   remain in the session's token-cost estimate, not added twice. A price
   confirmation names one model and session; if either changes while the
