@@ -2602,7 +2602,8 @@ describe('uiReducer: the session goal (M45)', () => {
       host({ type: 'authState', status: 'signedIn', backend: 'modelApi' }),
     )
     const scheduled = uiReducer(modelApi, agent({ type: 'schedulesChanged', jobs: [job] }))
-    const editing = uiReducer(scheduled, { type: 'goalEditStarted', objective: goal.objective })
+    const withUsage = uiReducer(scheduled, host({ type: 'usageReport', backend: 'modelApi' }))
+    const editing = uiReducer(withUsage, { type: 'goalEditStarted', objective: goal.objective })
     const pending = uiReducer(editing, { type: 'goalSubmitted', requestId: 'goal-a' })
     const same = uiReducer(
       pending,
@@ -2615,6 +2616,7 @@ describe('uiReducer: the session goal (M45)', () => {
       }),
     )
     expect(same.schedules).toEqual([job])
+    expect(same.usageReport?.backend).toBe('modelApi')
     expect(same.goalEdit?.draft).toBe('Recovered objective')
     expect(same.pendingGoalCommand?.requestId).toBe('goal-a')
     const signingIn = uiReducer(
@@ -2622,16 +2624,47 @@ describe('uiReducer: the session goal (M45)', () => {
       host({ type: 'authState', status: 'signingIn', backend: 'modelApi' }),
     )
     expect(signingIn.schedules).toEqual([job])
+    expect(signingIn.usageReport).toBeUndefined()
+    // The device code arrives in a later update: still the same live Model
+    // API session, kept for a cancel to return to (the review of PR #43).
+    const withCode = uiReducer(
+      signingIn,
+      host({
+        type: 'authState',
+        status: 'signingIn',
+        backend: 'modelApi',
+        verificationUrl: 'https://example.test/device',
+        userCode: 'ABCD-1234',
+      }),
+    )
+    expect(withCode.sessionId).toBe('s1')
+    expect(withCode.schedules).toEqual([job])
+    expect(withCode.auth.userCode).toBe('ABCD-1234')
+    const cancelled = uiReducer(
+      withCode,
+      host({ type: 'authState', status: 'signedIn', backend: 'modelApi' }),
+    )
+    expect(cancelled.sessionId).toBe('s1')
+    expect(cancelled.schedules).toEqual([job])
+    // Success moves the window to Muse Code: that is the account boundary.
+    const onMuseCode = uiReducer(
+      withCode,
+      host({ type: 'authState', status: 'signedIn', backend: 'museCode' }),
+    )
+    expect(onMuseCode.sessionId).toBeUndefined()
+    expect(onMuseCode.schedules).toEqual([])
     const signedOut = uiReducer(
       same,
       host({ type: 'authState', status: 'signedOut', backend: 'modelApi' }),
     )
     expect(signedOut.schedules).toEqual([])
+    expect(signedOut.usageReport).toBeUndefined()
     const switchedBackend = uiReducer(
       same,
       host({ type: 'authState', status: 'signedIn', backend: 'museCode' }),
     )
     expect(switchedBackend.schedules).toEqual([])
+    expect(switchedBackend.usageReport).toBeUndefined()
     const switched = uiReducer(
       same,
       host({
@@ -2644,6 +2677,140 @@ describe('uiReducer: the session goal (M45)', () => {
     expect(switched.schedules).toEqual([])
     expect(switched.goalEdit).toBeUndefined()
     expect(switched.pendingGoalCommand).toBeUndefined()
+  })
+
+  it('removes account A private views on sign-out while keeping an unsent draft', () => {
+    const seed = reduceAll(
+      [
+        host({ type: 'authState', status: 'signedIn', backend: 'modelApi' }),
+        host({
+          type: 'historyLoaded',
+          sessionId: 'account-a',
+          items: [
+            { itemId: 'u1', kind: 'userMessage', status: 'completed', text: 'A private prompt' },
+          ],
+          todos: [],
+        }),
+        host({
+          type: 'childTranscript',
+          sessionId: 'child-a',
+          items: [{ itemId: 'c1', kind: 'agentMessage', status: 'completed', text: 'A child' }],
+        }),
+        host({
+          type: 'outputPage',
+          itemId: 'o1',
+          outputRef: 'a',
+          offsetBytes: 0,
+          byteLen: 8,
+          content: 'A output',
+          eof: true,
+        }),
+      ],
+      { ...initialUiState, draft: 'Unsent local draft' },
+    )
+    expect(seed.transcript).toHaveLength(1)
+    const signedOut = uiReducer(
+      seed,
+      host({
+        type: 'authState',
+        status: 'error',
+        backend: 'modelApi',
+        detail: UI_TEXT.signOutPending,
+      }),
+    )
+    const accountB = uiReducer(
+      signedOut,
+      host({ type: 'authState', status: 'signedIn', backend: 'modelApi' }),
+    )
+    expect(accountB.transcript).toEqual([])
+    expect(accountB.childTranscripts).toEqual({})
+    expect(accountB.outputPages).toEqual({})
+    expect(accountB.sessionId).toBeUndefined()
+    expect(accountB.draft).toBe('Unsent local draft')
+  })
+
+  it('clears a same-backend key replacement explicitly, but keeps secondary-key CLI chat', () => {
+    const active = reduceAll([
+      host({ type: 'authState', status: 'signedIn', backend: 'museCode' }),
+      host({
+        type: 'historyLoaded',
+        sessionId: 'cli-a',
+        items: [{ itemId: 'u1', kind: 'userMessage', status: 'completed', text: 'CLI chat' }],
+        todos: [],
+      }),
+    ])
+    const secondaryKey = uiReducer(
+      active,
+      host({ type: 'authState', status: 'signedIn', backend: 'museCode' }),
+    )
+    expect(secondaryKey.transcript).toEqual(active.transcript)
+    const switchedAccount = uiReducer(
+      secondaryKey,
+      host({ type: 'conversationCleared', accountBoundary: true }),
+    )
+    expect(switchedAccount.transcript).toEqual([])
+    expect(switchedAccount.sessionId).toBeUndefined()
+  })
+
+  it('does not swallow an account clear as the echo of a local New Conversation', () => {
+    const localClear = uiReducer(initialUiState, { type: 'conversationCleared' })
+    const privateAfterClear = uiReducer(
+      localClear,
+      host({
+        type: 'historyLoaded',
+        sessionId: 'old-a',
+        items: [{ itemId: 'u1', kind: 'userMessage', status: 'completed', text: 'A data' }],
+        todos: [],
+      }),
+    )
+    const boundary = uiReducer(
+      privateAfterClear,
+      host({ type: 'conversationCleared', accountBoundary: true }),
+    )
+    expect(boundary.transcript).toEqual([])
+    expect(boundary.pendingClearEchoes).toBe(0)
+  })
+
+  it('clears account caches on the boundary message before the next auth reply', () => {
+    const old: UiState = {
+      ...initialUiState,
+      auth: { status: 'signedIn', backend: 'museCode', detail: undefined, methods: undefined },
+      draft: 'Unsent local draft',
+      title: 'Private A title',
+      sessionId: 'account-a',
+      sessions: [],
+      archivedIds: ['account-a'],
+      model: { modelId: 'account-a-model', contextLimit: 100 },
+      models: [{ modelId: 'account-a-model', displayLabel: 'A model', isDefault: false }],
+      skills: [{ selector: 'account-a-skill', displayName: 'A skill', description: 'A' }],
+      usageReport: {
+        backend: 'museCode',
+        subscription: undefined,
+        account: { signInMethod: 'cli' },
+        insights: undefined,
+      },
+      editorContext: { relativePath: 'private-a.ts', startLine: 1, endLine: 2, isEmpty: false },
+      dismissedEditorPath: 'private-a.ts',
+      mentionResults: { requestId: 1, items: [] },
+      pendingInsert: 'Private A insert',
+      announcement: { text: 'Private A notice', sequence: 1 },
+    }
+    const cleared = uiReducer(old, host({ type: 'conversationCleared', accountBoundary: true }))
+    expect(cleared.auth.status).toBe('checking')
+    expect(cleared.draft).toBe('Unsent local draft')
+    expect(cleared.title).toBeUndefined()
+    expect(cleared.sessionId).toBeUndefined()
+    expect(cleared.sessions).toEqual([])
+    expect(cleared.archivedIds).toEqual([])
+    expect(cleared.model).toBeUndefined()
+    expect(cleared.models).toEqual([])
+    expect(cleared.skills).toBeUndefined()
+    expect(cleared.usageReport).toBeUndefined()
+    expect(cleared.editorContext).toBeUndefined()
+    expect(cleared.dismissedEditorPath).toBeUndefined()
+    expect(cleared.mentionResults).toBeUndefined()
+    expect(cleared.pendingInsert).toBeUndefined()
+    expect(cleared.announcement).toBeUndefined()
   })
 
   it('drops the goal with the conversation', () => {

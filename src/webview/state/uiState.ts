@@ -172,6 +172,12 @@ export interface UiState {
     readonly backend: BackendKind | undefined
     /** The sign-in paths the gate offers; undefined means both. */
     readonly methods: readonly SignInMethod[] | undefined
+    readonly verificationUrl?: string | undefined
+    readonly userCode?: string | undefined
+    readonly installCommand?: string | undefined
+    readonly hasCli?: boolean | undefined
+    readonly hasCliSession?: boolean | undefined
+    readonly installState?: 'running' | 'failed' | undefined
   }
   readonly model:
     { readonly modelId: string; readonly contextLimit: number | undefined } | undefined
@@ -1584,6 +1590,28 @@ function clearedConversation(state: UiState): UiState {
   }
 }
 
+/** Credentials changed: no prior-account rows may survive in any panel cache. */
+function clearedAccountView(state: UiState): UiState {
+  return {
+    ...clearedConversation(state),
+    auth: initialUiState.auth,
+    canEditSessions: initialUiState.canEditSessions,
+    sessions: [],
+    archivedIds: [],
+    model: undefined,
+    models: [],
+    skills: undefined,
+    usageReport: undefined,
+    editorContext: undefined,
+    dismissedEditorPath: undefined,
+    mentionResults: undefined,
+    pendingInsert: undefined,
+    announcement: undefined,
+    pendingRestore: undefined,
+    pendingClearEchoes: 0,
+  }
+}
+
 /**
  * The goal after a history load (M45): the history's, or, when it cannot
  * say (Muse Code's inline history carries none), the one the panel already
@@ -1684,6 +1712,9 @@ function applyHostMessage(state: UiState, message: HostToWebviewMessage, at: num
       return { ...state, focusRequests: state.focusRequests + 1 }
     }
     case 'conversationCleared': {
+      if (message.accountBoundary === true) {
+        return clearedAccountView(state)
+      }
       // The echo of a clear this panel already made is spent, not applied
       // again: a message sent right after it must survive (M25).
       return state.pendingClearEchoes > 0
@@ -1709,16 +1740,32 @@ function applyHostMessage(state: UiState, message: HostToWebviewMessage, at: num
       }
     }
     case 'authState': {
+      // A CLI device sign-in started while the Model API session is live
+      // (M55) sends several `signingIn` updates (the code arrives in a later
+      // one); each keeps that session, which a cancel or failure returns to
+      // (the review of PR #43). Its success on Muse Code is the boundary.
+      const isModelApiHeld =
+        state.auth.backend === 'modelApi' &&
+        (state.auth.status === 'signedIn' || state.auth.status === 'signingIn')
+      const isTransientCliSignIn =
+        message.status === 'signingIn' && message.backend === 'modelApi' && isModelApiHeld
+      const isOtherBackend =
+        state.auth.backend !== undefined &&
+        message.backend !== state.auth.backend &&
+        (state.auth.status === 'signedIn' || isModelApiHeld)
+      const isAccountBoundary =
+        !isTransientCliSignIn && (message.status !== 'signedIn' || isOtherBackend)
+      const current = isAccountBoundary ? clearedAccountView(state) : state
       return {
-        ...state,
+        ...current,
         // Account-bound prompts disappear on sign-out or backend switch.
         // A CLI sign-in attempt can be transient while the Model API key and
         // session stay live; keep its list until auth actually changes.
         schedules:
           message.backend === 'modelApi' &&
           (message.status === 'signedIn' ||
-            (message.status === 'signingIn' && state.auth.backend === 'modelApi'))
-            ? state.schedules
+            (message.status === 'signingIn' && current.auth.backend === 'modelApi'))
+            ? current.schedules
             : [],
         // No account identity accompanies authState: discard prior-account
         // usage even if the backend name stays the same.
@@ -1728,6 +1775,12 @@ function applyHostMessage(state: UiState, message: HostToWebviewMessage, at: num
           detail: message.detail,
           backend: message.backend,
           methods: message.methods,
+          verificationUrl: message.verificationUrl,
+          userCode: message.userCode,
+          installCommand: message.installCommand,
+          hasCli: message.hasCli,
+          hasCliSession: message.hasCliSession,
+          installState: message.installState,
         },
       }
     }

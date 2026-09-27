@@ -81,6 +81,7 @@ export type SettingsSnapshot = z.infer<typeof settingsSnapshotSchema>
 export const AUTH_STATUSES = [
   'checking',
   'noCli',
+  'installing',
   'signedOut',
   'signingIn',
   'signedIn',
@@ -227,6 +228,8 @@ const webviewToHostMessageSchema = z.discriminatedUnion('type', [
   // The user pressed Stop.
   z.object({ type: z.literal('cancelTurn') }),
   z.object({ type: z.literal('signIn'), method: z.enum(SIGN_IN_METHODS) }),
+  z.object({ type: z.literal('installMuseCode') }),
+  z.object({ type: z.literal('cancelSignIn') }),
   z.object({ type: z.literal('signOut') }),
   // Re-check for the CLI / restart the backend after an error.
   z.object({ type: z.literal('retryBackend') }),
@@ -431,7 +434,7 @@ const hostToWebviewMessageSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('focusInput') }),
   // The host dropped this surface's conversation (M25): New Conversation
   // from a keybinding, or the echo of the webview's own clear.
-  z.object({ type: z.literal('conversationCleared') }),
+  z.object({ type: z.literal('conversationCleared'), accountBoundary: z.optional(z.boolean()) }),
   // Sent first on every `ready` (M25): the session and turn the host holds
   // for this surface, so a reloaded webview keeps the transcript it saved
   // only when that conversation is still the live one.
@@ -459,6 +462,12 @@ const hostToWebviewMessageSchema = z.discriminatedUnion('type', [
     backend: z.optional(z.enum(BACKEND_KINDS)),
     /** The sign-in paths the gate offers; both when absent. */
     methods: z.optional(z.array(z.enum(SIGN_IN_METHODS))),
+    verificationUrl: z.optional(z.url()),
+    userCode: z.optional(z.string()),
+    installCommand: z.optional(z.string()),
+    hasCli: z.optional(z.boolean()),
+    hasCliSession: z.optional(z.boolean()),
+    installState: z.optional(z.enum(['running', 'failed'])),
   }),
   // The active session's model (shown in the composer pill) and identity.
   z.object({

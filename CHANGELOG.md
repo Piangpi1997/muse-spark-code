@@ -7,6 +7,38 @@ happened, not what was planned; superseded entries are kept.
 
 ## [Unreleased]
 
+Model API conversations now carry a one-way key digest in local storage.
+History, reads, resume and fork refuse another key's sessions. Replacing the
+active Model API key stops its old host before storing the new key and starts
+a fresh conversation. History clears on account change and drops old list
+replies. Replacing a secondary key while Muse Code is active keeps its CLI
+conversation; an extension-paid image awaiting approval or retry refuses if
+that key changes, before a request can use the replacement key.
+Older sessions without ownership metadata stay on disk but cannot be reopened.
+
+Authentication changes now clear prior-account transcript, output and agent
+views and file chips while keeping unsent draft text. Held reads, History events and resumed
+sessions from a stopped host cannot refill those views. Selecting a cached
+host after a secondary-key change leaves the running Muse Code session under
+its manager's control. Installer discovery in `auto` mode retires an active
+Model API session before switching to the signed-in CLI.
+Session events and rename replies arriving while an account stop waits for
+turn cancellation can no longer refill the cleared panel or title.
+A missed-update history read begun before account stop likewise cannot replay
+old content or its failure notice after sign-out; a new account's own reload
+can proceed while the old read is pending.
+Reloading the panel during the account-stop cancellation wait now receives
+an empty session, preventing an old saved transcript from reappearing.
+A saved conversation stays hidden while the panel connects or checks sign-in:
+its title, transcript, goal and tasks appear only after the host confirms the
+same live session and a signed-in account. An account-boundary message gates
+the panel and clears prior usage, model and skill lists before the next auth
+reply, while keeping the unsent local draft.
+Session actions now use backend admission as well as the visible sign-in
+status. Held output and rewind reads, side forks, goal and subagent commands,
+compaction and paid scheduled-run confirmation stop at the account boundary;
+paged patch reads stay on their originating session.
+
 Model API steering now counts named text files from the active turn and all
 accepted steers against the same 768 KiB allowance, including steers already
 drained into replay. An over-budget steer is refused before its card or file
@@ -100,6 +132,17 @@ its session is replaced. A late turn acknowledgement cannot clear attachment
 chips or mark the new conversation as accepted. Owned recovery from a
 not-loaded session still retries normally. Disposed Model API sessions reject
 new sends and steering before a paid request can start.
+
+M55 account changes now carry an admission generation through host selection
+and session opening. A message held before sign-out cannot resume under a
+new sign-in to the same backend; its draft and attachments stay available.
+Overlapping sign-outs from two panels share one operation, so an earlier
+caller cannot reopen paid admission while another stop is pending. Replacing
+a Model API key also gates new host selection until the key write and
+backend restart settle.
+Model and skill choices are now cleared when a session ends and loaded again
+for the next account or backend. A late model or skill list from the old
+session cannot replace the new session's choices.
 
 Three paid extras of Meta's Model API, off until you turn them on, and loud
 while they are (PLAN.md D30, D34).
@@ -246,6 +289,43 @@ while they are (PLAN.md D30, D34).
   readable file-name annotation for History resume. Image-only rewind remains
   available.
   Stop removes tool-read media from future replay if its turn ends early.
+
+- **In-panel Muse Code setup** (M55). When the CLI is missing, the sign-in
+  screen displays Meta's platform-specific installer command in a modal before
+  asking to run it in a visible terminal, then checks for the new binary. The
+  Account & usage dialog offers the same setup while the Model API stays
+  signed in, and lets a Muse Code user add or replace the Model API key
+  without restarting the CLI session or making a paid call. Sign-in controls
+  remain visible above a saved transcript. Muse Code's
+  device-code sign-in shows its approval code and browser link in the panel,
+  with cancel and timeout cleanup, including while its temporary host is
+  still starting. A credential write at the cancel or timeout boundary still
+  completes sign-in. The Model API key path still uses VS Code
+  SecretStorage.
+  A cancelled or failed CLI sign-in restores an active Model API session;
+  a late device code after Cancel is ignored. Installer terminal launch
+  failures are distinct from discovery timeouts, and a late installer watcher
+  cannot restore credentials cleared by sign-out. Sign-out also invalidates
+  an open Model API key prompt and waits for an accepted SecretStorage write
+  and backend restart before clearing the key and ending sessions, so late
+  completion cannot sign back in or leave a backend active. If the CLI logout
+  terminal cannot open, the extension still closes its host. A credential-free
+  local logout hold keeps old CLI or environment credentials from silently
+  signing it back in after refresh or window restart; the panel explains how
+  to finish logout without exposing the key. Host selection checks that
+  AuthService still admits the chosen backend before and after reading raw
+  credentials. A host that finishes opening after admission is revoked is
+  closed, and a held refresh rereads facts before publishing auth. If the
+  hold cannot be saved, sign-out still closes the host and reports an
+  actionable error. Sign-out gates session actions and starts host shutdown
+  before waiting on state or key storage; a failed SecretStorage deletion
+  still leaves the host stopped and the panel gated. An old CLI credential
+  file can be replaced by an explicit browser approval only after a new
+  file modification is verified, while `META_API_KEY` still blocks recovery.
+  Installer timeout or terminal failure during sign-out now keeps the account
+  gated even if an old credential remains, and a browser sign-in click paused
+  on SecretStorage cannot start its device flow after a newer sign-out.
+
 
 - **Image edits** (M44, PLAN.md D37). With image generation on, the model
   can also change one workspace image, or combine up to four, by a prompt,

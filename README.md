@@ -165,14 +165,47 @@ harness:shots`) against a scripted session, so they match the build.
 2. Open the **Muse Spark** view from the activity bar (or press
    `Ctrl+Shift+Alt+Esc` on Windows, `Cmd+Shift+Esc` on macOS,
    `Ctrl+Shift+Esc` on Linux for a conversation in an editor tab).
-3. Sign in, one of two ways:
-   - **Sign in with your Meta account** opens a terminal running `muse login`
-     from the [Muse Code CLI](https://dev.meta.ai/products/muse-code/) and
-     waits for the browser sign-in to finish. Work is billed to your Muse
-     subscription.
+3. If Muse Code is missing, **Install Muse Code** opens a confirmation dialog
+   showing Meta's exact command for this operating system. The same action is
+   in **Account & usage** while you work with a Model API key. **Run installer**
+   opens a visible VS Code terminal;
+   the panel checks for the CLI and offers sign-in when it appears. You can also
+   open [Meta's installation instructions](https://dev.meta.ai/docs/muse-code).
+   If VS Code cannot open the installer terminal, the panel reports that
+   directly and keeps the manual instructions available.
+   Sign in, one of two ways:
+   - **Sign in with your Meta account** shows an approval code in the panel.
+     Open its sign-in page in your browser and approve the code. **Cancel
+     sign-in** stops the temporary CLI sign-in process. Work is billed to your
+     Muse subscription.
    - **Use a Model API key** takes a key shaped like `LLM|<id>|<secret>` from
      dev.meta.ai, stores it in VS Code's secret storage and runs the Model API
      backend with the extension's own tools, pay as you go.
+     **Account & usage** lets you add or replace that key while Muse Code is
+     signed in. The CLI session stays open; the key stays in VS Code secret
+     storage and enables only paid features you explicitly turn on. After a CLI
+     install, **Account & usage** also offers Muse Code browser sign-in. When
+     sign-in is needed in a conversation with history, its controls stay above
+     the transcript. Signing out cancels any still-open key prompt; a key
+     write and backend restart already in progress finish before the stored
+     key is cleared and conversations end. Two panels requesting sign-out
+     share one operation; the window stays gated until it finishes. A message
+     that was still opening its session
+     before sign-out keeps its draft and attachment chips for a fresh send;
+     it cannot run under the next signed-in account. If `muse logout` is still running
+     or its terminal could not open, the panel stays gated and tells you to
+     finish logout. An inherited `META_API_KEY` remains outside the extension:
+     remove it from your environment or VS Code's configured environment
+     variables, then choose **Check again**. Browser approval cannot override
+     that key's billing priority. If VS Code reports that sign-out protection
+     could not be saved, finish `muse logout` and remove `META_API_KEY`
+     before reopening VS Code. If the old CLI credential file remains, a
+     fresh browser approval can replace it; the panel requires a new file
+     write before using that sign-in. If VS Code cannot delete the stored
+     Model API key, sign-out stops this window's backend and keeps it gated
+     until the key can be cleared.
+     Model and skill picker choices reload for the next session; choices from
+     the previous account are cleared when its session ends.
 4. Type a message and press `Enter`. `/` shows the palette, `@` mentions a
    file, the microphone dictates.
 
@@ -187,7 +220,7 @@ The model pill shows the model as soon as the panel opens.
 
 | Backend                                                                      | Sign-in                                                          | Billing                | Tools                                                                                                                                                                                                                 |
 | ---------------------------------------------------------------------------- | ---------------------------------------------------------------- | ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Muse Code CLI** (`muse serve`, Muse Session Protocol via `@muse-code/sdk`) | The CLI's own browser sign-in (`muse login`)                     | Your Muse subscription | The CLI's, inside its OS sandbox where that works (see `shellSandbox`); its bundled skills, your user rules, its own memory, subagents, and the Problems panel through the extension                                  |
+| **Muse Code CLI** (`muse serve`, Muse Session Protocol via `@muse-code/sdk`) | The CLI's own device-code browser sign-in                        | Your Muse subscription | The CLI's, inside its OS sandbox where that works (see `shellSandbox`); its bundled skills, your user rules, its own memory, subagents, and the Problems panel through the extension                                  |
 | **Meta Model API** (`https://api.meta.ai/v1`)                                | A key from dev.meta.ai, kept in SecretStorage, sent only to Meta | Pay as you go          | The extension tools: read, edit, write, search, list, shell, skills, questions, todos and diagnostics; opt-in bounded subagents; shared Muse Code memory tools and configured MCP servers; workspace rules and skills |
 
 `museSpark.backend` picks: `auto` (default) uses the CLI when it is installed
@@ -200,10 +233,34 @@ on Windows, `~/.local/bin` elsewhere).
 Conversations on the Model API backend are saved as they go under VS Code's
 workspace storage for the extension, so the History dialog lists them after
 a reload, and a resumed one continues with its transcript and its edit
-patches. The CLI backend keeps its own session store. If the panel itself
+patches while the same Model API key is stored. History, resume, reads and
+forks are limited to that key's sessions. Replacing the key starts a fresh
+conversation; older sessions remain on disk for their original key. Sessions
+saved before ownership was recorded remain on disk but cannot be reopened
+because their account cannot be proved. The CLI backend keeps its own session
+store. Replacing its secondary Model API key keeps the Muse Code conversation
+running. A paid image awaiting approval or retry stops if that key changes;
+the old request cannot use the new key. If the panel itself
 ever fails to render, it shows the error and a **Reload** button instead of
 going blank; Reload brings the conversation back as it was, running turn and
 waiting cards included.
+
+Sign-out and account replacement clear the panel's transcript, loaded tool
+output, agent transcripts and retained file chips before another account signs in. Unsent draft
+text stays in the composer. When an installer makes a signed-in Muse Code CLI
+available in `auto` mode, the current Model API session ends before the next
+message starts a fresh CLI session.
+An older missed-update history read cannot refill the panel after sign-out;
+a fresh account's own history reload still works while that read is pending.
+A panel reloaded while sign-out cancels the old turn receives an empty session
+instead of restoring that account's transcript.
+While a reloaded panel connects or checks sign-in, its saved conversation title
+and transcript, goal and task list stay hidden. They appear after the host
+confirms the live session and signed-in account. An account change clears
+the prior usage report, model and skill lists before the next sign-in reply.
+An output or rewind read begun before sign-out cannot open old content or
+restore its draft afterward. A paid scheduled run confirmed during a key
+change is refused before another Model API request.
 
 ## Permission modes
 

@@ -26,6 +26,7 @@ import {
 } from '../../src/host/processTree'
 import { ORPHAN_SWEEP_ROUNDS } from '../../src/shared/constants'
 import { removeFolder } from './helpers/temporaryFolders'
+import { readJobSource } from './helpers/jobSource'
 
 const IS_WINDOWS = process.platform === 'win32'
 
@@ -143,6 +144,7 @@ describe('killTree', () => {
       const systemRoot = String(process.env['SystemRoot'])
       const logged: string[] = []
       const assembly = await shellJobAssembly({
+        readJobSource,
         storageDir: storage.dir,
         systemRoot,
         log: (message) => {
@@ -189,6 +191,7 @@ describe('killTree', () => {
     'leaves a background process running when the command ends on its own (M27)',
     async () => {
       const assembly = await shellJobAssembly({
+        readJobSource,
         storageDir: storage.dir,
         systemRoot: String(process.env['SystemRoot']),
         log: () => undefined,

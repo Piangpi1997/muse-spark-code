@@ -8,6 +8,7 @@
 !resources/walkthrough/**
 !native/windows/dictate.ps1
 !native/windows/capture.ps1
+!native/windows/MuseSparkMcpJob.cs
 !native/darwin/muse-dictate
 !package.json
 !package.nls.json

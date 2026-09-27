@@ -215,6 +215,8 @@ export interface ImageRunDeps {
   readonly isStillOn: () => boolean
   /** Called once an image was returned: Meta bills it whether or not it can be saved. */
   readonly onBilled: () => void
+  /** Rechecked with the key read for each paid image attempt and retry. */
+  readonly admitAttempt?: (keyDigest: string | undefined) => void
 }
 
 function failure(reason: string): ToolOutcome {
@@ -256,7 +258,7 @@ async function request(plan: ImagePlan, deps: ImageRunDeps): Promise<ImagesRespo
     output_format: IMAGE_OUTPUT_FORMAT,
   } as const
   return plan.kind === 'generate'
-    ? await deps.client.createImage(common, deps.signal)
+    ? await deps.client.createImage(common, deps.signal, deps.admitAttempt)
     : await deps.client.editImage(
         {
           ...common,
@@ -265,6 +267,7 @@ async function request(plan: ImagePlan, deps: ImageRunDeps): Promise<ImagesRespo
           })),
         },
         deps.signal,
+        deps.admitAttempt,
       )
 }
 

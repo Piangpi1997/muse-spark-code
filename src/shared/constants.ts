@@ -49,6 +49,8 @@ export const COMMAND_IDS = {
 export const GLOBAL_STATE_KEYS = {
   /** "Don't ask again" on the Windows sandbox setup prompt. */
   sandboxPromptSuppressed: 'museSpark.sandboxPromptSuppressed',
+  /** Credential-free sign-out hold, so activation cannot restore an old CLI credential. */
+  cliLogoutHold: 'museSpark.cliLogoutHold',
   /** Legacy unscoped subscription snapshot, erased at activation (M53 follow-up). */
   lastUsage: 'museSpark.lastUsage',
   /**
@@ -1252,6 +1254,17 @@ export const MUSE_DISABLE_SANDBOX_ARG = '--disable-sandbox'
 export const MUSE_TRUST_WORKSPACE_ARG = '--trust-workspace'
 export const MUSE_DISABLE_SHELL_ARG = '--disable-shell'
 export const MUSE_INSTALL_URL = 'https://dev.meta.ai/products/muse-code/'
+export const MUSE_INSTALL_COMMANDS = {
+  win32: 'irm https://dev.meta.ai/install.ps1 | iex',
+  posix: 'curl -fsSL https://dev.meta.ai/install.sh | sh',
+} as const
+export const MUSE_INSTALL_POLL_INTERVAL_MS = 2000
+export const MUSE_INSTALL_TIMEOUT_MS = 5 * 60 * 1000
+export const MUSE_DEVICE_SIGN_IN_URL_ORIGIN = 'https://auth.meta.com'
+export const MUSE_ACCOUNT_LOGIN_START = 'account/loginStart'
+export const MUSE_ACCOUNT_LOGIN_CANCEL = 'account/loginCancel'
+export const MUSE_ACCOUNT_LOGIN_COMPLETED = 'account/loginCompleted'
+export const MUSE_ACCOUNT_DEVICE_CODE_TYPE = 'deviceCode'
 export const MUSE_DOCS_URL = 'https://dev.meta.ai/products/muse-code/'
 // Muse Code's own page on MCP servers and hooks (M31).
 export const MUSE_EXTENDING_DOCS_URL = 'https://dev.meta.ai/docs/muse-code/extending'
@@ -1336,7 +1349,6 @@ export const WINDOWS_PSMODULEPATH_VARIABLE = 'PSModulePath'
  * that app.
  */
 export const DICTATION_DARWIN_APP_NAME_FLAG = '--app-name'
-export const MUSE_LOGIN_ARGS = ['login'] as const
 export const MUSE_LOGOUT_ARGS = ['logout'] as const
 // `Muse Spark: Open in Terminal` runs the CLI with no arguments (its TUI).
 export const MUSE_TERMINAL_NAME = 'Muse Code'
@@ -1500,6 +1512,7 @@ export const MODEL_TEXT = {
   imageGenerationOff:
     'image generation is off; the user turns it on (it is paid) in the palette or the museSpark.modelApiImageGeneration setting',
   imagePathTaken: 'something already exists at that path; choose a new file name',
+  imageAccountChanged: 'the Model API key changed; ask again before buying an image',
   pathChangedAfterApproval: 'path changed after approval; request a new approval',
   // The user said no in the price confirmation (M44): nothing was bought.
   imageDeclined: 'the user declined to buy this image; nothing was bought or written',

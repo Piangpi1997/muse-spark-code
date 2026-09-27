@@ -28,6 +28,7 @@ import { loadToolImage } from '../../src/core/toolImages'
 import { posixQuoted } from '../../src/core/shellQuote'
 import type { RunProgram } from '../../src/host/processTree'
 import { removeFolder } from './helpers/temporaryFolders'
+import { readJobSource } from './helpers/jobSource'
 
 const INSTALLED_SHELLS: ReadonlySet<string> = new Set([
   '/usr/bin/bash',
@@ -221,6 +222,7 @@ const jobStorage = mkdtempSync(path.join(tmpdir(), 'muse-toolio-jobs-'))
 const jobAssembly =
   process.platform === 'win32'
     ? shellJobAssembly({
+        readJobSource,
         storageDir: jobStorage,
         systemRoot: String(process.env['SystemRoot']),
         log: () => undefined,

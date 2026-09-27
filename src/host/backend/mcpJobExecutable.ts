@@ -8,13 +8,13 @@ import path from 'node:path'
 import { powerShellQuoted } from '../../core/shellQuote'
 import { SHELL_JOB_FOLDER, WINDOWS_POWERSHELL_COMMAND_ARGS } from '../../shared/constants'
 import { runProgram, windowsPowerShell } from '../processTree'
-import { MCP_JOB_SOURCE } from './mcpJobSource'
 import type { ShellJobDeps } from './shellJob'
 
 const SELF_TEST_ARGUMENT = '--self-test'
 const SELF_TEST_TOKEN = 'muse-spark-mcp-job-ready'
 
-const SOURCE = `using System;
+// The shared Win32 half is the shipped native/windows/MuseSparkMcpJob.cs (`jobSource.ts`).
+const launcherSource = (mcpJobSource: string): string => `using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.IO;
@@ -24,7 +24,7 @@ using System.Runtime.Serialization;
 using System.Runtime.Serialization.Json;
 using System.Text;
 
-${MCP_JOB_SOURCE}
+${mcpJobSource}
 
 [DataContract]
 public sealed class MuseSparkMcpLaunchConfig {
@@ -93,12 +93,19 @@ async function isPresent(file: string): Promise<boolean> {
   }
 }
 
-export function mcpJobExecutableName(): string {
-  const digest = createHash('sha256').update(SOURCE).digest('hex').slice(0, DIGEST_LENGTH)
+export function mcpJobExecutableName(mcpJobSource: string): string {
+  const digest = createHash('sha256')
+    .update(launcherSource(mcpJobSource))
+    .digest('hex')
+    .slice(0, DIGEST_LENGTH)
   return `${EXECUTABLE_STEM}${digest}${EXECUTABLE_EXTENSION}`
 }
 
-async function compile(executable: string, deps: McpJobExecutableDeps): Promise<void> {
+async function compile(
+  executable: string,
+  csharp: string,
+  deps: McpJobExecutableDeps,
+): Promise<void> {
   const directory = path.dirname(executable)
   await mkdir(directory, { recursive: true })
   const stem = path.join(directory, randomUUID())
@@ -106,7 +113,7 @@ async function compile(executable: string, deps: McpJobExecutableDeps): Promise<
   const output = `${stem}${EXECUTABLE_EXTENSION}`
   const powershell = windowsPowerShell(deps.systemRoot)
   try {
-    await writeFile(source, SOURCE, 'utf8')
+    await writeFile(source, csharp, 'utf8')
     await (deps.run ?? runProgram)(
       powershell.file,
       [
@@ -164,11 +171,16 @@ export function mcpJobExecutable(deps: McpJobExecutableDeps): () => Promise<stri
   let ready: Promise<string | undefined> | undefined
   return () =>
     (ready ??= (async () => {
-      const executable = path.join(deps.storageDir, SHELL_JOB_FOLDER, mcpJobExecutableName())
       try {
+        const mcpJobSource = await deps.readJobSource()
+        const executable = path.join(
+          deps.storageDir,
+          SHELL_JOB_FOLDER,
+          mcpJobExecutableName(mcpJobSource),
+        )
         let didCompile = false
         if (!(await isPresent(executable))) {
-          await compile(executable, deps)
+          await compile(executable, launcherSource(mcpJobSource), deps)
           didCompile = true
         }
         await verify(executable, deps)

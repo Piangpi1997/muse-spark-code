@@ -3,7 +3,8 @@
 // every call confirmed with its price, checked before anything is asked,
 // and billed to the key through the Model API's image endpoints.
 import { Buffer } from 'node:buffer'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
+import { ModelApiClient } from '../../src/core/backends/modelapi/client'
 import type { ImagePlan } from '../../src/core/backends/modelapi/imageGeneration'
 import { ideImageTools } from '../../src/host/ide/imageTools'
 import { fakeModelApi, fakeModelApiClient, TINY_PNG_BASE64 } from './helpers/fakeModelApi'
@@ -13,22 +14,45 @@ import { memoryToolIo } from './helpers/fakeToolIo'
 const ROOT = '/ws'
 const PNG = Buffer.from(TINY_PNG_BASE64, 'base64')
 
-function setup(options: { isOffered?: () => boolean; answer?: boolean; hasFolder?: boolean } = {}) {
+function setup(
+  options: {
+    isOffered?: () => boolean
+    answer?: boolean
+    hasFolder?: boolean
+    keyGeneration?: () => number
+    apiKey?: () => Promise<string | undefined>
+    confirm?: (plan: ImagePlan) => Promise<boolean>
+    sleep?: (ms: number) => Promise<void>
+  } = {},
+) {
   const api = fakeModelApi()
   const log = new FakeLogOutputChannel()
   const io = memoryToolIo({ 'taken.png': 'x' }, ROOT)
   io.binaries.set(`${ROOT}/fox.png`, PNG)
   const asked: ImagePlan[] = []
   let billed = 0
+  const client =
+    options.apiKey === undefined
+      ? fakeModelApiClient(api, log)
+      : new ModelApiClient({
+          fetch: api.fetch,
+          baseUrl: 'https://api.example.test/v1',
+          apiKey: options.apiKey,
+          sleep: options.sleep ?? (() => Promise.resolve()),
+          now: () => 0,
+          random: () => 0,
+          log,
+        })
   const tools = () =>
     ideImageTools({
       isOffered: options.isOffered ?? (() => true),
+      keyGeneration: options.keyGeneration ?? (() => 0),
       workspace:
         options.hasFolder === false ? undefined : { workspaceRoot: ROOT, platform: 'linux', io },
-      client: fakeModelApiClient(api, log),
+      client,
       confirm: (plan) => {
         asked.push(plan)
-        return Promise.resolve(options.answer ?? true)
+        return options.confirm?.(plan) ?? Promise.resolve(options.answer ?? true)
       },
       onBilled: () => {
         billed += 1
@@ -130,5 +154,51 @@ describe('the ide server’s image tools (M44)', () => {
     )
     expect(t.billed()).toBe(0)
     expect(t.io.binaries.has(`${ROOT}/bad.png`)).toBe(false)
+  })
+
+  it('refuses an approved image if the secondary key changes during confirmation', async () => {
+    let generation = 0
+    let key = 'LLM|1|secret'
+    const confirmed = Promise.withResolvers<boolean>()
+    const t = setup({
+      keyGeneration: () => generation,
+      apiKey: () => Promise.resolve(key),
+      confirm: () => confirmed.promise,
+    })
+    const buying = t.call('generateImage', { prompt: 'old account image', path: 'old.png' })
+    await vi.waitFor(() => {
+      expect(t.asked).toHaveLength(1)
+    })
+    generation += 1
+    key = 'LLM|1|second'
+    confirmed.resolve(true)
+    await expect(buying).rejects.toThrow('key changed')
+    expect(t.api.imageBodies()).toEqual([])
+    expect(t.billed()).toBe(0)
+  })
+
+  it('refuses a retry after the secondary key changes, without billing key B', async () => {
+    let generation = 0
+    let key = 'LLM|1|secret'
+    const retryStarted = Promise.withResolvers<undefined>()
+    const finishRetry = Promise.withResolvers<undefined>()
+    const t = setup({
+      keyGeneration: () => generation,
+      apiKey: () => Promise.resolve(key),
+      sleep: () => {
+        retryStarted.resolve(undefined)
+        return finishRetry.promise
+      },
+    })
+    t.api.images.push({ httpError: { status: 429, message: 'rate limited' } })
+    const buying = t.call('generateImage', { prompt: 'old account image', path: 'old.png' })
+    await retryStarted.promise
+    generation += 1
+    key = 'LLM|1|second'
+    finishRetry.resolve(undefined)
+    await expect(buying).rejects.toThrow('key changed')
+    expect(t.api.imageBodies()).toHaveLength(1)
+    expect(t.api.requests.at(-1)?.headers['Authorization']).toBe('Bearer LLM|1|secret')
+    expect(t.billed()).toBe(0)
   })
 })

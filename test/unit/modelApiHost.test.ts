@@ -1,4 +1,5 @@
 import { Buffer } from 'node:buffer'
+import { createHash } from 'node:crypto'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
@@ -166,6 +167,7 @@ function setup(
     mediaBudgetMaxEncodedChars?: number
     scheduleStore?: ScheduleStore
     getAccountId?: () => Promise<string | undefined>
+    newId?: () => string
     hooks?: readonly HookDefinition[]
     runHook?: NonNullable<ToolIo['runHook']>
     isHooksEnabled?: () => boolean
@@ -221,10 +223,12 @@ function setup(
     io,
     // The context loaders read the same files the tools do.
     contextIo: memoryContextIo(io.files),
-    newId: () => {
-      ids += 1
-      return `id${String(ids)}`
-    },
+    newId:
+      options.newId ??
+      (() => {
+        ids += 1
+        return `id${String(ids)}`
+      }),
     now: () => {
       clock += 1000
       return clock
@@ -234,7 +238,7 @@ function setup(
     isWorkspaceTrusted: () => options.isTrusted ?? true,
     store: options.store,
     scheduleStore: options.scheduleStore,
-    getAccountId: options.getAccountId,
+    getAccountId: options.getAccountId ?? (() => Promise.resolve(FAKE_MODEL_API_ACCOUNT_ID)),
     describeEnvironment: options.describeEnvironment ?? (() => Promise.resolve({ git: undefined })),
     isPaidFeatureOn: (feature) => options.paid?.includes(feature) === true,
     notePaidUse: (feature, units) => {
@@ -1225,7 +1229,7 @@ describe('Model API scheduled prompts (M52)', () => {
     expect(afterRun[0]?.fireCount).toBe(1)
     await t.host.flush()
     const savedJson = JSON.stringify(sessionStore.saved.get(session.sessionId))
-    expect(savedJson).not.toContain(FAKE_MODEL_API_ACCOUNT_ID)
+    expect(sessionStore.saved.get(session.sessionId)?.accountId).toBe(FAKE_MODEL_API_ACCOUNT_ID)
     expect(savedJson).not.toContain('confirmedRequest')
     const logJson = JSON.stringify([
       ...t.log.trace.mock.calls,
@@ -4284,6 +4288,120 @@ describe('ModelApiSession: environment (M12)', () => {
 })
 
 describe('ModelApiHost: sessions between windows (M11)', () => {
+  it('does not expose or replay a previous Model API key account after replacement', async () => {
+    const store = memorySessionStore()
+    const rawA = 'LLM|1|fake-a'
+    const rawB = 'LLM|1|fake-b'
+    const keyA = createHash('sha256').update(rawA).digest('hex')
+    const keyB = createHash('sha256').update(rawB).digest('hex')
+    const first = setup({
+      store,
+      getAccountId: () => Promise.resolve(keyA),
+      apiKey: () => Promise.resolve(rawA),
+    })
+    const { session, turnDone } = await startSession(first)
+    first.api.script({ text: 'private reply from A' })
+    await session.sendTurn([{ type: 'text', text: 'private prompt from A' }])
+    await turnDone()
+    await first.host.close()
+    expect(store.saved.get(session.sessionId)?.accountId).toBe(keyA)
+
+    let nextBId = 0
+    const second = setup({
+      store,
+      getAccountId: () => Promise.resolve(keyB),
+      apiKey: () => Promise.resolve(rawB),
+      newId: () => `b${String(++nextBId)}`,
+    })
+    await second.host.load()
+    const secondPage = await second.host.listSessions({ workspaceRoot: ROOT, limit: 10 })
+    expect(secondPage.sessions).toEqual([])
+    await expect(second.host.readSession(session.sessionId)).rejects.toThrow()
+    await expect(second.host.resumeSession(session.sessionId, 'muse-spark-1.3')).rejects.toThrow()
+    await expect(second.host.forkSession(session.sessionId, 'muse-spark-1.3')).rejects.toThrow()
+    const fresh = await startSession(second)
+    second.api.script({ text: 'reply to B' })
+    await fresh.session.sendTurn([{ type: 'text', text: 'fresh prompt from B' }])
+    await fresh.turnDone()
+    expect(JSON.stringify(second.api.responseBodies())).not.toContain('private prompt from A')
+    expect(second.api.responseBodies()).toHaveLength(1)
+
+    const restoredA = setup({
+      store,
+      getAccountId: () => Promise.resolve(keyA),
+      apiKey: () => Promise.resolve(rawA),
+    })
+    await restoredA.host.load()
+    const originalPage = await restoredA.host.listSessions({ workspaceRoot: ROOT, limit: 10 })
+    expect(originalPage.sessions).toContainEqual(
+      expect.objectContaining({ sessionId: session.sessionId }),
+    )
+    const oldSession = await restoredA.host.resumeSession(session.sessionId, 'muse-spark-1.3')
+    expect(JSON.stringify(oldSession.history.items)).toContain('private prompt from A')
+    const exposed = JSON.stringify({
+      history: [secondPage.sessions, originalPage.sessions],
+      http: [first.api.responseBodies(), second.api.responseBodies()],
+      logs: [
+        ...first.log.trace.mock.calls,
+        ...first.log.debug.mock.calls,
+        ...first.log.info.mock.calls,
+        ...second.log.trace.mock.calls,
+        ...second.log.debug.mock.calls,
+        ...second.log.info.mock.calls,
+      ],
+    })
+    for (const secret of [rawA, rawB, keyA, keyB]) {
+      expect(exposed).not.toContain(secret)
+    }
+    expect(JSON.stringify(store.saved.get(session.sessionId))).not.toContain(rawA)
+  })
+
+  it('keeps pre-ownership sessions on disk but refuses them to every account', async () => {
+    const store = memorySessionStore()
+    const first = setup({ store })
+    const { session, turnDone } = await startSession(first)
+    await answerFirst(first, session, turnDone)
+    await first.host.close()
+    const legacy = store.saved.get(session.sessionId)
+    if (legacy === undefined) {
+      throw new Error('expected stored session')
+    }
+    const unowned = structuredClone(legacy)
+    Reflect.deleteProperty(unowned, 'accountId')
+    store.saved.set(session.sessionId, unowned)
+    const reopened = setup({ store })
+    await reopened.host.load()
+    const legacyPage = await reopened.host.listSessions({ workspaceRoot: ROOT, limit: 10 })
+    expect(legacyPage.sessions).toEqual([])
+    await expect(reopened.host.resumeSession(session.sessionId, 'muse-spark-1.3')).rejects.toThrow()
+    expect(store.saved.has(session.sessionId)).toBe(true)
+  })
+
+  it('refuses a stored read when the active key changes while storage is pending', async () => {
+    const store = memorySessionStore()
+    const keyA = 'a'.repeat(64)
+    const first = setup({ store, getAccountId: () => Promise.resolve(keyA) })
+    const { session, turnDone } = await startSession(first)
+    await answerFirst(first, session, turnDone)
+    await first.host.close()
+    let active = keyA
+    const second = setup({ store, getAccountId: () => Promise.resolve(active) })
+    await second.host.load()
+    const originalLoad = store.load.bind(store)
+    const started = Promise.withResolvers<undefined>()
+    const release = Promise.withResolvers<undefined>()
+    store.load = async (sessionId) => {
+      started.resolve(undefined)
+      await release.promise
+      return await originalLoad(sessionId)
+    }
+    const reading = second.host.readSession(session.sessionId)
+    await started.promise
+    active = 'b'.repeat(64)
+    release.resolve(undefined)
+    await expect(reading).rejects.toThrow(UI_TEXT.notSignedInReason)
+  })
+
   it('saves after every change and lists, resumes and forks stored sessions in a new host', async () => {
     const store = memorySessionStore()
     const first = setup({ store, files: { 'a.txt': 'alpha\n' } })

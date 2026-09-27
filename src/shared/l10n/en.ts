@@ -39,13 +39,38 @@ export const EN = {
   stopTitle: 'Stop',
   signInTitle: 'Sign in to Muse Spark',
   signInBrowser: 'Sign in with your Meta account',
-  signInBrowserDetail: 'Opens a terminal running `muse login`; approve the code in your browser.',
+  signInBrowserDetail: 'Shows an approval code here; open the sign-in page to approve it.',
   signInApiKey: 'Use a Model API key',
   signInApiKeyDetail: 'Paste a key from dev.meta.ai; it is stored in VS Code secret storage.',
   installTitle: 'Muse Code is not installed',
   installDetail:
-    'The Muse Code CLI hosts conversations for this extension. Install it, then reload.',
+    'The Muse Code CLI hosts conversations for this extension. Install it here, then sign in.',
   installAction: 'Open install instructions',
+  installStartAction: 'Install Muse Code',
+  installConfirmDetail:
+    'Meta publishes this command. It downloads and runs an installer on this machine:',
+  installConfirmAction: 'Run installer',
+  installCancelAction: 'Cancel',
+  installWaiting: 'Installing Muse Code in the terminal…',
+  installTimedOut: 'Muse Code was not found. Check the terminal output, then check again.',
+  installStartFailed:
+    'The installer terminal could not open. Try again or use the install instructions.',
+  deviceCodePrompt: 'Enter this code in your browser:',
+  deviceCodeOpenAction: 'Open sign-in page',
+  deviceCodeCancelAction: 'Cancel sign-in',
+  deviceCodeWaiting: 'Waiting for browser approval…',
+  signInCancelled: 'Sign-in cancelled.',
+  signInFailed: 'Could not start in-panel sign-in. Check Muse Code and try again.',
+  signOutPending:
+    'Sign-out is in progress or credentials remain. Finish Muse Code logout or remove META_API_KEY, then check again.',
+  signOutTerminalFailed:
+    'Extension session ended, but its logout terminal could not open. Run muse logout or remove META_API_KEY, then check again.',
+  signOutHoldFailed:
+    'Could not save sign-out protection. Extension session ended; remove META_API_KEY and finish muse logout before reopening VS Code.',
+  signOutKeyClearFailed:
+    'Could not clear the stored Model API key. The extension host stopped; check VS Code secret storage and sign out again.',
+  signOutStopFailed:
+    'Backend shutdown failed. This window is gated; close VS Code and check credentials before reopening.',
   retryAction: 'Check again',
   apiKeyPrompt: 'Meta Model API key',
   apiKeyPlaceholder: 'LLM|1234567890|…',
@@ -742,6 +767,8 @@ export const EN = {
   backgroundBadge: 'background',
   subagentRowLabel: 'Agent',
   usageAccount: 'Account',
+  usageAddModelApiKey: 'Add Model API key',
+  usageReplaceModelApiKey: 'Replace Model API key',
   usageAuthMethod: 'Auth method',
   usageAuthCli: 'Meta account (Muse Code CLI)',
   usageAuthKey: 'Model API key',

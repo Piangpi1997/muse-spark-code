@@ -93,6 +93,13 @@ const full: StoredSession = {
 }
 
 describe('parseStoredSession', () => {
+  it('preserves a key digest while refusing a malformed owner', () => {
+    const owned = { ...full, accountId: 'a'.repeat(64) }
+    expect(parseStoredSession(owned)).toEqual({ ok: true, session: owned })
+    expect(headerOf(owned).accountId).toBe(owned.accountId)
+    expect(parseStoredSession({ ...full, accountId: 'raw-key' })).toMatchObject({ ok: false })
+  })
+
   it('accepts a full record unchanged after a JSON round trip', () => {
     const parsed = parseStoredSession(structuredClone(full))
     expect(parsed).toEqual({ ok: true, session: full })

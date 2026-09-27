@@ -29,15 +29,18 @@ import {
   rootRelativePath,
 } from './core/workspaceRoot'
 import { AuthService } from './host/auth/authService'
+import { connectDeviceSession, runDeviceSignIn } from './host/auth/deviceSignIn'
 import { CredentialStore, isValidModelApiKey } from './host/auth/credentialStore'
 import { ModelApiBackendManager } from './host/backend/modelApiBackendManager'
 import { createFileScheduleStore } from './host/backend/fileScheduleStore'
 import { MuseCodeBackendManager } from './host/backend/museCodeBackendManager'
+import { chooseAuthorizedHost } from './host/backend/selectedHost'
 import { type ProcessResult, SandboxSetup } from './host/backend/sandboxSetup'
 import { fileContextIo } from './host/backend/contextIo'
 import { describeEnvironment } from './host/backend/environment'
 import { createFileSessionStore } from './host/backend/fileSessionStore'
 import { createModelApiMcpServers } from './host/backend/mcpServers'
+import { jobSourceReader } from './host/backend/jobSource'
 import { mcpJobExecutable } from './host/backend/mcpJobExecutable'
 import { createMemoryIo, systemPath } from './host/backend/memoryIo'
 import {
@@ -45,7 +48,7 @@ import {
   readDelegationMode,
   readWorkflowTriggerMode,
 } from './host/backend/museSettings'
-import { shellJobAssembly } from './host/backend/shellJob'
+import { type ShellJobDeps, shellJobAssembly } from './host/backend/shellJob'
 import {
   createToolIo,
   readPickedFile,
@@ -125,6 +128,7 @@ import {
   MUSE_EDIT_SCHEME,
   MUSE_INIT_ARGS,
   MUSE_INIT_TIMEOUT_MS,
+  MUSE_INSTALL_COMMANDS,
   OUTPUT_DOCUMENT_SCHEME,
   PRODUCT_NAME,
   SEARCH_WORKER_FILE,
@@ -376,33 +380,23 @@ function runProcess(
   })
 }
 
-/** The shell tool's tested Windows job assembly (M27). */
-function windowsShellJobs(
+/**
+ * A tested Windows job helper, compiled once from the shared C# (`jobSource.ts`):
+ * the shell tool's job assembly (M27) or the direct MCP stdio launcher (M50).
+ * Undefined off Windows.
+ */
+function windowsJobHelper(
+  build: (deps: ShellJobDeps) => () => Promise<string | undefined>,
   storageDir: string,
+  readJobSource: () => Promise<string>,
   log: Logger,
 ): (() => Promise<string | undefined>) | undefined {
   const systemRoot = process.env['SystemRoot']
   return systemRoot !== undefined && process.platform === 'win32'
-    ? shellJobAssembly({
+    ? build({
         storageDir,
         systemRoot,
-        log: (message) => {
-          log.warn(message)
-        },
-      })
-    : undefined
-}
-
-/** The direct Windows MCP stdio job launcher, compiled once (M50). */
-function windowsMcpJobs(
-  storageDir: string,
-  log: Logger,
-): (() => Promise<string | undefined>) | undefined {
-  const systemRoot = process.env['SystemRoot']
-  return systemRoot !== undefined && process.platform === 'win32'
-    ? mcpJobExecutable({
-        storageDir,
-        systemRoot,
+        readJobSource,
         log: (message) => {
           log.warn(message)
         },
@@ -672,12 +666,43 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       hasEnvironmentKey: () => backend.hasEnvironmentKey(),
       getBackendMode: () => currentSettings().backend,
       restartBackend: (isConversationEnding) =>
-        restartBackend(isConversationEnding ? 'signed out' : 'signed in', isConversationEnding),
+        restartBackend('authentication changed', isConversationEnding),
     },
     credentials,
+    logoutHold: {
+      get: () => context.globalState.get<boolean>(GLOBAL_STATE_KEYS.cliLogoutHold) === true,
+      set: (isHeld) => context.globalState.update(GLOBAL_STATE_KEYS.cliLogoutHold, isHeld),
+    },
     runInTerminal: (cliPath, args) => {
       runInTerminal(cliPath, args, { name: UI_TEXT.museLoginTerminalName, cwd: undefined })
     },
+    installCommand:
+      process.platform === 'win32' ? MUSE_INSTALL_COMMANDS.win32 : MUSE_INSTALL_COMMANDS.posix,
+    runInstallerInTerminal: () => {
+      const isWindows = process.platform === 'win32'
+      const systemRoot = process.env['SystemRoot']
+      let shellPath: string | undefined = POSIX_TERMINAL_SHELL
+      if (isWindows) {
+        shellPath =
+          systemRoot === undefined ? undefined : `${systemRoot}${WINDOWS_POWERSHELL_TERMINAL_PATH}`
+      }
+      const terminal = vscode.window.createTerminal({
+        name: UI_TEXT.installStartAction,
+        ...(shellPath !== undefined && { shellPath }),
+      })
+      terminal.show(true)
+      terminal.sendText(isWindows ? MUSE_INSTALL_COMMANDS.win32 : MUSE_INSTALL_COMMANDS.posix)
+    },
+    runDeviceSignIn: (signal, onCode) =>
+      runDeviceSignIn({
+        connect: (connectSignal) =>
+          connectDeviceSession(backend, version, log, workspaceRoot, connectSignal),
+        credentialFileModifiedAt: () => modifiedAt(backend.credentialFilePath()),
+        sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+        now: Date.now,
+        signal,
+        onCode,
+      }),
     promptForApiKey,
     broadcast: (message) => {
       registry.broadcast(message)
@@ -718,8 +743,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     findFiles: findWorkspaceFiles,
     log,
   })
-  const windowsJobAssembly = windowsShellJobs(context.globalStorageUri.fsPath, log)
-  const windowsMcpJob = windowsMcpJobs(context.globalStorageUri.fsPath, log)
+  // The shared C# of both Windows job helpers, shipped beside the bundle (PLAN.md D6).
+  const readJobSource = jobSourceReader(context.extensionPath)
+  const storageDir = context.globalStorageUri.fsPath
+  const windowsJobAssembly = windowsJobHelper(shellJobAssembly, storageDir, readJobSource, log)
+  const windowsMcpJob = windowsJobHelper(mcpJobExecutable, storageDir, readJobSource, log)
   // The workspace's files and a shell (M7): the Model API backend's tools,
   // and the files the ide server's image tools read and write (M44).
   const toolIo = createToolIo({
@@ -779,6 +807,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       diagnostics,
       ...ideImageTools({
         isOffered: () => isKeyStored && paid.gate.isOn('imageGeneration'),
+        keyGeneration: () => auth.admissionGeneration,
         workspace:
           workspaceRoot === undefined
             ? undefined
@@ -987,23 +1016,26 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   let chosenBackend: BackendKind | undefined
   /** The host for the next conversation, by the same selection the sign-in gate uses. */
   const ensureSelectedHost = async () => {
-    const choice = selectBackend({
-      setting: currentSettings().backend,
-      hasCli: backend.resolveLaunch().ok,
-      hasCliSession: backend.credentialFileExists() || backend.hasEnvironmentKey(),
-      hasStoredKey: (await credentials.getApiKey()) !== undefined,
-    })
-    if (choice.kind !== chosenBackend) {
+    const host = await chooseAuthorizedHost(
+      () => auth.backend,
+      async () =>
+        selectBackend({
+          setting: currentSettings().backend,
+          hasCli: backend.resolveLaunch().ok,
+          hasCliSession: backend.credentialFileExists() || backend.hasEnvironmentKey(),
+          hasStoredKey: (await credentials.getApiKey()) !== undefined,
+        }),
+      async (kind): Promise<AgentHost> =>
+        kind === 'modelApi' ? await modelApi.ensureHost() : await backend.ensureHost(),
+      () => auth.admissionGeneration,
+    )
+    if (host.info.kind !== chosenBackend) {
       // Said when it changes, not on every message (M39).
-      chosenBackend = choice.kind
-      log.info(`Conversations run on the ${choice.kind ?? 'no'} backend`)
+      chosenBackend = host.info.kind
+      log.info(`Conversations run on the ${host.info.kind} backend`)
     }
-    if (choice.kind === 'modelApi') {
-      return await modelApi.ensureHost()
-    }
-    const host = await backend.ensureHost()
     // One exit listener per host, however many messages ask for it (D25).
-    if (!watchedHosts.has(host)) {
+    if (host.info.kind === 'museCode' && !watchedHosts.has(host)) {
       watchedHosts.add(host)
       host.onExit((exit) => {
         for (const active of controllers.values()) {

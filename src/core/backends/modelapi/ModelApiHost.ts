@@ -275,8 +275,8 @@ export interface ModelApiHostDeps extends ModelApiPaidHooks {
   readonly mediaBudgetMaxEncodedChars?: number
   /** Extension-owned, workspace-local schedules; absent without workspace storage. */
   readonly scheduleStore?: ScheduleStore | undefined
-  /** A digest of the current SecretStorage key, never its plaintext. */
-  readonly getAccountId?: (() => Promise<string | undefined>) | undefined
+  /** SHA-256 digest of the current SecretStorage key, never its plaintext. */
+  readonly getAccountId: () => Promise<string | undefined>
   /** A fresh snapshot at each session start (M51); disabled means empty. */
   readonly loadHooks?: () => Promise<readonly HookDefinition[]>
   /** Machine hook opt-in is checked again for every dispatch. */
@@ -1283,11 +1283,7 @@ export class ModelApiSession implements AgentSession {
     })
     this.createdAt = new Date(deps.now()).toISOString()
     this.lastActivityAt = this.createdAt
-    if (
-      deps.store !== undefined &&
-      deps.scheduleStore !== undefined &&
-      deps.getAccountId !== undefined
-    ) {
+    if (deps.store !== undefined && deps.scheduleStore !== undefined) {
       this.schedules = {
         create: (cadence, prompt) => this.createSchedule(cadence, prompt),
         list: () => this.listSchedules(),
@@ -4601,7 +4597,7 @@ export class ModelApiSession implements AgentSession {
 
   /** Only a stored key's digest scopes a job; a changed key sees no old jobs. */
   private async scheduleAccountId(): Promise<string> {
-    const id = await this.deps.getAccountId?.()
+    const id = await this.deps.getAccountId()
     if (id === undefined) {
       throw new Error(UI_TEXT.scheduleAccountMissing)
     }
@@ -4638,12 +4634,12 @@ export class ModelApiSession implements AgentSession {
   private async listSchedules(): Promise<readonly ScheduledPrompt[]> {
     // A removed key clears the panel without waiting for storage. Check again
     // after the read so a slow poll cannot publish a previous account's jobs.
-    if ((await this.deps.getAccountId?.()) === undefined) {
+    if ((await this.deps.getAccountId()) === undefined) {
       return this.publishSchedules([])
     }
     const store = this.scheduleStore()
     const stored = await store.list(this.sessionId)
-    const accountId = await this.deps.getAccountId?.()
+    const accountId = await this.deps.getAccountId()
     const jobs =
       accountId === undefined
         ? []
@@ -5657,6 +5653,8 @@ export class ModelApiSession implements AgentSession {
 
 export class ModelApiHost implements AgentHost {
   private readonly sessions = new Map<string, ModelApiSession>()
+  /** Pinned at first use; a host cannot serve a different stored-key account. */
+  private accountIdValue: string | undefined
   /** What the store holds for this workspace, kept current as sessions change. */
   private readonly stored = new Map<string, StoredSessionHeader>()
   private readonly listListeners = new Set<(event: SessionListEvent) => void>()
@@ -5671,6 +5669,35 @@ export class ModelApiHost implements AgentHost {
   }
 
   public constructor(private readonly deps: ModelApiHostDeps) {}
+
+  private async requireAccountId(): Promise<string> {
+    const current = await this.deps.getAccountId()
+    if (
+      current === undefined ||
+      (this.accountIdValue !== undefined && current !== this.accountIdValue)
+    ) {
+      throw new Error(UI_TEXT.notSignedInReason)
+    }
+    this.accountIdValue = current
+    return current
+  }
+
+  private ownedSnapshot(snapshot: StoredSession): StoredSession {
+    const accountId = this.accountIdValue
+    if (accountId === undefined) {
+      throw new Error(UI_TEXT.notSignedInReason)
+    }
+    return {
+      ...snapshot,
+      accountId,
+      ...(snapshot.children !== undefined && {
+        children: snapshot.children.map((child) => ({
+          ...child,
+          session: this.ownedSnapshot(child.session),
+        })),
+      }),
+    }
+  }
 
   private announce(session: ModelApiSession): void {
     for (const listener of this.listListeners) {
@@ -5710,7 +5737,7 @@ export class ModelApiHost implements AgentHost {
     if (store === undefined) {
       return isStrict ? Promise.reject(new Error(UI_TEXT.historyUnavailable)) : Promise.resolve()
     }
-    const snapshot = session.snapshot()
+    const snapshot = this.ownedSnapshot(session.snapshot())
     // A turn-start user message can be saved, but a function call without
     // its output cannot be replayed after a crash. Goal/settings touches
     // during a pending tool still announce live; the settled touch saves.
@@ -5729,7 +5756,7 @@ export class ModelApiHost implements AgentHost {
     if (store === undefined) {
       return Promise.reject(new Error(UI_TEXT.scheduleStorageMissing))
     }
-    const snapshot = session.snapshot()
+    const snapshot = this.ownedSnapshot(session.snapshot())
     // A schedule cannot make an unsafe replay durable. The caller removes
     // its new job on this refusal, leaving the last valid session snapshot.
     return hasUnansweredSessionCall(snapshot)
@@ -5784,11 +5811,13 @@ export class ModelApiHost implements AgentHost {
    * last wrote.
    */
   private async storedSession(sessionId: string): Promise<StoredSession> {
+    const accountId = await this.requireAccountId()
     const { store } = this.deps
     if (store !== undefined && this.stored.has(sessionId)) {
       await this.saving
       const stored = await store.load(sessionId)
-      if (stored !== undefined) {
+      await this.requireAccountId()
+      if (stored?.accountId === accountId) {
         return stored
       }
     }
@@ -5855,13 +5884,15 @@ export class ModelApiHost implements AgentHost {
 
   /** Reads the store once; this window's sessions then include the stored ones. */
   public async load(): Promise<void> {
+    const accountId = await this.requireAccountId()
     const { store } = this.deps
     if (store === undefined) {
       return
     }
     const sessions = await store.list()
+    await this.requireAccountId()
     for (const stored of sessions) {
-      if (stored.workspaceRoot === this.deps.workspaceRoot) {
+      if (stored.workspaceRoot === this.deps.workspaceRoot && stored.accountId === accountId) {
         this.stored.set(stored.sessionId, stored)
       }
     }
@@ -5895,15 +5926,23 @@ export class ModelApiHost implements AgentHost {
     if (!(APPROVAL_MODES as readonly string[]).includes(options.approvalMode)) {
       throw new Error(`unknown approval mode ${options.approvalMode}`)
     }
+    const hooks = options.sideChat === true ? [] : await this.sessionHooks()
+    await this.requireAccountId()
     const session = this.create(
       options.modelId,
       options.sideChat === true ? 'denyUnmatched' : (options.approvalMode as ApprovalMode),
       this.deps.newId(),
-      options.sideChat === true ? [] : await this.sessionHooks(),
+      hooks,
       'startup',
       options.sideChat === true,
     )
-    await session.startHooks()
+    try {
+      await session.startHooks()
+      await this.requireAccountId()
+    } catch (error: unknown) {
+      session.dispose()
+      throw error
+    }
     this.announce(session)
     void this.startMcpServers()
     return session
@@ -5914,7 +5953,8 @@ export class ModelApiHost implements AgentHost {
     return this.deps.mcpServers?.snapshot()
   }
 
-  public listSessions(options: ListSessionsOptions): Promise<SessionPage> {
+  public async listSessions(options: ListSessionsOptions): Promise<SessionPage> {
+    await this.requireAccountId()
     const records = Array.from(this.sessions.values(), (session) => session.record())
     for (const [sessionId, stored] of this.stored) {
       if (!this.sessions.has(sessionId)) {
@@ -5928,11 +5968,12 @@ export class ModelApiHost implements AgentHost {
           Date.parse(b.lastActivityAt ?? b.updatedAt) - Date.parse(a.lastActivityAt ?? a.updatedAt),
       )
       .slice(0, options.limit)
-    return Promise.resolve({ sessions, nextCursor: undefined })
+    return { sessions, nextCursor: undefined }
   }
 
   /** A conversation or one of its private child transcripts (M48). */
   public async readSession(sessionId: string): Promise<SessionHistoryOutcome> {
+    await this.requireAccountId()
     const live = this.sessions.get(sessionId)
     if (live !== undefined) {
       return live.history()
@@ -5973,7 +6014,15 @@ export class ModelApiHost implements AgentHost {
     _mcpServers?: Readonly<Record<string, SessionMcpHttpServer>>,
     options?: { readonly requireSideChat?: boolean },
   ): Promise<LoadedSession> {
-    const loaded = this.loaded(await this.revive(sessionId, options?.requireSideChat === true))
+    await this.requireAccountId()
+    const session = await this.revive(sessionId, options?.requireSideChat === true)
+    try {
+      await this.requireAccountId()
+    } catch (error: unknown) {
+      session.dispose()
+      throw error
+    }
+    const loaded = this.loaded(session)
     void this.startMcpServers()
     return loaded
   }
@@ -5984,26 +6033,39 @@ export class ModelApiHost implements AgentHost {
     lastTurnId?: string,
     options?: { readonly sideChat?: boolean },
   ): Promise<LoadedSession> {
+    await this.requireAccountId()
     // Copying needs no hold on a live source; a stored one is revived only for the copy.
     const live = this.sessions.get(sessionId)
     const source = live ?? (await this.revive(sessionId))
     const isSideChat = options?.sideChat === true || source.record().sideChat === true
+    let hooks: readonly HookDefinition[]
+    try {
+      hooks = isSideChat ? [] : await this.sessionHooks()
+      await this.requireAccountId()
+    } catch (error: unknown) {
+      if (live === undefined) {
+        source.dispose()
+      }
+      throw error
+    }
     const fork = this.create(
       modelId,
       isSideChat ? 'denyUnmatched' : source.approvalMode,
       this.deps.newId(),
-      isSideChat ? [] : await this.sessionHooks(),
+      hooks,
       'fork',
       isSideChat,
     )
     try {
       source.copyInto(fork, lastTurnId)
       await fork.startHooks()
+      await this.requireAccountId()
       if (isSideChat) {
         await this.persist(fork, true)
       } else {
         void this.persist(fork)
       }
+      await this.requireAccountId()
     } catch (error: unknown) {
       fork.dispose()
       throw error
