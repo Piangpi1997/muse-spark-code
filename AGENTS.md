@@ -53,8 +53,9 @@ them, the milestone plan, and the certification checklist.
 8. **Secrets never leave SecretStorage.** No API keys in settings, logs,
    telemetry, tests, or fixtures. The pasted Model API key is never passed to
    any child process: the Muse Code CLI signs in on its own, and the
-   extension only checks that its credential file exists. Log through the
-   `LogOutputChannel`; never `console.log` in the host.
+   extension only checks that its credential file exists and when it last
+   changed, never its contents. Log through the `LogOutputChannel`; never
+   `console.log` in the host.
 9. **Dependencies are deliberate.** Before adding one: check peer ranges
    against the pins in `PLAN.md` §2 D3 (`npm info <pkg> peerDependencies`),
    check `npm audit`, pin the exact version (`.npmrc` enforces `save-exact`),
@@ -116,9 +117,10 @@ test/integration/**   @vscode/test-cli, runs inside VS Code
 test/harness/         the webview behind a fake host, for screenshots and the
                       accessibility gate; themes/ holds VS Code's four themes
 scripts/**            esbuild build; bundle-size, host-globals, notices, audit,
-                      PSScriptAnalyzer, accessibility and localization gates;
-                      theme capture, the pseudo-locale, harness screenshots,
-                      image rendering, changelog notes
+                      PSScriptAnalyzer, semgrep, accessibility and
+                      localization gates; theme capture, the pseudo-locale,
+                      harness screenshots, image rendering, changelog notes,
+                      VS Code versions for CI
 docs/certification/   per-milestone gate-fire records and screenshots
 media/                icons, banner, social preview, README screenshots
 ```

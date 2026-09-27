@@ -123,3 +123,49 @@ The suite passed 6/6.
 The `nosemgrep` reason in `src/host/backend/mcpJobLaunch.ts` now names the
 packaged C# files the MCP launcher is compiled from (M56), not "fixed M50
 source".
+
+The audit also asked for a reason beside the two `as never` casts in
+`test/unit/patchApply.test.ts`. They are gone instead: the test names its
+two hunks and passes them in the wrong order directly, so
+`noUncheckedIndexedAccess` has nothing to widen. Their §8 row is removed.
+
+## Documentation
+
+A read-only audit of every shipped and project document against the code
+(`docs-audit-0.9.0.md` in the session scratchpad: 22 must-fix, 41
+should-fix and 35 nice-to-have items) was applied in full. The main
+changes:
+
+- the version is 0.9.0, and `CHANGELOG.md` has a `[0.9.0]` section, which
+  `scripts/changelog-notes.mjs 0.9.0` turns into the release notes (it
+  exited 1 before). The longest entries were cut to what a user sees; their
+  details stay in the certification records;
+- README: What's new, the settings table (the missing `modelApiHooks` row),
+  the machine-scoped list, the privacy claims (MCP servers and hooks also
+  receive conversation data), five paid features instead of three, the
+  palette and slash lists, limits and troubleshooting;
+- PRIVACY: hooks, the installer, device sign-in, subagents, scheduled
+  prompts, what is stored on disk, and the proxy handed to Muse Code;
+- SECURITY, AGENTS, CONTRIBUTING, the walkthrough text and the manifest's
+  description and walkthrough step, in all fifteen manifest tables;
+- PLAN statuses for M33–M56, the D36 table, Q6, §7 and §8, a stub for
+  M44b (web fetch on the Model API backend), and the 0.9.0 record in §10;
+- the certification index, and a dated closing section on each record that
+  still said "pending" (M46, M48, M50–M55).
+
+**Screenshots.** The walkthrough's four images were real captures from
+2026-09-22. They showed other products' panel tabs and a file name from the
+owner's workspace, and their UI was out of date. They are now harness
+renders (`empty`, `tools`, `slash-palette`, `signin`). Ten README images
+were re-rendered too. Each render was viewed before it was copied, and all
+show fixture content only.
+
+**A new harness scenario, `signin-install`,** shows the sign-in gate
+without the CLI: **Install Muse Code**, **Open install instructions**,
+**Check again** and **Use a Model API key**. It needs one line in
+`scripts/lib/harnessServer.mjs`'s scenario list. The accessibility gate now
+checks 332 pages (83 scenarios × 4 themes). With the scenario made to throw,
+the gate exited 1 with 4 pages without a result; restored, it exited 0.
+
+`npm run check:l10n`: 14 tables, 93 manifest strings, 226 source files, 0
+problems.

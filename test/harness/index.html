@@ -1018,6 +1018,16 @@
             detail: 'muse was not found on PATH (searched 12 directories).',
           })
         },
+        // The same gate as the host sends it since M55, with Meta's install
+        // command: Install Muse Code first, the Model API key beside it.
+        'signin-install': () => {
+          send({
+            type: 'authState',
+            status: 'noCli',
+            detail: 'muse was not found on PATH (searched 12 directories).',
+            installCommand: 'irm https://dev.meta.ai/install.ps1 | iex',
+          })
+        },
         'signin-waiting': () => {
           send({ type: 'authState', status: 'signingIn' })
         },

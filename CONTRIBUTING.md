@@ -27,8 +27,9 @@ Use this order for a candidate branch:
    conflicts and stage the candidate with no unstaged changes. Record its
    `git write-tree` hash.
 2. Run `npm ci` and `npm run quality` on that exact staged tree. For Windows
-   behavior, exercise the same tree on the Windows 11 host and VM in parallel
-   and record both results; collect other platform evidence where needed.
+   behavior, exercise the same tree on Windows (the maintainer uses a
+   Windows 11 host and VM in parallel) and record the results; collect other
+   platform evidence where needed.
 3. Have an independent agent review the staged diff and acceptance evidence.
    Scan the staged changes for secrets too: local `security:secrets` scans
    committed history, so it cannot see the index before commit. Fix findings,
@@ -57,8 +58,9 @@ Use this order for a candidate branch:
   production build with bundle budgets, `npm audit`, the accessibility
   gate, secret scanning and semgrep. CI runs the gates on Ubuntu, Windows
   and macOS, the accessibility gate and the integration tests on Ubuntu and
-  Windows, and gitleaks and semgrep as jobs of their own; the PowerShell lint runs only where Windows PowerShell exists, so a
-  green run on one platform is not quite the whole set.
+  Windows, and gitleaks and semgrep as jobs of their own; the PowerShell
+  lint runs only where Windows PowerShell exists, so a green run on one
+  platform is not quite the whole set.
 - Add or change tests with the code. A new check must be seen to fail once
   on purpose; the certification records under `docs/certification/`
   show how that is written down.
@@ -155,11 +157,12 @@ a stdio server the tests start as a child process through the extension's
 own spawner (its behaviour is chosen by `FAKE_MCP_*` variables in the
 entry's `env`), and `fakeMcpHttpServer.ts`, a streamable-HTTP server on
 loopback. A new MCP behaviour gets a case in one of them first.
-On Windows the real-process tests also compile the M27 job assembly in an
-isolated temporary folder. `fakeMcpBinary.mjs` checks raw stdio bytes,
-`fakeMcpOrphan.mjs` checks a finite detached child, and
-`fakeMcpLauncherParent.mjs` checks cleanup when the extension-side Node
-process exits, and `fakeMcpPrebindParent.mjs` checks death before the job
+On Windows the real-process tests also compile the job helpers' C#
+(`native/windows/MuseSparkJob.cs`, `MuseSparkMcpLauncher.cs` and the
+shared `MuseSparkMcpJob.cs`) in an isolated temporary folder.
+`fakeMcpBinary.mjs` checks raw stdio bytes, `fakeMcpOrphan.mjs` checks a
+finite detached child, and `fakeMcpLauncherParent.mjs` checks cleanup when
+the extension-side Node process exits, and `fakeMcpPrebindParent.mjs` checks death before the job
 helper binds that process. The withheld-GO test's marker must never start.
 The test-owned fixture PIDs must be gone after the suite.
 
