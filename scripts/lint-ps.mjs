@@ -9,7 +9,10 @@
 // The analyzer version is pinned (M26, PLAN.md D29): a new release can add
 // or retune rules, and a gate that changes under an unchanged tree is not a
 // gate. CI installs exactly this version (`--print-version` feeds the
-// workflow); raise it here, with a clean run, to move.
+// workflow); raise it here, with a clean run, to move. The package's
+// SHA-512 is pinned beside it (`--print-sha512`): when the Gallery's search
+// fails, CI downloads the package itself and checks it against this hash,
+// the one the Gallery publishes for the version.
 
 import { spawnSync } from 'node:child_process'
 import path from 'node:path'
@@ -18,6 +21,14 @@ const PSSCRIPTANALYZER_VERSION = '1.25.0'
 
 if (process.argv.includes('--print-version')) {
   console.log(PSSCRIPTANALYZER_VERSION)
+  process.exit(0)
+}
+
+if (process.argv.includes('--print-sha512')) {
+  // The Gallery's own PackageHash for 1.25.0 (SHA-512, base64), read 2026-09-27.
+  console.log(
+    '5/tXMmLmBLqymRSuYpIdJLl8L4i1GbQSd7QD72zhY/FLfRs23HNEmmjlrlqNlQKJGxDCZBMf0YE63ym/ExwWYw==',
+  )
   process.exit(0)
 }
 

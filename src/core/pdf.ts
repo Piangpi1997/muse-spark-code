@@ -30,9 +30,10 @@ const OBJECT_STREAM_MARKER = '/ObjStm'
 const ENCRYPTION_MARKER = '/Encrypt'
 const DICTIONARY_OPEN = '<<'
 const DICTIONARY_CLOSE = '>>'
-// A name ends where a regular character does not follow (PDF names are
-// letters, digits and a few marks; the next token starts with a delimiter).
-const PAGES_TYPE = /\/Type\s*\/Pages(?![A-Za-z0-9])/g
+// A name ends only at white space or a delimiter (ISO 32000-1 §7.2.2):
+// every other character, `-`, `_` and `.` included, continues it, so
+// `/Pages-Template` is another name, not the page tree (the review of PR #42).
+const PAGES_TYPE = /\/Type\s*\/Pages(?=[\0\t\n\f\r ()<>[\]{}/%]|$)/g
 // A signed object number may name the real Pages tree while a visible direct
 // tree is an unlinked decoy. Fail closed rather than trusting the decoy.
 const INDIRECT_TYPE_CANDIDATE = /\/Type\s+[+-]?\d+(?![A-Za-z0-9])/

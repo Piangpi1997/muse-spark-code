@@ -93,6 +93,22 @@ describe('PDF input inspection', () => {
     },
   )
 
+  it.each(['-Template', '_Old', '.bak', 'X'])(
+    'does not take /Pages%s for the page tree (the review of PR #42)',
+    (suffix) => {
+      const extra = `/Custom << /Type /Pages${suffix} /Count 50 >>`
+      expect(pdfPageCount(pdfFixture(1, extra))).toBe(1)
+    },
+  )
+
+  it.each(['/Kids []', '()', '<>', '[]', '% note\n', '\r', '\0'])(
+    'ends the page tree name at the delimiter that starts %j',
+    (next) => {
+      const bytes = new TextEncoder().encode(`%PDF-1.4\n<< /Type /Pages${next} /Count 3 >>\n`)
+      expect(pdfPageCount(bytes)).toBe(3)
+    },
+  )
+
   it('reserves the full budget when page-tree marker volume exceeds the bounded inspector', () => {
     const bytes = new TextEncoder().encode(
       `%PDF-1.4\n${'<< /Type /Pages /Count 1 >>\n'.repeat(PDF_PAGE_TREE_SCAN_LIMIT + 1)}`,
