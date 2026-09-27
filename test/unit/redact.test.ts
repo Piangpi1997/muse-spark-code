@@ -44,4 +44,11 @@ describe('redactSecrets', () => {
   it('does not treat a lone LLM prefix as a key', () => {
     expect(redactSecrets('model LLM|notakey')).toBe('model LLM|notakey')
   })
+
+  it('redacts a whole quoted field, including whitespace and escaped quotes', () => {
+    expect(redactSecrets('password="two words"')).toBe('password="[redacted]"')
+    expect(redactSecrets(String.raw`{"access_token":"two \" words"}`)).toBe(
+      '{"access_token":"[redacted]"}',
+    )
+  })
 })

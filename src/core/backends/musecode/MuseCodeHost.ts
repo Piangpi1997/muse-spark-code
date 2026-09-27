@@ -242,6 +242,21 @@ const PROMPT_SETTLED_KINDS: ReadonlyMap<string, PromptSettledReason> = new Map([
   ['userInputNotFound', 'gone'],
 ])
 
+// An approval mode above the host's ceiling (M56, PLAN.md D43): MSP answers
+// `session/start` and `session/setApprovalMode` with `commandRejected` and
+// this reason, "approval mode exceeds or is incomparable with the sealed
+// startup mode or the managed approval-mode set" (captured 2026-09-25).
+const APPROVAL_MODE_CEILING = 'approval_mode_ceiling'
+
+/** A refused approval mode as a reason the user can act on; anything else unchanged. */
+function ceilingOr(error: unknown): unknown {
+  return error instanceof MspError &&
+    error.kind === COMMAND_REJECTED &&
+    error.data['reason'] === APPROVAL_MODE_CEILING
+    ? new Error(UI_TEXT.approvalModeCeiling, { cause: error })
+    : error
+}
+
 /** A late decision or answer as a `PromptSettledError`; anything else unchanged. */
 function settledOr(error: unknown): unknown {
   if (!(error instanceof MspError)) {
@@ -576,7 +591,11 @@ export class MuseSession implements AgentSession {
 
   /** Select one of the host's preconfigured approval modes. */
   public async setApprovalMode(mode: string): Promise<void> {
-    await this.command('session/setApprovalMode', { mode })
+    try {
+      await this.command('session/setApprovalMode', { mode })
+    } catch (error: unknown) {
+      throw ceilingOr(error)
+    }
   }
 
   /** Summarise older context; `status` is `noop` with a reason when nothing to do. */
@@ -839,7 +858,7 @@ export class MuseCodeHost implements AgentHost {
     )
     if (parsed.sessionDurability !== undefined && parsed.sessionDurability !== DURABLE_SESSIONS) {
       this.log.warn(
-        `This muse serve keeps ${parsed.sessionDurability} sessions: History and resume will not find them after it exits`,
+        `This muse serve keeps ${parsed.sessionDurability} sessions: History and resume will not find them after it exits, and Muse Code 1.3.0 sent such a host's turns to no client (PLAN.md D43)`,
       )
     }
     // The SDK's connection keeps one handler; a throw inside it would end the
@@ -1279,12 +1298,17 @@ export class MuseCodeHost implements AgentHost {
 
   public async startSession(options: StartSessionOptions): Promise<MuseSession> {
     return await this.opened(async () => {
-      const result = await this.command('session/start', {
-        workspaceRoot: options.workspaceRoot,
-        modelId: options.modelId,
-        approvalMode: options.approvalMode,
-        ...this.mcpConfig(options.mcpServers),
-      })
+      let result: unknown
+      try {
+        result = await this.command('session/start', {
+          workspaceRoot: options.workspaceRoot,
+          modelId: options.modelId,
+          approvalMode: options.approvalMode,
+          ...this.mcpConfig(options.mcpServers),
+        })
+      } catch (error: unknown) {
+        throw ceilingOr(error)
+      }
       const { session } = sessionStartResultSchema.parse(result)
       return this.track(session, session.modelId ?? options.modelId)
     })

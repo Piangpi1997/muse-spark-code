@@ -1118,5 +1118,10 @@
     "one": "{count} zamanlanmış çalıştırma",
     "other": "{count} zamanlanmış çalıştırma"
   },
-  "usageScheduledIncluded": "token maliyeti yukarıya dahildir"
+  "usageScheduledIncluded": "token maliyeti yukarıya dahildir",
+  "networkUntrustedCertificate": "Sunucunun sertifikasına güvenilmiyor. Ağınız HTTPS trafiğini denetliyorsa, kök sertifikasını işletim sisteminin sertifika deposuna yükleyin (http.systemCertificates açıkken VS Code onu okur) ya da http.systemCertificates'i kapatıp VS Code'u başlatmadan önce kök sertifika dosyasını NODE_EXTRA_CA_CERTS ile belirtin.",
+  "networkProxyCredentials": "Ara sunucu kimlik bilgileri istedi ve aldıklarını kabul etmedi. http.proxy ve http.proxyAuthorization ayarlarını veya VS Code'un sizden istediği kimlik bilgilerini denetleyin.",
+  "networkProxyRefused": "Ara sunucu bağlantıyı reddetti (HTTP {status}). api.meta.ai adresine izin verdiğini denetleyin.",
+  "networkUnreachable": "Meta'nın sunucusuna ulaşılamadı. Ağ bağlantısını ve ara sunucu kullanıyorsanız http.proxy ile http.proxySupport ayarlarını denetleyin.",
+  "approvalModeCeiling": "Muse Code'un yapılandırması (varsayılan izin profili veya yöneticinizin yönettiği bir ilke) bu izin moduna izin vermiyor. El ile gibi daha katı bir mod seçin ve yeniden gönderin."
 }

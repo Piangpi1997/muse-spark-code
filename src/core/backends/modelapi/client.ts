@@ -25,6 +25,7 @@ import {
 import { fill } from '../../../shared/l10n/text'
 import { DeadlineError, withDeadline } from '../../timeouts'
 import type { CoreLogger } from '../../logging'
+import { describeNetworkFailure, networkFailureMessage } from '../../networkFailure'
 import {
   type CreateImageBody,
   type EditImageBody,
@@ -311,7 +312,7 @@ export class ModelApiClient {
           ...(signal !== undefined && { signal }),
         })
       } catch (error: unknown) {
-        if (isRateLimitOnly || signal?.aborted === true || attempt >= MODEL_API_MAX_RETRIES) {
+        if (error instanceof ModelApiError || signal?.aborted === true) {
           throw error instanceof ModelApiError
             ? error
             : new ModelApiError(
@@ -321,9 +322,16 @@ export class ModelApiClient {
                 undefined,
               )
         }
+        // Never reached the server: its causes say why, and the message
+        // names the setting or store to check (M56, PLAN.md D43).
+        const reason = networkFailureMessage(error)
+        if (isRateLimitOnly || attempt >= MODEL_API_MAX_RETRIES) {
+          throw new ModelApiError(reason, NETWORK_FAILURE_STATUS, undefined, undefined)
+        }
         const delay = this.backoffMs(attempt, undefined)
-        const reason = error instanceof Error ? error.message : String(error)
-        this.deps.log.warn(`Model API request failed to send; retrying in ${String(delay)} ms`)
+        this.deps.log.warn(
+          `Model API request failed to send (${describeNetworkFailure(error).detail}); retrying in ${String(delay)} ms`,
+        )
         await retry(attempt, delay, reason)
         continue
       }

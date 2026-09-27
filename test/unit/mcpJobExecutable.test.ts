@@ -6,7 +6,7 @@ import { mcpJobExecutable, mcpJobExecutableName } from '../../src/host/backend/m
 import type { RunProgram } from '../../src/host/processTree'
 import { SHELL_JOB_FOLDER } from '../../src/shared/constants'
 import { removeFolder } from './helpers/temporaryFolders'
-import { JOB_SOURCE, readJobSource } from './helpers/jobSource'
+import { readJobSource } from './helpers/jobSource'
 
 const paths = { root: '' }
 
@@ -44,14 +44,13 @@ describe('M50 compiled Windows job executable', () => {
       run,
     }
     const ready = mcpJobExecutable(deps)
-    const executable = path.join(folder, mcpJobExecutableName(JOB_SOURCE))
+    const name = mcpJobExecutableName(await readJobSource('mcpLauncher'))
+    const executable = path.join(folder, name)
     expect(await ready()).toBe(executable)
     expect(await ready()).toBe(executable)
     const left = await readdir(folder)
     expect(left.toSorted((a, b) => a.localeCompare(b))).toEqual(
-      ['MuseSparkJob-live.dll', mcpJobExecutableName(JOB_SOURCE)].toSorted((a, b) =>
-        a.localeCompare(b),
-      ),
+      ['MuseSparkJob-live.dll', name].toSorted((a, b) => a.localeCompare(b)),
     )
     expect(scripts).toHaveLength(1)
     expect(scripts[0]).toContain('-OutputType ConsoleApplication')
@@ -99,7 +98,7 @@ describe('M50 compiled Windows job executable', () => {
       const folder = path.join(storageDir, SHELL_JOB_FOLDER)
       await mkdir(folder)
       await writeFile(
-        path.join(folder, mcpJobExecutableName(JOB_SOURCE)),
+        path.join(folder, mcpJobExecutableName(await readJobSource('mcpLauncher'))),
         'not a Windows executable',
       )
       const logged: string[] = []

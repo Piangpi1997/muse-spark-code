@@ -9,9 +9,12 @@ import { Buffer } from 'node:buffer'
 import { randomBytes, randomUUID } from 'node:crypto'
 import { createServer } from 'node:net'
 import { setEnvironmentVariable } from '../../core/backends/musecode/launch'
-import { MCP_JOB_HANDSHAKE_MAX_CHARS, MCP_JOB_NONCE_BYTES } from '../../shared/constants'
+import {
+  MCP_JOB_CONFIG_VARIABLE,
+  MCP_JOB_HANDSHAKE_MAX_CHARS,
+  MCP_JOB_NONCE_BYTES,
+} from '../../shared/constants'
 
-const CONFIG_ENV = 'MUSE_SPARK_MCP_JOB_CONFIG'
 export interface McpJobLaunch {
   readonly executablePath: string
   readonly file: string
@@ -83,7 +86,7 @@ export function spawnMcpJob(launch: McpJobLaunch): ChildProcessWithoutNullStream
     'utf8',
   ).toString('base64')
   const helperEnv = { ...launch.env }
-  setEnvironmentVariable(helperEnv, 'win32', CONFIG_ENV, payload)
+  setEnvironmentVariable(helperEnv, 'win32', MCP_JOB_CONFIG_VARIABLE, payload)
   try {
     child = spawn(
       // nosemgrep: javascript.lang.security.detect-child-process.detect-child-process -- this executable is compiled from fixed M50 source into extension storage; configured MCP input stays in a private environment value (PLAN.md §8).

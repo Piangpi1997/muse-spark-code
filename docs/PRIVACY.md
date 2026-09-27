@@ -33,7 +33,15 @@ security notes for contributors are in `PLAN.md` §9.
 - **Through the Meta Model API** (when you paste a key), the extension calls
   `https://api.meta.ai/v1` directly with your key. Each turn re-sends the
   conversation so far, because requests are made with `store: false`; Meta's
-  Model API terms govern retention on their side. PDF bytes travel inline in
+  Model API terms govern retention on their side. Meta caches the start of
+  each request (the instructions, tools and conversation so far) to answer
+  the next one faster; the extension asks for Meta's shorter `in_memory`
+  retention by default. You may request up to 24 hours with the
+  machine-scoped `museSpark.modelApiPromptCacheRetention` setting, a hint
+  Meta may cut short. A repository cannot raise your retention choice. Each
+  request also carries a cache key: a digest of the instructions and tools
+  it starts with, which says nothing the request does not, and no session
+  or user id. PDF bytes travel inline in
   the request, without a persistent Files API upload. When older media would
   exceed Meta's 50-image and PDF-page budget or the extension's 48-million-
   character combined encoded-media cap, the request names what is left out;
@@ -130,10 +138,15 @@ security notes for contributors are in `PLAN.md` §9.
 
 The extension itself has **no telemetry**, no analytics, no crash reporting
 and no hosted server of its own. It contacts Meta when you send a message,
-sign in, use a paid feature, or open a panel while signed in (to list models;
-that request carries no message). On the Model API backend it also contacts
-remote MCP servers you configured when a conversation starts or uses their
-tools. On macOS, dictation may contact Apple as described above.
+sign in, dictate, use a paid feature, or open a panel while signed in (to list
+models; that request carries no message). On the Model API backend it also
+contacts remote MCP servers you configured when a conversation starts or uses
+their tools. On macOS, dictation may contact Apple as described above. Behind
+a proxy, those requests go through the proxy VS Code is set to use under its
+`http.*` settings. **Muse Spark: Diagnostics** runs `muse config status`,
+which reads Muse Code's managed configuration on this machine and contacts no
+one. The public-issue report includes only recognized source and generation
+fields, never raw configuration or failed-command output.
 
 ## Credentials
 

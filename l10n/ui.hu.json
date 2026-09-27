@@ -1118,5 +1118,10 @@
     "one": "{count} ütemezett futtatás",
     "other": "{count} ütemezett futtatás"
   },
-  "usageScheduledIncluded": "a tokenek költsége fent szerepel"
+  "usageScheduledIncluded": "a tokenek költsége fent szerepel",
+  "networkUntrustedCertificate": "A kiszolgáló tanúsítványa nem megbízható. Ha a hálózata vizsgálja a HTTPS-forgalmat, telepítse a gyökértanúsítványát az operációs rendszer tanúsítványtárolójába (a VS Code onnan olvassa, amíg a http.systemCertificates be van kapcsolva), vagy kapcsolja ki a http.systemCertificates beállítást, és a VS Code indítása előtt adja meg a gyökértanúsítvány fájlját a NODE_EXTRA_CA_CERTS változóban.",
+  "networkProxyCredentials": "A proxy hitelesítő adatokat kért, és nem fogadta el a kapottakat. Ellenőrizze a http.proxy és a http.proxyAuthorization beállítást, vagy azokat a hitelesítő adatokat, amelyeket a VS Code kért Öntől.",
+  "networkProxyRefused": "A proxy elutasította a kapcsolatot (HTTP {status}). Ellenőrizze, hogy engedélyezi-e az api.meta.ai címet.",
+  "networkUnreachable": "A Meta kiszolgálója nem érhető el. Ellenőrizze a hálózati kapcsolatot, és ha proxyt használ, a http.proxy és a http.proxySupport beállítást.",
+  "approvalModeCeiling": "A Muse Code konfigurációja (az alapértelmezett engedélyprofilja vagy a rendszergazda által felügyelt házirend) nem engedélyezi ezt az engedélyezési módot. Válasszon szigorúbbat, például a Kézi módot, és küldje el újra."
 }

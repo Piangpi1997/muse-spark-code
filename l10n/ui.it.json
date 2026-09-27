@@ -1150,5 +1150,10 @@
     "many": "{count} esecuzioni pianificate",
     "other": "{count} esecuzioni pianificate"
   },
-  "usageScheduledIncluded": "costo dei token incluso sopra"
+  "usageScheduledIncluded": "costo dei token incluso sopra",
+  "networkUntrustedCertificate": "Il certificato del server non è attendibile. Se la tua rete ispeziona il traffico HTTPS, installa il suo certificato radice nell’archivio certificati del sistema operativo (VS Code lo legge mentre http.systemCertificates è attivo), oppure disattiva http.systemCertificates e indica il file del certificato radice in NODE_EXTRA_CA_CERTS prima di avviare VS Code.",
+  "networkProxyCredentials": "Il proxy ha chiesto delle credenziali e non ha accettato quelle ricevute. Controlla http.proxy e http.proxyAuthorization, oppure le credenziali che VS Code ti ha chiesto.",
+  "networkProxyRefused": "Il proxy ha rifiutato la connessione (HTTP {status}). Verifica che consenta api.meta.ai.",
+  "networkUnreachable": "Impossibile raggiungere il server di Meta. Controlla la connessione di rete e, se usi un proxy, http.proxy e http.proxySupport.",
+  "approvalModeCeiling": "La configurazione di Muse Code (il suo profilo di autorizzazioni predefinito o un criterio gestito dal tuo amministratore) non consente questa modalità di autorizzazione. Scegline una più restrittiva, ad esempio Manuale, e invia di nuovo."
 }

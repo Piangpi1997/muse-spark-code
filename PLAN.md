@@ -1828,6 +1828,126 @@ optional` is optional) that is not running fails the turn with the reason
   servers' `instructions`, and the server-initiated event stream over HTTP
   (a tool list that changes between replies is seen at the next one).
 
+### D43 — Enterprise network and posture (2026-09-25)
+
+D36's last row: proxies and certificates for the extension's own traffic,
+Muse Code's `--sandbox-network` and `--no-session-log`, `muse config
+status`, and the Model API's prompt cache. What was read or captured first
+(2026-09-25; the capture is `docs/certification/m56.md`):
+
+- **VS Code already routes an extension's `fetch` and `WebSocket`.** VS
+  Code 1.125.0's `src/vs/workbench/api/node/proxyResolver.ts` (tag 1.125.0,
+  with `@vscode/proxy-agent` ^0.42.0) replaces the extension host's global
+  `fetch` (`createFetchPatch`, on while `http.fetchAdditionalSupport` is, by
+  default) and global `WebSocket` (`createWebSocketPatch`, proxy-agent
+  0.39.0, on while `http.webSocketAdditionalSupport` is, by default). Each
+  request gets the proxy for its URL (`http.proxy`, else the system's
+  settings or PAC file through Electron; `http.noProxy`; `http.proxySupport`
+  `override` by default), proxy authentication (Basic through VS Code,
+  Kerberos), and the operating system's certificates (`http.systemCertificates`,
+  by default). The shipped 1.139.0 extension host carries the same code. So
+  the Model API client and the Muse Voice socket need no proxy client of
+  their own and no dependency.
+- **Node 24.20** reads `NODE_EXTRA_CA_CERTS` when the process starts, for
+  every TLS connection; `--use-system-ca` and `NODE_USE_ENV_PROXY` are
+  process switches an extension cannot set. Its `fetch` throws `TypeError:
+fetch failed` with the reason in the causes: captured, `ECONNREFUSED`;
+  `DEPTH_ZERO_SELF_SIGNED_CERT` from a self-signed server; and from a proxy
+  answering the tunnel with 407 or 403, `Request was cancelled.` over
+  `Proxy response (407) !== 200 when HTTP Tunneling` (`UND_ERR_ABORTED`).
+- **Muse Code 1.3.0's network.** Its binary reads `HTTPS_PROXY`,
+  `HTTP_PROXY`, `ALL_PROXY` and `NO_PROXY` in either case (and has its own
+  `endpoint_transport.proxy` settings key); its changelog: "HTTP and HTTPS
+  proxy environment variables are respected for all network traffic". Its
+  TLS is rustls over the operating system's store (the binary enumerates
+  the Windows store) and it reads `SSL_CERT_FILE` / `SSL_CERT_DIR`, which in
+  rustls-native-certs replace that store ("certificates are only loaded
+  from the locations specified via environment variables and not the
+  platform-native certificate store"). With a recording proxy (no model
+  call), its start-up `CONNECT api.meta.ai:443` went through the proxy, and
+  so did `POST http://127.0.0.1:<port>/mcp` to a loopback MCP server, the
+  extension's `ide` server's address, until `NO_PROXY` listed 127.0.0.1.
+- **`muse serve --sandbox-network <restricted|enabled|proxy-only>`**,
+  `proxy-only` by default (each new destination asks, as a network approval
+  card); a wrong value exits 2 naming the three; with `--disable-sandbox`
+  the flag is ignored with a stderr line. The managed policy has
+  `execution.network_sandbox_modes` and `execution.approval_modes` keys.
+- **`muse serve --no-session-log`** makes the host `sessionDurability:
+"ephemeral"`, and Muse Code 1.3.0's memory-only host does not work over
+  MSP. One turn on the contributor model: the turn ran to completion in
+  the CLI's trace log, but the client received no `turn/*` or `item/*`
+  notification (the view cursor is the placeholder
+  `pending:seam-c-session-view-fold`); `view/subscribe`, `view/page`,
+  `session/read`, `session/resume`, `session/fork` and `session/rename`
+  answer `methodNotFound`; and `session/start` and `session/setApprovalMode`
+  refuse `onRequest` and `allowAll` with `commandRejected` /
+  `approval_mode_ceiling`.
+- **`muse config status`** prints the managed planes' state, one line per
+  plane and source (`plane=policy source_class=system_file state=absent`),
+  and a generation digest; `--json` is refused; nothing reached a recording
+  proxy while it ran.
+- **Prompt caching** (dev.meta.ai/docs/prompt-caching, protocols/responses,
+  pricing-rate-limits): the prefix is cached with no key; the key routes
+  requests that share a prefix together: "Use one stable key per shared
+  prefix … Don't over-partition: unique keys per user or per session lower
+  hit rates." `prompt_cache_retention` is `in_memory` (the default) or
+  `24h`, "a hint, not a guarantee", and "Set '24h' retention for bursty
+  workloads … with idle gaps". The pricing page has one cached-input rate
+  and no charge for retention. The extension sent the session id as its key.
+
+The choices:
+
+- **No proxy client of the extension's own.** VS Code's is complete and
+  follows the user's VS Code settings; the extension takes `globalThis.fetch`
+  at each request (not bound at activation) so whatever VS Code has
+  installed carries it. A request that never reached Meta says why, from
+  its causes: an untrusted certificate (the store to check), a proxy that
+  wants credentials or refused the tunnel, no route; Node's detail follows.
+  The detail must redact a quoted secret field in full, including spaces,
+  before it reaches a panel notice or log.
+- **Loopback bypasses Muse Code's environment proxy.** Wherever its environment
+  names a proxy (VS Code's `http.proxy` handed over, or the user's own),
+  `127.0.0.1`, `localhost` and `::1` are added to its `NO_PROXY`; the
+  entries already there stay. Before, `http.proxy` without `http.noProxy`
+  cut Muse Code off from the IDE tools.
+- **Validate VS Code's proxy settings before building the CLI environment.**
+  `WorkspaceConfiguration.get<T>` supplies a TypeScript type, not a runtime
+  check. A malformed `http.proxy` or `http.noProxy` must fall back to an empty
+  value instead of becoming a process environment variable; Diagnostics
+  reads the same validated values for its set/count facts.
+- **Certificates for Muse Code are left to the system store.** It already
+  reads it; `SSL_CERT_FILE` would replace it, so the extension never sets
+  one (a `NODE_EXTRA_CA_CERTS` file holds only the extra roots). The README
+  says so, and Diagnostics says whether one is set.
+- **`museSpark.sandboxNetwork`**, machine-scoped (a repository must not
+  open the sandbox's network): `default` passes nothing, so Muse Code's
+  default or a managed configuration's decides; the three modes pass the
+  flag while the sandbox is on, never without it (the log says it has no
+  effect then). Changing it restarts the host, like `shellSandbox`.
+- **`--no-session-log` is not offered.** A setting that makes the panel
+  silent would be a broken feature; the capture and an upstream report are
+  the record, and the setting comes when a Muse Code release serves a
+  memory-only host's view. The host's existing warning for a non-durable
+  host stays.
+- **A permission mode above the ceiling** (the captured
+  `approval_mode_ceiling`, from a managed `execution.approval_modes` or a
+  default permission profile) is refused with a sentence that says so and
+  names a stricter mode, instead of MSP's text.
+- **Diagnostics** adds the network posture (booleans and counts; never a
+  proxy's address, which can hold a password) and known-safe source and
+  generation fields from `muse config status`, run in `muse serve`'s
+  environment. Unrecognized lines and failed-command output are withheld.
+- **Prompt caching as documented**: `prompt_cache_key` is
+  `muse-spark-code-` and 32 hex characters of a SHA-256 over the model, the
+  instructions and the tools, the prefix a workspace's conversations share
+  (a compaction, which sends no tools, gets its own); and
+  `prompt_cache_retention` is `museSpark.modelApiPromptCacheRetention`,
+  `in_memory` by default, with `24h` only when the user chooses it. Both
+  have the same cached-input price; the longer value may improve cache hits
+  after a pause but asks Meta to retain the cached prefix longer. The
+  setting is machine-scoped, so a repository cannot raise the user's choice
+  through `.vscode/settings.json`.
+
 ### D45 — Subagents on both backends (M48, 2026-09-25)
 
 The Model API backend runs bounded child sessions with their own conversation
@@ -5601,6 +5721,168 @@ share ships as `native/windows/MuseSparkMcpJob.cs` and is read when a helper
 is first built, instead of riding in the host bundle as a 12 KiB string;
 `dist/extension.js` went from 605.5 KiB (over the 600 KiB budget) to
 593.5 KiB. The budget is unchanged.
+
+### M56 — Enterprise network and posture (D43)
+
+**Status 2026-09-27: built, and joined onto M55 as branch
+`codex/m56-enterprise-final`. Its commit `f7dc40f` sits on
+`codex/m55-install` `b98c05b`. A merge then brings in M55's `d50ce40`, which
+carries main's merged M54 (PR #42, `cf33cb2`). Both trees passed local
+`npm run quality`, and the receipts are in their commit messages. M55's
+review fix and main after PR #43 (`0cf5e7e`) are merged in, and that tree
+passed `npm run quality` too (2,497 unit tests, 328 accessibility pages).
+Still open: hosted PR CI, and live proof behind a real enterprise proxy with
+a private root, including Muse Code's IDE route**
+(`docs/certification/m56.md`, "Final join onto M55").
+
+That join keeps M54's and M55's records as they were. It restores
+`docs/certification/m53.md` to M55's copy, and it corrects the certificate
+advice to what the Kubuntu drill proved: `NODE_EXTRA_CA_CERTS` helps only
+with `http.systemCertificates` off. It also brings `dist/extension.js` from
+601.6 KiB to 596.7 KiB under the unchanged 600 KiB budget (D6). To do so,
+the shell job type and the MCP launcher's C# ship as `.cs` files beside
+M55's shared half, and the two helpers share one copy of their build steps
+(`jobBuild.ts`). The paragraphs below record the provisional joins that led
+here. Claude's original
+worktree left two failed quality runs. The isolated M56 tree builds on merged
+main `34002ab`; its pre-M47 stage is pinned at `refs/backup/m56-before-m47`.
+The staged tree `0b83645791fc43608cda0f569505cb8bd560661f` passed
+`npm run quality` on a separate Windows 11 VM checkout: 1,721 unit tests
+passed (3 skipped), 280 accessibility pages returned results with zero
+violations, and security scans found no leaks or SAST findings. The VM
+process audit found no remaining M56 checkout or accessibility Chrome
+process. This receipt covers that exact tree before the later documentation
+and proxy-validation fix. The combined staged tree
+`5619bd599df00b8a470a63582aec904056a2ae49` then passed full local
+Windows quality with 2,209 unit tests, accessibility and security gates
+green, and no owned test processes left; commit `90308c1` matches that tree.
+The M51 PR #39 and M53 PR #41 review fixes are joined. M54 frozen code and
+M55's sign-out, account-isolation and catalogue fixes are joined provisionally;
+M55's current independent review fixes, final receipts and merged ancestry
+must precede M56's exact-tree local and hosted checks. A live
+enterprise proxy with a private-root certificate remains open.
+
+An isolated Kubuntu drill on staged tree `8300ddaa` exercised production
+`liveFetch` and `withLoopbackBypass` through Node's environment-proxy
+support, a local authenticated CONNECT proxy and a temporary private CA.
+The success, missing-CA, 407 and loopback outcomes are recorded in
+`docs/certification/m56.md`. This is a local simulation, not VS Code
+extension-host or Muse Code IDE-route proof; an actual corporate proxy and
+private-root end-to-end check remains open. No model or paid call ran.
+
+A second isolated Kubuntu drill on staged tree `8e1d9cc` ran the actual
+extension in VS Code 1.130.0's Extension Development Host. Its production
+`liveFetch` reached a loopback-only HTTPS origin through a local authenticated
+CONNECT proxy and temporary private CA, with VS Code configured for that
+proxy and `http.systemCertificates: false` plus process-local
+`NODE_EXTRA_CA_CERTS`. Missing the CA failed TLS verification. With
+`http.systemCertificates: true`, that same process-local CA did not make the
+request pass in this setup. A network namespace had only loopback and no
+routes; no real Meta, model or paid traffic was possible. This proves that
+local extension-host path under the stated settings, not a real corporate
+proxy/root or Muse Code's IDE MCP route; those checks and exact-tree full
+quality remain open (`docs/certification/m56.md`).
+
+The fifth PR #42 review delta from head `5292d4a` to frozen M54 tree
+`75b30e59` was layered onto the backed-up M56 `f6a63e62` stage. The M54
+certification conflict kept the complete newer M54 receipt; the constants
+conflict kept both M56 prompt-cache controls and M54's Model API text limit.
+The combined source checkpoint was `43d02269` before its documentation
+receipt. M55 authentication and M56 enterprise implementation remain in
+place. M54 platform gates on `75b30e59` certify only M54; M56 exact-tree
+quality, final M54/M55 ancestry, and live enterprise proxy/private-root
+proof remain open.
+
+PR #42 receipt head `a228787` has the same source, tests and localization
+tables as frozen M54 tree `75b30e59`; it adds the fifth-review platform
+receipt to `docs/certification/m54.md`. The M56 staged source tree was
+preserved exactly while moving its HEAD from `5292d4a` to `a228787`, then
+the exact M54 receipt blob was adopted. M55 sign-in and M56 enterprise
+changes remain staged. This anchor does not certify the combined M56 tree;
+its final M55 ancestry, exact-tree gates and live enterprise proof remain open.
+
+The sixth PR #42 review delta from head `a228787` to frozen M54 tree
+`639bf222` was layered onto the backed-up M56 stage `b53293c3` without
+conflicts. It adds the reverse Muse Code attachment-budget guard and the
+Model API stale-send and late-ack fences. The ten-path patch can be reversed
+against the combined staged tree, and all other source paths retain their
+pre-join blobs. M55 authentication and M56 enterprise changes remain staged.
+The M54 code-tree evidence applies only to M54; final PR #42/M55 ancestry,
+M56 exact-tree quality and live enterprise proxy/private-root proof remain open.
+
+PR #42 receipt head `bd667e4` has the same source, tests and localization
+tables as frozen M54 tree `639bf222`; it adds only the sixth-review platform
+receipt to `docs/certification/m54.md`. The M56 staged source tree was
+preserved exactly while moving its HEAD from `a228787` to `bd667e4`, then
+the exact M54 receipt blob was adopted. M55 sign-in and M56 enterprise
+changes remain staged. This remains a provisional ancestry checkpoint;
+combined M56 exact-tree gates and live enterprise proof are open.
+
+The seventh PR #42 review delta from head `bd667e4` to frozen M54 tree
+`423ef6f5` was layered onto the backed-up M56 stage `5fba42e1` without
+conflicts. It adds the Model API tool-read PDF page-slot queue guard and
+keeps known localized attachment refusals visible in the composer. The
+eight-path patch passes a cached reverse check against the combined stage;
+all other paths retain their pre-join blobs. M55 sign-in and M56 enterprise
+implementation remain staged. This provisional source join still needs
+final PR #42/M55 ancestry, M56 exact-tree gates and live enterprise proof.
+
+PR #42 receipt head `97a1332` has the same source, tests and localization
+tables as frozen M54 tree `423ef6f5`; it adds only the seventh-review
+platform receipt to `docs/certification/m54.md`. The M56 staged source tree
+was preserved exactly while moving its HEAD from `bd667e4` to `97a1332`,
+then the exact M54 receipt blob was adopted. M55 sign-in and M56 enterprise
+changes remain staged. This ancestry checkpoint still needs final PR #42/M55
+joins, combined M56 gates and live enterprise proxy/private-root proof.
+
+The eighth PR #42 review delta from head `97a1332` to frozen M54 tree
+`53237394` was layered onto the backed-up M56 stage `0b6923d2` without
+conflicts. It reserves current-batch tool output, queued file and accepted
+steer media together until first delivery; Stop and failed requests scrub
+undelivered output images. The six-path patch passes a cached three-way
+reverse check. M55 sign-in and M56 enterprise code remain staged. This
+provisional source join still needs final PR #42/M55 ancestry, M56 exact-tree
+gates and live enterprise proxy/private-root proof.
+
+PR #42 receipt head `e8974ee` has the same source, tests and localization
+tables as frozen M54 tree `53237394`; it adds only the eighth-review
+platform receipt to `docs/certification/m54.md`. The M56 staged source tree
+was preserved exactly while moving its HEAD from `97a1332` to `e8974ee`,
+then the exact M54 receipt blob was adopted. M55 sign-in and M56 enterprise
+changes remain staged. This ancestry checkpoint still needs final PR #42/M55
+joins, combined M56 gates and live enterprise proxy/private-root proof.
+
+- **Goal**: route the panel through VS Code's proxy and certificate support
+  and Muse Code through its documented environment, expose the posture
+  switches `muse serve` has, and show managed-configuration status; key the
+  Model API's prompt cache as Meta documents.
+- **Research first**: VS Code 1.125.0's `proxyResolver.ts` and the shipped
+  1.139.0 extension host (the extension's `fetch` and WebSocket already go
+  through VS Code's proxy and certificate support); Node 24's failure
+  shapes, captured; Muse Code's proxy and certificate variables from its
+  binary and a recording proxy; `muse serve --help`, a wrong
+  `--sandbox-network`, and four MSP probes of `--no-session-log` (one turn
+  on the contributor model, 26 model attempts; the rest no model call);
+  `muse config status`; Meta's prompt-caching guide and pricing.
+- **Scope**: `liveFetch`; validated VS Code proxy settings at the Muse Code
+  child-process boundary; network failures described with their fix;
+  loopback in Muse Code's `NO_PROXY` whenever it has a proxy (a fix);
+  `museSpark.sandboxNetwork` (machine-scoped, restart on change);
+  Diagnostics' network lines and known-safe `muse config status` fields; the
+  approval-ceiling refusal as a sentence; `prompt_cache_key` per prefix and
+  `museSpark.modelApiPromptCacheRetention` (machine-scoped, in memory by
+  default); five UI strings and eight
+  manifest strings in fourteen languages; README (Settings, Proxies and
+  certificates, Privacy and security, Troubleshooting), PRIVACY, CHANGELOG.
+- **Acceptance**: tests from the captured shapes and drills N1–N20 passed;
+  the join onto M55 added the job-source contract test and drills N21–N25,
+  and its exact tree passed local full quality. Hosted checks after the
+  M54 and M55 merges and live enterprise-network proof remain pending.
+- **Left**: `--no-session-log` until Muse Code serves a memory-only host's
+  view over MSP (an upstream report, D43); Muse Code's own
+  `endpoint_transport.proxy` is the user's to set in its settings file. No
+  enterprise proxy with authentication and a private root has been exercised
+  end to end; routing and failure messages have local capture evidence only.
 
 ### M41 — Install Muse Code from the panel (folded into M55)
 

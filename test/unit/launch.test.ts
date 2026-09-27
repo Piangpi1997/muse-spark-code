@@ -5,6 +5,7 @@ import {
   credentialFilePath,
   type LaunchProbe,
   resolveMuseLaunch,
+  withLoopbackBypass,
 } from '../../src/core/backends/musecode/launch'
 
 function windowsProbe(files: Record<string, string | true>, overrides: Partial<LaunchProbe> = {}) {
@@ -240,6 +241,44 @@ describe('buildChildEnvironment', () => {
       programFiles: undefined,
     })
     expect(env).toEqual({ PATH: 'x', PSModulePath: 'keep', META_API_KEY: 'from-the-user-shell' })
+  })
+})
+
+// M56 (PLAN.md D43): Muse Code sent the loopback `ide` server's requests to
+// the proxy until NO_PROXY listed 127.0.0.1 (captured 2026-09-25).
+describe('withLoopbackBypass', () => {
+  const LOOPBACK = '127.0.0.1,localhost,::1'
+
+  it('adds a NO_PROXY for loopback wherever a proxy is set, and nothing without one', () => {
+    expect(withLoopbackBypass({ PATH: 'x' }, 'linux')).toEqual({ PATH: 'x' })
+    expect(withLoopbackBypass({ HTTPS_PROXY: '' }, 'linux')).toEqual({ HTTPS_PROXY: '' })
+    for (const name of ['HTTPS_PROXY', 'HTTP_PROXY', 'ALL_PROXY', 'https_proxy', 'all_proxy']) {
+      expect(withLoopbackBypass({ [name]: 'https://proxy:8443' }, 'linux')).toEqual({
+        [name]: 'https://proxy:8443',
+        NO_PROXY: LOOPBACK,
+      })
+    }
+  })
+
+  it('keeps the entries already listed, in every spelling there is, adding only what is missing', () => {
+    expect(
+      withLoopbackBypass(
+        { HTTPS_PROXY: 'https://p', NO_PROXY: '.corp, localhost', no_proxy: '' },
+        'darwin',
+      ),
+    ).toEqual({
+      HTTPS_PROXY: 'https://p',
+      NO_PROXY: '.corp,localhost,127.0.0.1,::1',
+      no_proxy: LOOPBACK,
+    })
+    // One variable on Windows, whatever its spelling.
+    expect(withLoopbackBypass({ Https_Proxy: 'https://p', no_proxy: '.corp' }, 'win32')).toEqual({
+      Https_Proxy: 'https://p',
+      NO_PROXY: `.corp,${LOOPBACK}`,
+    })
+    const inherited = { HTTP_PROXY: 'https://p' }
+    withLoopbackBypass(inherited, 'linux')
+    expect(inherited).toEqual({ HTTP_PROXY: 'https://p' })
   })
 })
 

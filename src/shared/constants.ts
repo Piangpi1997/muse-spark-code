@@ -110,6 +110,16 @@ export interface EnvironmentVariable {
 export const SHELL_SANDBOX_MODES = ['auto', 'muse', 'off'] as const
 export type ShellSandboxMode = (typeof SHELL_SANDBOX_MODES)[number]
 export const SHELL_SANDBOX_SETTING = 'museSpark.shellSandbox'
+// The shell sandbox's network, `muse serve --sandbox-network <mode>` (M56,
+// PLAN.md D43; `muse serve --help` and dev.meta.ai/docs/muse-code/permissions,
+// read 2026-09-25): `proxy-only` asks before each new destination,
+// `restricted` allows none, `enabled` allows all. `default` passes no flag,
+// so Muse Code's own default (`proxy-only`) or an administrator's managed
+// configuration decides. With the sandbox off Muse Code ignores the flag
+// (it says so on stderr), so it is not passed then.
+export const SANDBOX_NETWORK_MODES = ['default', 'proxy-only', 'restricted', 'enabled'] as const
+export type SandboxNetworkMode = (typeof SANDBOX_NETWORK_MODES)[number]
+export const SANDBOX_NETWORK_SETTING = 'museSpark.sandboxNetwork'
 export const BYPASS_SETTING = 'museSpark.allowDangerouslySkipPermissions'
 export const MODEL_API_HOOKS_SETTING = 'museSpark.modelApiHooks'
 // Settings `muse serve` takes at spawn: changing one restarts it (PLAN.md D25).
@@ -123,6 +133,45 @@ export const CLI_PROCESS_SETTINGS = [
 export const HTTP_SETTINGS_SECTION = 'http'
 export const HTTP_PROXY_SETTING = 'proxy'
 export const HTTP_NO_PROXY_SETTING = 'noProxy'
+// VS Code's network settings the Diagnostics report states (M56, PLAN.md
+// D43). VS Code 1.125 and later route an extension's global `fetch` and
+// `WebSocket` through its proxy support and the operating system's
+// certificates while these allow it; the extension relies on that rather
+// than a proxy client of its own.
+export const HTTP_POSTURE_SETTINGS = {
+  proxySupport: 'proxySupport',
+  proxyStrictSsl: 'proxyStrictSSL',
+  proxyAuthorization: 'proxyAuthorization',
+  systemCertificates: 'systemCertificates',
+  fetchAdditionalSupport: 'fetchAdditionalSupport',
+  webSocketAdditionalSupport: 'webSocketAdditionalSupport',
+} as const
+// VS Code's defaults for the settings above, for a value it does not report.
+export const HTTP_PROXY_SUPPORT_DEFAULT = 'override'
+export const HTTP_PROXY_SUPPORT_MODES = ['off', 'on', 'fallback', 'override'] as const
+// Extra roots Node adds to its store when the process starts; read by VS
+// Code's extension host, not by Muse Code.
+export const NODE_EXTRA_CA_CERTS_VARIABLE = 'NODE_EXTRA_CA_CERTS'
+// Muse Code 1.3.0 is built on rustls with the operating system's store; these
+// two, when set, replace that store (rustls-native-certs, M56).
+export const MUSE_CERTIFICATE_VARIABLES = ['SSL_CERT_FILE', 'SSL_CERT_DIR'] as const
+// The proxy variables Muse Code reads (its binary names these spellings);
+// POSIX tools read the lower-case ones too, so any of them means "configured".
+export const PROXY_VARIABLE_SPELLINGS = [
+  'HTTPS_PROXY',
+  'HTTP_PROXY',
+  'ALL_PROXY',
+  'https_proxy',
+  'http_proxy',
+  'all_proxy',
+] as const
+export const NO_PROXY_VARIABLE = 'NO_PROXY'
+export const NO_PROXY_SPELLINGS = [NO_PROXY_VARIABLE, 'no_proxy'] as const
+export const NO_PROXY_SEPARATOR = ','
+// Muse Code sends every HTTP request through the proxy its environment names,
+// the extension's loopback `ide` server's included, unless NO_PROXY lists
+// the address (captured 2026-09-25, M56): so these always bypass it.
+export const LOOPBACK_NO_PROXY_ENTRIES = ['127.0.0.1', 'localhost', '::1'] as const
 // The terminal environment settings the Model API shell tool applies (D25).
 export const TERMINAL_ENV_SECTION = 'terminal.integrated.env'
 export const TERMINAL_ENV_KEYS = { windows: 'windows', osx: 'osx', linux: 'linux' } as const
@@ -168,6 +217,10 @@ export const SETTING_DEFAULTS = {
   modelApiWebSearch: false,
   modelApiImageGeneration: false,
   modelApiVoice: false,
+  // M56 (PLAN.md D43): Muse Code's own network default, and Meta's shorter
+  // in-memory prompt-cache retention until the user chooses 24h.
+  sandboxNetwork: 'default' as SandboxNetworkMode,
+  modelApiPromptCacheRetention: 'in_memory' as PromptCacheRetention,
   modelApiScheduledPrompts: false,
   modelApiSubagents: false,
   // Hook commands are user code outside the agent sandbox (M51). A machine
@@ -189,6 +242,9 @@ export const MACHINE_SCOPED_SETTINGS = [
   'modelApiWebSearch',
   'modelApiImageGeneration',
   'modelApiVoice',
+  'sandboxNetwork',
+  // A repository must not extend the user's prompt retention (M56, D43).
+  'modelApiPromptCacheRetention',
   'modelApiScheduledPrompts',
   'modelApiSubagents',
   'modelApiHooks',
@@ -586,6 +642,19 @@ export const MODEL_API_MAX_OUTPUT_TOKENS = 32_768
 export const MODEL_API_TEXT_CONTEXT_RESERVE_TOKENS = 256 * 1024
 export const MAX_MODEL_API_TEXT_ATTACHMENT_BYTES =
   MODEL_API_CONTEXT_WINDOW - MODEL_API_TEXT_CONTEXT_RESERVE_TOKENS
+// Prompt caching (M56, PLAN.md D43; dev.meta.ai/docs/prompt-caching, read
+// 2026-09-25). "Use one stable key per shared prefix … Don't over-partition:
+// unique keys per user or per session lower hit rates": the key names the
+// prefix every request starts with (model, instructions, tools) by a digest
+// of it, so it says nothing the request does not. `prompt_cache_retention`
+// is a hint: `in_memory` (Meta's default) or `24h`, "for bursty workloads …
+// with idle gaps", as a conversation is; the pricing page has one cached
+// input rate for both.
+export const PROMPT_CACHE_KEY_PREFIX = 'muse-spark-code-'
+export const PROMPT_CACHE_KEY_DIGEST_CHARS = 32
+export const PROMPT_CACHE_KEY_HASH = 'sha256'
+export const PROMPT_CACHE_RETENTIONS = ['24h', 'in_memory'] as const
+export type PromptCacheRetention = (typeof PROMPT_CACHE_RETENTIONS)[number]
 // dev.meta.ai/docs/error-handling: 429 and the server errors are retryable
 // with exponential backoff and jitter, honouring Retry-After; 3–5 attempts.
 // A 504 is not: the guide says to stream instead, which every long request
@@ -617,6 +686,40 @@ export const BOUNDED_FILE_READ_CHUNK_BYTES = 64 * 1024
 export const HTTP_UNAUTHORIZED = 401
 // Refused before any work was done: the one status a per-call-billed request retries (M34).
 export const HTTP_TOO_MANY_REQUESTS = 429
+// A request that never reached Meta (M56, PLAN.md D43), read from the causes
+// under fetch's "fetch failed", as Node 24 throws them (captured 2026-09-25,
+// docs/certification/m56.md). Node's verification codes for a certificate
+// chain it does not trust, as a network that inspects HTTPS produces:
+export const TLS_TRUST_ERROR_CODES: ReadonlySet<string> = new Set([
+  'SELF_SIGNED_CERT_IN_CHAIN',
+  'DEPTH_ZERO_SELF_SIGNED_CERT',
+  'UNABLE_TO_GET_ISSUER_CERT',
+  'UNABLE_TO_GET_ISSUER_CERT_LOCALLY',
+  'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
+  'CERT_UNTRUSTED',
+  'CERT_HAS_EXPIRED',
+  'CERT_NOT_YET_VALID',
+  'CERT_SIGNATURE_FAILURE',
+  'ERR_TLS_CERT_ALTNAME_INVALID',
+])
+// … the codes of a connection that could not be made at all:
+export const CONNECTION_ERROR_CODES: ReadonlySet<string> = new Set([
+  'ECONNREFUSED',
+  'ECONNRESET',
+  'ENOTFOUND',
+  'EAI_AGAIN',
+  'ETIMEDOUT',
+  'EHOSTUNREACH',
+  'ENETUNREACH',
+  'UND_ERR_CONNECT_TIMEOUT',
+  'UND_ERR_SOCKET',
+])
+// … and a proxy that answered the tunnel with something other than 200
+// ("Proxy response (407) !== 200 when HTTP Tunneling").
+export const PROXY_TUNNEL_STATUS = /Proxy response \((\d{3})\)/
+export const HTTP_PROXY_AUTHENTICATION_REQUIRED = 407
+// How far down an error's causes the description looks.
+export const ERROR_CAUSE_MAX_DEPTH = 5
 // The turn error kind both backends report when the credential is refused;
 // the controller turns it into the signed-out gate.
 export const AUTH_REQUIRED_ERROR_KIND = 'authRequired'
@@ -1213,6 +1316,13 @@ export const MCP_STDIO_ENV_ALLOWLIST: readonly string[] = [
 export const MCP_JOB_NONCE_BYTES = 24
 /** Reject an oversized READY line before it can hold the private pipe. */
 export const MCP_JOB_HANDSHAKE_MAX_CHARS = 128
+// The Windows MCP launcher's contract with its shipped C#
+// (native/windows/MuseSparkMcpLauncher.cs, PLAN.md D6): the argument its
+// self-test is run with, the line it answers, and the variable its
+// configuration arrives in (removed before the server starts).
+export const MCP_JOB_SELF_TEST_ARGUMENT = '--self-test'
+export const MCP_JOB_SELF_TEST_TOKEN = 'muse-spark-mcp-job-ready'
+export const MCP_JOB_CONFIG_VARIABLE = 'MUSE_SPARK_MCP_JOB_CONFIG'
 // Diagnostics beyond this many are summarised as a count.
 export const DIAGNOSTICS_MAX_ENTRIES = 200
 // One diagnostic's message is cut here (PLAN.md D27): a TypeScript type
@@ -1253,6 +1363,8 @@ export const MUSE_DISABLE_SANDBOX_ARG = '--disable-sandbox'
 // for VS Code's Restricted Mode: no workspace shell execution (PLAN.md D13).
 export const MUSE_TRUST_WORKSPACE_ARG = '--trust-workspace'
 export const MUSE_DISABLE_SHELL_ARG = '--disable-shell'
+// `muse serve --sandbox-network <mode>` (M56, PLAN.md D43).
+export const MUSE_SANDBOX_NETWORK_ARG = '--sandbox-network'
 export const MUSE_INSTALL_URL = 'https://dev.meta.ai/products/muse-code/'
 export const MUSE_INSTALL_COMMANDS = {
   win32: 'irm https://dev.meta.ai/install.ps1 | iex',
@@ -1355,6 +1467,13 @@ export const MUSE_TERMINAL_NAME = 'Muse Code'
 // `Muse Spark: Create AGENTS.md` runs the CLI's own scaffold (no model call).
 export const MUSE_INIT_ARGS = ['init'] as const
 export const MUSE_INIT_TIMEOUT_MS = 30 * 1000
+// The Diagnostics report's managed-configuration section (M56, PLAN.md D43):
+// `muse config status` reads the enterprise planes on this machine and
+// prints their state (no model call, no network; verified 2026-09-25).
+export const MUSE_CONFIG_STATUS_ARGS = ['config', 'status'] as const
+export const MUSE_CONFIG_STATUS_TIMEOUT_MS = 15 * 1000
+// Its text in the report is cut here, so a long policy cannot flood the log.
+export const MUSE_CONFIG_STATUS_MAX_CHARS = 4000
 // The CLI's skill commands (M30, D30): local files only, no model call.
 export const MUSE_SKILLS_TIMEOUT_MS = 30 * 1000
 /** Where `muse skills import --from` can read skills (Claude Code, Codex). */
