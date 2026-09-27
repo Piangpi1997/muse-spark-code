@@ -602,13 +602,17 @@ panel cannot present an authoritative native job list or direct cancel.
   still open after New Conversation or sign-out cannot add an old file or
   mention to the new draft. Model API text,
   image and PDF reads use the checked canonical workspace target if a link
-  changes after confinement. Combined image
+  changes after confinement. Host file I/O also rejects an observed change
+  to that checked path when a parent directory becomes a junction after the
+  first check; paid image output reservations recheck before fill and cleanup.
+  Combined image
   and PDF data URLs are capped at 48 million encoded characters per message;
   an excess pasted or dropped attachment is refused before the browser reads
   and encodes it. Replayed requests use the same cap and
   keep newer media, announcing when older media is omitted from the request.
   A PDF whose page tree cannot be counted without ambiguity reserves all 50
-  image slots, including when comments or escaped names obscure its count.
+  image slots, including when comments, escaped names or indirect `/Count` or
+  `/Type` references obscure the real tree beside a visible decoy.
   The original attachments remain in local history. A batch of Model API
   `read_file` tool calls uses the same media cap; a file over that batch cap
   gets a failed tool result before its bytes are retained. PDF and image

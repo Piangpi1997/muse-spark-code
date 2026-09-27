@@ -49,6 +49,7 @@ import { shellJobAssembly } from './host/backend/shellJob'
 import {
   createToolIo,
   readPickedFile,
+  toolImagePreviewIo,
   terminalPlatform,
   withTerminalOverrides,
 } from './host/backend/toolIo'
@@ -1240,14 +1241,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         openDocument,
         openFile,
         readToolImage: async (imagePath) =>
-          await loadToolImage(imagePath, workspaceRoot, process.platform, {
-            realPath: canonicalPath,
-            fileSize: async (fsPath) => {
+          await loadToolImage(
+            imagePath,
+            workspaceRoot,
+            process.platform,
+            toolImagePreviewIo(toolIo, async (fsPath) => {
               const stat = await vscode.workspace.fs.stat(vscode.Uri.file(fsPath))
               return stat.size
-            },
-            readBytes: (fsPath, maxBytes) => toolIo.readBytes(fsPath, maxBytes),
-          }),
+            }),
+          ),
         // A server that failed to start is started again, and the session
         // that asked waits for it, so it gets the tool too (D25).
         ideMcpEndpoint: async () => {

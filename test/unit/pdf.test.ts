@@ -25,6 +25,36 @@ describe('PDF input inspection', () => {
     expect(pdfPageCount(bytes)).toBeUndefined()
   })
 
+  it('does not mistake an indirect Count object number for pages beside a one-page decoy', () => {
+    // pypdf strict mode counts 50 actual pages in this valid indirect-count fixture.
+    const bytes = readFileSync(new URL('../fixtures/indirect-count-decoy.pdf', import.meta.url))
+    expect(isPdf(bytes)).toBe(true)
+    expect(pdfPageCount(bytes)).toBeUndefined()
+  })
+
+  it('does not trust a one-page decoy when the real page-tree Type is indirect', () => {
+    // pypdf strict mode counts 50 pages and reads the root Pages type by reference.
+    const bytes = readFileSync(new URL('../fixtures/indirect-type-decoy.pdf', import.meta.url))
+    expect(isPdf(bytes)).toBe(true)
+    expect(pdfPageCount(bytes)).toBeUndefined()
+  })
+
+  it('does not trust a decoy when a signed indirect Type names the 50-page root', () => {
+    // pypdf strict mode resolves `/Type +5 0 R` to `/Pages` and counts 50 pages.
+    const bytes = readFileSync(new URL('../fixtures/plus-indirect-type-decoy.pdf', import.meta.url))
+    expect(isPdf(bytes)).toBe(true)
+    expect(pdfPageCount(bytes)).toBeUndefined()
+  })
+
+  it('also reserves all slots for a tab-separated signed indirect Type', () => {
+    const bytes = readFileSync(new URL('../fixtures/plus-indirect-type-decoy.pdf', import.meta.url))
+    const changed = bytes.toString('latin1').replace('/Type +5 0 R', '/Type\t+5 0 R')
+    expect(Buffer.byteLength(changed, 'latin1')).toBe(bytes.byteLength)
+    expect(changed).not.toBe(bytes.toString('latin1'))
+    // This same-length form also has 50 pages in pypdf strict mode.
+    expect(pdfPageCount(Buffer.from(changed, 'latin1'))).toBeUndefined()
+  })
+
   it('recognises a PDF name escape on a compressed page tree', () => {
     const bytes = readFileSync(
       new URL('../fixtures/compressed-pages-unlinked.pdf', import.meta.url),

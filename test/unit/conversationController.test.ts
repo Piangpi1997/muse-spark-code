@@ -1,7 +1,7 @@
 import { Buffer } from 'node:buffer'
 import { randomUUID } from 'node:crypto'
 import { mkdtempSync } from 'node:fs'
-import { writeFile } from 'node:fs/promises'
+import { mkdir, rename, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterAll, describe, expect, it, vi } from 'vitest'
@@ -30,6 +30,9 @@ import { disabledPaidFeatures } from './helpers/fakePaidFeatures'
 import { memoryContextIo } from './helpers/fakeContextIo'
 import { heldShellToolIo, memoryToolIo, type MemoryToolIo, noopToolIo } from './helpers/fakeToolIo'
 import { createFileScheduleStore } from '../../src/host/backend/fileScheduleStore'
+import { readPickedFile } from '../../src/host/backend/toolIo'
+import { canonicalPath } from '../../src/host/canonicalPath'
+import { confineWorkspacePath } from '../../src/core/backends/modelapi/tools'
 import { removeFolder } from './helpers/temporaryFolders'
 import { memorySessionStore } from './helpers/fakeSessionStore'
 import { pdfFixture } from './helpers/pdfFixture'
@@ -1029,6 +1032,7 @@ describe('ConversationController: context', () => {
 
   it('attaches picked images and mentions other picked files', async () => {
     const t = setup()
+    const read = vi.spyOn(t.deps.files, 'readFile')
     t.setPicked([
       { name: 'shot.png', fsPath: '/tmp/shot.png', relativePath: undefined },
       { name: 'notes.md', fsPath: '/ws/docs/notes.md', relativePath: 'docs/notes.md' },
@@ -1037,6 +1041,7 @@ describe('ConversationController: context', () => {
       { name: 'x#1.md', fsPath: '/ws/my docs/x#1.md', relativePath: 'my docs/x#1.md' },
     ])
     await t.controller.handle({ type: 'pickFile' })
+    expect(read).toHaveBeenCalledWith('/tmp/shot.png', expect.any(Number))
     expect(t.surface.posted).toEqual([
       {
         type: 'attachmentAdded',
@@ -1127,7 +1132,7 @@ describe('ConversationController: context', () => {
       )
     t.setPicked([{ name: 'picked.txt', fsPath: '/ws/picked.txt', relativePath: 'picked.txt' }])
     await t.controller.handle({ type: 'pickFile' })
-    expect(read).toHaveBeenCalledWith('/ws/allowed.txt', expect.any(Number))
+    expect(read).toHaveBeenCalledWith('/ws/allowed.txt', expect.any(Number), '/ws/allowed.txt')
     await t.send('text-file', 'Explain this', ['att-1'])
     const turn = t.server.requestsFor('turn/start')[0]
     if (turn?.params === undefined) {
@@ -1136,6 +1141,42 @@ describe('ConversationController: context', () => {
     const input = JSON.stringify(turn.params['input'])
     expect(input).toContain('SAFE_MARKER')
     expect(input).not.toContain('PRIVATE_MARKER')
+  })
+
+  it('refuses an indexed text picker read after its checked parent becomes a junction', async () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'muse-picked-proof-'))
+    try {
+      const workspace = path.join(root, 'ws')
+      const allowed = path.join(workspace, 'allowed')
+      const outside = path.join(root, 'outside')
+      const picked = path.join(allowed, 'note.txt')
+      await mkdir(allowed, { recursive: true })
+      await mkdir(outside)
+      await writeFile(picked, 'safe text')
+      await writeFile(path.join(outside, 'note.txt'), 'private sentinel')
+      const t = setup({ workspaceRoot: workspace, indexed: ['allowed/note.txt'] })
+      vi.spyOn(t.deps.files, 'canonicalRelativePath').mockImplementation(async (fsPath) => {
+        const result = await confineWorkspacePath(workspace, fsPath, process.platform, {
+          realPath: canonicalPath,
+        })
+        return result.ok
+          ? { canonical: result.canonical, checkedAbsolute: result.checkedAbsolute }
+          : undefined
+      })
+      vi.spyOn(t.deps.mentions, 'contains').mockImplementation(async () => {
+        await rename(allowed, path.join(workspace, 'moved'))
+        await symlink(outside, allowed, process.platform === 'win32' ? 'junction' : 'dir')
+        return true
+      })
+      vi.spyOn(t.deps.files, 'readFile').mockImplementation(readPickedFile)
+      t.setPicked([{ name: 'note.txt', fsPath: picked, relativePath: 'allowed/note.txt' }])
+      await t.controller.handle({ type: 'pickFile' })
+      expect(t.surface.posted).toEqual([
+        { type: 'attachmentRejected', name: 'note.txt', reason: UI_TEXT.attachmentUnreadable },
+      ])
+    } finally {
+      await removeFolder(root)
+    }
   })
 
   it('keeps text as a path mention without reading it in an untrusted workspace', async () => {

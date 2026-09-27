@@ -141,14 +141,19 @@ export interface ToolIo {
    * Rejects for a file that is not UTF-8 text (binary, UTF-16, Latin-1…):
    * decoding it lossily and writing it back would corrupt it (PLAN.md D27).
    */
-  readFile(absolutePath: string): Promise<string | undefined>
+  /** A canonical proof comes only from trusted workspace confinement, not tool arguments. */
+  readFile(absolutePath: string, expectedCanonicalPath?: string): Promise<string | undefined>
   /**
    * The file's bytes (M44: an image to edit); undefined when it does not
    * exist. Rejects, before reading, a file larger than `maxBytes`.
    */
-  readBytes(absolutePath: string, maxBytes: number): Promise<Uint8Array | undefined>
+  readBytes(
+    absolutePath: string,
+    maxBytes: number,
+    expectedCanonicalPath?: string,
+  ): Promise<Uint8Array | undefined>
   /** Replaces the file whole (a temporary file renamed into place), folders created. */
-  writeFile(absolutePath: string, content: string): Promise<void>
+  writeFile(absolutePath: string, content: string, expectedCanonicalPath?: string): Promise<void>
   /** Whether anything (a file, a folder, a link) is at the path. */
   pathExists(absolutePath: string): Promise<boolean>
   /**
@@ -157,7 +162,7 @@ export interface ToolIo {
    * overwritten. The file is taken before the image is bought, so a path
    * taken meanwhile costs nothing (the review of PR #27).
    */
-  reserveFile(absolutePath: string): Promise<FileReservation>
+  reserveFile(absolutePath: string, expectedCanonicalPath?: string): Promise<FileReservation>
   /** Whether an editor holds unsaved changes to the file (D27). */
   hasUnsavedChanges(absolutePath: string): boolean
   /** Workspace-relative, forward-slash paths of every listed file. */
@@ -910,6 +915,7 @@ async function readVisual(
     bytes = await context.io.readBytes(
       file.checkedAbsolute,
       kind === 'pdf' ? MAX_DOCUMENT_BYTES : MAX_IMAGE_BYTES,
+      file.checkedAbsolute,
     )
   } catch (error: unknown) {
     // Stop still belongs to the host's cancellation path, not a file error row.
@@ -945,7 +951,7 @@ async function readFile(
   if (visual !== undefined) {
     return await readVisual(resolved, visual, context)
   }
-  const raw = await context.io.readFile(resolved.checkedAbsolute)
+  const raw = await context.io.readFile(resolved.checkedAbsolute, resolved.checkedAbsolute)
   if (raw === undefined) {
     return failure(`file not found: ${resolved.relative}`)
   }
@@ -995,7 +1001,7 @@ async function located(
   ) {
     return { ok: false, outcome: failure(MODEL_TEXT.pathChangedAfterApproval) }
   }
-  const before = await context.io.readFile(resolved.checkedAbsolute)
+  const before = await context.io.readFile(resolved.checkedAbsolute, resolved.checkedAbsolute)
   return {
     ok: true,
     relative: resolved.relative,
@@ -1031,7 +1037,7 @@ async function writeFile(
   }
   const { before, relative, absolute, checkedAbsolute } = file
   if (before === undefined) {
-    await context.io.writeFile(checkedAbsolute, args.content)
+    await context.io.writeFile(checkedAbsolute, args.content, checkedAbsolute)
     context.seen.set(absolute, fingerprint(args.content))
     return patchOutcome(
       relative,
@@ -1053,7 +1059,7 @@ async function writeFile(
       ? `${normalized}${LF}`
       : normalized
   const after = fileText(text, shape)
-  await context.io.writeFile(checkedAbsolute, after)
+  await context.io.writeFile(checkedAbsolute, after, checkedAbsolute)
   context.seen.set(absolute, fingerprint(after))
   return patchOutcome(
     relative,
@@ -1098,7 +1104,7 @@ async function editFile(
   }
   const updated = `${current.slice(0, first)}${replace}${current.slice(first + find.length)}`
   const after = fileText(updated, shape)
-  await context.io.writeFile(checkedAbsolute, after)
+  await context.io.writeFile(checkedAbsolute, after, checkedAbsolute)
   context.seen.set(absolute, fingerprint(after))
   return patchOutcome(relative, current, updated, 'edited', `edited ${relative}`)
 }

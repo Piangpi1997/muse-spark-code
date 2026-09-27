@@ -34,6 +34,9 @@ const DICTIONARY_CLOSE = '>>'
 // A name ends where a regular character does not follow (PDF names are
 // letters, digits and a few marks; the next token starts with a delimiter).
 const PAGES_TYPE = /\/Type\s*\/Pages(?![A-Za-z0-9])/g
+// A signed object number may name the real Pages tree while a visible direct
+// tree is an unlinked decoy. Fail closed rather than trusting the decoy.
+const INDIRECT_TYPE_CANDIDATE = /\/Type\s+[+-]?\d+(?![A-Za-z0-9])/
 const COUNT_VALUE = /^\s+(\d+)(?![A-Za-z0-9])/
 const PDF_COMMENT_CANDIDATE = /\/(?:Type|Count)/g
 const PDF_WHITESPACE = ' \t\r\n\f\0'
@@ -239,7 +242,11 @@ function directCount(body: string): number | undefined {
     if (dictionaryDepth === 1 && arrayDepth === 0 && body.startsWith('/Count', at)) {
       const value = COUNT_VALUE.exec(body.slice(at + '/Count'.length))
       if (value !== null) {
-        return Number(value[1])
+        // A direct integer ends at the next key or dictionary close. A later
+        // number can be the generation of an indirect reference (`5 0 R`),
+        // not a page count; comments here are ambiguous too.
+        const following = body.slice(at + '/Count'.length + value[0].length).trimStart()[0]
+        return following === '/' || following === '>' ? Number(value[1]) : undefined
       }
     }
     at += 1
@@ -279,6 +286,7 @@ export function pdfPageCount(bytes: Uint8Array): number | undefined {
   const hasHiddenObjects =
     text.includes(OBJECT_STREAM_MARKER) ||
     text.includes(ENCRYPTION_MARKER) ||
+    INDIRECT_TYPE_CANDIDATE.test(text) ||
     hasEscapedCriticalName(text) ||
     hasAmbiguousCommentGap(text)
   return hasHiddenObjects ? undefined : pageTreeCount(text)

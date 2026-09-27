@@ -17,7 +17,11 @@ export interface ToolImageIo {
   readonly realPath: (fsPath: string) => Promise<string>
   readonly fileSize: (fsPath: string) => Promise<number>
   /** Reads at most maxBytes plus one from one open file handle. */
-  readonly readBytes: (fsPath: string, maxBytes: number) => Promise<Uint8Array | undefined>
+  readonly readBytes: (
+    fsPath: string,
+    maxBytes: number,
+    expectedCanonicalPath?: string,
+  ) => Promise<Uint8Array | undefined>
 }
 
 /** The media type a path's name gives, when it names an image the panel shows. */
@@ -50,7 +54,11 @@ export async function loadToolImage(
   if (size > MAX_IMAGE_BYTES) {
     return { ok: false, reason: `${given} is larger than ${String(MAX_IMAGE_BYTES)} bytes` }
   }
-  const bytes = await io.readBytes(resolved.checkedAbsolute, MAX_IMAGE_BYTES)
+  const bytes = await io.readBytes(
+    resolved.checkedAbsolute,
+    MAX_IMAGE_BYTES,
+    resolved.checkedAbsolute,
+  )
   if (bytes === undefined) {
     return { ok: false, reason: `${given} does not exist` }
   }

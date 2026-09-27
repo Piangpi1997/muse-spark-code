@@ -6,6 +6,7 @@ import { afterAll, afterEach, expect, it, vi } from 'vitest'
 import { createToolIo, readPickedFile } from '../../src/host/backend/toolIo'
 import { loadToolImage } from '../../src/core/toolImages'
 import { MAX_IMAGE_BYTES, MODEL_TEXT, TOOL_FILE_MAX_BYTES } from '../../src/shared/constants'
+import { canonicalPath } from '../../src/host/canonicalPath'
 import { removeFolder } from './helpers/temporaryFolders'
 
 vi.mock('node:fs/promises', async (importOriginal) => {
@@ -84,7 +85,7 @@ it('bounds a tool-row image that grows after its open handle reports the old siz
 
   await expect(
     loadToolImage('tool-image.png', root, process.platform, {
-      realPath: (fsPath) => Promise.resolve(fsPath),
+      realPath: canonicalPath,
       fileSize: () => Promise.resolve(4),
       readBytes: io.readBytes,
     }),

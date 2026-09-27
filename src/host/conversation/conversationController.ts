@@ -142,7 +142,11 @@ export interface FileAccess {
   /** Native open dialog; resolves to [] when cancelled. */
   showOpenDialog(): Promise<readonly PickedFile[]>
   /** Reads no file that is already over the attachment limit. */
-  readFile(fsPath: string, maxBytes: number): Promise<Uint8Array | undefined>
+  readFile(
+    fsPath: string,
+    maxBytes: number,
+    expectedCanonicalPath?: string,
+  ): Promise<Uint8Array | undefined>
   /** Indexed relative path and the same checked target for reading; undefined on an escape. */
   canonicalRelativePath(
     fsPath: string,
@@ -2924,7 +2928,9 @@ export class ConversationController {
         const maxBytes = isPdfFile ? MAX_DOCUMENT_BYTES : otherMaxBytes
         let bytes: Uint8Array | undefined
         try {
-          bytes = await this.deps.files.readFile(pathToRead, maxBytes)
+          bytes = isTextFile
+            ? await this.deps.files.readFile(pathToRead, maxBytes, pathToRead)
+            : await this.deps.files.readFile(pathToRead, maxBytes)
         } catch (error: unknown) {
           if (!this.isCurrentAttachmentGeneration(generation)) {
             return

@@ -8,11 +8,15 @@ export function pdfFixture(
     readonly typeGap?: string
     readonly countGap?: string
     readonly withDecoy?: boolean
+    readonly indirectCount?: boolean
   },
 ): Uint8Array {
+  const isIndirectCount = options?.indirectCount === true
+  const firstPageObject = isIndirectCount ? 6 : 3
   const objects = [
     '<< /Type /Catalog /Pages 2 0 R >>',
-    `<< /Type ${options?.typeGap ?? ''}/${options?.pageTreeType ?? 'Pages'} ${pageTreeExtra} /Kids [${Array.from({ length: pages }, (_, index) => `${String(index + 3)} 0 R`).join(' ')}] /${options?.countName ?? 'Count'} ${options?.countGap ?? ''}${String(pages)} >>`,
+    `<< /Type ${options?.typeGap ?? ''}/${options?.pageTreeType ?? 'Pages'} ${pageTreeExtra} /Kids [${Array.from({ length: pages }, (_, index) => `${String(index + firstPageObject)} 0 R`).join(' ')}] /${options?.countName ?? 'Count'} ${options?.countGap ?? ''}${isIndirectCount ? '5 0 R' : String(pages)} >>`,
+    ...(isIndirectCount ? ['null', 'null', String(pages)] : []),
     ...Array.from({ length: pages }, () => '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 10 10] >>'),
     ...(options?.withDecoy === true ? ['<< /Type /Pages /Kids [] /Count 1 >>'] : []),
   ]

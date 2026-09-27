@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import { AttachmentStore } from '../../src/core/attachments'
 import {
@@ -133,6 +134,21 @@ describe('AttachmentStore', () => {
       ok: true,
       attachment: { pageCount: 50 },
     })
+    expect(attachments.add('extra.png', png(1, 1), true)).toEqual({
+      ok: false,
+      reason: UI_TEXT.documentsOverBudget,
+    })
+  })
+
+  it.each([
+    ['indirect-count-decoy.pdf', 'indirect Count'],
+    ['indirect-type-decoy.pdf', 'indirect Type'],
+    ['plus-indirect-type-decoy.pdf', 'signed indirect Type'],
+  ])('reserves all page slots for %s (%s)', (fixture) => {
+    const attachments = store()
+    const bytes = readFileSync(new URL(`../fixtures/${fixture}`, import.meta.url))
+    expect(attachments.add(fixture, bytes, true).ok).toBe(true)
+    expect(attachments.list()[0]?.pageCount).toBeUndefined()
     expect(attachments.add('extra.png', png(1, 1), true)).toEqual({
       ok: false,
       reason: UI_TEXT.documentsOverBudget,

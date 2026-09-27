@@ -2000,7 +2000,13 @@ limit.
   `/Count` can do the same. Treat these ambiguous forms as uncountable and
   reserve all 50 slots. A visible page-tree candidate with a missing,
   non-positive or out-of-range direct count is ambiguous too: a separate
-  one-page decoy must never lower the reservation.
+  one-page decoy must never lower the reservation. A `/Count` followed by an
+  indirect-reference suffix (`5 0 R`) names an object, not five pages; treat
+  that tree as uncountable rather than trusting the reference's object number.
+  An indirect `/Type` may name the real `/Pages` tree while a visible direct
+  `/Type /Pages` dictionary is unlinked; reserve all 50 until the real tree
+  can be established without resolving arbitrary objects. Signed object
+  numbers such as `/Type +5 0 R` are equally ambiguous and reserve all 50.
   The Model API
   extension also caps base64 media to 48 million characters per new message
   and replay request. This is a conservative aggregate memory/request bound,
@@ -5042,8 +5048,27 @@ or edit outside-workspace files between the check and the write. Text-file
 cards keep the requested relative path, and unsaved-editor checks cover both
 the requested and canonical paths. Link-swap tests must prove the outside
 target is untouched and that an unavailable reservation sends no paid call.
+The checked absolute path itself can change after confinement if a workspace
+directory is renamed and replaced by a junction. Host reads therefore bind
+an opened handle to a fresh canonical-path and file-identity check before
+returning bytes. Atomic writes recheck the canonical target, parent and
+temporary file at the actual write/rename boundaries, including retries;
+changed paths fail closed under the approved target. A real junction-swap
+drill must leave the outside sentinel untouched for read and write tools.
+Paid image output reservations also check the opened file identity before
+fill and before release cleanup, so a changed path cannot delete a different
+file. The operation-time canonical check is applied only when the trusted
+M54 confinement caller passes its checked canonical path; raw memory paths
+retain their separate policy, including macOS `/var` to `/private/var`
+aliases. Node cannot expose a final Windows path by handle or perform a
+handle-relative rename here; adversarial rapid double-swaps remain outside
+these observed-change checks and are not claimed as sandbox protection.
+The indexed UTF-8 native picker forwards that proof through FileAccess to its
+bounded read after the index check. Native PDF and image picks retain their
+existing unrestricted local-path policy. The tool-row image preview adapter
+forwards the same proof from workspace confinement to its bounded read.
 
-**Status 2026-09-27: M51–M53 merged; M54 third PR review follow-up underway.** The
+**Prior checkpoints, 2026-09-27: M51–M53 merged; M54 PR review follow-ups.** The
 isolated M54 worktree is based on `34002ab`; its pre-M46 50-path staged tree
 is pinned at `refs/codex-backups/m54-pre-m46-20260926`. Focused PDF and
 replay checks passed; the M47-base reconciliation passed 724 focused
@@ -5138,8 +5163,13 @@ The M52-joined staged tree `ad5d89dcd36ffdcf6ead66126bf328fdf3493e60`
 passed full local Windows quality before its commit `5487149`: 2,113 unit
 tests passed, build and audit clean, accessibility and security gates green.
 The M53 join now preserves PDF media in side-fork replay and refuses its
-scheduled paid controls in core; 614 focused tests passed. The final combined
-tree's corrected VM and Mac gates passed; its final local and hosted PR gates remain open.
+scheduled paid controls in core; 614 focused tests passed. The final source
+tree `2d2d0dc45b31b8b5dcddad9aeae4ca73b126fe2c` passed exact-tree
+Windows VM `npm run quality` and Mac/Kubuntu `npm run quality:gates` after the
+indexed text picker and tool-row preview forwarded their checked path proofs.
+The documentation receipt still needs local `npm run quality`; the updated PR
+head needs hosted CI and review. Live paid PDF delivery remains unverified;
+no paid request ran.
 
 - **Goal:** a user can send a PDF to the Model API backend from the picker,
   paste or drop, then see it in the sent card and restored history; the agent

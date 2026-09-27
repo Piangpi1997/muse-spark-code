@@ -7,6 +7,12 @@ happened, not what was planned; superseded entries are kept.
 
 ## [Unreleased]
 
+Indexed UTF-8 picker reads now recheck their selected canonical file when
+loading bytes, and tool-row image previews keep their checked-path proof
+through the VS Code adapter. A workspace junction swap now refuses these
+reads before outside-workspace bytes become an attachment or preview.
+Native PDF and image picker paths retain their existing local selection policy.
+
 Muse Code now refuses a combination of text attachments whose serialized
 message would exceed its frame limit, before retaining the last file chip.
 Escaped text and existing images count; removing a file frees room. Model API
@@ -18,6 +24,19 @@ remove-attachment reason.
 Model API text attachments now have a 768 KiB combined UTF-8 content and
 file-name wrapper allowance. A large single file may be refused before it
 becomes a chip, leaving context room for the prompt, replay and output.
+
+Indirect PDF page-tree `/Count` and `/Type` references now reserve the full
+50 image slots instead of trusting an object number or an unlinked visible
+decoy. A signed indirect `/Type` also reserves all 50. Valid 50-page
+strict-reader fixtures cover each form.
+
+Model API host file reads now verify the opened file's identity and checked
+canonical path before exposing bytes. Atomic tool writes recheck the approved
+target and their temporary file before rename, refusing observed parent
+junction swaps instead of reading or writing an outside-workspace file. Paid
+image output reservations also recheck their opened file before fill and
+release cleanup. The guard uses a trusted confinement proof, leaving raw
+memory-file paths and macOS `/var` aliases to their existing policy.
 
 After a completed Model API request omits older PDF or image bytes to fit its
 media budget, saved replay now adopts the fitted text-only version. History

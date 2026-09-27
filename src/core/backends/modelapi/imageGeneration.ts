@@ -145,7 +145,11 @@ async function sourceOf(
   }
   let bytes: Uint8Array | undefined
   try {
-    bytes = await workspace.io.readBytes(resolved.checkedAbsolute, MAX_IMAGE_BYTES)
+    bytes = await workspace.io.readBytes(
+      resolved.checkedAbsolute,
+      MAX_IMAGE_BYTES,
+      resolved.checkedAbsolute,
+    )
   } catch (error: unknown) {
     return { reason: error instanceof Error ? error.message : String(error) }
   }
@@ -226,7 +230,10 @@ export async function runImageCall(plan: ImagePlan, deps: ImageRunDeps): Promise
   // The file is taken first, so a path taken while the card was open costs nothing.
   let reservation: FileReservation
   try {
-    reservation = await deps.io.reserveFile(plan.target.checkedAbsolute)
+    reservation = await deps.io.reserveFile(
+      plan.target.checkedAbsolute,
+      plan.target.checkedAbsolute,
+    )
   } catch {
     return failure(MODEL_TEXT.imagePathTaken)
   }
