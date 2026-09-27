@@ -442,6 +442,19 @@ function twoToolPdfs(t: ReturnType<typeof setup>): {
   }
 }
 
+/** One model round that asks to read two workspace PDFs in call order. */
+function requestTwoToolPdfs(t: ReturnType<typeof setup>, answer: string): void {
+  t.api.script(
+    {
+      calls: [
+        { name: 'read_file', arguments: '{"path":"docs/first.pdf"}', callId: 'read_first' },
+        { name: 'read_file', arguments: '{"path":"docs/second.pdf"}', callId: 'read_second' },
+      ],
+    },
+    { text: answer },
+  )
+}
+
 /** Earlier bytes stay, while a later undelivered file becomes path-only context. */
 function expectOnlyFirstPdfDelivered(
   nextInput: string,
@@ -2421,6 +2434,40 @@ describe('ModelApiSession: turns', () => {
     })
   })
 
+  it.each([
+    {
+      name: 'two known 30-page PDFs',
+      first: pdfFixture(30, '/Review (first)'),
+      second: pdfFixture(30, '/Review (second)'),
+    },
+    {
+      name: 'an unknown-page PDF and another PDF',
+      first: pdfFixture(1, '/Review /Encr#79pt'),
+      second: pdfFixture(1),
+    },
+  ])('refuses the second tool-read PDF before replay omits the first: $name', async (files) => {
+    const firstData = `data:application/pdf;base64,${Buffer.from(files.first).toString('base64')}`
+    const secondData = `data:application/pdf;base64,${Buffer.from(files.second).toString('base64')}`
+    const t = setup()
+    t.io.binaries.set('/ws/docs/first.pdf', files.first)
+    t.io.binaries.set('/ws/docs/second.pdf', files.second)
+    const { session, events, turnDone } = await startSession(t)
+    requestTwoToolPdfs(t, 'First PDF received')
+    await session.sendTurn([{ type: 'text', text: 'Read these PDFs in order' }])
+    await turnDone()
+    const delivered = JSON.stringify(t.api.responseBodies()[1]?.['input'])
+    expect(delivered).toContain(firstData)
+    expect(delivered).not.toContain(secondData)
+    expect(delivered).toContain(MODEL_TEXT.toolMediaBudgetExceeded)
+    const statuses = events.flatMap((event) =>
+      event.type === 'itemCompleted' && event.item.tool === 'read_file' ? [event.item.status] : [],
+    )
+    expect(statuses).toEqual(['completed', 'failed'])
+    const durableReplay = JSON.stringify(session.snapshot().replay)
+    expect(durableReplay).toContain(firstData)
+    expect(durableReplay).not.toContain(secondData)
+  })
+
   it('refuses excess PDF tool reads before retaining a batch of encoded files', async () => {
     const bytes = pdfFixture(1)
     const encoded = `data:application/pdf;base64,${Buffer.from(bytes).toString('base64')}`
@@ -2428,15 +2475,7 @@ describe('ModelApiSession: turns', () => {
     t.io.binaries.set('/ws/docs/first.pdf', bytes)
     t.io.binaries.set('/ws/docs/second.pdf', bytes)
     const { session, events, turnDone } = await startSession(t)
-    t.api.script(
-      {
-        calls: [
-          { name: 'read_file', arguments: '{"path":"docs/first.pdf"}', callId: 'read_first' },
-          { name: 'read_file', arguments: '{"path":"docs/second.pdf"}', callId: 'read_second' },
-        ],
-      },
-      { text: 'I read the first PDF' },
-    )
+    requestTwoToolPdfs(t, 'I read the first PDF')
     await session.sendTurn([{ type: 'text', text: 'Read both PDFs' }])
     await turnDone()
     expect(t.api.responseBodies()[1]).toMatchObject({

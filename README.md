@@ -591,8 +591,9 @@ panel cannot present an authoritative native job list or direct cancel.
   still exceed the Model API context limit. Files outside that set
   become `@` path mentions; known binary types and private
   files are refused.
-  Images and PDFs also paste and drop. The panel reports a refused file in a dismissible
-  banner. Muse Code's MSP 1.3.0 cannot take a PDF part, so a PDF attachment
+  Images and PDFs also paste and drop. A dismissible banner gives the specific
+  size, media, backend, text or private-file refusal; unknown file reasons
+  keep generic unsupported-type guidance. Muse Code's MSP 1.3.0 cannot take a PDF part, so a PDF attachment
   there names the Model API backend instead. The Model API agent can read a
   workspace PDF or image through `read_file`; other workspace files use its
   existing UTF-8 text reader. Excluded text files share only a path mention,

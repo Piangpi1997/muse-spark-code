@@ -39,6 +39,8 @@ import {
   MODEL_API_MAX_TOOL_ROUNDS,
   MAX_ENCODED_MEDIA_CHARS,
   MAX_MODEL_API_TEXT_ATTACHMENT_BYTES,
+  MODEL_API_MEDIA_PER_REQUEST,
+  MODEL_API_PDF_PAGE_IMAGES,
   MODEL_API_HOOK_PROVIDER,
   MODEL_API_RETRYABLE_STREAM_CODES,
   MODEL_API_MODEL_PREFIX,
@@ -2490,8 +2492,16 @@ export class ModelApiSession implements AgentSession {
       visible.part.mediaType.length +
       visible.part.base64Data.length
     const queuedChars = this.readFiles.reduce((total, queued) => total + encodedChars(queued), 0)
+    const slots = (visible: VisibleFile) =>
+      visible.part.type === 'image'
+        ? 1
+        : Math.min(visible.part.pageCount ?? MODEL_API_PDF_PAGE_IMAGES, MODEL_API_PDF_PAGE_IMAGES)
+    const queuedSlots = this.readFiles.reduce((total, queued) => total + slots(queued), 0)
     const limit = this.deps.mediaBudgetMaxEncodedChars ?? MAX_ENCODED_MEDIA_CHARS
-    return queuedChars + encodedChars(file) <= limit
+    return (
+      queuedChars + encodedChars(file) <= limit &&
+      queuedSlots + slots(file) <= MODEL_API_MEDIA_PER_REQUEST
+    )
   }
 
   /** `read_skill`: the body of a catalogue skill, by id; never a path. */

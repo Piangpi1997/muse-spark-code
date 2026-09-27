@@ -28,6 +28,16 @@ and steers reject aggregate named text over its allowance before retaining a
 turn or issuing HTTP, including chips admitted under Muse Code before a
 backend switch.
 
+Attachment refusal banners now show known localized PDF, media-budget,
+backend, text and private-file reasons instead of generic image-only
+unsupported-file guidance. Unknown reasons keep that generic fallback.
+
+Model API `read_file` now reserves PDF page slots as well as encoded bytes
+for a batch of visual reads. A second small PDF that would exceed the
+50-image/page request limit fails its tool row before success or replay; an
+unknown-page PDF reserves all 50 slots. The earlier accepted file stays in
+the next model request and saved replay.
+
 A send waiting for autosave, editor context or a backend lookup now stops if
 its session is replaced. A late turn acknowledgement cannot clear attachment
 chips or mark the new conversation as accepted. Owned recovery from a

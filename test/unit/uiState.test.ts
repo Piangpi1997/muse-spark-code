@@ -2178,6 +2178,28 @@ describe('clears, restores and refusals (M25)', () => {
     expect(noticed.announcement?.text).toBe('careful')
   })
 
+  it.each([
+    ['large.pdf', UI_TEXT.documentTooLarge],
+    ['many.pdf', UI_TEXT.documentsOverBudget],
+    ['packed.png', UI_TEXT.mediaTotalTooLarge],
+    ['large-muse.png', UI_TEXT.commandTooLarge],
+    ['report.pdf', UI_TEXT.pdfNeedsModelApi],
+    ['invalid.pdf', UI_TEXT.invalidPdf],
+    ['source.ts', UI_TEXT.textFilesOverModelApiBudget],
+    ['private.txt', UI_TEXT.textFilePrivate],
+  ])('shows the specific attachment refusal for %s', (name, reason) => {
+    const rejected = reduceAll([host({ type: 'attachmentRejected', name, reason })])
+    expect(rejected.banner).toBe(`${name}: ${reason}`)
+    expect(rejected.announcement?.text).toBe(`${name}: ${reason}`)
+  })
+
+  it('shows a local PDF-size refusal in the composer banner', () => {
+    const rejected = reduceAll([
+      { type: 'attachmentRefused', name: 'large.pdf', reason: UI_TEXT.documentTooLarge },
+    ])
+    expect(rejected.banner).toBe(`large.pdf: ${UI_TEXT.documentTooLarge}`)
+  })
+
   it('chains output pages by offset and drops a page that does not follow', () => {
     const state = reduceAll([
       outputChunk(0, 'abc'),

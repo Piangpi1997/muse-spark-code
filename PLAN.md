@@ -1949,6 +1949,10 @@ Muse Code also recomputes this attachment budget at both `turn/start` and
 `turn/steer`: an image accepted under Model API can survive a backend switch,
 so the active backend must refuse its now-incompatible chip before submitting
 a command, with a remove-attachment reason.
+Every known localized attachment refusal keeps its specific banner text in
+the composer, including PDF size/backend, shared media, text context and
+private-file reasons; only an unrecognized host refusal falls back to generic
+unsupported-file guidance. The live announcement still says the actual reason.
 Model API text attachments have a separate 768 KiB aggregate UTF-8 content
 and named-wrapper allowance. This conservative byte bound stays below the
 1,048,576-token context even for dense text and reserves roughly 256K tokens
@@ -2010,6 +2014,11 @@ limit.
   names, types and counts for the UI without retaining those omitted bytes.
   A request that has not completed must not prune pending tool-read media;
   its later Stop/failure still gets the path-only cleanup in this decision.
+  Tool `read_file` batches reserve both encoded characters and the same 50
+  image/page slots before a file reports success. An unknown-page PDF takes
+  all 50 slots. A later file that cannot fit returns the media-budget error
+  before its bytes enter queued replay, so a successful earlier file is not
+  silently replaced during the next request's replay fit.
   Red/green tests bind the fitted request, snapshot, resume and unchanged
   history chips to that boundary. The
   `read_file` tool also stops collecting media in one tool round at the same

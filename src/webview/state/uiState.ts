@@ -374,14 +374,26 @@ const REJECTED = 'rejected'
 const CANCELLED = 'cancelled'
 const USER_MESSAGE_KIND = 'userMessage'
 const SUBAGENT_KIND = 'subagent'
-// A refusal that is about the image's size or count (M25), or a read that
-// failed (M39), not its type: the banner says so instead of "Unsupported
-// file type". Read per refusal, so the reasons are the installed table's.
+// Show known localized attachment refusals verbatim; an unknown host reason
+// keeps the generic file-type guidance. Read at runtime for the installed language.
 function isStatedRefusal(reason: string): boolean {
   return [
     UI_TEXT.attachmentTooLarge,
+    UI_TEXT.attachmentUnsupported,
     UI_TEXT.attachmentLimit,
     UI_TEXT.attachmentUnreadable,
+    UI_TEXT.documentTooLarge,
+    UI_TEXT.documentsOverBudget,
+    UI_TEXT.mediaTotalTooLarge,
+    UI_TEXT.pdfNeedsModelApi,
+    UI_TEXT.invalidPdf,
+    UI_TEXT.textFileTooLarge,
+    UI_TEXT.textFilesOverBudget,
+    UI_TEXT.textFilesOverModelApiBudget,
+    UI_TEXT.textFileInvalid,
+    UI_TEXT.textFilePrivate,
+    UI_TEXT.binaryFileUnsupported,
+    UI_TEXT.commandTooLarge,
   ].includes(reason)
 }
 
