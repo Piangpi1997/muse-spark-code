@@ -162,6 +162,35 @@ will therefore show whether the hook started late or started on time and
 never saw its stdin end. The test's behaviour is otherwise unchanged. The
 diagnostic branch and its workflow were deleted; they never reached `main`.
 
+## Muse Code 1.4.0
+
+Meta's `muse-stable` channel
+(`https://api.meta.ai/muse-code/channels/muse-stable`) serves
+`1.4.0-R4302.1`. The launcher checks the channel hourly and updates itself
+in the background, so users are likely on 1.4.0 already. This machine was
+still on `1.3.0-R3401.1`. Its last check was 2026-09-27 14:18, and it had
+failed silently.
+
+**Why the update failed.** The launcher (`muse.cmd`, then
+`.muse-launcher.ps1`) runs under Windows PowerShell 5.1, but it inherited
+PowerShell 7's `PSModulePath` from the session that started it. 5.1 then
+could not load its own `Microsoft.PowerShell.Utility`. A synchronous update
+(`MUSE_SYNC_UPDATE=1 muse --version`) stopped at `Get-FileHash` with
+`CommandNotFoundException` and left `.muse-version` at 1.3.0. With
+`PSModulePath` set to 5.1's own three folders, the same command downloaded
+and verified the release and reported `Muse Code 1.4.0 (1.4.0-R4302.1)`.
+This is Meta's launcher, not the extension; it goes in the upstream
+reports.
+
+**The extension on 1.4.0.** `@muse-code/sdk` on npm is still 1.3.0.
+`test/e2e/live.e2e.test.ts` ran one reply-only turn through
+`MuseCodeBackendManager` and the real 1.4.0 CLI (`MUSE_LIVE_E2E=1`, empty
+temporary workspace). It passed in 85 s. The trace log
+(`cli-f292cbb9-….log`, `mode="serve"`, `build_commit="aebe0c188"`) counts
+**26 model attempts**, all on `muse-spark-1.3-contributor`. The drill now
+uses the contributor model, as the owner's rule for live tests asks; it had
+used the standard default.
+
 ## Documentation
 
 A read-only audit of every shipped and project document against the code

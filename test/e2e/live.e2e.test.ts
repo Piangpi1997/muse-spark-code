@@ -17,7 +17,7 @@ import path from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
 import type { AgentEvent } from '../../src/shared/agentEvents'
 import { MuseCodeBackendManager } from '../../src/host/backend/museCodeBackendManager'
-import { DEFAULT_MODEL_ID } from '../../src/shared/constants'
+import { CONTRIBUTOR_MODEL_SUFFIX, DEFAULT_MODEL_ID } from '../../src/shared/constants'
 import { FakeLogOutputChannel } from '../unit/helpers/fakes'
 
 const IS_ENABLED = process.env['MUSE_LIVE_E2E'] === '1'
@@ -29,6 +29,9 @@ const ATTEMPT_BUDGET = 60
 const LOG_WAIT_MS = 30_000
 const LOG_POLL_MS = 250
 const PROMPT = 'Reply with exactly the word OK and nothing else.'
+// The owner's rule for live tests (2026-09-24): the contributor tier, on
+// throwaway content only.
+const LIVE_MODEL_ID = `${DEFAULT_MODEL_ID}${CONTRIBUTOR_MODEL_SUFFIX}`
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => {
@@ -92,7 +95,7 @@ async function runDrill(): Promise<{ sessionId: string; text: string }> {
     const host = await backend.ensureHost()
     const session = await host.startSession({
       workspaceRoot,
-      modelId: DEFAULT_MODEL_ID,
+      modelId: LIVE_MODEL_ID,
       approvalMode: 'denyUnmatched',
     })
     const done = new Promise<AgentEvent>((resolve) => {
