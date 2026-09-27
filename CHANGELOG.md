@@ -80,8 +80,9 @@ while they are (PLAN.md D30, D34).
   The paid row and tally appear only when the first request starts. Muse Code's
   native cron remains available through its model tools; MSP offers no direct
   scheduler controls. Sign-out or a backend switch clears account-bound
-  prompts from the panel immediately; a temporary CLI sign-in attempt keeps
-  the still-active Model API list.
+  prompts from the panel immediately. Replacing the Model API key also clears
+  the old account's prompts before the backend restarts; a temporary CLI
+  sign-in attempt keeps the still-active Model API list.
 
 - **Image edits** (M44, PLAN.md D37). With image generation on, the model
   can also change one workspace image, or combine up to four, by a prompt,

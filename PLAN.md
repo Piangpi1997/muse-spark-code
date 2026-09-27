@@ -4523,6 +4523,14 @@ test failed with the old prompt still visible, then passed after auth-state
 clearing. Backend switches also clear it; transient CLI sign-in on the still
 active Model API backend preserves it until auth actually changes. The
 webview suite passed 98/98 after the fix. Final exact-tree gates remain open.
+A same-backend Model API key replacement then exposed one more boundary:
+`backendStopping(false)` dropped the old session, but its schedule event stayed
+visible and the next `signedIn` event retained it. A controller test failed
+with the old account's prompt still shown. Dropping a Model API session now
+emits an empty schedule list before the asynchronous restart, while a CLI
+sign-in attempt that keeps the session live does not drop it. The focused
+test passed after the fix; no real key or Model API call was used. This
+change requires its own exact-tree full gate before a commit.
 The native price-modal decline was observed with a fake Model API in an
 ordinary VS Code development window; see the receipt below. Meta's [interactive
 guide](https://dev.meta.ai/docs/muse-code/interactive) defines `/loop` as a

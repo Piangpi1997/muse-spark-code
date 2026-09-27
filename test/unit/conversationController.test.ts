@@ -4494,6 +4494,22 @@ describe('ConversationController: scheduled prompts (M52)', () => {
     expect(api.responseBodies()).toHaveLength(1)
     expect(staleNotices()).toHaveLength(3)
     expect(await scheduleStore.list(sessionId)).toEqual([])
+    // Replacing the Model API key restarts its host, then reports signedIn on
+    // the same backend. Clear the old account's prompts at that first drop.
+    await controller.handle({
+      type: 'scheduleCreate',
+      cadence: { kind: 'interval', everyMs: 60_000 },
+      prompt: 'Private old-account prompt',
+    })
+    const latestSchedules = () =>
+      t.surface.posted.findLast(
+        (message) => message.type === 'agentEvent' && message.event.type === 'schedulesChanged',
+      )
+    expect(latestSchedules()).toMatchObject({
+      event: { jobs: [expect.objectContaining({ prompt: 'Private old-account prompt' })] },
+    })
+    await controller.backendStopping(false)
+    expect(latestSchedules()).toMatchObject({ event: { jobs: [] } })
     controller.dispose()
     await modelHost.close()
   })

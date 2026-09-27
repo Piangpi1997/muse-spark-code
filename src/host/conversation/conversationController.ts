@@ -645,6 +645,11 @@ export class ConversationController {
     }
     this.unsubscribe?.()
     this.unsubscribe = undefined
+    // A key replacement may sign straight back in on the same Model API
+    // backend. Clear the old account's prompt names before that async restart.
+    if (session?.schedules !== undefined && !this.isDisposed) {
+      this.forward({ type: 'schedulesChanged', jobs: [] })
+    }
     this.closedWatch?.()
     this.closedWatch = undefined
     if (session !== undefined) {
