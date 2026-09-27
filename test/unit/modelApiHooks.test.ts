@@ -87,7 +87,7 @@ describe('Muse Code hook config on the Model API backend (M51)', () => {
     expect(child.warnings).toEqual([])
   })
 
-  it('loads managed, user, project in order and excludes project while untrusted', async () => {
+  it('loads managed, user, project in order, and nothing while untrusted', async () => {
     const files = new Map<string, string>([
       [
         '/cfg/muse/settings.json',
@@ -131,8 +131,13 @@ describe('Muse Code hook config on the Model API backend (M51)', () => {
     ])
     expect(trusted[0]?.extraEnvNames).toEqual(['CI_TOKEN'])
     expect(trusted[1]?.extraEnvNames).toBeUndefined()
+    // Restricted Mode runs no shell command, so no source loads, not even the
+    // user's or the administrator's, and no hook file is read.
+    const readFile = vi.spyOn(deps.io, 'readFile')
     const untrusted = await loadHookDefinitions({ ...deps, isWorkspaceTrusted: () => false })
-    expect(untrusted.map((hook) => hook.command)).toEqual(['managed-stop', 'user-stop'])
+    expect(untrusted).toEqual([])
+    expect(readFile).not.toHaveBeenCalled()
+    readFile.mockRestore()
     expect(warn).not.toHaveBeenCalled()
 
     files.set(

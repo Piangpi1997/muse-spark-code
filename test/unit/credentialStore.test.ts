@@ -1,18 +1,33 @@
 import { describe, expect, it } from 'vitest'
 import { CredentialStore, isValidModelApiKey } from '../../src/host/auth/credentialStore'
 import { memorySecrets, unexpectedWarning } from './helpers/fakes'
+import { CURRENT_SHAPE_KEYS, OLDER_SHAPE_KEYS } from './helpers/modelApiKeys'
 
 describe('isValidModelApiKey', () => {
-  it.each(['LLM|1234567890|abcDEF_123', ' LLM|1|x '])('accepts %j', (key) => {
+  it.each([
+    ...CURRENT_SHAPE_KEYS,
+    ...OLDER_SHAPE_KEYS,
+    ` ${CURRENT_SHAPE_KEYS[0]} `,
+    ` ${OLDER_SHAPE_KEYS[1]} `,
+  ])('accepts %j', (key) => {
     expect(isValidModelApiKey(key)).toBe(true)
   })
 
-  it.each(['', 'sk-abc', 'LLM|abc|secret', 'LLM|123|', 'LLM|123|has space'])(
-    'rejects %j',
-    (key) => {
-      expect(isValidModelApiKey(key)).toBe(false)
-    },
-  )
+  it.each([
+    '',
+    'sk-abc',
+    'LLM|abc|secret',
+    'LLM|123|',
+    'LLM|123|has space',
+    'LLM_',
+    'LLM_TooShort0000',
+    'LLM_TestOnly 0000000000000000',
+    'LLM_TestOnly$0000000000000000',
+    'LLM-TestOnly0000000000000000',
+    'llm_TestOnly0000000000000000',
+  ])('rejects %j', (key) => {
+    expect(isValidModelApiKey(key)).toBe(false)
+  })
 })
 
 describe('CredentialStore', () => {
@@ -22,6 +37,13 @@ describe('CredentialStore', () => {
     await store.setApiKey('  LLM|42|secret  ')
     expect(secrets.values.get('museSpark.modelApiKey')).toBe('LLM|42|secret')
     await expect(store.getApiKey()).resolves.toBe('LLM|42|secret')
+  })
+
+  it('stores a key in Meta’s current shape', async () => {
+    const secrets = memorySecrets()
+    const store = new CredentialStore(secrets, unexpectedWarning)
+    await store.setApiKey(`\n${CURRENT_SHAPE_KEYS[0]}\n`)
+    await expect(store.getApiKey()).resolves.toBe(CURRENT_SHAPE_KEYS[0])
   })
 
   it('refuses to store something that is not a key', async () => {
