@@ -1511,8 +1511,11 @@ export const EXPORT_TITLE_MAX_CHARS = 60
 // for the credential file, and how often it looks.
 export const CREDENTIAL_POLL_INTERVAL_MS = 2000
 export const CREDENTIAL_POLL_TIMEOUT_MS = 5 * 60 * 1000
-// Model API key shape: `LLM|<numeric id>|<secret>`.
-export const MODEL_API_KEY_PATTERN = /^LLM\|\d+\|\S+$/
+// Model API key shapes. Meta's current keys are `LLM_` and at least 16
+// letters, digits, `_` or `-` (a key issued 2026-09-27 had 44 after the
+// prefix, no `|`); older keys were `LLM|<numeric id>|<secret>`. The log
+// redactor (`src/core/redact.ts`) matches the same two shapes.
+export const MODEL_API_KEY_PATTERN = /^(?:LLM_[\w-]{16,}|LLM\|\d+\|\S+)$/
 export const SECRET_KEYS = {
   modelApiKey: 'museSpark.modelApiKey',
 } as const

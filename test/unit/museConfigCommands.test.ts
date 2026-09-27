@@ -424,6 +424,26 @@ describe('showHooks', () => {
       'Your settings name this file, but it does not exist.',
       undefined,
     ])
+    // On the Model API backend every configured source waits for trust; on
+    // Muse Code only the project's says so, since Muse Code applies its rules.
+    const configured = {
+      settings: JSON.stringify({ hooks: [{}], managed_hooks_path: '/etc/muse/hooks.json' }),
+      existing: [SETTINGS, HOOKS, '/etc/muse/hooks.json'],
+      isTrusted: false,
+    }
+    const modelApi = harness({ ...configured, modelApiHooks: true })
+    await showHooks(modelApi.deps)
+    expect(modelApi.picks[0]?.items.slice(1, 4).map((item) => item.detail)).toEqual([
+      'Runs only once you trust this workspace',
+      '1 hook in your settings · Runs only once you trust this workspace',
+      'Set by your settings; whoever controls this file controls what runs · Runs only once you trust this workspace',
+    ])
+    const museCode = harness(configured)
+    await showHooks(museCode.deps)
+    expect(museCode.picks[0]?.items.slice(1, 3).map((item) => item.detail)).toEqual([
+      '1 hook in your settings',
+      'Set by your settings; whoever controls this file controls what runs',
+    ])
     const bare = harness({ settings: undefined, existing: [], projectHooksPath: undefined })
     await showHooks(bare.deps)
     expect(bare.picks[0]?.items.map((item) => item.detail)).toEqual([

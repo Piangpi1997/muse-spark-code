@@ -108,16 +108,14 @@ describe('revertHunks', () => {
   })
 
   it('applies several hunks in order and leaves the lines between them alone', () => {
-    const two = [
-      { oldStart: 1, newStart: 1, lines: ['-a', '+A', ' b'] },
-      { oldStart: 4, newStart: 4, lines: [' d', '-e', '+E', '+E2'] },
-    ]
-    expect(revertHunks('A\nb\nc\nd\nE\nE2\nf\n', two)).toEqual({
+    const first = { oldStart: 1, newStart: 1, lines: ['-a', '+A', ' b'] }
+    const second = { oldStart: 4, newStart: 4, lines: [' d', '-e', '+E', '+E2'] }
+    expect(revertHunks('A\nb\nc\nd\nE\nE2\nf\n', [first, second])).toEqual({
       ok: true,
       content: 'a\nb\nc\nd\ne\nf\n',
       isCreatedFile: false,
     })
-    expect(revertHunks('A\nb\nc\nd\nE\nE2\nf\n', [two[1] as never, two[0] as never])).toEqual({
+    expect(revertHunks('A\nb\nc\nd\nE\nE2\nf\n', [second, first])).toEqual({
       ok: false,
       reason: 'hunk 2 overlaps the previous one',
     })

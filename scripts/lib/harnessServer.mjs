@@ -13,6 +13,7 @@ export const SCENARIOS = [
   'empty',
   'signin',
   'signin-nocli',
+  'signin-install',
   'signin-waiting',
   'signin-error',
   'signin-history',

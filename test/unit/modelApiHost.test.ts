@@ -8770,6 +8770,36 @@ describe('ModelApiSession: an explanation instead of an answer (M46)', () => {
       }),
     )
   })
+
+  it('takes an answer given as the card arrives: the question is pending before it is shown', async () => {
+    // The live Model API sweep's answerer replies inside the event (2026-09-27):
+    // the card was announced before it was pending, so the answer was refused
+    // "not pending" and the turn waited for ever. Approvals were already ordered.
+    const t = setup()
+    const { session, events, turnDone } = await startSession(t)
+    const refusals: string[] = []
+    session.onEvent((event) => {
+      if (event.type === 'questionRequested') {
+        void session.clarifyQuestions(event.userInputId, 'Green.').catch((error: unknown) => {
+          refusals.push(String(error))
+        })
+      }
+    })
+    t.api.script({ calls: [ASK_USER_CALL] }, { text: 'Green, then.' })
+    const done = turnDone()
+    await session.sendTurn([{ type: 'text', text: 'go' }])
+    await vi.waitFor(() => {
+      expect(refusals.length > 0 || events.some((event) => event.type === 'questionSettled')).toBe(
+        true,
+      )
+    })
+    expect(refusals).toEqual([])
+    await done
+    expect(events.find((event) => event.type === 'questionSettled')).toMatchObject({
+      outcome: 'clarified',
+      clarification: 'Green.',
+    })
+  })
 })
 
 /** The tool rows as they completed. */

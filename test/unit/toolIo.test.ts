@@ -606,7 +606,13 @@ describe('createToolIo (real file system and shell)', () => {
     if (runHook === undefined) {
       throw new Error('hook runner missing')
     }
-    const echo = 'process.stdin.pipe(process.stdout)'
+    // The stderr line says when the hook itself started, which tells a
+    // timeout's causes apart: a late start (the wrapper was slow) or an early
+    // start that never saw its stdin end. Hosted Windows runners timed out
+    // here twice, once with no output (PR #43) and once with the echo and
+    // exit 0 just after the timer (PR #44); 80 local runs of the launch passed.
+    const echo =
+      "process.stderr.write('hook started at '+Date.now());process.stdin.pipe(process.stdout)"
     const command =
       process.platform === 'win32'
         ? `"${process.execPath}" -e "${echo}"`
@@ -614,7 +620,7 @@ describe('createToolIo (real file system and shell)', () => {
     const payload = '{"session_id":"fixture","text":"héllo ✓"}\n'
     const startedAt = Date.now()
     const result = await runHook(command, payload, root, 60_000)
-    if (result.exitCode !== 0) {
+    if (result.exitCode !== 0 || result.isTimedOut) {
       // Fixed fixture: paths and the harmless echo expression are the only
       // command text; no model key, user input or workspace file is involved.
       throw new Error(
@@ -624,6 +630,7 @@ describe('createToolIo (real file system and shell)', () => {
           isCancelled: result.isCancelled,
           isOutputTooLarge: result.isOutputTooLarge ?? false,
           elapsedMs: Date.now() - startedAt,
+          startedAt,
           stdout: result.stdout,
           stderr: result.stderr,
         }),
@@ -632,6 +639,7 @@ describe('createToolIo (real file system and shell)', () => {
     expect(result.exitCode).toBe(0)
     expect(result.stdout).toContain('"session_id":"fixture"')
     expect(result.stdout).toContain('héllo ✓')
+    expect(result.stderr).toMatch(/^hook started at \d+$/)
     expect(result.isTimedOut).toBe(false)
   }, 90_000)
 

@@ -1,9 +1,25 @@
 import { describe, expect, it } from 'vitest'
 import { redactSecrets } from '../../src/core/redact'
+import { isValidModelApiKey } from '../../src/host/auth/credentialStore'
+import { CURRENT_SHAPE_KEYS, OLDER_SHAPE_KEYS } from './helpers/modelApiKeys'
 
 describe('redactSecrets', () => {
   it('redacts Meta Model API keys wherever they appear', () => {
     expect(redactSecrets('key=LLM|1234567890|abcDEF-123_xyz done')).toBe('key=[redacted] done')
+    expect(redactSecrets(`pasted ${CURRENT_SHAPE_KEYS[0]} done`)).toBe('pasted [redacted] done')
+    expect(redactSecrets(`{"k":"${CURRENT_SHAPE_KEYS[1]}"}`)).toBe('{"k":"[redacted]"}')
+  })
+
+  it.each([...CURRENT_SHAPE_KEYS, ...OLDER_SHAPE_KEYS])(
+    'redacts all of %j, a shape the key store accepts',
+    (key) => {
+      expect(isValidModelApiKey(key)).toBe(true)
+      expect(redactSecrets(`(${key})`)).toBe('([redacted])')
+    },
+  )
+
+  it('leaves short LLM_ names alone', () => {
+    expect(redactSecrets('LLM_MODEL and LLM_TIMEOUT_MS')).toBe('LLM_MODEL and LLM_TIMEOUT_MS')
   })
 
   it('redacts bearer tokens but keeps the scheme', () => {

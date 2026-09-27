@@ -9,6 +9,7 @@
 import { readFile, realpath, stat } from 'node:fs/promises'
 import path from 'node:path'
 import { parentPort, workerData } from 'node:worker_threads'
+import * as z from 'zod/mini'
 import type {
   SearchHit,
   SearchJob,
@@ -17,6 +18,16 @@ import type {
 } from '../../core/backends/modelapi/tools'
 
 const LINE_BREAK = /\r?\n/
+
+// The job crosses a thread boundary, so it is parsed like any other message
+// (AGENTS.md rule 7), although only `toolIo.searchOnWorker` sends it.
+const SEARCH_JOB = z.object({
+  pattern: z.string(),
+  root: z.string(),
+  files: z.array(z.object({ relative: z.string(), absolute: z.string() })),
+  maxFileBytes: z.number(),
+  maxHits: z.number(),
+})
 
 function isBinary(text: string): boolean {
   return text.includes('\0')
@@ -105,8 +116,12 @@ function post(message: SearchWorkerMessage): void {
   parentPort?.postMessage(message)
 }
 
-const job = workerData as SearchJob
-void run(job)
+/** A malformed job rejects here, so it is reported like any other failure. */
+async function parsedRun(): Promise<SearchOutcome> {
+  return await run(SEARCH_JOB.parse(workerData))
+}
+
+void parsedRun()
   .then((outcome) => {
     post({ type: 'done', outcome })
   })

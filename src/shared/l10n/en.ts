@@ -73,8 +73,9 @@ export const EN = {
     'Backend shutdown failed. This window is gated; close VS Code and check credentials before reopening.',
   retryAction: 'Check again',
   apiKeyPrompt: 'Meta Model API key',
-  apiKeyPlaceholder: 'LLM|1234567890|…',
-  apiKeyInvalid: 'A Model API key looks like LLM|<numeric id>|<secret>.',
+  apiKeyPlaceholder: 'LLM_…',
+  apiKeyInvalid:
+    'A Model API key starts with LLM_ (older keys look like LLM|<numeric id>|<secret>).',
   signInWaiting: 'Waiting for the browser sign-in to finish…',
   signInTimedOut: 'The sign-in did not complete in time. Try again.',
   hostExited: 'Muse Code stopped unexpectedly',
