@@ -3847,6 +3847,12 @@ exit is zero and no timeout occurred. The exact staged tree `e46ece3`
 passed the focused real hook test on WIN-11-VM after `npm ci`, with zero
 checkout-owned processes. Repeat exact documented-tree local quality and
 branch dispatch before opening a PR.
+The third M51 pre-PR run on `348ac4f` failed the same Windows hook case
+after 10,962 ms even with the Node echo child. The next bounded diagnostic
+must report the controlled fixture's exit code, timeout/cancel flags and
+stdout/stderr on failure, without secrets. Do not infer a terminal-pager
+cause or relax the 10 second product limit before that result is known;
+the PowerShell-to-cmd stdin forwarding boundary may need a runtime fix.
 An M54 integration review found a separate hook-stdin privacy boundary:
 `input_text`, developer instructions, tool descriptions and assistant output
 can themselves contain pasted `data:` media URLs. The common model-call

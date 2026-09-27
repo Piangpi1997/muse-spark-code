@@ -488,8 +488,24 @@ describe('createToolIo (real file system and shell)', () => {
       process.platform === 'win32'
         ? `"${process.execPath}" -e "${echo}"`
         : `${posixQuoted(process.execPath)} -e ${posixQuoted(echo)}`
+    const startedAt = Date.now()
     const result = await runHook(command, '{"session_id":"fixture"}\n', root, 10_000)
-    expect(result.exitCode, result.stderr).toBe(0)
+    if (result.exitCode !== 0) {
+      // Fixed fixture: paths and the harmless echo expression are the only
+      // command text; no model key, user input or workspace file is involved.
+      throw new Error(
+        JSON.stringify({
+          exitCode: result.exitCode,
+          isTimedOut: result.isTimedOut,
+          isCancelled: result.isCancelled,
+          isOutputTooLarge: result.isOutputTooLarge ?? false,
+          elapsedMs: Date.now() - startedAt,
+          stdout: result.stdout,
+          stderr: result.stderr,
+        }),
+      )
+    }
+    expect(result.exitCode).toBe(0)
     expect(result.stdout).toContain('"session_id":"fixture"')
     expect(result.isTimedOut).toBe(false)
   }, 30_000)
