@@ -1559,6 +1559,8 @@ export const MODEL_TEXT = {
   toolFileFollows: 'The file read_file read at `{path}`:',
   toolFileNotDelivered:
     'The file read_file read at `{path}` was not delivered because that tool round ended early.',
+  toolOutputImageNotDelivered:
+    'An image returned by a tool was not delivered to the model before the turn ended.',
   notPdf: 'is named as a PDF but is not one (it has no %PDF- header)',
   notImage: 'is named as an image but is not a PNG, JPEG, GIF or WebP image',
   // Replays keep newer media within page and encoded-size budgets, naming
@@ -1568,7 +1570,7 @@ export const MODEL_TEXT = {
   pdfLeftOut:
     '[The PDF {name}, attached earlier, is left out of this request because newer media fill the request limit.]',
   toolMediaBudgetExceeded:
-    'The file was not attached: images and PDFs read in this tool round exceed the combined media size limit. Read fewer files at once.',
+    'Visual media was not attached: images and PDFs returned or read in this tool round exceed the combined media limit. Use fewer images or files at once.',
   attachedTextFile: 'Attached text file {name}:\n\n{text}',
   // M50: MCP tools on the Model API backend.
   mcpRestrictedMode:

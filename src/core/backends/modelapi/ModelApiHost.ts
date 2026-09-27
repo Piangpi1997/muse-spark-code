@@ -193,6 +193,7 @@ import {
   citationsOf,
   type CreateResponseBody,
   type FunctionCallItem,
+  type FunctionOutputPart,
   type IncludeField,
   type InputContentPart,
   type InputItem,
@@ -311,6 +312,18 @@ interface PendingReadFile {
   readonly path: string
   readonly lead: InputContentPart
   readonly media: InputContentPart
+}
+
+type FunctionImagePart = Extract<FunctionOutputPart, { readonly type: 'input_image' }>
+
+function turnMediaEncodedChars(part: ImagePart | DocumentPart): number {
+  return BASE64_DATA_URL_OVERHEAD_CHARS + part.mediaType.length + part.base64Data.length
+}
+
+function turnMediaSlots(part: ImagePart | DocumentPart): number {
+  return part.type === 'image'
+    ? 1
+    : Math.min(part.pageCount ?? MODEL_API_PDF_PAGE_IMAGES, MODEL_API_PDF_PAGE_IMAGES)
 }
 
 interface PendingNote {
@@ -1192,6 +1205,8 @@ export class ModelApiSession implements AgentSession {
   private readonly readFiles: VisibleFile[] = []
   /** Synthetic tool-read media still waiting for a completed model request. */
   private readonly readFileMessages = new WeakMap<ReplayItem, readonly PendingReadFile[]>()
+  /** Function-output images awaiting their first completed model request. */
+  private readonly pendingOutputMedia = new Map<ReplayItem, readonly FunctionImagePart[]>()
   /** The MCP notices this session has shown (M50): each is said once. */
   private readonly announcedMcp = new Set<string>()
   /** The compaction in flight (D26): it holds the session like a turn. */
@@ -2106,6 +2121,7 @@ export class ModelApiSession implements AgentSession {
     }
     this.markReadFileMediaDelivered(turnId, body.input)
     const wasFitted = this.commitFittedReplay(requestReplay, body.input)
+    this.markOutputMediaDelivered(requestReplay, body.input)
     const calls = this.adoptOutput(turnId, final, open, chargedGoalId)
     if (wasFitted) {
       this.touch()
@@ -2453,8 +2469,32 @@ export class ModelApiSession implements AgentSession {
     }
   }
 
+  /** A completed request delivers or durably omits pending function-output images. */
+  private markOutputMediaDelivered(
+    requestReplay: readonly ReplayItem[],
+    input: readonly InputItem[],
+  ): void {
+    const sent = new Set(
+      input.flatMap((item) =>
+        item.type === 'function_call_output' && typeof item.output !== 'string' ? item.output : [],
+      ),
+    )
+    for (const entry of requestReplay) {
+      const pending = this.pendingOutputMedia.get(entry)
+      if (pending === undefined) {
+        continue
+      }
+      const remaining = pending.filter((part) => !sent.has(part))
+      if (remaining.length === 0 || !this.replay.includes(entry)) {
+        this.pendingOutputMedia.delete(entry)
+      } else {
+        this.pendingOutputMedia.set(entry, remaining)
+      }
+    }
+  }
+
   /** A stopped or failed turn replaces only media no completed request carried. */
-  private dropReadFileMedia(turnId: string): void {
+  private dropUndeliveredMedia(turnId: string): void {
     for (const [index, replay] of this.replay.entries()) {
       if (replay.turnId !== turnId || replay.item.type !== 'message') {
         continue
@@ -2483,25 +2523,84 @@ export class ModelApiSession implements AgentSession {
       }
       this.readFileMessages.delete(replay)
     }
+    for (const [replay, pending] of this.pendingOutputMedia) {
+      if (replay.turnId !== turnId) {
+        continue
+      }
+      const index = this.replay.indexOf(replay)
+      if (
+        index !== -1 &&
+        replay.item.type === 'function_call_output' &&
+        typeof replay.item.output !== 'string'
+      ) {
+        const media = new Set<FunctionOutputPart>(pending)
+        const output = replay.item.output.map((part): FunctionOutputPart =>
+          media.has(part)
+            ? { type: 'input_text', text: MODEL_TEXT.toolOutputImageNotDelivered }
+            : part,
+        )
+        this.replay[index] = { ...replay, item: { ...replay.item, output } }
+      }
+      this.pendingOutputMedia.delete(replay)
+    }
   }
 
-  /** Prevent a burst of tool reads from retaining more media than a request can carry. */
-  private canQueueVisibleFile(file: VisibleFile): boolean {
-    const encodedChars = (visible: VisibleFile) =>
-      BASE64_DATA_URL_OVERHEAD_CHARS +
-      visible.part.mediaType.length +
-      visible.part.base64Data.length
-    const queuedChars = this.readFiles.reduce((total, queued) => total + encodedChars(queued), 0)
-    const slots = (visible: VisibleFile) =>
-      visible.part.type === 'image'
-        ? 1
-        : Math.min(visible.part.pageCount ?? MODEL_API_PDF_PAGE_IMAGES, MODEL_API_PDF_PAGE_IMAGES)
-    const queuedSlots = this.readFiles.reduce((total, queued) => total + slots(queued), 0)
+  /** Media awaiting the next request: tool outputs, read files and accepted steering. */
+  private queuedMediaUsage(): { readonly chars: number; readonly slots: number } {
+    let chars = 0
+    let slots = 0
+    for (const file of this.readFiles) {
+      chars += turnMediaEncodedChars(file.part)
+      slots += turnMediaSlots(file.part)
+    }
+    for (const images of this.pendingOutputMedia.values()) {
+      for (const image of images) {
+        chars += image.image_url.length
+        slots += 1
+      }
+    }
+    const steers = this.active?.steered ?? []
+    for (const steer of steers) {
+      for (const part of steer.parts) {
+        if (part.type !== 'image' && part.type !== 'file') {
+          continue
+        }
+        chars += turnMediaEncodedChars(part)
+        slots += turnMediaSlots(part)
+      }
+    }
+    return { chars, slots }
+  }
+
+  private canQueueMedia(chars: number, slots: number): boolean {
+    const queued = this.queuedMediaUsage()
     const limit = this.deps.mediaBudgetMaxEncodedChars ?? MAX_ENCODED_MEDIA_CHARS
-    return (
-      queuedChars + encodedChars(file) <= limit &&
-      queuedSlots + slots(file) <= MODEL_API_MEDIA_PER_REQUEST
-    )
+    return queued.chars + chars <= limit && queued.slots + slots <= MODEL_API_MEDIA_PER_REQUEST
+  }
+
+  /** Reserve all current-batch visual outputs before their tool row reports success. */
+  private canQueueToolMedia(outcome: ToolOutcome): boolean {
+    const newImages = outcome.outputParts?.filter((part) => part.type === 'input_image') ?? []
+    const chars =
+      (outcome.visibleFile === undefined ? 0 : turnMediaEncodedChars(outcome.visibleFile.part)) +
+      newImages.reduce((total, image) => total + image.image_url.length, 0)
+    const slots =
+      (outcome.visibleFile === undefined ? 0 : turnMediaSlots(outcome.visibleFile.part)) +
+      newImages.length
+    return this.canQueueMedia(chars, slots)
+  }
+
+  private canQueueSteeredMedia(parts: readonly TurnPart[]): boolean {
+    let chars = 0
+    let slots = 0
+    for (const part of parts) {
+      if (part.type !== 'image' && part.type !== 'file') {
+        continue
+      }
+      chars += turnMediaEncodedChars(part)
+      slots += turnMediaSlots(part)
+    }
+    return slots === 0 || this.canQueueMedia(chars, slots)
   }
 
   /** `read_skill`: the body of a catalogue skill, by id; never a path. */
@@ -3595,14 +3694,19 @@ export class ModelApiSession implements AgentSession {
     }
     this.emit({ type: 'itemCompleted', item: completed })
     this.rerecordTranscript(completed)
-    this.replay.push({
+    const replay: ReplayItem = {
       turnId,
       item: {
         type: 'function_call_output',
         call_id: call.call_id,
         output: outcome.outputParts ?? outcome.output,
       },
-    })
+    }
+    this.replay.push(replay)
+    const outputImages = outcome.outputParts?.filter((part) => part.type === 'input_image') ?? []
+    if (outputImages.length > 0) {
+      this.pendingOutputMedia.set(replay, outputImages)
+    }
     if (outcome.visibleFile !== undefined) {
       this.readFiles.push(outcome.visibleFile)
     }
@@ -3678,7 +3782,7 @@ export class ModelApiSession implements AgentSession {
     let { outcome } = result
     const { isRejected, running } = result
     if (running === undefined) {
-      if (outcome.visibleFile !== undefined && !this.canQueueVisibleFile(outcome.visibleFile)) {
+      if (!this.canQueueToolMedia(outcome)) {
         outcome = {
           output: `Error: ${MODEL_TEXT.toolMediaBudgetExceeded}`,
           visibleOutput: UI_TEXT.mediaTotalTooLarge,
@@ -4079,6 +4183,7 @@ export class ModelApiSession implements AgentSession {
                 throw requiredAfterCall
               }
               this.skipCalls(turn.turnId, calls.slice(index + 1), finished.stopReason)
+              this.dropUndeliveredMedia(turn.turnId)
               return
             }
           } catch (error: unknown) {
@@ -4119,7 +4224,7 @@ export class ModelApiSession implements AgentSession {
       if (afterBatch.stopReason !== undefined) {
         // Hooks can stop a completed tool batch without a cancelled terminal.
         // Those read-file bytes were queued, not delivered to a model request.
-        this.dropReadFileMedia(turn.turnId)
+        this.dropUndeliveredMedia(turn.turnId)
         return
       }
     }
@@ -4262,7 +4367,7 @@ export class ModelApiSession implements AgentSession {
       }
     }
     if (terminal !== COMPLETED) {
-      this.dropReadFileMedia(turn.turnId)
+      this.dropUndeliveredMedia(turn.turnId)
     }
     // `loop` returns only with nothing steered left (D26), and `steer` is
     // refused once `active` is cleared, so no input is lost between the two.
@@ -4757,6 +4862,9 @@ export class ModelApiSession implements AgentSession {
     const textBudgetError = textAttachmentBudgetError(parts)
     if (textBudgetError !== undefined) {
       return Promise.reject(textBudgetError)
+    }
+    if (!this.canQueueSteeredMedia(parts)) {
+      return Promise.reject(new Error(UI_TEXT.mediaTotalTooLarge))
     }
     const userMessageId = this.deps.newId()
     this.active.steered.push({ parts, userMessageId })

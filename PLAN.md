@@ -2019,6 +2019,15 @@ limit.
   all 50 slots. A later file that cannot fit returns the media-budget error
   before its bytes enter queued replay, so a successful earlier file is not
   silently replaced during the next request's replay fit.
+  Visual parts from any function-call output in the current tool batch share
+  that admission budget with queued `read_file` media. Count them once until
+  a completed model request carries the parts; a failed request or Stop must
+  not mark them delivered. A later read that would displace an undelivered
+  image fails explicitly before its tool result reports success.
+  Accepted user steering media reserves that same first-delivery budget:
+  a later tool result cannot displace it silently, and a steer that arrives
+  after pending tool media is refused before it enters this turn. The panel
+  can submit that prompt as a later turn after the pending media is delivered.
   Red/green tests bind the fitted request, snapshot, resume and unchanged
   history chips to that boundary. The
   `read_file` tool also stops collecting media in one tool round at the same

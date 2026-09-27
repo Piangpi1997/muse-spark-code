@@ -17,7 +17,7 @@ import {
   type PaidFeature,
   UI_TEXT,
 } from '../../src/shared/constants'
-import type { AgentSession } from '../../src/core/agent/agentBackend'
+import type { AgentSession, DocumentPart } from '../../src/core/agent/agentBackend'
 import { AttachmentStore } from '../../src/core/attachments'
 import { ModelApiClient } from '../../src/core/backends/modelapi/client'
 import type { SubagentTaskConfirmation } from '../../src/shared/paid'
@@ -54,6 +54,7 @@ import { removeFolder } from './helpers/temporaryFolders'
 import { parseHookConfig, type HookDefinition } from '../../src/core/backends/modelapi/hooks'
 import type { ToolIo } from '../../src/core/backends/modelapi/tools'
 import { type FakeMcpSource, fakeMcpSource } from './helpers/fakeMcpSource'
+import type { McpCallOutcome } from '../../src/core/backends/modelapi/mcp/functions'
 import { countLogged } from './helpers/logText'
 import type { McpTool } from '../../src/core/mcp'
 import { memoryStoreOver, PERSONAL } from './helpers/fakeMemoryIo'
@@ -453,6 +454,88 @@ function requestTwoToolPdfs(t: ReturnType<typeof setup>, answer: string): void {
     },
     { text: answer },
   )
+}
+
+function mcpImages(...urls: readonly string[]): McpCallOutcome {
+  return {
+    output: 'picture result',
+    visibleOutput: 'picture result',
+    outputParts: urls.map((url) => ({ type: 'input_image', image_url: url, detail: 'auto' })),
+  }
+}
+
+function pictureSource(...outcomes: readonly McpCallOutcome[]): FakeMcpSource {
+  const mcp = fakeMcpSource([{ server: 'docs', tool: 'picture', isReadOnly: true }])
+  mcp.outcomes = [...outcomes]
+  return mcp
+}
+
+function twoImageBudgetFixture(isOneOutcome: boolean) {
+  const firstUrl = `data:image/png;base64,${TINY_PNG_BASE64}`
+  const secondUrl = 'data:image/png;base64,AAAA'
+  const outcomes = isOneOutcome
+    ? [mcpImages(firstUrl, secondUrl)]
+    : [mcpImages(firstUrl), mcpImages(secondUrl)]
+  const t = setup({
+    mcpServers: pictureSource(...outcomes),
+    mediaBudgetMaxEncodedChars: firstUrl.length + secondUrl.length - 1,
+  })
+  return { t, firstUrl, secondUrl }
+}
+
+function pdfPictureFixture() {
+  const pdf = pdfFixture(50)
+  const pdfData = `data:application/pdf;base64,${Buffer.from(pdf).toString('base64')}`
+  const imageUrl = `data:image/png;base64,${TINY_PNG_BASE64}`
+  const t = setup({ mcpServers: pictureSource(mcpImages(imageUrl)) })
+  t.io.binaries.set('/ws/docs/report.pdf', pdf)
+  return { t, pdfData, imageUrl }
+}
+
+function expectFailedTool(events: readonly AgentEvent[], tool: string): void {
+  expect(
+    events.find((event) => event.type === 'itemCompleted' && event.item.tool === tool),
+  ).toMatchObject({ item: { status: 'failed' } })
+}
+
+async function expectNoPictureAfterStop(
+  t: ReturnType<typeof setup>,
+  session: ModelApiSession,
+  turnDone: () => Promise<void>,
+  imageUrl: string,
+): Promise<void> {
+  expect(JSON.stringify(session.snapshot().replay).includes(imageUrl)).toBe(false)
+  const nextInput = await nextInputAfterStop(t, session, turnDone)
+  expect(nextInput.includes(imageUrl)).toBe(false)
+}
+
+function modelInputAt(t: ReturnType<typeof setup>, index: number): string {
+  return JSON.stringify(t.api.responseBodies()[index]?.['input'])
+}
+
+async function completeToolCalls(
+  t: ReturnType<typeof setup>,
+  session: ModelApiSession,
+  turnDone: () => Promise<void>,
+  calls: NonNullable<ScriptedReply['calls']>,
+  prompt: string,
+  followup?: ScriptedReply,
+): Promise<void> {
+  t.api.script({ calls }, ...(followup === undefined ? [] : [followup]))
+  await session.sendTurn([{ type: 'text', text: prompt }])
+  await turnDone()
+}
+
+function pdfTurnPart(pages: number): DocumentPart {
+  const bytes = pdfFixture(pages)
+  return {
+    type: 'file',
+    name: 'steered.pdf',
+    mediaType: 'application/pdf',
+    base64Data: Buffer.from(bytes).toString('base64'),
+    sizeBytes: bytes.length,
+    pageCount: pages,
+  }
 }
 
 /** Earlier bytes stay, while a later undelivered file becomes path-only context. */
@@ -2400,6 +2483,238 @@ describe('ModelApiSession: turns', () => {
       level: 'warning',
       text: UI_TEXT.olderMediaOmitted,
     })
+  })
+
+  it.each([
+    { name: 'page slots', pages: 50, limit: 'slots' },
+    { name: 'encoded characters', pages: 1, limit: 'encoded' },
+  ])('refuses a visual read after undelivered MCP image fills $name', async ({ pages, limit }) => {
+    const imageUrl = `data:image/png;base64,${TINY_PNG_BASE64}`
+    const pdf = pdfFixture(pages)
+    const pdfData = `data:application/pdf;base64,${Buffer.from(pdf).toString('base64')}`
+    const mcp = pictureSource(mcpImages(imageUrl))
+    const t = setup({
+      mcpServers: mcp,
+      ...(limit === 'encoded' && {
+        mediaBudgetMaxEncodedChars: imageUrl.length + pdfData.length - 1,
+      }),
+    })
+    t.io.binaries.set('/ws/docs/report.pdf', pdf)
+    const { session, events, turnDone } = await startSession(t, 'allowAll')
+    await completeToolCalls(
+      t,
+      session,
+      turnDone,
+      [
+        { name: 'mcp__docs__picture', arguments: '{}', callId: 'picture' },
+        { name: 'read_file', arguments: '{"path":"docs/report.pdf"}', callId: 'read_pdf' },
+      ],
+      'Read the picture and PDF',
+      { text: 'Picture received' },
+    )
+    const delivered = modelInputAt(t, 1)
+    expect(delivered).toContain(imageUrl)
+    expect(delivered).not.toContain(pdfData)
+    expect(delivered).toContain(MODEL_TEXT.toolMediaBudgetExceeded)
+    const read = events.find(
+      (event) => event.type === 'itemCompleted' && event.item.tool === 'read_file',
+    )
+    expect(read).toMatchObject({ item: { status: 'failed' } })
+    const replay = JSON.stringify(session.snapshot().replay)
+    expect(replay).toContain(imageUrl)
+    expect(replay).not.toContain(pdfData)
+  })
+
+  it('keeps the earlier MCP image when a second tool image exceeds the encoded budget', async () => {
+    const { t, firstUrl, secondUrl } = twoImageBudgetFixture(false)
+    const { session, events, turnDone } = await startSession(t, 'allowAll')
+    await completeToolCalls(
+      t,
+      session,
+      turnDone,
+      [
+        { name: 'mcp__docs__picture', arguments: '{}', callId: 'first_picture' },
+        { name: 'mcp__docs__picture', arguments: '{}', callId: 'second_picture' },
+      ],
+      'Look at both pictures',
+      { text: 'First picture received' },
+    )
+    const delivered = modelInputAt(t, 1)
+    expect(delivered.includes(firstUrl)).toBe(true)
+    expect(delivered.includes(secondUrl)).toBe(false)
+    expect(delivered).toContain(MODEL_TEXT.toolMediaBudgetExceeded)
+    expect(
+      events.flatMap((event) =>
+        event.type === 'itemCompleted' && event.item.tool === 'mcp__docs__picture'
+          ? [event.item.status]
+          : [],
+      ),
+    ).toEqual(['completed', 'failed'])
+    const replay = JSON.stringify(session.snapshot().replay)
+    expect(replay.includes(firstUrl)).toBe(true)
+    expect(replay.includes(secondUrl)).toBe(false)
+  })
+
+  it('fails one MCP result whose two images exceed the aggregate encoded budget', async () => {
+    const { t, firstUrl, secondUrl } = twoImageBudgetFixture(true)
+    const { session, events, turnDone } = await startSession(t, 'allowAll')
+    await completeToolCalls(
+      t,
+      session,
+      turnDone,
+      [{ name: 'mcp__docs__picture', arguments: '{}', callId: 'both_pictures' }],
+      'Look at this result',
+      { text: 'No pictures received' },
+    )
+    const delivered = modelInputAt(t, 1)
+    expect(delivered.includes(firstUrl)).toBe(false)
+    expect(delivered.includes(secondUrl)).toBe(false)
+    expect(delivered).toContain(MODEL_TEXT.toolMediaBudgetExceeded)
+    expectFailedTool(events, 'mcp__docs__picture')
+    expect(JSON.stringify(session.snapshot().replay).includes(firstUrl)).toBe(false)
+  })
+
+  it('keeps a queued 50-page PDF when a later MCP image cannot fit', async () => {
+    const { t, pdfData, imageUrl } = pdfPictureFixture()
+    const { session, events, turnDone } = await startSession(t, 'allowAll')
+    await completeToolCalls(
+      t,
+      session,
+      turnDone,
+      [
+        { name: 'read_file', arguments: '{"path":"docs/report.pdf"}', callId: 'read_pdf' },
+        { name: 'mcp__docs__picture', arguments: '{}', callId: 'picture' },
+      ],
+      'Read PDF and picture',
+      { text: 'PDF received' },
+    )
+    const delivered = modelInputAt(t, 1)
+    expect(delivered.includes(pdfData)).toBe(true)
+    expect(delivered.includes(imageUrl)).toBe(false)
+    expect(delivered).toContain(MODEL_TEXT.toolMediaBudgetExceeded)
+    expectFailedTool(events, 'mcp__docs__picture')
+    expect(JSON.stringify(session.snapshot().replay).includes(pdfData)).toBe(true)
+  })
+
+  it('scrubs an undelivered MCP image when a PostToolBatch hook stops the turn', async () => {
+    const imageUrl = `data:image/png;base64,${TINY_PNG_BASE64}`
+    const mcp = pictureSource(mcpImages(imageUrl))
+    const t = setup({
+      mcpServers: mcp,
+      hooks: hooksFor('PostToolBatch', 'stop-picture'),
+      runHook: () => hookReply(JSON.stringify({ continue: false, stopReason: 'stop picture' })),
+    })
+    const { session, turnDone } = await startSession(t, 'allowAll')
+    await completeToolCalls(
+      t,
+      session,
+      turnDone,
+      [{ name: 'mcp__docs__picture', arguments: '{}', callId: 'picture' }],
+      'Look at the picture',
+    )
+    expect(t.api.responseBodies()).toHaveLength(1)
+    await expectNoPictureAfterStop(t, session, turnDone, imageUrl)
+  })
+
+  it('releases an MCP image reservation after its first completed delivery', async () => {
+    const { t, pdfData, imageUrl } = pdfPictureFixture()
+    const { session, events, turnDone } = await startSession(t, 'allowAll')
+    t.api.script(
+      { calls: [{ name: 'mcp__docs__picture', arguments: '{}', callId: 'picture' }] },
+      {
+        calls: [{ name: 'read_file', arguments: '{"path":"docs/report.pdf"}', callId: 'read_pdf' }],
+      },
+      { text: 'Both arrived in their own requests' },
+    )
+    await session.sendTurn([{ type: 'text', text: 'Read the picture, then the PDF' }])
+    await turnDone()
+    expect(JSON.stringify(t.api.responseBodies()[1]?.['input']).includes(imageUrl)).toBe(true)
+    expect(JSON.stringify(t.api.responseBodies()[2]?.['input']).includes(pdfData)).toBe(true)
+    expect(
+      events.find((event) => event.type === 'itemCompleted' && event.item.tool === 'read_file'),
+    ).toMatchObject({ item: { status: 'completed' } })
+  })
+
+  it('scrubs an MCP image when its first delivery request fails', async () => {
+    const imageUrl = `data:image/png;base64,${TINY_PNG_BASE64}`
+    const mcp = pictureSource(mcpImages(imageUrl))
+    const t = setup({ mcpServers: mcp })
+    const { session, turnDone } = await startSession(t, 'allowAll')
+    await completeToolCalls(
+      t,
+      session,
+      turnDone,
+      [{ name: 'mcp__docs__picture', arguments: '{}', callId: 'picture' }],
+      'Look at the picture',
+      { failed: { code: 'server_error', message: 'delivery failed' } },
+    )
+    expect(JSON.stringify(t.api.responseBodies()[1]?.['input']).includes(imageUrl)).toBe(true)
+    await expectNoPictureAfterStop(t, session, turnDone, imageUrl)
+  })
+
+  it('fails a held MCP image when a steered 50-page PDF took the last slots first', async () => {
+    const imageUrl = `data:image/png;base64,${TINY_PNG_BASE64}`
+    const mcp = pictureSource(mcpImages(imageUrl))
+    const held = Promise.withResolvers<undefined>()
+    mcp.gate = held.promise
+    const t = setup({ mcpServers: mcp })
+    const { session, events, turnDone } = await startSession(t, 'allowAll')
+    t.api.script(
+      { calls: [{ name: 'mcp__docs__picture', arguments: '{}', callId: 'picture' }] },
+      { text: 'PDF received' },
+    )
+    const submitted = await session.sendTurn([{ type: 'text', text: 'Review the picture' }])
+    await vi.waitFor(() => {
+      expect(mcp.calls).toHaveLength(1)
+    })
+    const pdf = pdfTurnPart(50)
+    await expect(session.steer(submitted.turnId, [pdf])).resolves.toMatchObject({
+      disposition: 'steered',
+    })
+    held.resolve(undefined)
+    await turnDone()
+    expect(
+      events.find(
+        (event) => event.type === 'itemCompleted' && event.item.tool === 'mcp__docs__picture',
+      ),
+    ).toMatchObject({ item: { status: 'failed' } })
+    const delivered = JSON.stringify(t.api.responseBodies()[1]?.['input'])
+    expect(delivered.includes(imageUrl)).toBe(false)
+    expect(delivered).toContain(pdf.base64Data)
+    expect(delivered).toContain(MODEL_TEXT.toolMediaBudgetExceeded)
+  })
+
+  it('refuses a steer that would hide an already completed MCP image', async () => {
+    const imageUrl = `data:image/png;base64,${TINY_PNG_BASE64}`
+    const mcp = pictureSource(mcpImages(imageUrl))
+    const held = Promise.withResolvers<undefined>()
+    const t = setup({
+      mcpServers: mcp,
+      hooks: hooksFor('PostToolBatch', 'hold-picture'),
+      runHook: async () => {
+        await held.promise
+        return await hookReply()
+      },
+    })
+    const { session, events, turnDone } = await startSession(t, 'allowAll')
+    t.api.script(
+      { calls: [{ name: 'mcp__docs__picture', arguments: '{}', callId: 'picture' }] },
+      { text: 'Picture received' },
+    )
+    const submitted = await session.sendTurn([{ type: 'text', text: 'Review the picture' }])
+    await vi.waitFor(() => {
+      expect(
+        events.some(
+          (event) => event.type === 'itemCompleted' && event.item.tool === 'mcp__docs__picture',
+        ),
+      ).toBe(true)
+    })
+    await expect(session.steer(submitted.turnId, [pdfTurnPart(50)])).rejects.toThrow(
+      UI_TEXT.mediaTotalTooLarge,
+    )
+    held.resolve(undefined)
+    await turnDone()
+    expect(JSON.stringify(t.api.responseBodies()[1]?.['input']).includes(imageUrl)).toBe(true)
   })
 
   it('places a workspace PDF read after the function output so the next model call sees it', async () => {

@@ -28,6 +28,16 @@ and steers reject aggregate named text over its allowance before retaining a
 turn or issuing HTTP, including chips admitted under Muse Code before a
 backend switch.
 
+Model API tool batches now reserve visual media returned by tools alongside
+queued `read_file` images and PDF pages. A later tool result that would hide
+an earlier undelivered image fails explicitly, including multiple images in
+one result. A completed model request releases its reservation; Stop or a
+failed delivery removes undelivered image bytes from saved replay.
+Steered images and PDFs share the first-delivery reservation: if steering
+arrives first, excess tool media fails; if a tool result is already pending,
+an over-budget steer is refused for this turn so the composer can send it as
+a later turn.
+
 Attachment refusal banners now show known localized PDF, media-budget,
 backend, text and private-file reasons instead of generic image-only
 unsupported-file guidance. Unknown reasons keep that generic fallback.
