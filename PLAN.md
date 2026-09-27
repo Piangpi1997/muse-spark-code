@@ -6519,4 +6519,6 @@ new stable release (`1.4.0-R4302.1`, which the launcher installs by itself;
 Side chat again, which fail (#30, #31), and dropped the profile-workspace
 sandbox warning, which still applies (#26). Both now hold for every version
 (D26 amendment). Known 1.4.0 schema fingerprints are logged at info instead
-of as a mismatch warning. `docs/certification/release-0.9.1.md`.
+of as a mismatch warning. The full gate passed on `9c2cdce` (2,507 tests,
+332 accessibility pages, no leaks, no Semgrep findings).
+`docs/certification/release-0.9.1.md`.

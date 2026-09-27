@@ -86,6 +86,18 @@ bytes, checked by SHA-256 (`drills-091.mjs` in the session scratchpad).
 | F1    | A known 1.4.0 fingerprint still logged as a mismatch warning            | exit 1, 1 failed |
 | F2    | Every fingerprint mismatch treated as known                             | exit 1, 1 failed |
 
+## Gate
+
+`npm run quality` on `9c2cdce` (Windows 11, Node 22), exit 0:
+
+- format, lint (ESLint, stylelint, PSScriptAnalyzer), five TypeScript
+  projects, `check:l10n` (14 tables, 0 problems), knip, dpdm, jscpd (0 clones);
+- vitest with coverage: 173 files passed and 2 skipped; 2,507 tests passed
+  and 23 skipped; statements 94.21 %;
+- build and budgets: `dist/extension.js` 596.7 KiB of 600;
+- a11y: 332 pages (83 scenarios × 4 themes), 0 rules violated;
+- gitleaks: no leaks; Semgrep: 287 rules on 404 files, 0 findings.
+
 ## Not in this release
 
 - Offering `session/delete`, which is new in 1.4.0. It fails on Windows
