@@ -3853,6 +3853,22 @@ must report the controlled fixture's exit code, timeout/cancel flags and
 stdout/stderr on failure, without secrets. Do not infer a terminal-pager
 cause or relax the 10 second product limit before that result is known;
 the PowerShell-to-cmd stdin forwarding boundary may need a runtime fix.
+Run `36282344418` then reported `isTimedOut: true`, `elapsedMs: 11027`,
+empty stdout/stderr and no cancellation. Microsoft documents that
+[stdin is not connected to PowerShell's pipeline for input](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_redirection?view=powershell-5.1),
+while [`Console.In` reads standard input](https://learn.microsoft.com/en-us/dotnet/api/system.console.in?view=netframework-4.8.1).
+On Windows, the hook wrapper now explicitly reads its UTF-8 stdin and pipes
+it to cmd, with the existing 256 KiB hook-input cap enforced before spawn;
+the job-object join, allowlisted environment, 10 second test operation cap
+and child command line stay intact. A local Unicode JSON echo drill passed;
+removing the adapter cap made its oversized-input guard test fail before
+restoration. Exact staged tree `c977c836` passed a real Unicode+EOF hook
+drill and full WIN-11-VM `npm run quality`: 2,036 tests passed (3 skipped),
+304 accessible pages returned with zero violations/undecided/missing, and
+audit, gitleaks and SAST found zero. The remote tree matched before/after
+and process audit found zero checkout-owned processes. This receipt changes
+documentation, so final exact local Windows and hosted branch proof remain
+before a PR.
 An M54 integration review found a separate hook-stdin privacy boundary:
 `input_text`, developer instructions, tool descriptions and assistant output
 can themselves contain pasted `data:` media URLs. The common model-call
