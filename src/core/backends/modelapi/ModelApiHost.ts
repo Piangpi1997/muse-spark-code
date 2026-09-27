@@ -111,8 +111,10 @@ import {
   type ModelSummary,
   type OutputPage,
   type OutputPageRequest,
+  type SentImage,
   type SessionEventListener,
   type SessionHistoryOutcome,
+  type SessionMcpHttpServer,
   type SessionListEvent,
   type SessionPage,
   type SessionRecord,
@@ -545,6 +547,8 @@ const NOOP = 'noop'
 const ACCEPTED = 'accepted'
 const NO_COMPACTABLE_HISTORY = 'no_compactable_history'
 const COMPACTION_TURN_ID = 'compaction'
+// A replayed picture (`contentPartsFor`): `data:<media type>;base64,<data>`.
+const DATA_URL = /^data:([^;,]+);base64,(.+)$/s
 const MODEL_API_ERROR_KIND = 'modelApi'
 const TURN_NOT_RUNNING = 'the turn is not running'
 
@@ -581,6 +585,13 @@ function hasUnansweredCall(replay: readonly StoredReplayItem[]): boolean {
   )
   return replay.some(
     (entry) => entry.item.type === 'function_call' && !answered.has(entry.item.call_id),
+  )
+}
+
+function hasUnansweredSessionCall(snapshot: StoredSession): boolean {
+  return (
+    hasUnansweredCall(snapshot.replay) ||
+    (snapshot.children ?? []).some((child) => hasUnansweredCall(child.session.replay))
   )
 }
 
@@ -1201,6 +1212,7 @@ export class ModelApiSession implements AgentSession {
     private readonly childSubagentId?: string,
     private readonly hooks: readonly HookDefinition[] = [],
     private readonly hookStartSource: 'startup' | 'resume' | 'fork' = 'startup',
+    private readonly isSideChat = false,
   ) {
     this.modelId = modelId
     this.permissions = new PermissionEngine(approvalMode)
@@ -1284,7 +1296,7 @@ export class ModelApiSession implements AgentSession {
     shouldReplayContext = true,
     shouldShowMessages = true,
   ): Promise<HookDispatch> {
-    const enabledHooks = this.deps.isHooksEnabled?.() === false ? [] : this.hooks
+    const enabledHooks = this.isSideChat || this.deps.isHooksEnabled?.() === false ? [] : this.hooks
     const result = await dispatchHooks(
       enabledHooks,
       event,
@@ -2884,7 +2896,7 @@ export class ModelApiSession implements AgentSession {
     const child = new ModelApiSession(
       `${this.sessionId}:${id}`,
       this.modelId,
-      this.permissions.currentMode,
+      this.isSideChat ? 'denyUnmatched' : this.permissions.currentMode,
       this.deps,
       () => {
         this.touch()
@@ -2896,6 +2908,8 @@ export class ModelApiSession implements AgentSession {
       this,
       id,
       this.hooks,
+      'startup',
+      this.isSideChat,
     )
     child.childTaskGrant = grant
     const record: ChildRecord = {
@@ -3278,6 +3292,12 @@ export class ModelApiSession implements AgentSession {
     shouldForceApproval = false,
   ): Promise<CallResult> {
     const external = this.externalTool(call.name)
+    if (external !== undefined && this.isSideChat) {
+      return {
+        outcome: toolFailure(`${call.name} ${MODEL_TEXT.toolRefusedByMode}`),
+        isRejected: true,
+      }
+    }
     // The IDE tool reads VS Code's Problems panel: a read, in every mode.
     let toolClass: ToolClass | undefined = classifyTool(call.name)
     if (external !== undefined) {
@@ -4316,6 +4336,9 @@ export class ModelApiSession implements AgentSession {
   }
 
   private async createSchedule(cadence: ScheduleCadence, prompt: string): Promise<ScheduledPrompt> {
+    if (this.isSideChat) {
+      throw new Error(UI_TEXT.sideChatPlanOnly)
+    }
     const parsed = scheduleCadenceSchema.safeParse(cadence)
     const cleanPrompt = prompt.trim()
     if (
@@ -4366,6 +4389,9 @@ export class ModelApiSession implements AgentSession {
   }
 
   private async cancelSchedule(id: string): Promise<boolean> {
+    if (this.isSideChat) {
+      throw new Error(UI_TEXT.sideChatPlanOnly)
+    }
     const jobs = await this.listSchedules()
     const job = jobs.find((entry) => entry.id === id)
     if (job === undefined) {
@@ -4385,6 +4411,9 @@ export class ModelApiSession implements AgentSession {
     occurrenceMs: number,
     confirmed: ScheduleRunConfirmation,
   ): Promise<TurnSubmission> {
+    if (this.isSideChat) {
+      throw new Error(UI_TEXT.sideChatPlanOnly)
+    }
     if (confirmed.sessionId !== this.sessionId || confirmed.modelId !== this.modelId) {
       throw new Error(UI_TEXT.scheduleConfirmationExpired)
     }
@@ -4463,6 +4492,19 @@ export class ModelApiSession implements AgentSession {
       this.deps.log.warn(`Scheduled prompts could not be refreshed: ${describe(error)}`)
     }
     return submission
+  }
+
+  /**
+   * The index in `turnIds` of the last turn the compaction summary stands
+   * for, or -1 when the conversation was never compacted: a compaction
+   * replaces the replay of every turn before it with one summary (M53).
+   */
+  private compactedThrough(turnIds: readonly string[]): number {
+    if (this.replay.every((entry) => entry.turnId !== COMPACTION_TURN_ID)) {
+      return -1
+    }
+    const replayed = new Set(this.replay.map((entry) => entry.turnId))
+    return turnIds.findLastIndex((turnId) => !replayed.has(turnId))
   }
 
   // --- AgentSession ---
@@ -4567,6 +4609,9 @@ export class ModelApiSession implements AgentSession {
   }
 
   public setApprovalMode(mode: string): Promise<void> {
+    if (mode !== 'denyUnmatched' && this.isSideChat) {
+      return Promise.reject(new Error(UI_TEXT.sideChatPlanOnly))
+    }
     if (!(APPROVAL_MODES as readonly string[]).includes(mode)) {
       return Promise.reject(new Error(`unknown approval mode ${mode}`))
     }
@@ -4926,6 +4971,28 @@ export class ModelApiSession implements AgentSession {
     return Promise.resolve(name)
   }
 
+  /**
+   * The pictures a turn's message carried, read back from the replay (M53):
+   * a rewind puts them in the composer again. Undefined for a turn the
+   * replay no longer holds (compacted, or never here).
+   */
+  public sentImages(turnId: string): readonly SentImage[] | undefined {
+    const entry = this.replay.find(
+      (candidate) =>
+        candidate.turnId === turnId &&
+        candidate.item.type === 'message' &&
+        candidate.item.role === 'user',
+    )
+    if (entry?.item.type !== 'message') {
+      return undefined
+    }
+    return entry.item.content.flatMap((part) => {
+      const parsed = part.type === 'input_image' ? DATA_URL.exec(part.image_url) : null
+      const [, mediaType, base64Data] = parsed ?? []
+      return mediaType === undefined || base64Data === undefined ? [] : [{ mediaType, base64Data }]
+    })
+  }
+
   /** One more surface holds this session (a second panel resumed it, PLAN.md D25). */
   public retain(): void {
     this.holders += 1
@@ -4983,6 +5050,7 @@ export class ModelApiSession implements AgentSession {
   public record(): SessionRecord {
     return {
       sessionId: this.sessionId,
+      ...(this.isSideChat && { sideChat: true }),
       ...(this.name !== undefined && { name: this.name }),
       ...(this.firstPrompt !== undefined && {
         title: this.firstPrompt,
@@ -5001,6 +5069,7 @@ export class ModelApiSession implements AgentSession {
   public history(): SessionHistoryOutcome {
     return {
       mode: 'inline',
+      sideChat: this.isSideChat,
       items: this.transcript.map((entry) => entry.item),
       name: this.name,
       todos: [...this.todos],
@@ -5013,6 +5082,7 @@ export class ModelApiSession implements AgentSession {
     return {
       version: STORED_SESSION_VERSION,
       sessionId: this.sessionId,
+      ...(this.isSideChat && { sideChat: true }),
       workspaceRoot: this.deps.workspaceRoot,
       modelId: this.modelId,
       approvalMode: this.permissions.currentMode,
@@ -5073,7 +5143,7 @@ export class ModelApiSession implements AgentSession {
     this.effort = stored.effort
     this.name = stored.name
     this.todos = [...stored.todos]
-    this.goal = stored.goal
+    this.goal = this.isSideChat ? undefined : stored.goal
     this.firstPrompt = stored.firstPrompt
     this.forkedFrom = stored.forkedFrom
     this.createdAt = stored.createdAt
@@ -5091,7 +5161,7 @@ export class ModelApiSession implements AgentSession {
       const session = new ModelApiSession(
         saved.session.sessionId,
         saved.session.modelId,
-        saved.session.approvalMode,
+        this.isSideChat ? 'denyUnmatched' : saved.session.approvalMode,
         this.deps,
         () => {
           this.touch()
@@ -5103,6 +5173,7 @@ export class ModelApiSession implements AgentSession {
         saved.id,
         this.hooks,
         'resume',
+        this.isSideChat,
       )
       session.adopt(saved.session)
       const record: ChildRecord = {
@@ -5132,19 +5203,30 @@ export class ModelApiSession implements AgentSession {
     }
   }
 
-  /** Copies the turns through `lastTurnId` (all of them when absent) into `target`. */
+  /**
+   * Copies the completed turns through `lastTurnId` (all of them when
+   * absent) into `target`. A turn still running is never copied, as MSP's
+   * fork copies completed turns only (a side chat opens while the main turn
+   * runs, M53). A cut before the last compaction is refused (PLAN.md D46):
+   * its summary stands for the turns after the cut too, so the branch would
+   * carry what it was cut from.
+   */
   public copyInto(target: ModelApiSession, lastTurnId: string | undefined): void {
-    const cut =
-      lastTurnId === undefined ? this.turnIds.length - 1 : this.turnIds.indexOf(lastTurnId)
+    const completed = this.turnIds.filter((turnId) => turnId !== this.active?.turnId)
+    const cut = lastTurnId === undefined ? completed.length - 1 : completed.indexOf(lastTurnId)
     if (cut === -1) {
-      throw new Error(`invalid fork boundary for session ${this.sessionId}: unknown turn`)
+      const why = lastTurnId === undefined ? 'no completed turn' : 'unknown turn'
+      throw new Error(`invalid fork boundary for session ${this.sessionId}: ${why}`)
     }
-    const kept = new Set(this.turnIds.slice(0, cut + 1))
+    if (cut < this.compactedThrough(completed)) {
+      throw new Error(UI_TEXT.rewindBeforeCompaction)
+    }
+    const kept = new Set(completed.slice(0, cut + 1))
     kept.add(COMPACTION_TURN_ID)
     target.replay.push(...this.replay.filter((entry) => kept.has(entry.turnId)))
     const retained = this.transcript.filter((entry) => kept.has(entry.turnId))
     target.transcript.push(...withoutRunning(retained))
-    target.turnIds.push(...this.turnIds.slice(0, cut + 1))
+    target.turnIds.push(...completed.slice(0, cut + 1))
     const copiedNotes = new Set(
       target.replay.flatMap((entry) =>
         entry.backgroundTaskId === undefined ? [] : [entry.backgroundTaskId],
@@ -5174,7 +5256,7 @@ export class ModelApiSession implements AgentSession {
     target.effort = this.effort
     // The goal as it stands goes with the fork (M45): a goal has no history
     // to cut, so a fork from an earlier turn gets today's goal too.
-    target.goal = this.goal
+    target.goal = target.isSideChat ? undefined : this.goal
     for (const child of this.children.values()) {
       if (!kept.has(child.parentTurnId)) {
         continue
@@ -5183,7 +5265,7 @@ export class ModelApiSession implements AgentSession {
       const session = new ModelApiSession(
         sessionId,
         child.session.modelId,
-        child.session.approvalMode,
+        target.isSideChat ? 'denyUnmatched' : child.session.approvalMode,
         this.deps,
         () => {
           target.touch()
@@ -5195,6 +5277,7 @@ export class ModelApiSession implements AgentSession {
         child.id,
         target.hooks,
         'fork',
+        target.isSideChat,
       )
       session.adopt({ ...child.session.snapshot(), sessionId })
       const cloned: ChildRecord = {
@@ -5236,7 +5319,7 @@ export class ModelApiHost implements AgentHost {
   /** What the store holds for this workspace, kept current as sessions change. */
   private readonly stored = new Map<string, StoredSessionHeader>()
   private readonly listListeners = new Set<(event: SessionListEvent) => void>()
-  /** Saves run one after another; a failure is logged and never surfaces. */
+  /** Saves run one after another; failures are logged, and strict callers also see them. */
   private saving: Promise<void> = Promise.resolve()
   public readonly info: HostInfo = {
     kind: 'modelApi',
@@ -5254,55 +5337,22 @@ export class ModelApiHost implements AgentHost {
     }
   }
 
-  private persist(session: ModelApiSession): void {
-    const { store } = this.deps
-    if (store === undefined) {
-      return
+  private queueSave(
+    snapshot: StoredSession,
+    store: SessionStore,
+    shouldSetHeaderAfterSave: boolean,
+  ): Promise<void> {
+    const header = headerOf(snapshot)
+    if (!shouldSetHeaderAfterSave) {
+      this.stored.set(snapshot.sessionId, header)
     }
-    const snapshot = session.snapshot()
-    // A turn-start user message can be saved, but a function call without
-    // its output cannot be replayed after a crash. Goal/settings touches
-    // during a pending tool still announce live; the settled touch saves.
-    // A child's unsettled turn holds the parent's save the same way: its
-    // replay is nested in this snapshot.
-    if (
-      hasUnansweredCall(snapshot.replay) ||
-      (snapshot.children ?? []).some((child) => hasUnansweredCall(child.session.replay))
-    ) {
-      return
-    }
-    this.stored.set(snapshot.sessionId, headerOf(snapshot))
-    const previous = this.saving
-    this.saving = (async () => {
-      await previous
-      try {
-        await store.save(snapshot)
-      } catch (error: unknown) {
-        this.deps.log.warn(`Session ${snapshot.sessionId} was not saved: ${describe(error)}`)
-      }
-    })()
-  }
-
-  /** A schedule create needs proof its owning session was saved before success. */
-  private persistStrict(session: ModelApiSession): Promise<void> {
-    const { store } = this.deps
-    if (store === undefined) {
-      return Promise.reject(new Error(UI_TEXT.scheduleStorageMissing))
-    }
-    const snapshot = session.snapshot()
-    // A schedule cannot make an unsafe replay durable. The caller removes
-    // its new job on this refusal, leaving the last valid session snapshot.
-    if (
-      hasUnansweredCall(snapshot.replay) ||
-      (snapshot.children ?? []).some((child) => hasUnansweredCall(child.session.replay))
-    ) {
-      return Promise.reject(new Error(UI_TEXT.scheduleBusy))
-    }
-    this.stored.set(snapshot.sessionId, headerOf(snapshot))
     const previous = this.saving
     const saved = (async () => {
       await previous
       await store.save(snapshot)
+      if (shouldSetHeaderAfterSave) {
+        this.stored.set(snapshot.sessionId, header)
+      }
     })()
     this.saving = (async () => {
       try {
@@ -5314,12 +5364,45 @@ export class ModelApiHost implements AgentHost {
     return saved
   }
 
+  private persist(session: ModelApiSession, isStrict = false): Promise<void> {
+    const { store } = this.deps
+    if (store === undefined) {
+      return isStrict ? Promise.reject(new Error(UI_TEXT.historyUnavailable)) : Promise.resolve()
+    }
+    const snapshot = session.snapshot()
+    // A turn-start user message can be saved, but a function call without
+    // its output cannot be replayed after a crash. Goal/settings touches
+    // during a pending tool still announce live; the settled touch saves.
+    // A child's unsettled turn holds the parent's save the same way: its
+    // replay is nested in this snapshot.
+    if (hasUnansweredSessionCall(snapshot)) {
+      return isStrict ? Promise.reject(new Error(UI_TEXT.historyUnavailable)) : Promise.resolve()
+    }
+    const saved = this.queueSave(snapshot, store, isStrict)
+    return isStrict ? saved : this.saving
+  }
+
+  /** A schedule create needs proof its owning session was saved before success. */
+  private persistStrict(session: ModelApiSession): Promise<void> {
+    const { store } = this.deps
+    if (store === undefined) {
+      return Promise.reject(new Error(UI_TEXT.scheduleStorageMissing))
+    }
+    const snapshot = session.snapshot()
+    // A schedule cannot make an unsafe replay durable. The caller removes
+    // its new job on this refusal, leaving the last valid session snapshot.
+    return hasUnansweredSessionCall(snapshot)
+      ? Promise.reject(new Error(UI_TEXT.scheduleBusy))
+      : this.queueSave(snapshot, store, false)
+  }
+
   private create(
     modelId: string,
     approvalMode: ApprovalMode,
     sessionId: string = this.deps.newId(),
     hooks: readonly HookDefinition[] = [],
     hookStartSource: 'startup' | 'resume' | 'fork' = 'startup',
+    isSideChat = false,
   ): ModelApiSession {
     const session: ModelApiSession = new ModelApiSession(
       sessionId,
@@ -5327,7 +5410,7 @@ export class ModelApiHost implements AgentHost {
       approvalMode,
       this.deps,
       () => {
-        this.persist(session)
+        void this.persist(session)
         this.announce(session)
       },
       () => this.persistStrict(session),
@@ -5339,6 +5422,7 @@ export class ModelApiHost implements AgentHost {
       undefined,
       hooks,
       hookStartSource,
+      isSideChat,
     )
     this.sessions.set(sessionId, session)
     return session
@@ -5371,25 +5455,35 @@ export class ModelApiHost implements AgentHost {
   }
 
   /** The live session, or the stored one brought back into this window. */
-  private async revive(sessionId: string): Promise<ModelApiSession> {
+  private async revive(sessionId: string, isSideChatRequired = false): Promise<ModelApiSession> {
     const live = this.sessions.get(sessionId)
     if (live !== undefined) {
+      if (isSideChatRequired && live.record().sideChat !== true) {
+        throw new Error(UI_TEXT.sideChatSessionOnly)
+      }
       live.retain()
       return live
     }
     const stored = await this.storedSession(sessionId)
+    if (isSideChatRequired && stored.sideChat !== true) {
+      throw new Error(UI_TEXT.sideChatSessionOnly)
+    }
     // Another surface may have brought it back while the file was read.
     const revived = this.sessions.get(sessionId)
     if (revived !== undefined) {
+      if (isSideChatRequired && revived.record().sideChat !== true) {
+        throw new Error(UI_TEXT.sideChatSessionOnly)
+      }
       revived.retain()
       return revived
     }
     const session = this.create(
       stored.modelId,
-      stored.approvalMode,
+      stored.sideChat === true ? 'denyUnmatched' : stored.approvalMode,
       sessionId,
-      await this.sessionHooks(),
+      stored.sideChat === true ? [] : await this.sessionHooks(),
       'resume',
+      stored.sideChat === true,
     )
     session.adopt(stored)
     await session.startHooks()
@@ -5462,9 +5556,11 @@ export class ModelApiHost implements AgentHost {
     }
     const session = this.create(
       options.modelId,
-      options.approvalMode as ApprovalMode,
+      options.sideChat === true ? 'denyUnmatched' : (options.approvalMode as ApprovalMode),
       this.deps.newId(),
-      await this.sessionHooks(),
+      options.sideChat === true ? [] : await this.sessionHooks(),
+      'startup',
+      options.sideChat === true,
     )
     await session.startHooks()
     this.announce(session)
@@ -5522,6 +5618,7 @@ export class ModelApiHost implements AgentHost {
     }
     return {
       mode: 'inline',
+      sideChat: source.sideChat === true,
       items: source.transcript.map((entry) => entry.item),
       name: source.name,
       todos: source.todos,
@@ -5529,8 +5626,13 @@ export class ModelApiHost implements AgentHost {
     }
   }
 
-  public async resumeSession(sessionId: string, _modelId: string): Promise<LoadedSession> {
-    const loaded = this.loaded(await this.revive(sessionId))
+  public async resumeSession(
+    sessionId: string,
+    _modelId: string,
+    _mcpServers?: Readonly<Record<string, SessionMcpHttpServer>>,
+    options?: { readonly requireSideChat?: boolean },
+  ): Promise<LoadedSession> {
+    const loaded = this.loaded(await this.revive(sessionId, options?.requireSideChat === true))
     void this.startMcpServers()
     return loaded
   }
@@ -5539,21 +5641,28 @@ export class ModelApiHost implements AgentHost {
     sessionId: string,
     modelId: string,
     lastTurnId?: string,
+    options?: { readonly sideChat?: boolean },
   ): Promise<LoadedSession> {
     // Copying needs no hold on a live source; a stored one is revived only for the copy.
     const live = this.sessions.get(sessionId)
     const source = live ?? (await this.revive(sessionId))
+    const isSideChat = options?.sideChat === true || source.record().sideChat === true
     const fork = this.create(
       modelId,
-      source.approvalMode,
+      isSideChat ? 'denyUnmatched' : source.approvalMode,
       this.deps.newId(),
-      await this.sessionHooks(),
+      isSideChat ? [] : await this.sessionHooks(),
       'fork',
+      isSideChat,
     )
     try {
       source.copyInto(fork, lastTurnId)
       await fork.startHooks()
-      this.persist(fork)
+      if (isSideChat) {
+        await this.persist(fork, true)
+      } else {
+        void this.persist(fork)
+      }
     } catch (error: unknown) {
       fork.dispose()
       throw error

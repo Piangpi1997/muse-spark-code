@@ -143,10 +143,11 @@ export interface FakeSurface extends ChatSurface {
   readonly takeRestoredSessionId: ReturnType<typeof vi.fn<() => string | undefined>>
 }
 
-export function fakeSurface(id: string): FakeSurface {
+export function fakeSurface(id: string, isSideChat = false): FakeSurface {
   const posted: HostToWebviewMessage[] = []
   return {
     id,
+    isSideChat,
     posted,
     post(message) {
       posted.push(message)

@@ -18,6 +18,8 @@ function attachChatPanel(
   context: WebviewHostContext,
   registry: SurfaceRegistry,
   restoredSessionId: string | undefined,
+  isSideChat = false,
+  onDisposed?: () => void,
 ): void {
   // A restored panel keeps the title VS Code saved, unread mark included.
   let title = panel.title.startsWith(UI_TEXT.unreadMark)
@@ -30,6 +32,7 @@ function attachChatPanel(
   const surface = configureWebview(panel.webview, context, {
     id: `panel:${globalThis.crypto.randomUUID()}`,
     restoredSessionId,
+    isSideChat,
     reveal: () => {
       panel.reveal(undefined, false)
     },
@@ -41,7 +44,7 @@ function attachChatPanel(
       applyTitle()
     },
     setTitle: (name) => {
-      title = name
+      title = isSideChat ? `${UI_TEXT.sideChatTitle}: ${name}` : name
       applyTitle()
     },
     onFocused: (focused) => {
@@ -64,20 +67,35 @@ function attachChatPanel(
   panel.onDidDispose(() => {
     registration.dispose()
     surface.dispose()
+    onDisposed?.()
   })
+}
+
+export interface NewChatPanelOptions {
+  readonly sessionId?: string
+  readonly isSideChat?: boolean
+  readonly onDisposed?: () => void
 }
 
 export function openChatPanel(
   context: WebviewHostContext,
   registry: SurfaceRegistry,
+  options: NewChatPanelOptions = {},
 ): vscode.WebviewPanel {
   const panel = vscode.window.createWebviewPanel(
     CHAT_PANEL_VIEW_TYPE,
-    UI_TEXT.untitledConversation,
+    options.isSideChat === true ? UI_TEXT.sideChatTitle : UI_TEXT.untitledConversation,
     vscode.ViewColumn.Beside,
     { retainContextWhenHidden: true },
   )
-  attachChatPanel(panel, context, registry, undefined)
+  attachChatPanel(
+    panel,
+    context,
+    registry,
+    options.sessionId,
+    options.isSideChat,
+    options.onDisposed,
+  )
   return panel
 }
 
@@ -91,5 +109,6 @@ export function restoreChatPanel(
   context: WebviewHostContext,
   registry: SurfaceRegistry,
 ): void {
-  attachChatPanel(panel, context, registry, parsePersistedState(state).sessionId)
+  const persisted = parsePersistedState(state)
+  attachChatPanel(panel, context, registry, persisted.sessionId, persisted.sideChat)
 }

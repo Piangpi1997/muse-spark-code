@@ -1887,6 +1887,35 @@ Agent map keeps the captured M18 controls; those two verbs remain unavailable
 until a bounded live owner-command capture establishes their success shapes.
 The Model API backend's local read and reopen actions are separate from MSP.
 
+### D46 — Conversation rewind and side chat (2026-09-25)
+
+Muse Code 1.3.0 exposes neither `session/rewind` nor `session/sideChat` over
+MSP. Conversation rewind uses the supported `session/fork` cut point just
+before the selected user turn, then restores that turn's prompt as a draft.
+The first turn rewinds to a fresh conversation. Code rewind remains a separate
+choice; its existing edit review refuses changed files. The prior session
+stays in History. A Model API fork rejects a cut before its latest compaction
+summary, because that summary contains later context. Images return to the
+composer when the backend retained their bytes; a missing image is reported.
+
+Side chat opens a separate tab forked from completed turns, with Plan mode
+forced and the inherited goal cleared so it cannot continue there. The Model
+API backend denies write tools in that mode. Muse Code
+applies its project and session allow rules, so its side fork is not claimed
+strictly read only. The main tab
+and any running turn remain attached. Closing the side tab returns focus to
+the original tab; its fork stays in History. Muse Code 1.3.0 on Windows has a
+known `session/fork` failure, so both conversation actions remain unavailable
+there until the CLI fixes that method. A side chat is an ordinary Model API or
+Muse Code model call on the selected backend, never a paid Model API feature
+called through a Muse subscription.
+
+The Model API Plan statement covers its tool-permission engine. The provisional
+M51 join suppresses hooks in a durable side session and refuses external MCP
+tools regardless of a server's read-only hint. The M52 join adds core refusal
+of scheduled create, cancel and run before storage, claim or paid use. Focused
+tests pass; final side-branch certification remains open (M53 below).
+
 ### D47 — File input follows each backend's proven wire (2026-09-25)
 
 Meta's [file handling guide](https://dev.meta.ai/docs/file-handling) permits
@@ -3871,6 +3900,32 @@ fake response-body helper. The review cleanup replaces it with a runtime
 array/record check. A malformed fake input failed before the change and
 passes after it; the cleanup receives its own exact-tree quality gate before
 commit.
+The first pre-PR branch run on `bb2bd61` failed only on Windows:
+`toolIo.test.ts`'s real hook-process test hit Vitest's default five-second
+test deadline while its real `runHook` operation still had a ten-second
+deadline; test-folder cleanup then saw `EBUSY`. Align the test's outer
+deadline with other bounded real-process tests so it can observe the hook
+operation's success or explicit timeout and finish cleanup. Do not change
+`runHook`'s deadline, assertions, Vitest's global threshold or the quality
+gate. The exact staged tree `2856971` passed the focused real hook stdin
+test on WIN-11-VM with zero fixture-owned processes; final documented-tree
+local quality and a new pre-PR branch dispatch remain before a PR. The next
+documented tree `0b990287` passed full local Windows quality (2,034 tests,
+3 skipped; 304 a11y pages with zero violations/undecided/missing; audit,
+gitleaks and SAST zero) and a process audit of zero. The verified pre-PR
+workflow receipt below changes documentation again, so the final candidate
+must receive its own exact-tree gate before commit and branch dispatch.
+An M54 integration review found a separate hook-stdin privacy boundary:
+`input_text`, developer instructions, tool descriptions and assistant output
+can themselves contain pasted `data:` media URLs. The common model-call
+preview now scrubs those URLs before clipping text, preserving ordinary
+surrounding words and leaving the actual Model API request/replay unchanged.
+A fake Zod-valid text URL failed the pre/post payload test before the fix;
+the shared projection then passed 4/4 focused tests. No new provider wire
+schema or live paid call is inferred. The prior documented-tree full gate
+`42168ea7` passed locally with 2,034 unit tests (3 skipped), 304 accessible
+pages and zero audit/leak/SAST findings, but predates this media fix; exact
+quality and branch dispatch remain required on the new tree.
 
 **Status 2026-09-26: M51 branch `4624552` includes merged main `fa370ee` and has exact-tree Windows `npm run quality` green on tree `6a70ef7` (2,033 tests passed, 3 skipped; 304 accessibility pages with zero violations, undecided or missing; audit, gitleaks and SAST zero). The small final-review test/doc cleanup requires its own exact-tree gate before commit; live hook parity and hosted PR certification remain open.** The
 bounded runtime wires all 17 documented event names at the Model API backend's supported operations: `SessionStart`, `UserPromptSubmit`,
@@ -4593,15 +4648,100 @@ Code process, profile and extensions directory were removed after a process
 audit. The capture and red drill are in `docs/certification/m52.md`; ordered
 integration and full gates on the later tree remain open.
 
+### M53 — Conversation rewind and side chat (D46)
+
+**Status 2026-09-26: M52 and M54 joins staged; combined certification
+pending** (`docs/certification/m53.md`). Focused tests and merge red drills
+passed on the isolated trees: 628 focused tests on M47 main `34002ab` and
+the combined-fork red drill on M46. The pre-move stage is pinned at
+`refs/codex-backups/m53-pre-m47-20260926`. M48–M51 are present in staged
+tree `01fe750c246b16a527ca51eeb989c672571e7eb8`; six focused suites
+passed 561/561 with five TypeScript projects, lint, localization and format
+green. The later M52/M54 join passed 614/614 focused tests, five-project
+typecheck, localization, lint and formatting. Side-schedule create, cancel
+and run first failed their red test, then were refused before storage, claim,
+HTTP or paid tally; a PDF remains in side-fork replay. Corrected M51 ancestry
+and exact combined quality and browser gates remain open.
+
+- **Goal**: rewind conversation context to a selected user turn, preserving
+  its prompt as a new draft; ask a side question in a separate branch while
+  the main conversation continues.
+- **Research**: Muse Code 1.3.0 exposes `session/fork` with an optional
+  completed-turn cut point, but no MSP rewind or side-chat verb. Its TUI has
+  `/rewind` and `/side` (`/btw`). The Model API session already stores input
+  replay and transcript items. D46 sets the implementation and limits.
+- **Scope**: a user-card rewind choice, draft and available image restoration,
+  a fork before the chosen turn (or fresh conversation before the first), a
+  separate side-chat panel that keeps the source attached, a fixed Plan-mode
+  policy and cleared goal on the side branch, compaction-aware Model API cuts, eight strings
+  in all fourteen languages, and documentation.
+- **Acceptance pending**: full quality and visual accessibility gates after
+  earlier milestone integration. Focused host, backend, reducer, UI,
+  snapshot and protocol tests and red drills passed on the isolated tree.
+- **Mac gate checkpoint, M48–M52 joins still pending**: exact staged M53 tree
+  `426a6f55f99f551e6ce85254977688964699a867` passed remote patch and
+  Node archive verification and `npm ci`, then `quality:gates` stopped at
+  `unicorn/prefer-simple-condition-first` in the side-chat `Shift+Tab`
+  guard. Moving the existing callback check first passed focused ESLint and
+  the keyboard regression test on the private Mac copy. The second run on
+  corrected tree `eda1f4ce416ccd5c4cd5f402edc0e0eec01608f5` passed
+  through cycles, then stopped at three `jscpd` clones. Shared fork-source
+  guard and test setup helpers removed all three on the private Mac copy:
+  duplication found zero, 267 focused tests passed, and changed-file ESLint
+  plus host/unit type checks passed. A third run on exact staged tree
+  `eaa5ee60f195d8eab9ce5ab237ca2c59db70bb0f` passed
+  `quality:gates` on Mac: 1717 unit tests passed, localization, duplication
+  and audit clean. The `rewind` and `signin` accessibility scenarios each
+  passed all four themes; the full Mac accessibility matrix remains open
+  after six-way Chrome page timeouts over SSH (`docs/certification/m53.md`).
+- **WIN-11-VM full local gate**: literal `npm run quality` exited 0 on exact
+  staged M53 tree `4273bd0f94bccfcffae471b5ad1a36cd38542964` on M47
+  base. Unit tests: 1721 passed, three skipped. Accessibility: 280 pages,
+  zero violated or undecided rules and zero pages without a result.
+  PSScriptAnalyzer, localization, duplication, audit, gitleaks and Semgrep
+  all reported zero findings. The private VM checkout had no unstaged or
+  untracked files or remaining gate processes. This documentation receipt
+  changes the staged tree; M48–M52 joins and their gates remain pending
+  (`docs/certification/m53.md`).
+- **Provisional M51 boundary review**: `ModelApiSession.copyInto` keeps the
+  completed-turn/compaction cut alongside M46 background notes and M48 child
+  records. A side fork is marked and put in Plan before any M51 `SessionStart`
+  hook; all its hooks stay disabled through resume and close. M50 external MCP
+  calls are refused before read-only hints or approval rules. Copied and
+  resumed child records are held to Plan. A side surface cannot revive an
+  ordinary Model API session: the core checks its stored marker before resume
+  hooks. Red tests caught the previous hook, child-mode and resume leaks;
+  normal forks remain unaffected (`docs/certification/m53.md`).
+- **Durable side-session lifecycle**: the stored marker is optional for old
+  sessions. The fork clears its inherited goal before a strict save; a failed
+  save opens no panel or orphan record, and a slow save finishes before the
+  source hold is released. History/restart keeps the side label and Plan lock.
+  These focused checks passed on the provisional M51 join. The M52 join now
+  refuses schedule create, cancel and run in core before any paid admission;
+  red/green tests cover a resumed side fork and a Bypass source. Corrected
+  M51 ancestry and exact combined quality still need verification.
+- **Stale action boundary**: a rewind message names the session whose
+  transcript supplied the selected prompt; a side-chat message names the
+  session shown when its header button was clicked. If the surface switched
+  sessions before or during host work, neither rewind nor side chat may
+  clear, replace, or fork the unrelated current session.
+- **Focus return**: closing a side-chat tab reveals its original surface if
+  that surface is still registered. The registry's active fallback can be a
+  different tab, so it is not used as proof that the original closed.
+- **Limit**: Muse Code 1.3.0 on Windows refuses forks. On other Muse Code
+  platforms the Plan-mode side fork may inherit allow rules; unlike Model
+  API Plan mode, it is not certified as strictly read only.
+
 ### M54 — PDFs and other files as input (D47)
 
-**Status 2026-09-26: M51 join staged; combined certification pending.** The
+**Status 2026-09-26: M52/M53 joins staged; combined certification pending.** The
 isolated M54 worktree is based on `34002ab`; its pre-M46 50-path staged tree
 is pinned at `refs/codex-backups/m54-pre-m46-20260926`. Focused PDF and
 replay checks passed; the M47-base reconciliation passed 724 focused
 attachment, replay, workflow and backend tests, all five TypeScript projects,
-localization and lint. M48–M51 are now staged together; M52/M53 joins and full
-quality/browser gates on the combined tree remain open. A compressed or encrypted page tree with
+localization and lint. M48–M53 are now staged together; corrected M51 ancestry
+and full quality/browser gates on the combined tree remain open. A compressed
+or encrypted page tree with
 unknown count still reserves all 50 image slots (D47).
 After the M54 Stop replay fix, nine focused suites passed 531/531 and all
 five TypeScript projects passed on this tree. M54-on-M47 passed full Windows
@@ -4620,7 +4760,13 @@ Independent review built a valid 50-page PDF with its real page tree in an
 object stream and an unlinked visible one-page tree. The bounded raw scanner
 had returned one page, underweighting the request. A red test reproduced it;
 the parser now reserves all 50 slots when object streams or encryption could
-hide the real tree. Final exact-tree quality remains open.
+hide the real tree. That review tree still needed a fresh gate.
+The M52-joined staged tree `ad5d89dcd36ffdcf6ead66126bf328fdf3493e60`
+passed full local Windows quality before its commit `5487149`: 2,113 unit
+tests passed, build and audit clean, accessibility and security gates green.
+The M53 join now preserves PDF media in side-fork replay and refuses its
+scheduled paid controls in core; 614 focused tests passed. The final combined
+tree still needs quality and hosted gates after corrected M51 ancestry.
 
 - **Goal:** a user can send a PDF to the Model API backend from the picker,
   paste or drop, then see it in the sent card and restored history; the agent
@@ -4639,15 +4785,15 @@ hide the real tree. Final exact-tree quality remains open.
   `docs/certification/m54.md` before changing status to certified.
 - **Stop edge:** a tool-read PDF or image from a stopped/failed turn is not
   sent again with the next user turn; replay says why its bytes are absent.
-- **Pending ordered joins (M48–M53):** check M48 child-session isolation and
+- **Remaining ordered checks (M48–M53):** check M48 child-session isolation and
   paid attempt accounting for PDF reads; M49 memory-path protections beside
   named text attachments; M50 MCP image parts in function outputs against
   the same page and encoded-media budgets; M51 hook stops after `read_file`
   and hook previews without media bytes; M52 confirmed paid runs with PDFs
   already in replay; M53 rewind of PDF/text chips and Plan-mode side chats
-  with inherited PDF context. These are watchpoints from separate staged
-  trees, not acceptance evidence. Add focused tests before calling M54
-  integrated, then run exact-tree quality and browser gates.
+  with inherited PDF context. M52 confirmed paid replay and M53 side-fork PDF
+  replay now have focused tests on the staged join. The other cross-checks,
+  exact-tree quality and browser gates still precede final certification.
 - **Kubuntu exact-tree gate attempt:** the private `10.10.11.212` checkout of
   staged tree `7cd2d8d` passed `npm ci`, then `npm run quality:gates` stopped
   at its first step: Prettier flagged one formatting line in
@@ -4696,7 +4842,8 @@ The CLI itself is not bundled: it is Meta's closed-source binary.
 ## 7. Gates
 
 **Pre-PR delivery (2026-09-26: trigger merged at `10522223`; first manual
-branch dispatch proof pending).** The owner
+branch dispatch run `36276240077` succeeded on head `ac9df5a` in all seven
+jobs).** The owner
 wants platform failures found and fixed before a pull request is opened.
 `ci.yml` gains `workflow_dispatch`, calling the same `build.yml` as pushes and
 pull requests. `CONTRIBUTING.md` gives the order: integrate milestones, run
@@ -4704,8 +4851,9 @@ local quality on the exact tree, collect platform evidence, get an independent
 review, push, dispatch hosted CI and inspect its SHA and every job before
 opening a pull request. No build job or threshold changes. GitHub requires a
 manually dispatched workflow on the default branch, so the first pre-PR branch
-run can happen only after this trigger lands on `main`. Acceptance needs that
-branch run and its job evidence; pull-request CI and review still gate merge.
+run could happen only after this trigger landed on `main`. Its recorded
+run and job evidence prove the process; each feature branch still needs its
+own exact-SHA run before a PR. Pull-request CI and review still gate merge.
 
 | Gate                  | Command                                                                                                                                                                                                         | Status                                                                                                                                                                                                     |
 | --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

@@ -1149,6 +1149,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         openExternal: (url) => {
           void vscode.env.openExternal(vscode.Uri.parse(url))
         },
+        openSideChat: (sessionId) => {
+          openChatPanel(hostContext, registry, {
+            sessionId,
+            isSideChat: true,
+            onDisposed: () => {
+              if (registry.has(surface)) {
+                surface.reveal()
+              }
+            },
+          })
+        },
         mentions: {
           search: (query, limit) => mentions.search(query, limit),
           contains: (relativePath) => mentions.contains(relativePath),

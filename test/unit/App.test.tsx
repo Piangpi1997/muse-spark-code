@@ -995,6 +995,75 @@ describe('App session history (M6)', () => {
     expect(screen.queryByText('first')).toBeNull()
   })
 
+  it('rewinds a conversation at the preceding turn and restores its prompt only after host success (M53)', () => {
+    const postMessage = renderReady()
+    deliver({
+      type: 'historyLoaded',
+      sessionId: 'old',
+      todos: [],
+      items: [
+        { itemId: 'u1', kind: 'userMessage', status: 'completed', turnId: 't1', text: 'first' },
+        { itemId: 'u2', kind: 'userMessage', status: 'completed', turnId: 't2', text: 'second' },
+      ],
+    })
+    fireEvent.click(screen.getAllByLabelText('Fork or rewind')[1]!)
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Rewind conversation to here' }))
+    expect(postMessage).toHaveBeenLastCalledWith({
+      type: 'rewindConversation',
+      sourceSessionId: 'old',
+      turnId: 't2',
+      lastTurnId: 't1',
+      text: 'second',
+      imageCount: 0,
+    })
+    expect(textarea()).toHaveValue('')
+    deliver({ type: 'restoreDraft', text: 'second' })
+    expect(textarea()).toHaveValue('second')
+  })
+
+  it('offers a side chat on a fork-capable session and labels the Plan-mode tab (M53)', () => {
+    const postMessage = renderReady()
+    deliver({ type: 'sessionInfo', modelId: 'muse-spark-1.3', sessionId: 'old' })
+    deliver({
+      type: 'historyLoaded',
+      sessionId: 'old',
+      todos: [],
+      items: [
+        { itemId: 'u1', kind: 'userMessage', status: 'completed', turnId: 't1', text: 'first' },
+      ],
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Side chat' }))
+    expect(postMessage).toHaveBeenLastCalledWith({ type: 'openSideChat', sourceSessionId: 'old' })
+    deliver({
+      ...init,
+      sideChat: true,
+      settings: { ...testSettings, initialPermissionMode: 'plan' },
+    })
+    expect(screen.getByText('Side chat')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Side chat' })).toBeNull()
+  })
+
+  it('labels a side session resumed through ordinary History and locks its mode (M53)', () => {
+    renderReady()
+    deliver({
+      type: 'historyLoaded',
+      sessionId: 'side',
+      sideChat: true,
+      todos: [],
+      items: [{ itemId: 'u1', kind: 'userMessage', status: 'completed', turnId: 't1', text: 'hi' }],
+    })
+    deliver({ type: 'sessionInfo', modelId: 'muse-spark-1.3', sessionId: 'side', sideChat: true })
+    deliver({
+      type: 'composerState',
+      effort: 'high',
+      isThinkingEnabled: true,
+      permissionMode: 'plan',
+    })
+    expect(screen.getByText('Side chat')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: UI_TEXT.sideChatPlanOnly })).toBeDisabled()
+    expect(screen.queryByRole('button', { name: 'Side chat' })).toBeNull()
+  })
+
   it('rewinds code to a message, forks after rewinding, and closes the menu on Escape (M13)', () => {
     const postMessage = renderReady()
     deliver({

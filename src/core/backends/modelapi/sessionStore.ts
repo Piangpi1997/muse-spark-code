@@ -64,6 +64,7 @@ export interface StoredChild {
 export interface StoredSession {
   readonly version: typeof STORED_SESSION_VERSION
   readonly sessionId: string
+  readonly sideChat?: boolean
   readonly workspaceRoot: string
   readonly modelId: string
   readonly approvalMode: ApprovalMode
@@ -96,6 +97,7 @@ export interface StoredSession {
  */
 export interface StoredSessionHeader {
   readonly sessionId: string
+  readonly sideChat?: boolean
   readonly workspaceRoot: string
   readonly name?: string
   readonly createdAt: string
@@ -118,6 +120,7 @@ export interface SessionStore {
 export function headerOf(stored: StoredSession): StoredSessionHeader {
   return {
     sessionId: stored.sessionId,
+    ...(stored.sideChat === true && { sideChat: true }),
     workspaceRoot: stored.workspaceRoot,
     ...(stored.name !== undefined && { name: stored.name }),
     createdAt: stored.createdAt,
@@ -172,6 +175,7 @@ const storedInputItemSchema = z.union([
 const storedSessionFields = {
   version: z.literal(STORED_SESSION_VERSION),
   sessionId: z.string(),
+  sideChat: z.optional(z.boolean()),
   workspaceRoot: z.string(),
   modelId: z.string(),
   approvalMode: z.enum(APPROVAL_MODES),
@@ -247,6 +251,7 @@ export function parseStoredSession(raw: unknown): StoredSessionParse {
     forkedFrom,
     firstPrompt,
     goal,
+    sideChat,
     children,
     pendingChildResults,
     spawnCommands,
@@ -286,6 +291,7 @@ export function parseStoredSession(raw: unknown): StoredSessionParse {
       ...(forkedFrom !== undefined && { forkedFrom }),
       ...(firstPrompt !== undefined && { firstPrompt }),
       ...(goal !== undefined && { goal }),
+      ...(sideChat === true && { sideChat: true }),
       ...(children !== undefined && { children: restoredChildren }),
       ...(pendingChildResults !== undefined && { pendingChildResults }),
       ...(spawnCommands !== undefined && { spawnCommands }),
@@ -299,6 +305,7 @@ const IDLE = 'idle'
 export function recordOf(stored: StoredSessionHeader): SessionRecord {
   return {
     sessionId: stored.sessionId,
+    ...(stored.sideChat === true && { sideChat: true }),
     ...(stored.name !== undefined && { name: stored.name }),
     ...(stored.firstPrompt !== undefined && {
       title: stored.firstPrompt,

@@ -60,6 +60,8 @@ while they are (PLAN.md D30, D34).
   previews; media and credential fields stay out of hook stdin while the
   original MCP result still reaches the model. A required MCP server loss
   cannot be hidden by a post-tool hook stop.
+  Model-call hook text previews also remove pasted media data URLs before
+  shortening user text, instructions, tool descriptions or assistant output.
 
 - **Model API scheduled prompts** (M52). `/loop` stores an interval or local
   five-field cron prompt in the current conversation; the panel lists due
@@ -77,6 +79,21 @@ while they are (PLAN.md D30, D34).
   native cron remains available through its model tools; MSP offers no direct
   scheduler controls.
 
+- **Conversation rewind and side chats** (M53, PLAN.md D46). A sent message
+  can branch before itself and return its prompt to the composer. Model API
+  images return when replay still holds them; otherwise the panel warns.
+  Side chat opens a separate Plan-mode fork without stopping the main tab.
+  On the Model API backend, its stored side marker survives reopen, keeps
+  Plan and the cleared goal, suppresses hooks, and refuses external MCP tools
+  even when a server marks them read only. A failed fork save opens no panel.
+  Scheduled prompt creation, cancellation and runs are refused in core before
+  storage, claim or paid use, including after a side fork is reopened.
+  Rewind and side-chat clicks carry their source session, so a late request
+  is ignored if that tab has moved to another session. Closing a
+  side chat returns focus to its original tab while that tab remains open.
+  Its locked Plan mode leaves `Shift+Tab` available for keyboard navigation.
+  Muse Code's Windows 1.3.0 fork limitation still hides these actions.
+
 - **PDF input on the Model API backend** (M54, PLAN.md D47). Pick, paste or
   drop a PDF up to 32 MB; its name appears in the composer and sent history.
   The Model API agent can also read workspace PDFs and images through
@@ -92,6 +109,7 @@ while they are (PLAN.md D30, D34).
   are refused. The PDF page budget reads the page tree's own count even
   when nested metadata has another count, preventing an oversized request.
   Stop removes tool-read media from future replay if its turn ends early.
+
 
 
 - **Image edits** (M44, PLAN.md D37). With image generation on, the model

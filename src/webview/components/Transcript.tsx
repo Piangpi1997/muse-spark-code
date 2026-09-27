@@ -64,6 +64,7 @@ export interface TranscriptProps {
   /** The user card's menu (M6, M13); absent while no session exists. */
   readonly onFork?: ((entryId: string) => void) | undefined
   readonly onRewind?: ((entryId: string) => void) | undefined
+  readonly onRewindConversation?: ((entryId: string) => void) | undefined
   /** A reply's actions menu (M17); absent while no session exists. */
   readonly onReply?: ((entryId: string) => void) | undefined
   /** The row whose highlighted text has the Copy / Ask / Comment menu open (M17). */
@@ -73,12 +74,13 @@ export interface TranscriptProps {
   readonly onCloseQuoteMenu?: (() => void) | undefined
 }
 
-type RewindChoice = 'fork' | 'rewind' | 'both'
+type RewindChoice = 'fork' | 'rewind' | 'both' | 'conversation'
 
 /** The rows of the user card's menu, in Claude Code's order. */
 function rewindMenu(): readonly { readonly id: RewindChoice; readonly label: string }[] {
   return [
     { id: 'fork', label: UI_TEXT.forkFromHere },
+    { id: 'conversation', label: UI_TEXT.rewindConversationToHere },
     { id: 'rewind', label: UI_TEXT.rewindCodeToHere },
     { id: 'both', label: UI_TEXT.forkAndRewind },
   ]
@@ -132,11 +134,13 @@ const UserCard = memo(function UserCard({
   entry,
   onFork,
   onRewind,
+  onRewindConversation,
   quoteMenu,
 }: {
   readonly entry: Extract<TranscriptEntry, { kind: 'user' }>
   readonly onFork: ((entryId: string) => void) | undefined
   readonly onRewind: ((entryId: string) => void) | undefined
+  readonly onRewindConversation: ((entryId: string) => void) | undefined
   readonly quoteMenu: ReactNode
 }) {
   const hasChips =
@@ -151,9 +155,18 @@ const UserCard = memo(function UserCard({
   const onMenuBlur = useDismiss(menuArea, isMenuOpen, closeMenu)
   // Without fork (a host that refuses it, D26) the menu offers the rewind alone.
   const hasMenu = onRewind !== undefined && entry.status === 'sent'
-  const menuRows = rewindMenu().filter((row) => onFork !== undefined || row.id === 'rewind')
+  const menuRows = rewindMenu().filter(
+    (row) =>
+      row.id === 'rewind' ||
+      (row.id === 'conversation' && onRewindConversation !== undefined) ||
+      ((row.id === 'fork' || row.id === 'both') && onFork !== undefined),
+  )
   const choose = (choice: RewindChoice) => {
     setMenuOpen(false)
+    if (choice === 'conversation') {
+      onRewindConversation?.(entry.id)
+      return
+    }
     if (choice !== 'fork') {
       onRewind?.(entry.id)
     }
@@ -526,6 +539,7 @@ function TranscriptList(props: TranscriptProps) {
     onRefuseLink,
     onFork,
     onRewind,
+    onRewindConversation,
     onReply,
     quoteMenuEntryId,
     onQuote,
@@ -577,6 +591,7 @@ function TranscriptList(props: TranscriptProps) {
             entry={entry}
             onFork={onFork}
             onRewind={onRewind}
+            onRewindConversation={onRewindConversation}
             quoteMenu={quoteMenuFor(entry.id)}
           />
         )

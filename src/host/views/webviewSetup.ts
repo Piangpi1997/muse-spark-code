@@ -44,6 +44,7 @@ export interface WebviewHostContext {
 /** One chat UI instance (the sidebar view or one editor panel). */
 export interface ChatSurface extends vscode.Disposable {
   readonly id: string
+  readonly isSideChat?: boolean
   post(message: HostToWebviewMessage): void
   /** Bring the surface into view and give it keyboard focus. */
   reveal(): void
@@ -64,6 +65,7 @@ export interface ChatSurface extends vscode.Disposable {
 
 export interface SurfaceOptions {
   readonly id: string
+  readonly isSideChat?: boolean
   /** The session id a deserialized panel stored; undefined for a new surface. */
   readonly restoredSessionId: string | undefined
   readonly reveal: () => void
@@ -86,12 +88,15 @@ function isRestoreEnding(message: HostToWebviewMessage): boolean {
   )
 }
 
-function buildInitMessage(context: WebviewHostContext): HostToWebviewMessage {
+function buildInitMessage(context: WebviewHostContext, isSideChat: boolean): HostToWebviewMessage {
   return {
     type: 'init',
     emptyStateHint: UI_TEXT.emptyStateHint,
     composerPlaceholder: UI_TEXT.composerPlaceholder,
-    settings: context.getSettings(),
+    settings: isSideChat
+      ? { ...context.getSettings(), initialPermissionMode: 'plan' }
+      : context.getSettings(),
+    ...(isSideChat && { sideChat: true }),
   }
 }
 
@@ -125,6 +130,7 @@ export function configureWebview(
   let restoredSessionId = options.restoredSessionId
   const surface: ChatSurface = {
     id: options.id,
+    isSideChat: options.isSideChat === true,
     post(message) {
       if (isRestoreEnding(message)) {
         restoredSessionId = undefined
@@ -153,7 +159,7 @@ export function configureWebview(
     const { message } = parsed
     switch (message.type) {
       case 'ready': {
-        surface.post(buildInitMessage(context))
+        surface.post(buildInitMessage(context, surface.isSideChat === true))
         context.onSurfaceReady(surface)
         break
       }

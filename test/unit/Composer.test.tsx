@@ -187,6 +187,16 @@ describe('Composer keyboard semantics', () => {
     expect(props.onCyclePermissionMode).toHaveBeenCalledOnce()
     expect(fireEvent.keyDown(textarea, { key: 'Tab' })).toBe(true)
   })
+
+  it('lets Shift+Tab move focus when side chat locks Plan mode (M53)', () => {
+    const { textarea } = renderComposer({
+      permissionMode: 'plan',
+      onCyclePermissionMode: undefined,
+      onOpenModeMenu: undefined,
+    })
+    expect(fireEvent.keyDown(textarea, { key: 'Tab', shiftKey: true })).toBe(true)
+    expect(screen.getByRole('button', { name: UI_TEXT.sideChatPlanOnly })).toBeDisabled()
+  })
 })
 
 describe('Composer focus and insertion', () => {

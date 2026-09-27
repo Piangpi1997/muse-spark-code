@@ -9,6 +9,7 @@ import { HistoryIcon, NewConversationIcon } from './icons'
 export interface HeaderProps {
   readonly title: string
   readonly isFocusView: boolean
+  readonly isSideChat?: boolean
   readonly onNewConversation: () => void
   /** Undefined while the shell is connecting (the buttons are inert then). */
   readonly onOpenHistory?: (() => void) | undefined
@@ -20,6 +21,7 @@ export interface HeaderProps {
   /** Background tasks still running (M46): they show the pill too. */
   readonly runningTaskCount?: number
   readonly onOpenAgents?: (() => void) | undefined
+  readonly onOpenSideChat?: (() => void) | undefined
 }
 
 /** The pill's words: the agents, the running background tasks, or both (M14, M46). */
@@ -91,6 +93,7 @@ function TitleEditor({
 export function Header({
   title,
   isFocusView,
+  isSideChat = false,
   onNewConversation,
   onOpenHistory,
   onRename,
@@ -98,6 +101,7 @@ export function Header({
   runningAgentCount = 0,
   runningTaskCount = 0,
   onOpenAgents,
+  onOpenSideChat,
 }: HeaderProps) {
   const isPillShown = agentCount > 0 || runningTaskCount > 0
   const isAnyRunning = runningAgentCount > 0 || runningTaskCount > 0
@@ -112,6 +116,12 @@ export function Header({
       )}
       <div className="header-actions">
         {isFocusView ? <span className="badge">{UI_TEXT.focusViewBadge}</span> : null}
+        {isSideChat ? <span className="badge">{UI_TEXT.sideChatTitle}</span> : null}
+        {onOpenSideChat === undefined ? null : (
+          <button type="button" className="agents-pill" onClick={onOpenSideChat}>
+            {UI_TEXT.openSideChat}
+          </button>
+        )}
         {onOpenAgents !== undefined && isPillShown ? (
           <button
             type="button"
