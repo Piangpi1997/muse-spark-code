@@ -22,6 +22,7 @@ interface HarnessOptions {
   readonly projectHooksPath?: string | undefined
   /** The window runs the Model API backend (M50): its servers' snapshot, undefined before they start. */
   readonly modelApi?: { readonly snapshot: McpPoolSnapshot | undefined }
+  readonly modelApiHooks?: boolean | undefined
 }
 
 function harness(options: HarnessOptions = {}) {
@@ -33,6 +34,7 @@ function harness(options: HarnessOptions = {}) {
   let docs = 0
   let restarts = 0
   let logs = 0
+  let modelApiSettingsOpened = 0
   const answers = [...(options.answers ?? [])]
   const existing = new Set(options.existing ?? [SETTINGS])
   const deps: MuseConfigDeps = {
@@ -78,6 +80,13 @@ function harness(options: HarnessOptions = {}) {
         logs += 1
       },
     }),
+    ...(options.modelApiHooks !== undefined && {
+      modelApiHooks: () => options.modelApiHooks,
+      openModelApiHooksSetting: () => {
+        modelApiSettingsOpened += 1
+        return Promise.resolve()
+      },
+    }),
   }
   return {
     deps,
@@ -89,6 +98,7 @@ function harness(options: HarnessOptions = {}) {
     docs: () => docs,
     restarts: () => restarts,
     logs: () => logs,
+    modelApiSettingsOpened: () => modelApiSettingsOpened,
   }
 }
 
@@ -361,6 +371,25 @@ describe('showMcpServers on the Model API backend (M50)', () => {
 })
 
 describe('showHooks', () => {
+  it('shows Model API hook opt-in state before source files', async () => {
+    const off = harness({ modelApiHooks: false, existing: [SETTINGS, HOOKS] })
+    await showHooks(off.deps)
+    expect(off.picks[0]?.title).toBe('Model API hooks')
+    expect(off.picks[0]?.items[0]).toMatchObject({
+      id: 'hooks:modelApiSetting',
+      label: 'museSpark.modelApiHooks',
+      detail: 'off',
+    })
+    expect(off.picks[0]?.items[1]?.detail).toBe('off')
+    const on = harness({ modelApiHooks: true, existing: [SETTINGS, HOOKS] })
+    await showHooks(on.deps)
+    expect(on.picks[0]?.items[0]?.detail).toBe('on')
+    expect(on.picks[0]?.items[1]?.detail).toBe('Runs in this workspace')
+    const chosen = harness({ modelApiHooks: false, answers: ['hooks:modelApiSetting'] })
+    await showHooks(chosen.deps)
+    expect(chosen.modelApiSettingsOpened()).toBe(1)
+  })
+
   it('lists the three sources with the sandbox warning', async () => {
     const t = harness({
       settings: JSON.stringify({ hooks: [{}], managed_hooks_path: '/etc/muse/hooks.json' }),

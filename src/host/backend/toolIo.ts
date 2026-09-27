@@ -29,9 +29,13 @@ import type {
   ToolIo,
 } from '../../core/backends/modelapi/tools'
 import { resolveExecutable } from '../../core/executables'
+import { powerShellQuoted } from '../../core/shellQuote'
 import {
   BYTES_PER_MIB,
   MODEL_TEXT,
+  HOOK_OUTPUT_MAX_BYTES,
+  HOOK_FORBIDDEN_ENV_NAMES,
+  HOOK_STDIN_MAX_BYTES,
   SEARCH_TIMEOUT_MS,
   SHELL_DRAIN_GRACE_MS,
   SHELL_OUTPUT_MAX_CHARS,
@@ -111,6 +115,20 @@ const POWERSHELL = 'powershell'
 const PATH_VARIABLE = 'PATH'
 const PS_MODULE_PATH = 'PSModulePath'
 const PROGRAM_FILES = 'ProgramFiles'
+const HOOK_ENV_NAMES = [
+  'HOME',
+  'PATH',
+  'USER',
+  'LOGNAME',
+  'TMPDIR',
+  'TEMP',
+  'TMP',
+  'SHELL',
+  'LANG',
+  'LC_ALL',
+  'TERM',
+] as const
+const WINDOWS_HOOK_ENV_NAMES = ['COMSPEC', 'PATHEXT', 'SystemRoot', 'WINDIR'] as const
 
 // The variables VS Code's terminal strips from the extension host's
 // environment before a shell sees it (`sanitizeProcessEnvironment`,
@@ -217,6 +235,50 @@ export function shellEnvironment(
   return clean
 }
 
+/** Hooks get Muse Code's narrow environment; provider credentials never pass. */
+function isForbiddenHookEnv(name: string): boolean {
+  const upper = name.toUpperCase()
+  return upper.endsWith('_API_KEY') || HOOK_FORBIDDEN_ENV_NAMES.has(upper)
+}
+
+export function hookEnvironment(
+  env: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform,
+  extraNames: readonly string[] = [],
+): NodeJS.ProcessEnv {
+  const clean: NodeJS.ProcessEnv = {}
+  const names: readonly string[] =
+    platform === 'win32'
+      ? [...HOOK_ENV_NAMES, ...WINDOWS_HOOK_ENV_NAMES, ...extraNames]
+      : [...HOOK_ENV_NAMES, ...extraNames]
+  for (const name of names) {
+    if (isForbiddenHookEnv(name)) {
+      continue
+    }
+    const value = environmentValue(env, platform, name)
+    if (value === undefined) {
+      continue
+    }
+    const normalizedName = platform === 'win32' ? name.toUpperCase() : name
+    if (normalizedName === PATH_VARIABLE) {
+      const pathApi = platform === 'win32' ? path.win32 : path.posix
+      const delimiter = pathApi.delimiter
+      setEnvironmentVariable(
+        clean,
+        platform,
+        name,
+        value
+          .split(delimiter)
+          .filter((entry) => pathApi.isAbsolute(entry))
+          .join(delimiter),
+      )
+    } else if (normalizedName !== 'COMSPEC' || path.win32.isAbsolute(value)) {
+      setEnvironmentVariable(clean, platform, name, value)
+    }
+  }
+  return clean
+}
+
 /**
  * The interpreter for the shell tool, by absolute path: Windows PowerShell
  * under `%SystemRoot%` (else the first on the absolute PATH), bash from the
@@ -265,8 +327,31 @@ export function shellArguments(
     : ['-lc', command]
 }
 
+function hookProgramFor(deps: ToolIoDeps, configuredShell: string | undefined): string | undefined {
+  if (deps.platform === 'win32') {
+    return deps.systemRoot === undefined
+      ? resolveExecutable('cmd', {
+          platform: deps.platform,
+          pathVariable: deps.env()['PATH'],
+          fileExists: existsSync,
+        })
+      : path.win32.join(deps.systemRoot, 'System32', 'cmd.exe')
+  }
+  return configuredShell !== undefined &&
+    path.posix.isAbsolute(configuredShell) &&
+    existsSync(configuredShell)
+    ? configuredShell
+    : resolveExecutable('sh', {
+        platform: deps.platform,
+        pathVariable: deps.env()['PATH'],
+        fileExists: existsSync,
+      })
+}
+
 export function createToolIo(deps: ToolIoDeps): ToolIo {
   const interpreter = shellInterpreter(deps.platform, deps.systemRoot, deps.env(), existsSync)
+  const configuredHookShell = deps.env()['SHELL']
+  const hookProgram = hookProgramFor(deps, configuredHookShell)
   return {
     async readFile(absolutePath) {
       let bytes: Uint8Array
@@ -376,6 +461,47 @@ export function createToolIo(deps: ToolIoDeps): ToolIo {
         job,
       })
     },
+    async runHook(command, payload, cwd, timeoutMs, signal, extraEnvNames) {
+      // dispatchHooks enforces this too. Keep the adapter bounded when it is
+      // called directly, before any hook subprocess starts.
+      if (Buffer.byteLength(payload) > HOOK_STDIN_MAX_BYTES) {
+        throw new RangeError('Hook stdin exceeds the input cap')
+      }
+      const file = deps.platform === 'win32' ? interpreter : hookProgram
+      if (hookProgram === undefined || file === undefined) {
+        return {
+          stdout: '',
+          stderr: 'Hook shell is unavailable',
+          exitCode: null,
+          isTimedOut: false,
+          isCancelled: false,
+        }
+      }
+      const assembly = deps.platform === 'win32' ? await deps.shellJobAssembly?.() : undefined
+      const job = assembly === undefined ? undefined : newShellJob(assembly)
+      // On Windows PowerShell joins the job first, then starts cmd.exe with
+      // the configured command. The command itself uses cmd, as Muse Code does.
+      const args =
+        deps.platform === 'win32'
+          ? shellArguments(
+              deps.platform,
+              `& ${powerShellQuoted(hookProgram)} /D /S /C ${powerShellQuoted(command)}`,
+              job,
+            )
+          : ['-c', command]
+      return await runCommand({
+        file,
+        args,
+        cwd,
+        env: hookEnvironment(deps.env(), deps.platform, extraEnvNames),
+        timeoutMs,
+        signal,
+        tree: { platform: deps.platform, systemRoot: deps.systemRoot, log: deps.log },
+        job,
+        stdin: payload,
+        maxOutputBytes: HOOK_OUTPUT_MAX_BYTES,
+      })
+    },
   }
 }
 
@@ -429,6 +555,10 @@ export interface CommandRun {
   readonly tree: ProcessTreeDeps
   /** The job object the command joins (Windows, M27). */
   readonly job?: ShellJob | undefined
+  /** One JSON payload for a hook process; ordinary shell tools leave stdin closed. */
+  readonly stdin?: string | undefined
+  /** Per-stream byte ceiling, killing the tree when crossed. */
+  readonly maxOutputBytes?: number | undefined
 }
 
 /**
@@ -450,13 +580,16 @@ export function runCommand(run: CommandRun): Promise<ShellResult> {
       cwd: run.cwd,
       env: run.env,
       windowsHide: true,
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: ['pipe', 'pipe', 'pipe'],
       ...treeSpawnOptions(run.tree.platform),
     })
     const stdout = new BoundedText(SHELL_OUTPUT_MAX_CHARS)
     const stderr = new BoundedText(SHELL_OUTPUT_MAX_CHARS)
     let isTimedOut = false
     let isCancelled = false
+    let isOutputTooLarge = false
+    let stdoutBytes = 0
+    let stderrBytes = 0
     let isSettled = false
     let drain: NodeJS.Timeout | undefined
     let kill: Promise<void> | undefined
@@ -491,6 +624,7 @@ export function runCommand(run: CommandRun): Promise<ShellResult> {
         exitCode,
         isTimedOut,
         isCancelled,
+        ...(isOutputTooLarge && { isOutputTooLarge }),
       }
       // killTree never rejects: what it cannot do, it logs.
       void (kill ?? Promise.resolve()).then(() => {
@@ -498,10 +632,26 @@ export function runCommand(run: CommandRun): Promise<ShellResult> {
       })
     }
     run.signal?.addEventListener('abort', onAbort, { once: true })
+    // A hook may exit before consuming stdin. EPIPE must not crash the host.
+    // Ordinary shell tools get EOF at once, as they did with ignored stdin.
+    child.stdin.on('error', () => {
+      // An early hook exit can close stdin before this write finishes.
+    })
+    child.stdin.end(run.stdin)
     child.stdout.on('data', (chunk: Buffer) => {
+      stdoutBytes += chunk.length
+      if (run.maxOutputBytes !== undefined && stdoutBytes > run.maxOutputBytes) {
+        isOutputTooLarge = true
+        stop()
+      }
       stdout.push(chunk)
     })
     child.stderr.on('data', (chunk: Buffer) => {
+      stderrBytes += chunk.length
+      if (run.maxOutputBytes !== undefined && stderrBytes > run.maxOutputBytes) {
+        isOutputTooLarge = true
+        stop()
+      }
       stderr.push(chunk)
     })
     child.on('error', (error) => {

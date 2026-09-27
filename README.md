@@ -444,6 +444,36 @@ hooks from `.muse/hooks.json`. The extension shows them and never edits them:
   Code's sandbox and approvals, so read a repository's hooks before you
   trust its folder.
 
+On the **Model API backend**, `museSpark.modelApiHooks` is a machine-scoped
+setting, off by default. When enabled, a new session reads the same managed,
+user and project hook sources. Project hooks require VS Code workspace trust.
+The implementation currently fires `SessionStart`, `UserPromptSubmit`,
+`PreToolUse`, `PermissionRequest`, `PostToolUse`, `PostToolUseFailure`,
+`PostToolBatch`, `PreLLMCall`, `PostLLMCall`, `PreCompact`, `PostCompact`,
+`SubagentStart`, `SubagentStop`, `Stop`, `StopFailure`, `SessionEnd` and
+`Notification`;
+unsupported events and handlers are reported and skipped. Hook commands run as your user outside
+the agent's sandbox, with a narrow environment that excludes the Model API key.
+They get JSON on stdin, have a timeout and output cap, and may approve an
+ordinary tool call that would otherwise ask. Paid calls and protected writes
+still need your confirmation. A `PreToolUse` hook that asks forces a human
+card for memory reads or writes, including in Bypass and Edit automatically;
+Plan still refuses memory writes. Review each source with
+**Muse Spark: Hooks** in the Command Palette before enabling the setting.
+On the Model API backend, that picker shows the machine setting's on/off state
+and opens it. Turning the setting off stops hook dispatch in an open session;
+source file changes are read at the next session start.
+Model-call hooks receive bounded summaries without inline image bytes or the
+Model API key. A pre-call veto stops the request before it reaches Meta. A
+post-call veto stops returned tools and follow-up requests. An isolated Muse
+Code echo capture also ended the run as failed without another model request.
+Pasted media data URLs inside ordinary text are removed before any model-call
+hook preview is shortened; the original text still reaches the model.
+Tool hooks receive bounded previews of arguments and output, with media data
+URLs and credential-named fields omitted. MCP tools and the model still use
+the original arguments and results. A required MCP server failure ends the
+turn even if a post-tool hook asks to stop it.
+
 **Worktrees.** **New worktree…** asks for a new branch and its base (the
 current commit or any local branch), creates it in a folder of its own, and
 offers to open it in a new window, so a conversation there leaves your

@@ -5,12 +5,14 @@ import path from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import {
   MODEL_TEXT,
+  HOOK_STDIN_MAX_BYTES,
   TOOL_FILE_MAX_BYTES,
   WINDOWS_POWERSHELL_UTF8_PREAMBLE,
 } from '../../src/shared/constants'
 import {
   BoundedText,
   createToolIo,
+  hookEnvironment,
   runCommand,
   shellArguments,
   shellEnvironment,
@@ -20,6 +22,7 @@ import {
 } from '../../src/host/backend/toolIo'
 import { shellJobAssembly } from '../../src/host/backend/shellJob'
 import { ShellTimeLimit } from '../../src/core/backends/modelapi/tools'
+import { posixQuoted } from '../../src/core/shellQuote'
 import type { RunProgram } from '../../src/host/processTree'
 import { removeFolder } from './helpers/temporaryFolders'
 
@@ -162,6 +165,43 @@ describe('shellEnvironment', () => {
       ProgramFiles: String.raw`C:\Program Files`,
       PSModulePath: String.raw`C:\Program Files\WindowsPowerShell\Modules;C:\Windows\System32\WindowsPowerShell\v1.0\Modules`,
     })
+  })
+})
+
+describe('hookEnvironment (M51)', () => {
+  it('passes only Muse hook variables, withholding provider credentials and editor handles', () => {
+    expect(
+      hookEnvironment(
+        {
+          HOME: '/home/u',
+          PATH: '/usr/bin:.:bin:/opt/bin',
+          LANG: 'en_US.UTF-8',
+          META_API_KEY: 'LLM|1|secret',
+          OPENAI_API_KEY: 'secret',
+          VSCODE_IPC_HOOK_CLI: '/tmp/editor.sock',
+          CI_TOKEN: 'secret',
+        },
+        'linux',
+        ['CI_TOKEN', 'META_API_KEY'],
+      ),
+    ).toEqual({
+      HOME: '/home/u',
+      PATH: '/usr/bin:/opt/bin',
+      LANG: 'en_US.UTF-8',
+      CI_TOKEN: 'secret',
+    })
+  })
+
+  it('sanitizes mixed-case Windows PATH and COMSPEC grants too', () => {
+    const clean = hookEnvironment(
+      { Path: String.raw`C:\bin;.;tools`, ComSpec: 'cmd.exe' },
+      'win32',
+      ['Path', 'comspec'],
+    )
+    expect(Object.entries(clean).filter(([name]) => name.toUpperCase() === 'PATH')).toEqual([
+      ['Path', String.raw`C:\bin`],
+    ])
+    expect(Object.keys(clean).some((name) => name.toUpperCase() === 'COMSPEC')).toBe(false)
   })
 })
 
@@ -438,4 +478,67 @@ describe('createToolIo (real file system and shell)', () => {
     expect(result.stderr).toMatch(/ENOENT/)
     expect(result.isTimedOut).toBe(false)
   })
+
+  it('delivers hook JSON on stdin without placing it in the command line (M51)', async () => {
+    const runHook = io().runHook
+    if (runHook === undefined) {
+      throw new Error('hook runner missing')
+    }
+    const echo = 'process.stdin.pipe(process.stdout)'
+    const command =
+      process.platform === 'win32'
+        ? `"${process.execPath}" -e "${echo}"`
+        : `${posixQuoted(process.execPath)} -e ${posixQuoted(echo)}`
+    const payload = '{"session_id":"fixture","text":"héllo ✓"}\n'
+    const startedAt = Date.now()
+    const result = await runHook(command, payload, root, 60_000)
+    if (result.exitCode !== 0) {
+      // Fixed fixture: paths and the harmless echo expression are the only
+      // command text; no model key, user input or workspace file is involved.
+      throw new Error(
+        JSON.stringify({
+          exitCode: result.exitCode,
+          isTimedOut: result.isTimedOut,
+          isCancelled: result.isCancelled,
+          isOutputTooLarge: result.isOutputTooLarge ?? false,
+          elapsedMs: Date.now() - startedAt,
+          stdout: result.stdout,
+          stderr: result.stderr,
+        }),
+      )
+    }
+    expect(result.exitCode).toBe(0)
+    expect(result.stdout).toContain('"session_id":"fixture"')
+    expect(result.stdout).toContain('héllo ✓')
+    expect(result.isTimedOut).toBe(false)
+  }, 90_000)
+
+  it('refuses hook stdin over its cap before launching an interpreter', async () => {
+    const runHook = io().runHook
+    if (runHook === undefined) {
+      throw new Error('hook runner missing')
+    }
+    await expect(
+      runHook('unused', 'x'.repeat(HOOK_STDIN_MAX_BYTES + 1), root, 10_000),
+    ).rejects.toThrow('Hook stdin exceeds the input cap')
+  })
+
+  it('kills a hook that exceeds its per-stream output limit', async () => {
+    const result = await runCommand({
+      file: process.execPath,
+      args: ['-e', `process.stdout.write('x'.repeat(17000)); setTimeout(() => {}, 30000)`],
+      cwd: root,
+      env: process.env,
+      timeoutMs: 10_000,
+      signal: undefined,
+      tree: {
+        platform: process.platform,
+        systemRoot: process.env['SystemRoot'],
+        log: () => undefined,
+      },
+      maxOutputBytes: 16 * 1024,
+    })
+    expect(result.isOutputTooLarge).toBe(true)
+    expect(result.isTimedOut).toBe(false)
+  }, 30_000)
 })

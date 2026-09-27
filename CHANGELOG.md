@@ -36,6 +36,35 @@ while they are (PLAN.md D30, D34).
   Muse Code's two uncaptured owner verbs remain a later follow-up. Final
   M48 quality and hosted checks remain open.
 
+- **Model API hooks, initial M51 increment (certification pending).** The
+  machine-scoped `modelApiHooks` setting enables all 17 documented hook event
+  names at the Model API backend's supported boundaries, from managed, user
+  and trusted-project hook files. Commands get
+  JSON on stdin, a cleared environment without the Model API key, time and
+  output caps, and process-tree cancellation. Unsupported events and handlers
+  are reported and skipped; complete Muse event-specific output parity remains
+  open. Windows
+  managed PATH grants retain only absolute entries even when the variable
+  uses mixed case. Captured PreLLMCall hooks can veto a Model API request
+  before HTTPS. Successful PostLLMCall hooks see bounded summaries; a
+  post-call veto stops tools and follow-up requests without claiming Muse's
+  full hook parity; an isolated Muse echo capture ended its run as failed
+  without another request. The M45 Stop and goal-budget checks still fence
+  buffered replies and keep accepted steering when hooks run.
+  Untrusted regular-expression matchers now compile under the same V8
+  deadline as matching, so pattern compilation cannot stall the host thread.
+  The Model API Hooks picker now shows the machine opt-in state and opens its
+  setting. MCP and IDE tools reach tool hooks through bounded argument/result
+  previews; media and credential fields stay out of hook stdin while the
+  original MCP result still reaches the model. A required MCP server loss
+  cannot be hidden by a post-tool hook stop.
+  Model-call hook text previews also remove pasted media data URLs before
+  shortening user text, instructions, tool descriptions or assistant output.
+  Hook stdin is bounded again at the host adapter before process launch;
+  the payload stays off command lines.
+  A `PreToolUse` hook's request for approval now reaches memory tools in
+  Bypass and Edit automatically; its card requires a human, while Plan
+  still refuses writes.
 - **Image edits** (M44, PLAN.md D37). With image generation on, the model
   can also change one workspace image, or combine up to four, by a prompt,
   into a new PNG (`edit_image`, Meta's `/images/edits`, $0.01 per image).

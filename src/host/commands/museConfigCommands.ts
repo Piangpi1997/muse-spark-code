@@ -18,7 +18,7 @@ import {
   readHookSources,
   readMcpServers,
 } from '../../core/backends/musecode/museConfigView'
-import { IDE_MCP_SERVER_NAME, UI_TEXT } from '../../shared/constants'
+import { IDE_MCP_SERVER_NAME, MODEL_API_HOOKS_SETTING, UI_TEXT } from '../../shared/constants'
 import { fill, plural } from '../../shared/l10n/text'
 import type { PickItem, PickOne } from './pickItem'
 
@@ -49,6 +49,9 @@ export interface MuseConfigDeps {
   readonly modelApiServers?: (() => McpPoolSnapshot | undefined) | undefined
   /** The extension's log, where a server's stderr goes. */
   readonly openLog?: (() => void) | undefined
+  /** Present only on the Model API backend; false means no hook can run. */
+  readonly modelApiHooks?: (() => boolean | undefined) | undefined
+  readonly openModelApiHooksSetting?: (() => Promise<void>) | undefined
 }
 
 const OPEN_SETTINGS = 'action:openSettings'
@@ -60,6 +63,7 @@ const BUILT_IN_PREFIX = 'builtin:'
 const PROJECT_HOOKS = 'hooks:project'
 const USER_HOOKS = 'hooks:user'
 const MANAGED_HOOKS = 'hooks:managed'
+const MODEL_API_HOOKS_PICK = 'hooks:modelApiSetting'
 const STREAMABLE_HTTP = 'streamable-http'
 const LIST_SEPARATOR = ', '
 const DETAIL_SEPARATOR = ' · '
@@ -309,8 +313,12 @@ function projectHooksItem(deps: MuseConfigDeps): PickItem {
   let detail: string
   if (projectHooksPath === undefined || !deps.fileExists(projectHooksPath)) {
     detail = UI_TEXT.hooksProjectNone
+  } else if (!deps.isWorkspaceTrusted()) {
+    detail = UI_TEXT.hooksProjectUntrusted
+  } else if (deps.modelApiHooks?.() === false) {
+    detail = UI_TEXT.usagePaidOff
   } else {
-    detail = deps.isWorkspaceTrusted() ? UI_TEXT.hooksProjectTrusted : UI_TEXT.hooksProjectUntrusted
+    detail = UI_TEXT.hooksProjectTrusted
   }
   return {
     id: PROJECT_HOOKS,
@@ -333,6 +341,16 @@ export async function showHooks(deps: MuseConfigDeps): Promise<void> {
   }
   const choice = await deps.pick(
     [
+      ...(deps.modelApiHooks === undefined
+        ? []
+        : [
+            {
+              id: MODEL_API_HOOKS_PICK,
+              label: MODEL_API_HOOKS_SETTING,
+              description: UI_TEXT.backendModelApi,
+              detail: deps.modelApiHooks() === true ? UI_TEXT.usagePaidOn : UI_TEXT.usagePaidOff,
+            },
+          ]),
       projectHooksItem(deps),
       {
         id: USER_HOOKS,
@@ -351,10 +369,14 @@ export async function showHooks(deps: MuseConfigDeps): Promise<void> {
       },
       { id: DOCS, label: UI_TEXT.hooksDocs },
     ],
-    UI_TEXT.hooksTitle,
-    UI_TEXT.hooksWarning,
+    deps.modelApiHooks === undefined ? UI_TEXT.hooksTitle : UI_TEXT.hooksTitleModelApi,
+    deps.modelApiHooks === undefined ? UI_TEXT.hooksWarning : UI_TEXT.hooksModelApiWarning,
   )
   switch (choice) {
+    case MODEL_API_HOOKS_PICK: {
+      await deps.openModelApiHooksSetting?.()
+      break
+    }
     case PROJECT_HOOKS: {
       const target = deps.projectHooksPath
       if (target !== undefined && deps.fileExists(target)) {

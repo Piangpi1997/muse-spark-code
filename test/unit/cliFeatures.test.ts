@@ -65,6 +65,7 @@ function setup(
       return Promise.resolve()
     },
     modelApiMcp: () => undefined,
+    modelApiHooks: () => undefined,
     openLog: () => undefined,
     log: new FakeLogOutputChannel(),
   })

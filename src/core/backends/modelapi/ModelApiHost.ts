@@ -26,6 +26,9 @@ import {
   type GoalCommandVerb,
   type SubagentAction,
   HTTP_UNAUTHORIZED,
+  HOOK_MAX_STOP_CONTINUATIONS,
+  HOOK_NOTIFICATION_DELAY_MS,
+  HOOK_SESSION_END_TIMEOUT_MS,
   IDE_MCP_SERVER_NAME,
   MODEL_API_CONTEXT_WINDOW,
   MODEL_API_EFFORT_OFF,
@@ -33,6 +36,7 @@ import {
   MODEL_API_MAX_OUTPUT_TOKENS,
   MODEL_API_MAX_RETRIES,
   MODEL_API_MAX_TOOL_ROUNDS,
+  MODEL_API_HOOK_PROVIDER,
   MODEL_API_RETRYABLE_STREAM_CODES,
   MODEL_API_MODEL_PREFIX,
   MODEL_API_OUTPUT_ENCODING,
@@ -124,6 +128,15 @@ import {
   withTokensUsed,
 } from './goals'
 import { type EnvironmentFacts, instructionsFor } from './instructions'
+import {
+  dispatchHooks,
+  type HookDefinition,
+  type HookDispatch,
+  type HookEvent,
+  toolMatcherNames,
+} from './hooks'
+import { postModelCallFields, preModelCallFields } from './modelCallHooks'
+import { toolHookInput, toolHookOutput } from './toolHookPayload'
 import { type ImagePlan, prepareImageCall, runImageCall } from './imageGeneration'
 import { mcpFunctionDefinition, mcpFunctionName } from './mcp/functions'
 import type { McpPoolSnapshot, McpToolRef, McpToolSource } from './mcp/pool'
@@ -136,6 +149,7 @@ import {
   paidChoices,
   PermissionEngine,
   type PermissionQuery,
+  type PermissionVerdict,
   type ToolClass,
 } from './permissions'
 import {
@@ -224,6 +238,12 @@ export interface ModelApiHostDeps extends ModelApiPaidHooks {
   readonly store?: SessionStore | undefined
   /** The git facts for the prompt's environment section (D15), read once per session. */
   readonly describeEnvironment: () => Promise<EnvironmentFacts>
+  /** A fresh snapshot at each session start (M51); disabled means empty. */
+  readonly loadHooks?: () => Promise<readonly HookDefinition[]>
+  /** Machine hook opt-in is checked again for every dispatch. */
+  readonly isHooksEnabled?: (() => boolean) | undefined
+  /** Tests can shorten the six-second Notification delay without waiting. */
+  readonly hookNotificationDelayMs?: number | undefined
   /** The MCP servers of Muse Code's settings (M50, PLAN.md D42), closed with the host. */
   readonly mcpServers?: McpToolSource | undefined
   /**
@@ -322,8 +342,20 @@ interface ActiveTurn {
   readonly abort: AbortController
   /** Steered input, appended before the next model call. */
   readonly steered: (readonly TurnPart[])[]
+  modelFailure?: unknown
   /** A goal accepted after the current model request began needs another round. */
   goalWakePending: boolean
+}
+
+interface HookToolResult {
+  readonly record: Readonly<Record<string, unknown>>
+  readonly stopReason: string | undefined
+}
+
+interface StreamedCall {
+  readonly calls: readonly FunctionCallItem[]
+  readonly goalCommandRevision: number
+  readonly postContexts: readonly string[]
 }
 
 interface Pending<T> {
@@ -381,6 +413,7 @@ function characterEnd(bytes: Uint8Array, index: number): number {
 interface ApprovalOutcome {
   readonly isApproved: boolean
   readonly feedback: string | undefined
+  readonly deniedByHook?: boolean
 }
 
 /** A call's outcome, and whether the mode or the user refused it. */
@@ -533,6 +566,13 @@ class AbortedError extends Error {
   }
 }
 
+class HookStoppedError extends Error {
+  public constructor(message: string) {
+    super(message)
+    this.name = 'HookStoppedError'
+  }
+}
+
 function describe(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
@@ -655,8 +695,12 @@ function childTaskFailure(kind: ChildTaskRefusal): ToolOutcome {
 }
 
 /** A refused tool call, with the user's answer when they gave one. */
-function refusedOutcome(call: FunctionCallItem, feedback: string | undefined): ToolOutcome {
-  const reason = `${call.name} ${MODEL_TEXT.toolRejectedByUser}`
+function refusedOutcome(
+  call: FunctionCallItem,
+  feedback: string | undefined,
+  isDeniedByHook = false,
+): ToolOutcome {
+  const reason = `${call.name} ${isDeniedByHook ? MODEL_TEXT.toolRejectedByHook : MODEL_TEXT.toolRejectedByUser}`
   const withFeedback = feedback === undefined ? '' : `\nUser: ${feedback}`
   return {
     output: `Error: ${reason}${withFeedback}`,
@@ -988,6 +1032,11 @@ export class ModelApiSession implements AgentSession {
    * ended, the user ran one) while a turn or a compaction holds the replay.
    */
   private readonly pendingNotes: PendingNote[] = []
+  private hookStarted = false
+  private hookEnded = false
+  private readonly pendingHookContexts: string[] = []
+  private readonly pendingHookMessages: string[] = []
+  private hookStartStopReason: string | undefined
   private readonly queuedTurns: QueuedTurn[] = []
   private readonly children = new Map<string, ChildRecord>()
   private readonly spawnCommands = new Map<string, string>()
@@ -1052,6 +1101,9 @@ export class ModelApiSession implements AgentSession {
     private readonly onDispose: () => void,
     private readonly isSubagent = false,
     private readonly parentSession?: ModelApiSession,
+    private readonly childSubagentId?: string,
+    private readonly hooks: readonly HookDefinition[] = [],
+    private readonly hookStartSource: 'startup' | 'resume' | 'fork' = 'startup',
   ) {
     this.modelId = modelId
     this.permissions = new PermissionEngine(approvalMode)
@@ -1080,6 +1132,118 @@ export class ModelApiSession implements AgentSession {
   private touch(): void {
     this.lastActivityAt = new Date(this.deps.now()).toISOString()
     this.onChanged()
+  }
+
+  private hookPayload(
+    event: HookEvent,
+    turnId: string | undefined,
+    fields: Readonly<Record<string, unknown>>,
+  ): Readonly<Record<string, unknown>> {
+    return {
+      hook_event_name: event,
+      session_id: this.sessionId,
+      ...(turnId !== undefined && { turn_id: turnId }),
+      cwd: this.deps.workspaceRoot,
+      transcript_path: null,
+      model: this.modelId,
+      model_provider: 'meta',
+      permission_mode: this.permissions.currentMode,
+      ...fields,
+    }
+  }
+
+  private appendHookContexts(turnId: string, contexts: readonly string[]): void {
+    for (const context of contexts) {
+      this.replay.push({
+        turnId,
+        item: {
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_text', text: context }],
+        },
+      })
+    }
+  }
+
+  private async runHooks(
+    event: HookEvent,
+    turnId: string | undefined,
+    fields: Readonly<Record<string, unknown>>,
+    matcher: string | readonly string[] | undefined,
+    signal: AbortSignal | undefined,
+    shouldReplayContext = true,
+    shouldShowMessages = true,
+  ): Promise<HookDispatch> {
+    const enabledHooks = this.deps.isHooksEnabled?.() === false ? [] : this.hooks
+    const result = await dispatchHooks(
+      enabledHooks,
+      event,
+      this.hookPayload(event, turnId, fields),
+      matcher,
+      this.deps.io,
+      signal,
+      (warning) => {
+        this.deps.log.warn(`Model API hooks: ${warning}`)
+      },
+    )
+    if (shouldShowMessages) {
+      for (const message of result.messages) {
+        this.emit({ type: 'backendNotice', level: 'info', text: message })
+      }
+    }
+    if (turnId !== undefined && shouldReplayContext) {
+      this.appendHookContexts(turnId, result.contexts)
+    }
+    return result
+  }
+
+  /** Pre-call veto and context use the same boundary for turns and compaction. */
+  private async beforeModelCall(
+    turnId: string,
+    body: CreateResponseBody,
+    requestId: string,
+    attempt: number,
+    step: number,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const pre = await this.runHooks(
+      'PreLLMCall',
+      turnId,
+      preModelCallFields(body, requestId, attempt, step),
+      MODEL_API_HOOK_PROVIDER,
+      signal,
+      false,
+    )
+    if (pre.blockedReason !== undefined) {
+      throw new HookStoppedError(pre.blockedReason)
+    }
+    this.appendHookContexts(turnId, pre.contexts)
+  }
+
+  private async collectStartHooks(
+    source: 'startup' | 'resume' | 'fork' | 'compact',
+    signal: AbortSignal | undefined,
+  ): Promise<void> {
+    const start = await this.runHooks(
+      'SessionStart',
+      undefined,
+      { source },
+      source,
+      signal,
+      false,
+      false,
+    )
+    this.pendingHookContexts.push(...start.contexts)
+    this.pendingHookMessages.push(...start.messages)
+    if (source === 'compact') {
+      // Manual compaction has no running turn to stop. The next user turn is
+      // unrelated and must not inherit a veto from this completed operation.
+      if (start.stopReason !== undefined) {
+        this.pendingHookMessages.push(start.stopReason)
+      }
+    } else {
+      this.hookStartStopReason = start.stopReason
+    }
   }
 
   /** Never throws: a describer that fails leaves the section at "no git". */
@@ -1207,6 +1371,22 @@ export class ModelApiSession implements AgentSession {
           fill(UI_TEXT.mcpRequiredFailed, { name: required.name, reason: required.state.reason }),
         )
       : undefined
+  }
+
+  /** Final synchronous check after key retrieval, before each response POST or retry. */
+  private responseAttemptGuard(body: CreateResponseBody): ResponseAttemptGuard | undefined {
+    if (this.deps.mcpServers === undefined && !this.isSubagent) {
+      return undefined
+    }
+    return (keyDigest) => {
+      const required = this.requiredMcpFailure(this.deps.mcpServers?.snapshot())
+      if (required !== undefined) {
+        throw required
+      }
+      if (this.isSubagent) {
+        this.admitChildAttempt(keyDigest, body)
+      }
+    }
   }
 
   /** The encrypted reasoning always; the search results while search is on, for the rows. */
@@ -1647,15 +1827,13 @@ export class ModelApiSession implements AgentSession {
   private async streamOnce(
     turnId: string,
     signal: AbortSignal,
-  ): Promise<{
-    readonly calls: readonly FunctionCallItem[]
-    readonly goalCommandRevision: number
-  }> {
+    step: number,
+  ): Promise<StreamedCall> {
     const budget: RetryBudget = { retriesUsed: 0 }
     for (;;) {
       const open = new Map<string, OpenItem>()
       try {
-        return await this.streamAttempt(turnId, signal, open, budget)
+        return await this.streamAttempt(turnId, signal, open, budget, step)
       } catch (error: unknown) {
         // What a failed attempt showed stays in the history, the last one's
         // too (the review of PR #28); a Stop is the turn's own business.
@@ -1694,11 +1872,15 @@ export class ModelApiSession implements AgentSession {
     signal: AbortSignal,
     open: Map<string, OpenItem>,
     budget: RetryBudget,
-  ): Promise<{
-    readonly calls: readonly FunctionCallItem[]
-    readonly goalCommandRevision: number
-  }> {
-    let final: ResponseObject | undefined
+    step: number,
+  ): Promise<StreamedCall> {
+    const requestId = this.deps.newId()
+    const attempt = budget.retriesUsed + 1
+    await this.beforeModelCall(turnId, this.body(), requestId, attempt, step, signal)
+    const requiredAfterPreHook = this.requiredMcpFailure(this.deps.mcpServers?.snapshot())
+    if (requiredAfterPreHook !== undefined) {
+      throw requiredAfterPreHook
+    }
     // An HTTP or whole-stream retry gets its own snapshot: the goal may have
     // changed between attempts, but a reply never charges a newly set goal.
     const chargedGoalId = isGoalActive(this.goal) ? this.goal.goal_id : undefined
@@ -1714,14 +1896,11 @@ export class ModelApiSession implements AgentSession {
         reason: notice.reason,
       })
     }
-    const requestBody = this.body()
-    const admitAttempt: ResponseAttemptGuard | undefined = this.isSubagent
-      ? (keyDigest) => {
-          this.admitChildAttempt(keyDigest, requestBody)
-        }
-      : undefined
+    const body = this.body()
+    let final: ResponseObject | undefined
+    const admitAttempt = this.responseAttemptGuard(body)
     const responseStream = this.deps.client.streamResponse(
-      requestBody,
+      body,
       signal,
       onRetry,
       budget,
@@ -1738,10 +1917,27 @@ export class ModelApiSession implements AgentSession {
         undefined,
       )
     }
-    return {
-      calls: this.adoptOutput(turnId, final, open, chargedGoalId),
-      goalCommandRevision,
+    const calls = this.adoptOutput(turnId, final, open, chargedGoalId)
+    const post = await this.runHooks(
+      'PostLLMCall',
+      turnId,
+      postModelCallFields(body, final, requestId, attempt, step, this.sessionId),
+      MODEL_API_HOOK_PROVIDER,
+      signal,
+      false,
+    )
+    const requiredAfterPostHook = this.requiredMcpFailure(this.deps.mcpServers?.snapshot())
+    if (requiredAfterPostHook !== undefined) {
+      this.skipCalls(turnId, calls, MODEL_TEXT.mcpRequiredUnavailable)
+      throw requiredAfterPostHook
     }
+    if (post.blockedReason !== undefined) {
+      // Muse Code's isolated echo capture ended its run on a PostLLM block.
+      // Stop here, pairing calls so a later session can still replay them.
+      this.skipCalls(turnId, calls, post.blockedReason)
+      throw new HookStoppedError(post.blockedReason)
+    }
+    return { calls, goalCommandRevision, postContexts: post.contexts }
   }
 
   /**
@@ -1829,7 +2025,28 @@ export class ModelApiSession implements AgentSession {
     query: PermissionQuery,
     subject: ApprovalSubject,
     childTask?: SubagentTaskConfirmation,
+    requiresUserApproval = false,
   ): Promise<ApprovalOutcome> {
+    const hook = await this.runHooks(
+      'PermissionRequest',
+      this.active?.turnId,
+      { tool_name: call.name, tool_input: toolHookInput(argumentsOf(call)) },
+      toolMatcherNames(call.name),
+      signal,
+      false,
+    )
+    if (hook.blockedReason !== undefined) {
+      return { isApproved: false, feedback: hook.blockedReason, deniedByHook: true }
+    }
+    if (
+      !requiresUserApproval &&
+      childTask === undefined &&
+      query.isProtected !== true &&
+      query.toolClass !== 'paid' &&
+      hook.approvalDecision === 'allow'
+    ) {
+      return { isApproved: true, feedback: undefined }
+    }
     const approvalId = this.deps.newId()
     const request: Extract<AgentEvent, { type: 'approvalRequested' }> = {
       type: 'approvalRequested',
@@ -1844,10 +2061,32 @@ export class ModelApiSession implements AgentSession {
           ? paidChoices()
           : choicesFor(call.name, query.command)),
       ],
-      isJudgeEscalated: false,
+      isJudgeEscalated: requiresUserApproval,
       isProtectedWrite: query.isProtected === true,
     }
     let decision: ApprovalDecision
+    const notificationAbort = new AbortController()
+    const onTurnAbort = () => {
+      notificationAbort.abort()
+    }
+    signal.addEventListener('abort', onTurnAbort, { once: true })
+    const notification = this.hooks.some((entry) => entry.event === 'Notification')
+      ? setTimeout(() => {
+          void this.runHooks(
+            'Notification',
+            this.active?.turnId,
+            {
+              notification_type: 'permission_prompt',
+              title: call.name,
+              message: call.arguments,
+            },
+            'permission_prompt',
+            notificationAbort.signal,
+          ).catch((error: unknown) => {
+            this.deps.log.warn(`Model API Notification hook failed: ${describe(error)}`)
+          })
+        }, this.deps.hookNotificationDelayMs ?? HOOK_NOTIFICATION_DELAY_MS)
+      : undefined
     try {
       decision = await waitFor<ApprovalDecision>(signal, (pending) => {
         this.pendingApprovals.set(approvalId, pending)
@@ -1857,6 +2096,9 @@ export class ModelApiSession implements AgentSession {
     } finally {
       this.pendingApprovalEvents.delete(approvalId)
       this.pendingApprovals.delete(approvalId)
+      clearTimeout(notification)
+      notificationAbort.abort()
+      signal.removeEventListener('abort', onTurnAbort)
     }
     const isOffered = request.availableChoices.some(
       (choice) => choice.choiceId === decision.choiceId,
@@ -2455,6 +2697,8 @@ export class ModelApiSession implements AgentSession {
       NO_CHILD_DISPOSAL,
       true,
       this,
+      id,
+      this.hooks,
     )
     child.childTaskGrant = grant
     const record: ChildRecord = {
@@ -2761,21 +3005,43 @@ export class ModelApiSession implements AgentSession {
     signal: AbortSignal,
     query: PermissionQuery,
     subject: ApprovalSubject,
+    shouldForceApproval = false,
   ): Promise<CallResult | undefined> {
-    const verdict = this.permissions.verdict(query)
+    const verdict = this.verdictWithHook(query, shouldForceApproval)
     if (verdict === 'deny') {
-      return {
-        outcome: toolFailure(`${call.name} ${MODEL_TEXT.toolRefusedByMode}`),
-        isRejected: true,
-      }
+      return this.refusedByMode(call)
     }
     if (verdict === 'allow') {
       return undefined
     }
-    const approval = await this.askApproval(itemId, call, signal, query, subject)
+    const approval = await this.askApproval(
+      itemId,
+      call,
+      signal,
+      query,
+      subject,
+      undefined,
+      shouldForceApproval,
+    )
     return approval.isApproved
       ? undefined
-      : { outcome: refusedOutcome(call, approval.feedback), isRejected: true }
+      : {
+          outcome: refusedOutcome(call, approval.feedback, approval.deniedByHook === true),
+          isRejected: true,
+        }
+  }
+
+  /** A hook may add a card to an allow, never override a mode's denial. */
+  private verdictWithHook(query: PermissionQuery, shouldForceApproval: boolean): PermissionVerdict {
+    const permitted = this.permissions.verdict(query)
+    return permitted === 'allow' && shouldForceApproval ? 'ask' : permitted
+  }
+
+  private refusedByMode(call: FunctionCallItem): CallResult {
+    return {
+      outcome: toolFailure(`${call.name} ${MODEL_TEXT.toolRefusedByMode}`),
+      isRejected: true,
+    }
   }
 
   /**
@@ -2788,6 +3054,7 @@ export class ModelApiSession implements AgentSession {
     call: FunctionCallItem,
     signal: AbortSignal,
     toolClass: ToolClass,
+    shouldForceApproval: boolean,
   ): Promise<CallResult> {
     const { memory } = this.deps
     if (memory === undefined) {
@@ -2800,13 +3067,18 @@ export class ModelApiSession implements AgentSession {
     if (!placed.ok) {
       return { outcome: toolFailure(placed.reason), isRejected: false }
     }
-    if (toolClass !== 'read') {
+    if (toolClass !== 'read' || shouldForceApproval) {
+      const subject: ApprovalSubject =
+        toolClass === 'read'
+          ? { kind: 'tool', toolName: call.name }
+          : { kind: 'fileWrite', path: placed.value.place.display, toolName: call.name }
       const refusal = await this.judge(
         itemId,
         call,
         signal,
         { toolName: call.name, toolClass, isProtected: false },
-        { kind: 'fileWrite', path: placed.value.place.display, toolName: call.name },
+        subject,
+        shouldForceApproval,
       )
       if (refusal !== undefined) {
         return refusal
@@ -2831,6 +3103,7 @@ export class ModelApiSession implements AgentSession {
     call: FunctionCallItem,
     signal: AbortSignal,
     goalCommandRevision: number,
+    shouldForceApproval = false,
   ): Promise<CallResult> {
     const external = this.externalTool(call.name)
     // The IDE tool reads VS Code's Problems panel: a read, in every mode.
@@ -2842,7 +3115,7 @@ export class ModelApiSession implements AgentSession {
       return { outcome: toolFailure(`unknown tool ${call.name}`), isRejected: false }
     }
     if (isMemoryTool(call.name)) {
-      return await this.decideAndRunMemory(itemId, call, signal, toolClass)
+      return await this.decideAndRunMemory(itemId, call, signal, toolClass, shouldForceApproval)
     }
     if (
       this.isSubagent &&
@@ -2886,12 +3159,9 @@ export class ModelApiSession implements AgentSession {
       isProtected: target?.ok === true && isProtectedPath(target.canonical),
       isReadOnly: external?.kind === 'mcp' && external.ref.isReadOnly,
     }
-    const verdict = this.permissions.verdict(query)
+    const verdict = this.verdictWithHook(query, shouldForceApproval)
     if (verdict === 'deny') {
-      return {
-        outcome: toolFailure(`${call.name} ${MODEL_TEXT.toolRefusedByMode}`),
-        isRejected: true,
-      }
+      return this.refusedByMode(call)
     }
     let childGrant: ChildTaskGrant | undefined
     if (childTask !== undefined) {
@@ -2912,13 +3182,14 @@ export class ModelApiSession implements AgentSession {
         query,
         subjectFor(call, this.deps.platform, toolClass === 'mcp', childTask),
         childTask,
+        shouldForceApproval,
       )
       if (!approval.isApproved) {
+        if (childTask !== undefined && approval.deniedByHook !== true) {
+          return { outcome: childTaskFailure('consentDeclined'), isRejected: true }
+        }
         return {
-          outcome:
-            childTask === undefined
-              ? refusedOutcome(call, approval.feedback)
-              : childTaskFailure('consentDeclined'),
+          outcome: refusedOutcome(call, approval.feedback, approval.deniedByHook === true),
           isRejected: true,
         }
       }
@@ -2986,29 +3257,53 @@ export class ModelApiSession implements AgentSession {
     call: FunctionCallItem,
     signal: AbortSignal,
     goalCommandRevision: number,
-  ): Promise<void> {
+  ): Promise<HookToolResult> {
     const itemId = this.deps.newId()
-    const paid = this.childTaskFor(call) === undefined ? paidFeatureOf(call.name) : 'subagents'
+    const startedAt = this.deps.now()
+    const pre = await this.runHooks(
+      'PreToolUse',
+      turnId,
+      { tool_name: call.name, tool_input: toolHookInput(argumentsOf(call)), tool_use_id: itemId },
+      toolMatcherNames(call.name),
+      signal,
+      false,
+    )
+    const effectiveCall: FunctionCallItem =
+      pre.updatedInput === undefined
+        ? call
+        : { ...call, arguments: JSON.stringify(pre.updatedInput) }
+    const paid =
+      this.childTaskFor(effectiveCall) === undefined ? paidFeatureOf(call.name) : 'subagents'
     const started: ItemSnapshot = {
       itemId,
       kind: 'toolCall',
       status: IN_PROGRESS,
       turnId,
       tool: call.name,
-      args: call.arguments,
+      args: effectiveCall.arguments,
       ...(paid !== undefined && { paid }),
     }
     this.recordTranscript(turnId, started)
     this.emit({ type: 'itemStarted', item: started })
     let result: CallResult
     try {
-      result = await this.decideAndRun(turnId, itemId, call, signal, goalCommandRevision)
+      result =
+        pre.blockedReason === undefined
+          ? await this.decideAndRun(
+              turnId,
+              itemId,
+              effectiveCall,
+              signal,
+              goalCommandRevision,
+              pre.forceApproval,
+            )
+          : { outcome: toolFailure(pre.blockedReason), isRejected: true }
     } catch (error: unknown) {
       if (error instanceof AbortedError || signal.aborted) {
         this.finishCall(
           turnId,
           started,
-          call,
+          effectiveCall,
           toolFailure(MODEL_TEXT.toolCancelledByStop),
           CANCELLED,
         )
@@ -3020,19 +3315,69 @@ export class ModelApiSession implements AgentSession {
       result = { outcome: toolFailure(describe(error)), isRejected: false }
     }
     // An MCP tool's `path` is its own business, not a workspace file it read.
-    if (this.externalTool(call.name) === undefined) {
-      await this.touchPath(call)
+    if (this.externalTool(effectiveCall.name) === undefined) {
+      await this.touchPath(effectiveCall)
     }
     const { outcome, isRejected, running } = result
-    if (running !== undefined) {
-      this.continueInBackground(turnId, started, call, outcome, running)
-      return
+    if (running === undefined) {
+      let status = COMPLETED
+      if (outcome.failureReason !== undefined) {
+        status = isRejected ? REJECTED : FAILED
+      }
+      this.finishCall(turnId, started, effectiveCall, outcome, status)
+    } else {
+      this.continueInBackground(turnId, started, effectiveCall, outcome, running)
     }
-    let status = COMPLETED
-    if (outcome.failureReason !== undefined) {
-      status = isRejected ? REJECTED : FAILED
+    for (const context of pre.contexts) {
+      this.replay.push({
+        turnId,
+        item: {
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_text', text: context }],
+        },
+      })
     }
-    this.finishCall(turnId, started, call, outcome, status)
+    const post = await this.runHooks(
+      outcome.failureReason === undefined ? 'PostToolUse' : 'PostToolUseFailure',
+      turnId,
+      outcome.failureReason === undefined
+        ? {
+            tool_name: effectiveCall.name,
+            tool_input: toolHookInput(argumentsOf(effectiveCall)),
+            tool_use_id: itemId,
+            tool_response: toolHookOutput(outcome.output),
+          }
+        : {
+            tool_name: effectiveCall.name,
+            tool_input: toolHookInput(argumentsOf(effectiveCall)),
+            tool_use_id: itemId,
+            error: toolHookOutput(outcome.failureReason),
+            is_interrupt: false,
+            duration_ms: this.deps.now() - startedAt,
+          },
+      toolMatcherNames(effectiveCall.name),
+      signal,
+    )
+    if (post.stopReason === undefined && post.blockedReason !== undefined) {
+      this.replay.push({
+        turnId,
+        item: {
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_text', text: post.blockedReason }],
+        },
+      })
+    }
+    return {
+      record: {
+        tool_name: effectiveCall.name,
+        tool_input: toolHookInput(argumentsOf(effectiveCall)),
+        tool_use_id: itemId,
+        tool_response: toolHookOutput(outcome.output),
+      },
+      stopReason: post.stopReason,
+    }
   }
 
   /**
@@ -3249,6 +3594,8 @@ export class ModelApiSession implements AgentSession {
 
   private async loop(turn: ActiveTurn): Promise<void> {
     const { signal } = turn.abort
+    let isStopHookActive = false
+    let stopContinuations = 0
     for (let round = 0; round < MODEL_API_MAX_TOOL_ROUNDS; round += 1) {
       if (isAbortRequested(signal)) {
         throw new AbortedError()
@@ -3260,7 +3607,16 @@ export class ModelApiSession implements AgentSession {
       this.drainSteered(turn)
       this.drainGoalWake(turn)
       const wasBudgetLimited = this.goal?.status === GOAL_STATUS.budgetLimited
-      const { calls, goalCommandRevision } = await this.streamOnce(turn.turnId, signal)
+      let streamed: StreamedCall
+      try {
+        streamed = await this.streamOnce(turn.turnId, signal, round)
+      } catch (error: unknown) {
+        if (!isAbortRequested(signal)) {
+          turn.modelFailure = error
+        }
+        throw error
+      }
+      const { calls, goalCommandRevision, postContexts } = streamed
       if (isAbortRequested(signal)) {
         // A buffered completed response may arrive after Stop. Its calls
         // still need outputs for valid replay, but no work or steering runs.
@@ -3274,6 +3630,7 @@ export class ModelApiSession implements AgentSession {
       }
       if (!wasBudgetLimited && this.goal?.status === GOAL_STATUS.budgetLimited) {
         this.skipCalls(turn.turnId, calls, MODEL_TEXT.goalBudgetReached)
+        this.appendHookContexts(turn.turnId, postContexts)
         this.queuedTurns.unshift(...this.queuedSteered(turn))
         return
       }
@@ -3282,33 +3639,113 @@ export class ModelApiSession implements AgentSession {
         this.goalSteps += 1
       }
       if (calls.length === 0) {
+        this.appendHookContexts(turn.turnId, postContexts)
         // A message typed while the final answer streamed gets its own round
         // instead of being accepted and dropped (D26).
         if (turn.steered.length === 0 && !(turn.goalWakePending && isGoalActive(this.goal))) {
+          const lastAssistantMessage =
+            this.transcript.findLast(
+              (entry) => entry.item.turnId === turn.turnId && entry.item.kind === 'agentMessage',
+            )?.item.text ?? ''
+          const stopEvent = this.isSubagent ? 'SubagentStop' : 'Stop'
+          const stop = await this.runHooks(
+            stopEvent,
+            turn.turnId,
+            {
+              stop_hook_active: isStopHookActive,
+              last_assistant_message: lastAssistantMessage,
+              ...(this.isSubagent &&
+                this.childSubagentId !== undefined && {
+                  subagent_id: this.childSubagentId,
+                  child_session_id: this.sessionId,
+                }),
+            },
+            undefined,
+            signal,
+          )
+          const requiredAfterStopHook = this.requiredMcpFailure(this.deps.mcpServers?.snapshot())
+          if (requiredAfterStopHook !== undefined) {
+            throw requiredAfterStopHook
+          }
+          if (stop.stopReason !== undefined) {
+            return
+          }
+          if (stop.blockedReason !== undefined && stopContinuations < HOOK_MAX_STOP_CONTINUATIONS) {
+            isStopHookActive = true
+            stopContinuations += 1
+            this.replay.push({
+              turnId: turn.turnId,
+              item: {
+                type: 'message',
+                role: 'user',
+                content: [{ type: 'input_text', text: stop.blockedReason }],
+              },
+            })
+            continue
+          }
+          if (stop.blockedReason !== undefined) {
+            this.deps.log.warn(`Model API ${stopEvent} hook reached its continuation limit`)
+          }
           return
         }
         continue
       }
-      for (const [index, call] of calls.entries()) {
-        if (isAbortRequested(signal)) {
-          this.skipCalls(turn.turnId, calls.slice(index))
-          throw new AbortedError()
+      const batch: Readonly<Record<string, unknown>>[] = []
+      try {
+        for (const [index, call] of calls.entries()) {
+          if (isAbortRequested(signal)) {
+            this.skipCalls(turn.turnId, calls.slice(index))
+            throw new AbortedError()
+          }
+          const requiredBeforeCall = this.requiredMcpFailure(this.deps.mcpServers?.snapshot())
+          if (requiredBeforeCall !== undefined) {
+            this.skipCalls(turn.turnId, calls.slice(index), MODEL_TEXT.mcpRequiredUnavailable)
+            throw requiredBeforeCall
+          }
+          try {
+            const finished = await this.runCall(turn.turnId, call, signal, goalCommandRevision)
+            batch.push(finished.record)
+            if (finished.stopReason !== undefined) {
+              const requiredAfterCall = this.requiredMcpFailure(this.deps.mcpServers?.snapshot())
+              if (requiredAfterCall !== undefined) {
+                throw requiredAfterCall
+              }
+              this.skipCalls(turn.turnId, calls.slice(index + 1), finished.stopReason)
+              return
+            }
+          } catch (error: unknown) {
+            this.skipCalls(turn.turnId, calls.slice(index + 1))
+            throw error
+          }
         }
-        const requiredBeforeCall = this.requiredMcpFailure(this.deps.mcpServers?.snapshot())
-        if (requiredBeforeCall !== undefined) {
-          this.skipCalls(turn.turnId, calls.slice(index), MODEL_TEXT.mcpRequiredUnavailable)
-          throw requiredBeforeCall
-        }
-        try {
-          await this.runCall(turn.turnId, call, signal, goalCommandRevision)
-        } catch (error: unknown) {
-          this.skipCalls(turn.turnId, calls.slice(index + 1))
-          throw error
-        }
+      } finally {
+        // A user message between a function call and its output is invalid
+        // replay. Post-model context follows the whole tool batch instead.
+        this.appendHookContexts(turn.turnId, postContexts)
+      }
+      const afterBatch = await this.runHooks(
+        'PostToolBatch',
+        turn.turnId,
+        { tool_calls: batch },
+        undefined,
+        signal,
+      )
+      if (afterBatch.stopReason === undefined && afterBatch.blockedReason !== undefined) {
+        this.replay.push({
+          turnId: turn.turnId,
+          item: {
+            type: 'message',
+            role: 'user',
+            content: [{ type: 'input_text', text: afterBatch.blockedReason }],
+          },
+        })
       }
       const requiredAfterCalls = this.requiredMcpFailure(this.deps.mcpServers?.snapshot())
       if (requiredAfterCalls !== undefined) {
         throw requiredAfterCalls
+      }
+      if (afterBatch.stopReason !== undefined) {
+        return
       }
     }
     // Input accepted during the last permitted round still needs a request
@@ -3329,6 +3766,7 @@ export class ModelApiSession implements AgentSession {
       turnId: queued.turnId,
       abort: new AbortController(),
       steered: [],
+      modelFailure: undefined,
       goalWakePending: false,
     }
     this.active = turn
@@ -3342,18 +3780,70 @@ export class ModelApiSession implements AgentSession {
     this.environment ??= await this.loadEnvironment()
     // Pending background output and user shell commands precede this turn.
     this.settleNotes(turn.turnId)
-    this.drainChildResults()
-    if (queued.isGoalWake) {
-      this.appendGoalWake(turn.turnId, queued.parts)
-    } else {
-      this.appendUserMessage(turn.turnId, queued.parts, queued.displayText)
-    }
     this.touch()
     const startedAt = this.deps.now()
     let terminal = COMPLETED
     let reason: string | undefined
     let errorKind: string | undefined
     try {
+      await this.startHooks()
+      for (const message of this.pendingHookMessages.splice(0)) {
+        this.emit({ type: 'backendNotice', level: 'info', text: message })
+      }
+      for (const context of this.pendingHookContexts.splice(0)) {
+        this.replay.push({
+          turnId: turn.turnId,
+          item: { type: 'message', role: 'user', content: [{ type: 'input_text', text: context }] },
+        })
+      }
+      if (this.hookStartStopReason !== undefined) {
+        const stopReason = this.hookStartStopReason
+        this.hookStartStopReason = undefined
+        throw new HookStoppedError(stopReason)
+      }
+      if (this.isSubagent && this.turnCount === 0) {
+        if (this.childSubagentId === undefined) {
+          throw new Error('child session has no subagent id')
+        }
+        await this.runHooks(
+          'SubagentStart',
+          turn.turnId,
+          { subagent_id: this.childSubagentId, child_session_id: this.sessionId },
+          undefined,
+          turn.abort.signal,
+        )
+      }
+      this.drainChildResults()
+      if (queued.isGoalWake) {
+        this.appendGoalWake(turn.turnId, queued.parts)
+      } else {
+        this.appendUserMessage(turn.turnId, queued.parts, queued.displayText)
+      }
+      if (!queued.isGoalWake) {
+        const replayBeforeSubmit = this.replay.length
+        const submitted = await this.runHooks(
+          'UserPromptSubmit',
+          turn.turnId,
+          { prompt: typedText(queued.parts) },
+          undefined,
+          turn.abort.signal,
+        )
+        if (submitted.blockedReason !== undefined) {
+          // A rejected prompt stays visible in History, but never reaches a
+          // later model request through the replay (M51).
+          this.replay.splice(replayBeforeSubmit)
+          const userIndex = this.replay.findLastIndex(
+            (entry) =>
+              entry.turnId === turn.turnId &&
+              entry.item.type === 'message' &&
+              entry.item.role === 'user',
+          )
+          if (userIndex !== -1) {
+            this.replay.splice(userIndex, 1)
+          }
+          throw new HookStoppedError(submitted.blockedReason)
+        }
+      }
       await this.prepareMcp(turn.abort.signal)
       await this.loop(turn)
     } catch (error: unknown) {
@@ -3367,7 +3857,29 @@ export class ModelApiSession implements AgentSession {
         } else {
           errorKind = isAuthFailure(error) ? AUTH_REQUIRED_ERROR_KIND : MODEL_API_ERROR_KIND
         }
-        this.deps.log.warn(`Model API turn ${turn.turnId} failed: ${reason}`)
+        this.deps.log.warn(
+          error instanceof HookStoppedError
+            ? `Model API turn ${turn.turnId} stopped by a hook`
+            : `Model API turn ${turn.turnId} failed: ${reason}`,
+        )
+        if (turn.modelFailure !== undefined && !(error instanceof ChildTaskRefusedError)) {
+          const lastAssistantMessage = this.transcript.findLast(
+            (entry) => entry.item.turnId === turn.turnId && entry.item.kind === 'agentMessage',
+          )?.item.text
+          await this.runHooks(
+            'StopFailure',
+            turn.turnId,
+            {
+              error: errorKind,
+              error_details: reason,
+              ...(lastAssistantMessage !== undefined && {
+                last_assistant_message: lastAssistantMessage,
+              }),
+            },
+            errorKind,
+            turn.abort.signal,
+          )
+        }
       }
     }
     // `loop` returns only with nothing steered left (D26), and `steer` is
@@ -3456,14 +3968,10 @@ export class ModelApiSession implements AgentSession {
     body: CreateResponseBody,
     signal: AbortSignal,
     chargedGoalId: string | undefined,
-  ): Promise<string> {
+  ): Promise<{ readonly text: string; readonly response: ResponseObject }> {
     let text = ''
-    let isComplete = false
-    const admitAttempt: ResponseAttemptGuard | undefined = this.isSubagent
-      ? (keyDigest) => {
-          this.admitChildAttempt(keyDigest, body)
-        }
-      : undefined
+    let response: ResponseObject | undefined
+    const admitAttempt = this.responseAttemptGuard(body)
     const responseStream = this.deps.client.streamResponse(
       body,
       signal,
@@ -3472,10 +3980,12 @@ export class ModelApiSession implements AgentSession {
       admitAttempt,
     )
     for await (const event of responseStream) {
-      isComplete ||= event.type === 'response.completed'
+      if (event.type === 'response.completed') {
+        response = event.response
+      }
       text += this.collectedText(event, chargedGoalId)
     }
-    if (!isComplete) {
+    if (response === undefined) {
       throw new ModelApiError(
         'The stream ended without a completed response',
         0,
@@ -3483,13 +3993,12 @@ export class ModelApiSession implements AgentSession {
         undefined,
       )
     }
-    return text
+    return { text, response }
   }
 
   /** The summary call of `compact`, and the replay it leaves behind. */
   private async runCompaction(signal: AbortSignal): Promise<CompactOutcome> {
-    const chargedGoalId = isGoalActive(this.goal) ? this.goal.goal_id : undefined
-    const body: CreateResponseBody = {
+    const compactionBody = (): CreateResponseBody => ({
       ...this.body(),
       input: [
         ...this.replay.map((entry) => entry.item),
@@ -3501,8 +4010,24 @@ export class ModelApiSession implements AgentSession {
       ],
       tools: [],
       include: ['reasoning.encrypted_content'],
+    })
+    const turnId = this.turnIds.at(-1) ?? COMPACTION_TURN_ID
+    const requestId = this.deps.newId()
+    await this.beforeModelCall(turnId, compactionBody(), requestId, 1, 0, signal)
+    const chargedGoalId = isGoalActive(this.goal) ? this.goal.goal_id : undefined
+    const body = compactionBody()
+    const { text: summary, response } = await this.collectText(body, signal, chargedGoalId)
+    const post = await this.runHooks(
+      'PostLLMCall',
+      turnId,
+      postModelCallFields(body, response, requestId, 1, 0, this.sessionId),
+      MODEL_API_HOOK_PROVIDER,
+      signal,
+      false,
+    )
+    if (post.blockedReason !== undefined) {
+      throw new HookStoppedError(post.blockedReason)
     }
-    const summary = await this.collectText(body, signal, chargedGoalId)
     this.replay.splice(0, this.replay.length, {
       turnId: COMPACTION_TURN_ID,
       item: {
@@ -3511,6 +4036,7 @@ export class ModelApiSession implements AgentSession {
         content: [{ type: 'input_text', text: `${MODEL_TEXT.compactionPrefix}\n\n${summary}` }],
       },
     })
+    this.appendHookContexts(COMPACTION_TURN_ID, post.contexts)
     const item: ItemSnapshot = {
       itemId: this.deps.newId(),
       kind: 'compaction',
@@ -3531,6 +4057,15 @@ export class ModelApiSession implements AgentSession {
   }
 
   // --- AgentSession ---
+
+  /** SessionStart runs when the session opens; context enters its first turn. */
+  public async startHooks(): Promise<void> {
+    if (this.hookStarted) {
+      return
+    }
+    this.hookStarted = true
+    await this.collectStartHooks(this.hookStartSource, undefined)
+  }
 
   public onEvent(listener: SessionEventListener): () => void {
     this.listeners.add(listener)
@@ -3640,7 +4175,28 @@ export class ModelApiSession implements AgentSession {
     this.status = RUNNING
     this.emit({ type: 'sessionStatus', status: RUNNING })
     try {
-      return await this.runCompaction(abort.signal)
+      const before = await this.runHooks(
+        'PreCompact',
+        this.turnIds.at(-1),
+        { trigger: 'manual' },
+        'manual',
+        abort.signal,
+      )
+      if (before.stopReason !== undefined) {
+        return { status: NOOP, reason: before.stopReason }
+      }
+      const outcome = await this.runCompaction(abort.signal)
+      await this.runHooks(
+        'PostCompact',
+        this.turnIds.at(-1),
+        { trigger: 'manual' },
+        'manual',
+        abort.signal,
+      )
+      if (outcome.status === 'accepted') {
+        await this.collectStartHooks('compact', abort.signal)
+      }
+      return outcome
     } catch (error: unknown) {
       if (abort.signal.aborted) {
         return { status: CANCELLED, reason: UI_TEXT.compactionStopped }
@@ -3954,6 +4510,15 @@ export class ModelApiSession implements AgentSession {
     this.holders += 1
   }
 
+  /** Orderly host shutdown; SessionEnd is observation only (M51). */
+  public async endHooks(signal: AbortSignal): Promise<void> {
+    if (this.hookEnded || !this.hookStarted) {
+      return
+    }
+    this.hookEnded = true
+    await this.runHooks('SessionEnd', undefined, { reason: 'shutdown' }, 'shutdown', signal)
+  }
+
   /** Releases a surface's hold; the last one stops the turn and forgets the session. */
   public dispose(): void {
     if (this.isDisposed) {
@@ -4109,6 +4674,9 @@ export class ModelApiSession implements AgentSession {
         NO_CHILD_DISPOSAL,
         true,
         this,
+        saved.id,
+        this.hooks,
+        'resume',
       )
       session.adopt(saved.session)
       const record: ChildRecord = {
@@ -4197,6 +4765,9 @@ export class ModelApiSession implements AgentSession {
         NO_CHILD_DISPOSAL,
         true,
         target,
+        child.id,
+        target.hooks,
+        'fork',
       )
       session.adopt({ ...child.session.snapshot(), sessionId })
       const cloned: ChildRecord = {
@@ -4289,6 +4860,8 @@ export class ModelApiHost implements AgentHost {
     modelId: string,
     approvalMode: ApprovalMode,
     sessionId: string = this.deps.newId(),
+    hooks: readonly HookDefinition[] = [],
+    hookStartSource: 'startup' | 'resume' | 'fork' = 'startup',
   ): ModelApiSession {
     const session = new ModelApiSession(
       sessionId,
@@ -4302,9 +4875,23 @@ export class ModelApiHost implements AgentHost {
       () => {
         this.sessions.delete(sessionId)
       },
+      false,
+      undefined,
+      undefined,
+      hooks,
+      hookStartSource,
     )
     this.sessions.set(sessionId, session)
     return session
+  }
+
+  private async sessionHooks(): Promise<readonly HookDefinition[]> {
+    try {
+      return (await this.deps.loadHooks?.()) ?? []
+    } catch (error: unknown) {
+      this.deps.log.warn(`Model API hooks could not load: ${describe(error)}`)
+      return []
+    }
   }
 
   /**
@@ -4338,8 +4925,15 @@ export class ModelApiHost implements AgentHost {
       revived.retain()
       return revived
     }
-    const session = this.create(stored.modelId, stored.approvalMode, sessionId)
+    const session = this.create(
+      stored.modelId,
+      stored.approvalMode,
+      sessionId,
+      await this.sessionHooks(),
+      'resume',
+    )
     session.adopt(stored)
+    await session.startHooks()
     return session
   }
 
@@ -4403,14 +4997,20 @@ export class ModelApiHost implements AgentHost {
       }))
   }
 
-  public startSession(options: StartSessionOptions): Promise<AgentSession> {
+  public async startSession(options: StartSessionOptions): Promise<AgentSession> {
     if (!(APPROVAL_MODES as readonly string[]).includes(options.approvalMode)) {
-      return Promise.reject(new Error(`unknown approval mode ${options.approvalMode}`))
+      throw new Error(`unknown approval mode ${options.approvalMode}`)
     }
-    const session = this.create(options.modelId, options.approvalMode as ApprovalMode)
+    const session = this.create(
+      options.modelId,
+      options.approvalMode as ApprovalMode,
+      this.deps.newId(),
+      await this.sessionHooks(),
+    )
+    await session.startHooks()
     this.announce(session)
     void this.startMcpServers()
-    return Promise.resolve(session)
+    return session
   }
 
   /** The MCP servers' live state, for the MCP servers view (M50). */
@@ -4484,9 +5084,16 @@ export class ModelApiHost implements AgentHost {
     // Copying needs no hold on a live source; a stored one is revived only for the copy.
     const live = this.sessions.get(sessionId)
     const source = live ?? (await this.revive(sessionId))
-    const fork = this.create(modelId, source.approvalMode)
+    const fork = this.create(
+      modelId,
+      source.approvalMode,
+      this.deps.newId(),
+      await this.sessionHooks(),
+      'fork',
+    )
     try {
       source.copyInto(fork, lastTurnId)
+      await fork.startHooks()
       this.persist(fork)
     } catch (error: unknown) {
       fork.dispose()
@@ -4526,6 +5133,24 @@ export class ModelApiHost implements AgentHost {
   }
 
   public async close(): Promise<void> {
+    const ending = new AbortController()
+    const deadline = setTimeout(() => {
+      ending.abort()
+    }, HOOK_SESSION_END_TIMEOUT_MS)
+    try {
+      for (const session of this.sessions.values()) {
+        if (ending.signal.aborted) {
+          break
+        }
+        try {
+          await session.endHooks(ending.signal)
+        } catch (error: unknown) {
+          this.deps.log.warn(`Model API SessionEnd hook failed: ${describe(error)}`)
+        }
+      }
+    } finally {
+      clearTimeout(deadline)
+    }
     // Disposing removes the entry; a Map iterator tolerates that.
     for (const session of this.sessions.values()) {
       session.disposeAll()

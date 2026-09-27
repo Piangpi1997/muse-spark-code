@@ -311,6 +311,7 @@ describe('buildPalette', () => {
       'focusView',
       'ctrlEnter',
       'mcpServers',
+      'hooks',
       'memory',
       'settings',
       'keybindings',

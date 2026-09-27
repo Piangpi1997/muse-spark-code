@@ -62,6 +62,8 @@ export interface ShellResult {
   readonly isTimedOut: boolean
   /** Stopped because the turn was (the Stop button, PLAN.md D25). */
   readonly isCancelled: boolean
+  /** The command exceeded its per-stream byte budget (M51 hooks). */
+  readonly isOutputTooLarge?: boolean
 }
 
 /**
@@ -161,6 +163,15 @@ export interface ToolIo {
     timeoutMs: number,
     signal?: AbortSignal,
     limit?: ShellTimeLimit,
+  ): Promise<ShellResult>
+  /** An explicitly enabled M51 hook, with JSON stdin and a cleared environment. */
+  runHook?(
+    command: string,
+    payload: string,
+    cwd: string,
+    timeoutMs: number,
+    signal?: AbortSignal,
+    extraEnvNames?: readonly string[],
   ): Promise<ShellResult>
   /**
    * The canonical form of an absolute path: links, junctions and short

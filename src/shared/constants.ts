@@ -109,6 +109,7 @@ export const SHELL_SANDBOX_MODES = ['auto', 'muse', 'off'] as const
 export type ShellSandboxMode = (typeof SHELL_SANDBOX_MODES)[number]
 export const SHELL_SANDBOX_SETTING = 'museSpark.shellSandbox'
 export const BYPASS_SETTING = 'museSpark.allowDangerouslySkipPermissions'
+export const MODEL_API_HOOKS_SETTING = 'museSpark.modelApiHooks'
 // Settings `muse serve` takes at spawn: changing one restarts it (PLAN.md D25).
 export const CLI_PROCESS_SETTINGS = [
   'museSpark.museBinaryPath',
@@ -166,6 +167,9 @@ export const SETTING_DEFAULTS = {
   modelApiImageGeneration: false,
   modelApiVoice: false,
   modelApiSubagents: false,
+  // Hook commands are user code outside the agent sandbox (M51). A machine
+  // setting must explicitly enable them on the Model API backend.
+  modelApiHooks: false,
 } as const
 export const ARCHIVE_DAY_CHOICES = [1, 2, 7, 14, 0] as const
 // Settings a repository's `.vscode/settings.json` must never set (PLAN.md
@@ -183,7 +187,52 @@ export const MACHINE_SCOPED_SETTINGS = [
   'modelApiImageGeneration',
   'modelApiVoice',
   'modelApiSubagents',
+  'modelApiHooks',
 ] as const
+
+// Muse Code SDK 1.3.0 hook process limits (PLAN.md M51).
+export const HOOK_STDIN_MAX_BYTES = 256 * 1024
+export const HOOK_OUTPUT_MAX_BYTES = 16 * 1024
+export const HOOK_DEFAULT_TIMEOUT_SECONDS = 600
+export const HOOK_MAX_TIMEOUT_SECONDS = 600
+export const HOOK_CONFIG_MAX_BYTES = 1024 * 1024
+export const HOOK_SYSTEM_MESSAGE_MAX_CHARS = 1000
+export const HOOK_MODEL_MESSAGE_SUMMARIES_MAX = 32
+export const HOOK_MODEL_CONTENT_PARTS_MAX = 4
+export const HOOK_MODEL_TOOL_SUMMARIES_MAX = 50
+export const HOOK_MODEL_TEXT_PREVIEW_CHARS = 256
+export const HOOK_MODEL_TOOL_DESCRIPTION_CHARS = 256
+export const HOOK_MODEL_OUTPUT_PREVIEW_CHARS = 1024
+export const HOOK_TOOL_INPUT_PREVIEW_CHARS = 4096
+export const HOOK_TOOL_VALUE_PREVIEW_CHARS = 512
+export const HOOK_TOOL_OUTPUT_PREVIEW_CHARS = 1024
+export const HOOK_TOOL_NESTING_MAX = 4
+export const HOOK_TOOL_ENTRIES_MAX = 16
+export const MODEL_API_HOOK_PROVIDER = 'meta'
+export const HOOK_MAX_STOP_CONTINUATIONS = 8
+export const HOOK_CONTROL_CODE_LIMIT = 32
+export const HOOK_NEWLINE_CODE = 10
+export const HOOK_DELETE_CODE = 127
+export const HOOK_MATCHER_MAX_CHARS = 256
+export const HOOK_MATCHER_VALUE_MAX_CHARS = 256
+export const HOOK_MATCHER_TIMEOUT_MS = 25
+export const HOOK_MATCHER_COMPILE_TIMEOUT_MS = 250
+export const HOOK_SOURCE_MAX_HANDLERS = 64
+export const HOOK_TOTAL_MAX_HANDLERS = 64
+export const HOOK_MAX_RUNNING_COMMANDS = 4
+export const HOOK_ON_FAILURE_MAX_DEPTH = 3
+export const HOOK_MANAGED_ENV_MAX_NAMES = 64
+export const HOOK_MANAGED_ENV_NAME_MAX_CHARS = 128
+export const HOOK_NOTIFICATION_DELAY_MS = 6000
+export const HOOK_SESSION_END_TIMEOUT_MS = 10_000
+export const HOOK_FORBIDDEN_ENV_NAMES: ReadonlySet<string> = new Set([
+  'AWS_ACCESS_KEY_ID',
+  'AWS_SECRET_ACCESS_KEY',
+  'AWS_SESSION_TOKEN',
+  'OPENAI_KEY',
+  'ANTHROPIC_KEY',
+  'META_KEY',
+])
 
 // --- Paid features on the Model API backend (M33–M35, PLAN.md D30) ---
 
@@ -1278,6 +1327,7 @@ export const MODEL_TEXT = {
   shellRestrictedMode:
     'shell commands are disabled while the workspace is in Restricted Mode; trust the workspace to enable them',
   toolRejectedByUser: 'rejected by the user',
+  toolRejectedByHook: 'rejected by a hook',
   // PLAN.md D26: what the model is told when Stop cuts a tool short.
   toolCancelledByStop: 'cancelled: the user stopped the turn',
   goalBudgetReached: 'cancelled: the goal token budget was reached',

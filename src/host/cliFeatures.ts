@@ -13,6 +13,7 @@ import {
   EXPORT_FILE_EXTENSIONS,
   MUSE_EXPORT_TIMEOUT_MS,
   MUSE_EXTENDING_DOCS_URL,
+  MODEL_API_HOOKS_SETTING,
   MUSE_SKILLS_TIMEOUT_MS,
   PROJECT_HOOKS_SEGMENTS,
   type SkillImportSource,
@@ -45,6 +46,8 @@ export interface CliFeatureDeps {
    * runs on that backend (M50); undefined on Muse Code.
    */
   readonly modelApiMcp: () => (() => McpPoolSnapshot | undefined) | undefined
+  /** Undefined on Muse Code; current machine hook setting on Model API. */
+  readonly modelApiHooks: () => boolean | undefined
   /** Shows the extension's log, where an MCP server's stderr goes. */
   readonly openLog: () => void
   readonly log: Logger
@@ -141,6 +144,13 @@ export function createCliFeatures(deps: CliFeatureDeps): CliFeatures {
       },
       showWarning: loggedPopups(deps.log).showWarning,
       modelApiServers: deps.modelApiMcp(),
+      modelApiHooks: deps.modelApiHooks() === undefined ? undefined : () => deps.modelApiHooks(),
+      openModelApiHooksSetting: async () => {
+        await vscode.commands.executeCommand(
+          'workbench.action.openSettings',
+          MODEL_API_HOOKS_SETTING,
+        )
+      },
       openLog: deps.openLog,
     }
   }

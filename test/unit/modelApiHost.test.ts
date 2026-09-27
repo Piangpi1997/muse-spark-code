@@ -4,6 +4,7 @@ import * as z from 'zod/mini'
 import type { AgentEvent } from '../../src/shared/agentEvents'
 import {
   CLARIFICATION_MAX_CHARS,
+  HOOK_MAX_STOP_CONTINUATIONS,
   MODEL_API_MAX_RETRIES,
   MODEL_API_MAX_TOOL_ROUNDS,
   GOAL_OBJECTIVE_MAX_CHARS,
@@ -35,12 +36,102 @@ import {
   type StoredSession,
 } from '../../src/core/backends/modelapi/sessionStore'
 import { heldShellToolIo, type MemoryToolIo, memoryToolIo } from './helpers/fakeToolIo'
+import { parseHookConfig, type HookDefinition } from '../../src/core/backends/modelapi/hooks'
+import type { ToolIo } from '../../src/core/backends/modelapi/tools'
 import { type FakeMcpSource, fakeMcpSource } from './helpers/fakeMcpSource'
 import { countLogged } from './helpers/logText'
 import type { McpTool } from '../../src/core/mcp'
 import { memoryStoreOver, PERSONAL } from './helpers/fakeMemoryIo'
 
 const ROOT = '/ws'
+
+function hooksFor(event: string, command: string): readonly HookDefinition[] {
+  return parseHookConfig(
+    JSON.stringify({
+      hooks: {
+        [event]: [{ hooks: [{ type: 'command', command }] }],
+      },
+    }),
+    'project',
+    'linux',
+  ).hooks
+}
+
+function permitHook() {
+  return hookReply(JSON.stringify({ decision: { behavior: 'allow' } }))
+}
+
+function hookReply(stdout = '{}') {
+  return Promise.resolve({
+    stdout,
+    stderr: '',
+    exitCode: 0,
+    isTimedOut: false,
+    isCancelled: false,
+  })
+}
+
+function recordHookPayloads(payloads: unknown[]): NonNullable<ToolIo['runHook']> {
+  return (_command, payload) => {
+    payloads.push(z.unknown().parse(JSON.parse(payload)))
+    return hookReply()
+  }
+}
+
+function recordRawHookPayloads(payloads: string[]): NonNullable<ToolIo['runHook']> {
+  return (_command, payload) => {
+    payloads.push(payload)
+    return hookReply('')
+  }
+}
+
+function postVetoHook(isBlocked: () => boolean): NonNullable<ToolIo['runHook']> {
+  return () =>
+    hookReply(isBlocked() ? JSON.stringify({ decision: 'block', reason: 'Post veto' }) : '{}')
+}
+
+function modelCallObserver(payloads: unknown[]): ReturnType<typeof setup> {
+  return setup({
+    hooks: [...hooksFor('PreLLMCall', 'observe'), ...hooksFor('PostLLMCall', 'observe')],
+    runHook: recordHookPayloads(payloads),
+  })
+}
+
+function scriptWriteCalls(
+  t: ReturnType<typeof setup>,
+  ...calls: readonly { readonly path: string; readonly content: string; readonly callId?: string }[]
+): void {
+  t.api.script(
+    {
+      calls: calls.map(({ path, content, callId }) => ({
+        name: 'write_file',
+        arguments: JSON.stringify({ path, content }),
+        ...(callId !== undefined && { callId }),
+      })),
+    },
+    { text: 'done' },
+  )
+}
+
+async function completeWriteTurn(
+  t: ReturnType<typeof setup>,
+  session: ModelApiSession,
+  turnDone: () => Promise<void>,
+  path: string,
+  content: string,
+  callId?: string,
+): Promise<void> {
+  scriptWriteCalls(t, { path, content, ...(callId !== undefined && { callId }) })
+  await session.sendTurn([{ type: 'text', text: 'write' }])
+  await turnDone()
+}
+
+async function completeUnpromptedWrite(t: ReturnType<typeof setup>): Promise<AgentEvent[]> {
+  const { session, events, turnDone } = await startSession(t)
+  await completeWriteTurn(t, session, turnDone, 'notes.txt', 'x', 'c')
+  expect(events.some((event) => event.type === 'approvalRequested')).toBe(false)
+  return events
+}
 
 function setup(
   options: {
@@ -56,6 +147,10 @@ function setup(
     apiKey?: () => Promise<string | undefined>
     /** The tools' files and shell, when a test needs its own (M46: a held shell). */
     io?: MemoryToolIo
+    hooks?: readonly HookDefinition[]
+    runHook?: NonNullable<ToolIo['runHook']>
+    isHooksEnabled?: () => boolean
+    hookNotificationDelayMs?: number
     /** The MCP servers and the IDE tools (M50). */
     mcpServers?: ModelApiHostDeps['mcpServers']
     ideTools?: ModelApiHostDeps['ideTools']
@@ -75,6 +170,9 @@ function setup(
   const api = fakeModelApi()
   const log = new FakeLogOutputChannel()
   const io = options.io ?? memoryToolIo(options.files ?? {}, ROOT)
+  if (options.runHook !== undefined) {
+    io.runHook = options.runHook
+  }
   // Muse Code's memory over the same files the tools see (M49).
   const memory =
     options.hasMemory === false
@@ -127,6 +225,9 @@ function setup(
     noteSubagentUsage: (modelId, usage) => {
       subagentUsage.push({ modelId, ...usage })
     },
+    loadHooks: () => Promise.resolve(options.hooks ?? []),
+    isHooksEnabled: options.isHooksEnabled,
+    hookNotificationDelayMs: options.hookNotificationDelayMs,
     memory,
   })
   return {
@@ -629,18 +730,10 @@ describe('ModelApiSession: turns', () => {
   it('asks for a protected write even in Auto, and refuses a choice it never offered (D24)', async () => {
     const t = setup({ files: { 'a.txt': 'alpha\n' } })
     const { session, events, turnDone } = await startSession(t, 'onRequest')
-    t.api.script(
-      {
-        calls: [
-          { name: 'write_file', arguments: '{"path":"notes.txt","content":"x"}', callId: 'c1' },
-          {
-            name: 'write_file',
-            arguments: '{"path":".git/hooks/pre-commit","content":"evil"}',
-            callId: 'c2',
-          },
-        ],
-      },
-      { text: 'done' },
+    scriptWriteCalls(
+      t,
+      { path: 'notes.txt', content: 'x', callId: 'c1' },
+      { path: '.git/hooks/pre-commit', content: 'evil', callId: 'c2' },
     )
     await session.sendTurn([{ type: 'text', text: 'write' }])
     const request = await approvalRequest(events, 0)
@@ -669,12 +762,7 @@ describe('ModelApiSession: turns', () => {
   it('refuses an edit outside the workspace before any card', async () => {
     const t = setup()
     const { session, events, turnDone } = await startSession(t)
-    t.api.script(
-      { calls: [{ name: 'write_file', arguments: '{"path":"../x","content":"y"}' }] },
-      { text: 'done' },
-    )
-    await session.sendTurn([{ type: 'text', text: 'write' }])
-    await turnDone()
+    await completeWriteTurn(t, session, turnDone, '../x', 'y')
     expect(events.some((event) => event.type === 'approvalRequested')).toBe(false)
     const row = events.findLast(
       (event): event is Extract<AgentEvent, { type: 'itemCompleted' }> =>
@@ -893,6 +981,613 @@ describe('ModelApiSession: turns', () => {
   })
 })
 
+describe('ModelApiSession: hook boundaries (M51)', () => {
+  it('vetoes a captured PreLLMCall before any Model API request', async () => {
+    const payloads: unknown[] = []
+    const t = setup({
+      hooks: hooksFor('PreLLMCall', 'veto'),
+      runHook: (_command, payload) => {
+        payloads.push(JSON.parse(payload))
+        return Promise.resolve({
+          stdout: JSON.stringify({ decision: 'block', reason: 'M51 pre-call veto' }),
+          stderr: '',
+          exitCode: 0,
+          isTimedOut: false,
+          isCancelled: false,
+        })
+      },
+    })
+    const { session, events, turnDone } = await startSession(t)
+    t.api.script({ text: 'not sent' })
+    await session.sendTurn([{ type: 'text', text: 'Do work' }])
+    await turnDone()
+    expect(t.api.responseBodies()).toHaveLength(0)
+    expect(payloads).toEqual([
+      expect.objectContaining({
+        hook_event_name: 'PreLLMCall',
+        provider: 'meta',
+        attempt: 1,
+        step: 0,
+        messages: [{ role: 'user', content: [{ type: 'text', text: 'Do work' }] }],
+      }),
+    ])
+    expect(events.find((event) => event.type === 'turnCompleted')).toMatchObject({
+      terminal: 'failed',
+      reason: 'M51 pre-call veto',
+    })
+  })
+
+  it('observes successful model calls and compaction with captured PostLLMCall fields', async () => {
+    const payloads: unknown[] = []
+    const t = modelCallObserver(payloads)
+    const { session, turnDone } = await startSession(t)
+    t.api.script({ text: 'Reply' })
+    await session.sendTurn([{ type: 'text', text: 'First prompt' }])
+    await turnDone()
+    t.api.script({ text: 'Summary' })
+    await expect(session.compact()).resolves.toMatchObject({ status: 'accepted' })
+    expect(payloads).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          hook_event_name: 'PreLLMCall',
+          provider: 'meta',
+          attempt: 1,
+          step: 0,
+          message_count: 1,
+          tool_count: expect.any(Number),
+        }),
+        expect.objectContaining({
+          hook_event_name: 'PostLLMCall',
+          provider: 'meta',
+          status: 'success',
+          response_id: expect.any(String),
+          output_text_preview: 'Reply',
+          tool_call_count: 0,
+          usage: expect.objectContaining({ input_tokens: expect.any(Number) }),
+        }),
+        expect.objectContaining({
+          hook_event_name: 'PreLLMCall',
+          tool_count: 0,
+        }),
+        expect.objectContaining({
+          hook_event_name: 'PostLLMCall',
+          tool_count: 0,
+          output_text_preview: 'Summary',
+        }),
+      ]),
+    )
+    expect(t.api.responseBodies()).toHaveLength(2)
+  })
+
+  it('issues a fresh PreLLMCall for a whole-stream retry and one successful PostLLMCall', async () => {
+    const payloads: unknown[] = []
+    const t = modelCallObserver(payloads)
+    const { session, turnDone } = await startSession(t)
+    t.api.script(
+      { text: 'partial', streamError: { code: 'server_shutting_down', message: 'draining' } },
+      { text: 'final' },
+    )
+    await session.sendTurn([{ type: 'text', text: 'Try again' }])
+    await turnDone()
+    expect(t.api.responseBodies()).toHaveLength(2)
+    expect(payloads).toMatchObject([
+      { hook_event_name: 'PreLLMCall', attempt: 1, step: 0 },
+      { hook_event_name: 'PreLLMCall', attempt: 2, step: 0 },
+      { hook_event_name: 'PostLLMCall', attempt: 2, step: 0, status: 'success' },
+    ])
+  })
+
+  it('stops after a captured PostLLMCall block without executing returned tools', async () => {
+    let shouldBlock = true
+    const t = setup({
+      hooks: hooksFor('PostLLMCall', 'veto'),
+      runHook: postVetoHook(() => shouldBlock),
+    })
+    const { session, events, turnDone } = await startSession(t, 'allowAll')
+    t.api.script({
+      calls: [
+        {
+          name: 'write_file',
+          arguments: '{"path":"blocked.txt","content":"bad"}',
+          callId: 'blocked-call',
+        },
+      ],
+    })
+    await session.sendTurn([{ type: 'text', text: 'Write it' }])
+    await turnDone()
+    expect(t.files.has(`${ROOT}/blocked.txt`)).toBe(false)
+    expect(t.api.responseBodies()).toHaveLength(1)
+    expect(events.find((event) => event.type === 'turnCompleted')).toMatchObject({
+      terminal: 'failed',
+      reason: 'Post veto',
+    })
+    shouldBlock = false
+    t.api.script({ text: 'Next reply' })
+    await session.sendTurn([{ type: 'text', text: 'Continue later' }])
+    await turnDone()
+    expect(t.api.responseBodies()[1]).toMatchObject({
+      input: expect.arrayContaining([
+        expect.objectContaining({
+          type: 'function_call_output',
+          call_id: 'blocked-call',
+          output: expect.stringContaining('Post veto'),
+        }),
+      ]),
+    })
+  })
+
+  it('replays model hook context after tool outputs, keeping the request valid', async () => {
+    const t = setup({
+      hooks: [...hooksFor('PreLLMCall', 'pre-context'), ...hooksFor('PostLLMCall', 'post-context')],
+      files: { 'a.txt': 'alpha' },
+      runHook: (_command, payload) =>
+        Promise.resolve({
+          stdout: JSON.stringify({
+            hookSpecificOutput: {
+              hookEventName: payload.includes('"hook_event_name":"PreLLMCall"')
+                ? 'PreLLMCall'
+                : 'PostLLMCall',
+              additionalContext: payload.includes('"hook_event_name":"PreLLMCall"')
+                ? 'Pre note'
+                : 'Post note',
+            },
+          }),
+          stderr: '',
+          exitCode: 0,
+          isTimedOut: false,
+          isCancelled: false,
+        }),
+    })
+    const { session, turnDone } = await startSession(t)
+    t.api.script(
+      { calls: [{ name: 'read_file', arguments: '{"path":"a.txt"}', callId: 'read-one' }] },
+      { text: 'done' },
+    )
+    await session.sendTurn([{ type: 'text', text: 'Read it' }])
+    await turnDone()
+    const second = t.api.responseBodies()[1]?.['input']
+    const input: readonly unknown[] = Array.isArray(second) ? second : []
+    const outputIndex = input.findIndex(
+      (item) =>
+        typeof item === 'object' &&
+        item !== null &&
+        'type' in item &&
+        item.type === 'function_call_output',
+    )
+    const postContextIndex = input.findIndex((item) => JSON.stringify(item).includes('Post note'))
+    expect(outputIndex).toBeGreaterThan(0)
+    expect(postContextIndex).toBeGreaterThan(outputIndex)
+    expect(JSON.stringify(second)).toContain('Pre note')
+  })
+
+  it('keeps old history and counts usage when a PostLLMCall hook stops compaction', async () => {
+    let shouldBlock = false
+    const t = setup({
+      hooks: hooksFor('PostLLMCall', 'veto'),
+      runHook: postVetoHook(() => shouldBlock),
+    })
+    const { session, turnDone } = await startSession(t)
+    t.api.script({ text: 'Before' })
+    await session.sendTurn([{ type: 'text', text: 'First' }])
+    await turnDone()
+    const before = session.snapshot()
+    shouldBlock = true
+    t.api.script({ text: 'Summary', usage: { input: 20, output: 3 } })
+    await expect(session.compact()).rejects.toThrow('Post veto')
+    expect(t.api.responseBodies()).toHaveLength(2)
+    expect(session.snapshot().usage.inputTokens - before.usage.inputTokens).toBe(20)
+    expect(session.snapshot().usage.outputTokens - before.usage.outputTokens).toBe(3)
+    expect(session.history().items.some((item) => item.kind === 'compaction')).toBe(false)
+    expect(JSON.stringify(session.snapshot().replay)).toContain('First')
+  })
+
+  it('runs SessionStart when a session opens, before its first prompt', async () => {
+    const payloads: string[] = []
+    const t = setup({
+      hooks: hooksFor('SessionStart', 'start'),
+      runHook: recordRawHookPayloads(payloads),
+    })
+    await startSession(t)
+    expect(payloads).toHaveLength(1)
+    const payload: unknown = JSON.parse(payloads[0] ?? '')
+    expect(payload).toMatchObject({ hook_event_name: 'SessionStart', source: 'startup' })
+    expect(JSON.stringify(payload)).not.toContain('turn_id')
+    expect(t.api.responseBodies()).toHaveLength(0)
+  })
+
+  it('fires SessionStart again for a fork and after accepted compaction', async () => {
+    const payloads: string[] = []
+    const t = setup({
+      hooks: hooksFor('SessionStart', 'start'),
+      runHook: recordRawHookPayloads(payloads),
+    })
+    const { session, turnDone } = await startSession(t)
+    await answerFirst(t, session, turnDone)
+    await t.host.forkSession(session.sessionId, 'muse-spark-1.3')
+    t.api.script({ text: 'summary' })
+    expect(await session.compact()).toMatchObject({ status: 'accepted' })
+    expect(payloads).toHaveLength(3)
+    const fork: unknown = JSON.parse(payloads[1] ?? '')
+    const compact: unknown = JSON.parse(payloads[2] ?? '')
+    expect(fork).toMatchObject({ hook_event_name: 'SessionStart', source: 'fork' })
+    expect(compact).toMatchObject({ hook_event_name: 'SessionStart', source: 'compact' })
+  })
+
+  it('blocks a prompt before any API request and excludes it from later replay', async () => {
+    let shouldBlock = true
+    const t = setup({
+      hooks: hooksFor('UserPromptSubmit', 'guard'),
+      runHook: () =>
+        Promise.resolve({
+          stdout: '',
+          stderr: shouldBlock ? 'prompt blocked' : '',
+          exitCode: shouldBlock ? 2 : 0,
+          isTimedOut: false,
+          isCancelled: false,
+        }),
+    })
+    const { session, events, turnDone } = await startSession(t)
+    await session.sendTurn([{ type: 'text', text: 'blocked prompt' }])
+    await turnDone()
+    expect(events.find((event) => event.type === 'turnCompleted')).toMatchObject({
+      terminal: 'failed',
+      reason: 'prompt blocked',
+    })
+    expect(JSON.stringify(t.log.warn.mock.calls)).not.toContain('prompt blocked')
+    expect(t.api.responseBodies()).toHaveLength(0)
+
+    shouldBlock = false
+    t.api.script({ text: 'allowed' })
+    await session.sendTurn([{ type: 'text', text: 'allowed prompt' }])
+    await turnDone()
+    const input = JSON.stringify(t.api.responseBodies()[0]?.['input'])
+    expect(input).toContain('allowed prompt')
+    expect(input).not.toContain('blocked prompt')
+  })
+
+  it('accepts but ignores continue false on prompt submission, as Muse does', async () => {
+    const t = setup({
+      hooks: hooksFor('UserPromptSubmit', 'stop'),
+      runHook: () =>
+        Promise.resolve({
+          stdout: JSON.stringify({ continue: false, stopReason: 'stop here' }),
+          stderr: '',
+          exitCode: 0,
+          isTimedOut: false,
+          isCancelled: false,
+        }),
+    })
+    const { session, events, turnDone } = await startSession(t)
+    t.api.script({ text: 'received' })
+    await session.sendTurn([{ type: 'text', text: 'send me' }])
+    await turnDone()
+    expect(events.find((event) => event.type === 'turnCompleted')).toMatchObject({
+      terminal: 'completed',
+    })
+    expect(t.api.responseBodies()).toHaveLength(1)
+  })
+
+  it('rechecks permissions after a hook rewrites a tool to a protected path', async () => {
+    const t = setup({
+      hooks: hooksFor('PreToolUse', 'rewrite'),
+      runHook: () =>
+        Promise.resolve({
+          stdout: JSON.stringify({
+            hookSpecificOutput: {
+              hookEventName: 'PreToolUse',
+              permissionDecision: 'allow',
+              updatedInput: { path: '.muse/hooks.json', content: 'reviewed' },
+            },
+          }),
+          stderr: '',
+          exitCode: 0,
+          isTimedOut: false,
+          isCancelled: false,
+        }),
+    })
+    const { session, events, turnDone } = await startSession(t, 'onRequest')
+    scriptWriteCalls(t, { path: 'notes.txt', content: 'x', callId: 'hook_write' })
+    await session.sendTurn([{ type: 'text', text: 'write' }])
+    const request = await approvalRequest(events, 0)
+    expect(request).toMatchObject({
+      subject: { kind: 'fileWrite', path: '.muse/hooks.json' },
+      isProtectedWrite: true,
+    })
+    expect(t.files.has(`${ROOT}/notes.txt`)).toBe(false)
+    await session.decideApproval({
+      approvalId: request.approvalId,
+      choiceId: 'abort',
+      requirementId: request.requirementId,
+    })
+    await turnDone()
+    expect(t.files.has(`${ROOT}/.muse/hooks.json`)).toBe(false)
+  })
+
+  it('lets a PermissionRequest hook deny without showing an approval card', async () => {
+    const t = setup({
+      hooks: hooksFor('PermissionRequest', 'deny'),
+      runHook: () =>
+        hookReply(
+          JSON.stringify({
+            hookSpecificOutput: {
+              hookEventName: 'PermissionRequest',
+              decision: { behavior: 'deny', message: 'policy denied' },
+            },
+          }),
+        ),
+    })
+    const events = await completeUnpromptedWrite(t)
+    expect(t.files.has(`${ROOT}/notes.txt`)).toBe(false)
+    expect(
+      events.find((event) => event.type === 'itemCompleted' && event.item.kind === 'toolCall'),
+    ).toMatchObject({
+      item: { status: 'rejected', failureReason: 'write_file rejected by a hook' },
+    })
+  })
+
+  it('lets an opted-in PermissionRequest hook allow an ordinary edit', async () => {
+    const t = setup({
+      hooks: hooksFor('PermissionRequest', 'allow'),
+      runHook: permitHook,
+    })
+    await completeUnpromptedWrite(t)
+    expect(t.files.get(`${ROOT}/notes.txt`)).toBe('x')
+  })
+
+  it('keeps protected writes and paid calls on user cards despite hook allow', async () => {
+    const protectedWrite = setup({
+      hooks: hooksFor('PermissionRequest', 'allow'),
+      runHook: permitHook,
+    })
+    const first = await startSession(protectedWrite, 'onRequest')
+    protectedWrite.api.script(
+      {
+        calls: [
+          {
+            name: 'write_file',
+            arguments: '{"path":".muse/hooks.json","content":"x"}',
+            callId: 'c',
+          },
+        ],
+      },
+      { text: 'done' },
+    )
+    await first.session.sendTurn([{ type: 'text', text: 'write hooks' }])
+    const protectedCard = await approvalRequest(first.events, 0)
+    expect(protectedCard.isProtectedWrite).toBe(true)
+    await first.session.decideApproval({
+      approvalId: protectedCard.approvalId,
+      choiceId: 'abort',
+      requirementId: protectedCard.requirementId,
+    })
+    await first.turnDone()
+    expect(protectedWrite.files.has(`${ROOT}/.muse/hooks.json`)).toBe(false)
+
+    const paid = setup({
+      paid: ['imageGeneration'],
+      hooks: hooksFor('PermissionRequest', 'allow'),
+      runHook: permitHook,
+    })
+    const second = await startSession(paid, 'allowAll')
+    paid.api.script({ calls: [imageCall({ prompt: 'one', path: 'one.png' })] }, { text: 'done' })
+    await second.session.sendTurn([{ type: 'text', text: 'draw' }])
+    const paidCard = await approvalRequest(second.events, 0)
+    expect(paidCard.subject).toMatchObject({ kind: 'paidTool', paidFeature: 'imageGeneration' })
+    await second.session.decideApproval({
+      approvalId: paidCard.approvalId,
+      choiceId: 'abort',
+      requirementId: paidCard.requirementId,
+    })
+    await second.turnDone()
+    expect(paid.paidUses).toEqual([])
+    expect(paid.io.binaries.has(`${ROOT}/one.png`)).toBe(false)
+  })
+
+  it('emits success, failure, batch and stop hook payloads at their boundaries', async () => {
+    const payloads: unknown[] = []
+    const hooks = [
+      ...hooksFor('PostToolUse', 'observe'),
+      ...hooksFor('PostToolUseFailure', 'observe'),
+      ...hooksFor('PostToolBatch', 'observe'),
+      ...hooksFor('Stop', 'observe'),
+    ]
+    const t = setup({
+      hooks,
+      files: { 'a.txt': 'alpha' },
+      runHook: recordHookPayloads(payloads),
+    })
+    const { session, turnDone } = await startSession(t)
+    t.api.script(
+      {
+        calls: [
+          { name: 'read_file', arguments: '{"path":"a.txt"}', callId: 'read_a' },
+          { name: 'read_file', arguments: '{"path":"missing.txt"}', callId: 'read_missing' },
+        ],
+      },
+      { text: 'done' },
+    )
+    await session.sendTurn([{ type: 'text', text: 'Read files' }])
+    await turnDone()
+    expect(payloads).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          hook_event_name: 'PostToolUse',
+          tool_name: 'read_file',
+          tool_input: { path: 'a.txt' },
+          tool_use_id: expect.any(String),
+          tool_response: expect.stringContaining('alpha'),
+        }),
+        expect.objectContaining({
+          hook_event_name: 'PostToolUseFailure',
+          tool_name: 'read_file',
+          tool_input: { path: 'missing.txt' },
+          tool_use_id: expect.any(String),
+          is_interrupt: false,
+          duration_ms: expect.any(Number),
+          error: expect.any(String),
+        }),
+        expect.objectContaining({
+          hook_event_name: 'PostToolBatch',
+          tool_calls: [
+            expect.objectContaining({ tool_name: 'read_file', tool_input: { path: 'a.txt' } }),
+            expect.objectContaining({
+              tool_name: 'read_file',
+              tool_input: { path: 'missing.txt' },
+            }),
+          ],
+        }),
+        expect.objectContaining({
+          hook_event_name: 'Stop',
+          stop_hook_active: false,
+          last_assistant_message: 'done',
+        }),
+      ]),
+    )
+  })
+
+  it('bounds Stop hook continuations to avoid an unending paid model loop', async () => {
+    const runHook = vi.fn(() =>
+      Promise.resolve({
+        stdout: JSON.stringify({ decision: 'block', reason: 'continue' }),
+        stderr: '',
+        exitCode: 0,
+        isTimedOut: false,
+        isCancelled: false,
+      }),
+    )
+    const t = setup({ hooks: hooksFor('Stop', 'keep-going'), runHook })
+    const { session, turnDone } = await startSession(t)
+    t.api.script(
+      ...Array.from({ length: HOOK_MAX_STOP_CONTINUATIONS + 1 }, () => ({ text: 'reply' })),
+    )
+    await session.sendTurn([{ type: 'text', text: 'finish' }])
+    await turnDone()
+    expect(t.api.responseBodies()).toHaveLength(HOOK_MAX_STOP_CONTINUATIONS + 1)
+    expect(runHook).toHaveBeenCalledTimes(HOOK_MAX_STOP_CONTINUATIONS + 1)
+    expect(t.log.warn).toHaveBeenCalledWith('Model API Stop hook reached its continuation limit')
+  })
+
+  it('lets PreCompact veto a manual compaction before the model is called', async () => {
+    const t = setup({
+      hooks: hooksFor('PreCompact', 'veto'),
+      runHook: () =>
+        Promise.resolve({
+          stdout: JSON.stringify({ continue: false, stopReason: 'keep context' }),
+          stderr: '',
+          exitCode: 0,
+          isTimedOut: false,
+          isCancelled: false,
+        }),
+    })
+    const { session, turnDone } = await startSession(t)
+    t.api.script({ text: 'first' })
+    await session.sendTurn([{ type: 'text', text: 'first' }])
+    await turnDone()
+    expect(await session.compact()).toEqual({ status: 'noop', reason: 'keep context' })
+    expect(t.api.responseBodies()).toHaveLength(1)
+  })
+
+  it('emits compaction and model-failure hook payloads at their boundaries', async () => {
+    const payloads: unknown[] = []
+    const t = setup({
+      hooks: [
+        ...hooksFor('PreCompact', 'observe'),
+        ...hooksFor('PostCompact', 'observe'),
+        ...hooksFor('StopFailure', 'observe'),
+      ],
+      runHook: recordHookPayloads(payloads),
+    })
+    const { session, turnDone } = await startSession(t)
+    t.api.script({ text: 'first' })
+    await session.sendTurn([{ type: 'text', text: 'first' }])
+    await turnDone()
+    t.api.script({ text: 'summary' })
+    expect(await session.compact()).toMatchObject({ status: 'accepted' })
+    t.api.script({
+      httpError: {
+        status: 400,
+        body: { error: { message: 'bad request', type: 'invalid_request_error' } },
+      },
+    })
+    await session.sendTurn([{ type: 'text', text: 'fail' }])
+    await turnDone()
+    expect(payloads).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ hook_event_name: 'PreCompact', trigger: 'manual' }),
+        expect.objectContaining({ hook_event_name: 'PostCompact', trigger: 'manual' }),
+        expect.objectContaining({
+          hook_event_name: 'StopFailure',
+          error: 'modelApi',
+          error_details: 'bad request',
+        }),
+      ]),
+    )
+  })
+
+  it('fires Notification for an approval that stays open', async () => {
+    const runHook = vi.fn((_command: string, _payload: string) =>
+      Promise.resolve({
+        stdout: '',
+        stderr: '',
+        exitCode: 0,
+        isTimedOut: false,
+        isCancelled: false,
+      }),
+    )
+    const t = setup({
+      hooks: hooksFor('Notification', 'notify'),
+      hookNotificationDelayMs: 10,
+      runHook,
+    })
+    const { session, events, turnDone } = await startSession(t)
+    scriptWriteCalls(t, { path: 'notes.txt', content: 'x', callId: 'c' })
+    await session.sendTurn([{ type: 'text', text: 'write' }])
+    const request = await approvalRequest(events, 0)
+    await vi.waitFor(() => {
+      expect(runHook).toHaveBeenCalledOnce()
+    })
+    const payload: unknown = JSON.parse(String(runHook.mock.calls[0]?.[1]))
+    expect(payload).toMatchObject({
+      hook_event_name: 'Notification',
+      notification_type: 'permission_prompt',
+      title: 'write_file',
+    })
+    await session.decideApproval({
+      approvalId: request.approvalId,
+      choiceId: 'abort',
+      requirementId: request.requirementId,
+    })
+    await turnDone()
+  })
+
+  it('fires SessionEnd on orderly host shutdown, once per live session', async () => {
+    const payloads: string[] = []
+    const t = setup({
+      hooks: hooksFor('SessionEnd', 'finish'),
+      runHook: (_command, payload) => {
+        payloads.push(payload)
+        return Promise.resolve({
+          stdout: '',
+          stderr: '',
+          exitCode: 0,
+          isTimedOut: false,
+          isCancelled: false,
+        })
+      },
+    })
+    const { session, turnDone } = await startSession(t)
+    await answerFirst(t, session, turnDone)
+    await t.host.close()
+    expect(payloads).toHaveLength(1)
+    const parsed: unknown = JSON.parse(payloads[0] ?? '')
+    expect(parsed).toMatchObject({
+      hook_event_name: 'SessionEnd',
+      reason: 'shutdown',
+      session_id: session.sessionId,
+    })
+  })
+})
+
 const skillFile = (name: string, description: string, body: string) =>
   `---\nname: ${name}\ndescription: ${description}\n---\n\n${body}\n`
 
@@ -913,6 +1608,14 @@ const ADD_DEPLOY = {
 const DEPLOY_WRITTEN =
   '{"success":true,"scope":"project","path":"deploy.md","operation":"add","message":"memory note written"}'
 
+function forceMemoryApprovalHook() {
+  return hookReply(
+    JSON.stringify({
+      hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'ask' },
+    }),
+  )
+}
+
 /** The memory rows' final snapshots, in order. */
 const memoryRows = (events: readonly AgentEvent[]) =>
   events.flatMap((event) =>
@@ -924,6 +1627,157 @@ const memoryRows = (events: readonly AgentEvent[]) =>
   )
 
 describe('ModelApiSession: memory (M49)', () => {
+  it.each(['allowAll', 'onRequest'] as const)(
+    'makes a PreToolUse ask require a human for memory writes in %s',
+    async (mode) => {
+      for (const call of [
+        ADD_DEPLOY,
+        {
+          name: 'edit_memory',
+          arguments: JSON.stringify({
+            scope: 'project',
+            path: 'prefs.md',
+            old_str: 'Tea',
+            new_str: 'Coffee',
+          }),
+          callId: 'call_edit',
+        },
+      ]) {
+        const t = setup({
+          files: { '.agents/memory/prefs.md': 'Tea' },
+          hooks: [
+            ...hooksFor('PreToolUse', 'ask-memory'),
+            ...hooksFor('PermissionRequest', 'allow-memory'),
+          ],
+          runHook: (_command, payload) =>
+            payload.includes('"hook_event_name":"PreToolUse"')
+              ? forceMemoryApprovalHook()
+              : permitHook(),
+        })
+        const { session, events, turnDone } = await startSession(t, mode)
+        t.api.script({ calls: [call] }, { text: 'done' })
+        await session.sendTurn([{ type: 'text', text: 'remember the preference' }])
+        const request = await approvalRequest(events, 0)
+        expect(request).toMatchObject({
+          toolName: call.name,
+          subject: { kind: 'fileWrite', toolName: call.name },
+          isJudgeEscalated: true,
+        })
+        expect(t.files.has(`${ROOT}/.agents/memory/deploy.md`)).toBe(false)
+        expect(t.files.get(`${ROOT}/.agents/memory/prefs.md`)).toBe('Tea')
+        await session.decideApproval({
+          approvalId: request.approvalId,
+          choiceId: 'abort',
+          requirementId: request.requirementId,
+        })
+        await turnDone()
+        expect(memoryRows(events)[0]?.status).toBe('rejected')
+        expect(t.files.has(`${ROOT}/.agents/memory/deploy.md`)).toBe(false)
+        expect(t.files.get(`${ROOT}/.agents/memory/prefs.md`)).toBe('Tea')
+      }
+    },
+  )
+
+  it('runs a hook-forced memory write only after Allow once in Bypass', async () => {
+    const t = setup({
+      hooks: hooksFor('PreToolUse', 'ask-memory'),
+      runHook: forceMemoryApprovalHook,
+    })
+    const { session, events, turnDone } = await startSession(t, 'allowAll')
+    t.api.script({ calls: [ADD_DEPLOY] }, { text: 'saved' })
+    await session.sendTurn([{ type: 'text', text: 'remember deploy day' }])
+    const approval = await approvalRequest(events, 0)
+    expect(t.files.has(`${ROOT}/.agents/memory/deploy.md`)).toBe(false)
+    await session.decideApproval({
+      approvalId: approval.approvalId,
+      choiceId: 'allow_once',
+      requirementId: approval.requirementId,
+    })
+    await turnDone()
+    expect(memoryRows(events)[0]?.status).toBe('completed')
+    expect(t.files.get(`${ROOT}/.agents/memory/deploy.md`)).toContain('Deploys run on Fridays.')
+  })
+
+  it('asks before a hook-forced memory read without presenting it as a write', async () => {
+    const t = setup({
+      files: { '.agents/memory/deploy.md': 'Deploy day' },
+      hooks: hooksFor('PreToolUse', 'ask-memory'),
+      runHook: forceMemoryApprovalHook,
+    })
+    const { session, events, turnDone } = await startSession(t, 'allowAll')
+    t.api.script(
+      { calls: [{ name: 'read_memory', arguments: '{"scope":"project","path":"deploy.md"}' }] },
+      { text: 'read' },
+    )
+    await session.sendTurn([{ type: 'text', text: 'read memory' }])
+    const approval = await approvalRequest(events, 0)
+    expect(approval).toMatchObject({
+      toolName: 'read_memory',
+      subject: { kind: 'tool', toolName: 'read_memory' },
+      isJudgeEscalated: true,
+    })
+    await session.decideApproval({
+      approvalId: approval.approvalId,
+      choiceId: 'allow_once',
+      requirementId: approval.requirementId,
+    })
+    await turnDone()
+    expect(memoryRows(events)[0]?.status).toBe('completed')
+    expect(memoryRows(events)[0]?.visibleOutput).toContain('Deploy day')
+  })
+
+  it('keeps Plan denial ahead of a hook-forced memory approval', async () => {
+    const t = setup({
+      hooks: hooksFor('PreToolUse', 'ask-memory'),
+      runHook: forceMemoryApprovalHook,
+    })
+    const { session, events, turnDone } = await startSession(t, 'denyUnmatched')
+    t.api.script({ calls: [ADD_DEPLOY] }, { text: 'refused' })
+    await session.sendTurn([{ type: 'text', text: 'remember deploy day' }])
+    await turnDone()
+    expect(events.some((event) => event.type === 'approvalRequested')).toBe(false)
+    expect(memoryRows(events)[0]?.status).toBe('rejected')
+    expect(t.files.has(`${ROOT}/.agents/memory/deploy.md`)).toBe(false)
+  })
+
+  it('routes a hook-rewritten memory note through its final path approval and store', async () => {
+    const t = setup({
+      hooks: hooksFor('PreToolUse', 'review-memory'),
+      runHook: () =>
+        hookReply(
+          JSON.stringify({
+            hookSpecificOutput: {
+              hookEventName: 'PreToolUse',
+              permissionDecision: 'allow',
+              updatedInput: {
+                scope: 'project',
+                path: 'reviewed.md',
+                content: 'Reviewed memory content.',
+                type: 'reference',
+                description: 'Reviewed note',
+              },
+            },
+          }),
+        ),
+    })
+    const { session, events, turnDone } = await startSession(t)
+    t.api.script({ calls: [ADD_DEPLOY] }, { text: 'saved' })
+    await session.sendTurn([{ type: 'text', text: 'remember the review' }])
+    const approval = await approvalRequest(events, 0)
+    expect(approval.subject).toMatchObject({
+      kind: 'fileWrite',
+      path: '.agents/memory/reviewed.md',
+    })
+    await session.decideApproval({
+      approvalId: approval.approvalId,
+      choiceId: 'allow_once',
+      requirementId: approval.requirementId,
+    })
+    await turnDone()
+    expect(t.files.get(`${ROOT}/.agents/memory/reviewed.md`)).toContain('Reviewed memory content.')
+    expect(t.files.has(`${ROOT}/.agents/memory/deploy.md`)).toBe(false)
+  })
+
   it('offers the memory tools and the snapshot only in a trusted workspace with a store', async () => {
     const trusted = setup({ files: { '.agents/memory/MEMORY.md': '- [Build](build.md) | npm\n' } })
     const first = await startSession(trusted)
@@ -3033,9 +3887,317 @@ describe('ModelApiSession subagents (M48)', () => {
 
 /** The `function_call_output` the replay holds for one call id, from a request body. */
 function outputFor(body: Record<string, unknown> | undefined, callId: string): unknown {
-  const input = (body?.['input'] ?? []) as readonly Record<string, unknown>[]
-  return input.find((item) => item['type'] === 'function_call_output' && item['call_id'] === callId)
+  const raw = body?.['input']
+  if (!Array.isArray(raw)) {
+    return undefined
+  }
+  const input: readonly unknown[] = raw
+  return input.find(
+    (item) =>
+      typeof item === 'object' &&
+      item !== null &&
+      !Array.isArray(item) &&
+      'type' in item &&
+      item.type === 'function_call_output' &&
+      'call_id' in item &&
+      item.call_id === callId,
+  )
 }
+
+it('refuses malformed fake response input before replay inspection', () => {
+  expect(
+    outputFor({ input: { type: 'function_call_output', call_id: 'one' } }, 'one'),
+  ).toBeUndefined()
+  expect(
+    outputFor({ input: [null, 1, { type: 'function_call_output', call_id: 'one' }] }, 'one'),
+  ).toMatchObject({ call_id: 'one' })
+})
+
+describe('ModelApiSession: child hook boundaries (M51 with M48)', () => {
+  it('stops dispatching stored hooks as soon as the machine opt-in turns off', async () => {
+    let isEnabled = true
+    const runHook = vi.fn(() =>
+      Promise.resolve({
+        stdout: '',
+        stderr: '',
+        exitCode: 0,
+        isTimedOut: false,
+        isCancelled: false,
+      }),
+    )
+    const t = setup({
+      hooks: hooksFor('UserPromptSubmit', 'observe'),
+      isHooksEnabled: () => isEnabled,
+      runHook,
+    })
+    const { session, turnDone } = await startSession(t)
+    t.api.script({ text: 'First done.' }, { text: 'Second done.' })
+    await session.sendTurn([{ type: 'text', text: 'first' }])
+    await turnDone()
+    expect(runHook).toHaveBeenCalledOnce()
+    isEnabled = false
+    await session.sendTurn([{ type: 'text', text: 'second' }])
+    await turnDone()
+    expect(runHook).toHaveBeenCalledOnce()
+  })
+
+  it('runs SubagentStart once at the admitted child turn and keeps its context in the child', async () => {
+    const seen: unknown[] = []
+    const t = setupSubagents({
+      hooks: hooksFor('SubagentStart', 'announce'),
+      runHook: (_command, payload) => {
+        seen.push(z.unknown().parse(JSON.parse(payload)))
+        return Promise.resolve({
+          stdout: 'Child-only start context',
+          stderr: '',
+          exitCode: 0,
+          isTimedOut: false,
+          isCancelled: false,
+        })
+      },
+    })
+    const { session } = await startApprovedSubagentSession(t)
+    await completePaidChild(t, session, 'spawn_child_start_hook')
+    expect(seen).toMatchObject([
+      {
+        hook_event_name: 'SubagentStart',
+        subagent_id: 'subagent-1',
+        child_session_id: `${session.sessionId}:subagent-1`,
+      },
+    ])
+    const bodies = t.api.responseBodies()
+    const childBody = bodies.find((body) => String(body['prompt_cache_key']).includes(':subagent-'))
+    expect(JSON.stringify(childBody?.['input'])).toContain('Child-only start context')
+    expect(
+      bodies
+        .filter((body) => !String(body['prompt_cache_key']).includes(':subagent-'))
+        .some((body) => JSON.stringify(body['input']).includes('Child-only start context')),
+    ).toBe(false)
+    t.api.script({ text: 'Follow-up done.' })
+    await session.messageSubagent('subagent-1', 'Another task', true)
+    await vi.waitFor(() => {
+      expect(t.api.responseBodies()).toHaveLength(bodies.length + 1)
+    })
+    expect(seen).toHaveLength(1)
+  })
+
+  it('does not start a child hook when paid spawn consent is declined', async () => {
+    const runHook = vi.fn(() =>
+      Promise.resolve({
+        stdout: 'Must not run',
+        stderr: '',
+        exitCode: 0,
+        isTimedOut: false,
+        isCancelled: false,
+      }),
+    )
+    const t = setupSubagents({ hooks: hooksFor('SubagentStart', 'announce'), runHook })
+    const { session, events, turnDone } = await startSession(t, 'allowAll')
+    t.api.script(
+      {
+        calls: [
+          {
+            name: 'subagent_spawn',
+            arguments: '{"role":"explorer","objective":"Review files"}',
+            callId: 'declined_start_hook',
+          },
+        ],
+      },
+      { text: 'Parent continues.' },
+    )
+    await session.sendTurn([{ type: 'text', text: 'delegate' }])
+    const approval = await approvalRequest(events, 0)
+    await session.decideApproval({
+      approvalId: approval.approvalId,
+      choiceId: 'abort',
+      requirementId: approval.requirementId,
+    })
+    await turnDone()
+    expect(runHook).not.toHaveBeenCalled()
+    expect(t.paidUses.filter((use) => use.feature === 'subagents')).toHaveLength(0)
+  })
+
+  it('does not start a hook for a queued child cancelled before capacity opens', async () => {
+    const runHook = vi.fn(() =>
+      Promise.resolve({
+        stdout: '',
+        stderr: '',
+        exitCode: 0,
+        isTimedOut: false,
+        isCancelled: false,
+      }),
+    )
+    const t = setupSubagents({ hooks: hooksFor('SubagentStart', 'announce'), runHook })
+    const { session } = await startApprovedSubagentSession(t)
+    const hold = await queueChildren(t, session)
+    try {
+      await vi.waitFor(() => {
+        expect(runHook).toHaveBeenCalledTimes(8)
+      })
+      await session.controlSubagent('subagent-9', 'stop')
+      expect(runHook).toHaveBeenCalledTimes(8)
+    } finally {
+      hold.resolve(undefined)
+      await t.host.close()
+    }
+  })
+
+  it('uses SubagentStop to continue a natural child reply within its existing paid grant', async () => {
+    const seen: unknown[] = []
+    const t = setupSubagents({
+      hooks: hooksFor('SubagentStop', 'continue-child'),
+      runHook: (_command, payload) => {
+        seen.push(z.unknown().parse(JSON.parse(payload)))
+        return Promise.resolve({
+          stdout:
+            seen.length === 1
+              ? JSON.stringify({ decision: 'block', reason: 'Review one more file' })
+              : '',
+          stderr: '',
+          exitCode: 0,
+          isTimedOut: false,
+          isCancelled: false,
+        })
+      },
+    })
+    const { session, events } = await startApprovedSubagentSession(t)
+    const holdParent = Promise.withResolvers<undefined>()
+    t.api.script(
+      {
+        calls: [
+          {
+            name: 'subagent_spawn',
+            arguments: '{"role":"explorer","objective":"Review files"}',
+            callId: 'spawn_for_stop_hook',
+          },
+        ],
+      },
+      { text: 'Parent done.', hold: holdParent.promise },
+      { text: 'Child first answer.' },
+      { text: 'Child final answer.' },
+    )
+    try {
+      await session.sendTurn([{ type: 'text', text: 'delegate' }])
+      await waitForChildResult(session)
+    } finally {
+      holdParent.resolve(undefined)
+    }
+    expect(seen).toMatchObject([
+      {
+        hook_event_name: 'SubagentStop',
+        subagent_id: 'subagent-1',
+        child_session_id: `${session.sessionId}:subagent-1`,
+        stop_hook_active: false,
+        last_assistant_message: 'Child first answer.',
+      },
+      {
+        hook_event_name: 'SubagentStop',
+        stop_hook_active: true,
+        last_assistant_message: 'Child final answer.',
+      },
+    ])
+    expect(
+      t.api
+        .responseBodies()
+        .filter((body) => String(body['prompt_cache_key']).includes(':subagent-')),
+    ).toHaveLength(2)
+    expect(t.paidUses.filter((use) => use.feature === 'subagents')).toHaveLength(2)
+    expect(
+      events.filter(
+        (event) => event.type === 'approvalRequested' && event.subject.paidFeature === 'subagents',
+      ),
+    ).toHaveLength(1)
+  })
+
+  it('lets SubagentStop block only within the four-request child grant', async () => {
+    const runHook = vi.fn(() =>
+      Promise.resolve({
+        stdout: JSON.stringify({ decision: 'block', reason: 'Keep reviewing' }),
+        stderr: '',
+        exitCode: 0,
+        isTimedOut: false,
+        isCancelled: false,
+      }),
+    )
+    const t = setupSubagents({ hooks: hooksFor('SubagentStop', 'keep-reviewing'), runHook })
+    const { session } = await startApprovedSubagentSession(t)
+    const holdParent = Promise.withResolvers<undefined>()
+    t.api.script(
+      {
+        calls: [
+          {
+            name: 'subagent_spawn',
+            arguments: '{"role":"explorer","objective":"Review files"}',
+            callId: 'spawn_for_stop_cap',
+          },
+        ],
+      },
+      { text: 'Parent done.', hold: holdParent.promise },
+      ...Array.from({ length: 4 }, () => ({ text: 'Child keeps reviewing.' })),
+      { text: 'Must not run.' },
+    )
+    try {
+      await session.sendTurn([{ type: 'text', text: 'delegate' }])
+      await waitForChildResult(session)
+    } finally {
+      holdParent.resolve(undefined)
+    }
+    expect(session.history().items.find((item) => item.kind === 'subagent')).toMatchObject({
+      result: { errorKind: 'subagent_requestLimit' },
+    })
+    expect(
+      t.api
+        .responseBodies()
+        .filter((body) => String(body['prompt_cache_key']).includes(':subagent-')),
+    ).toHaveLength(4)
+    expect(t.paidUses.filter((use) => use.feature === 'subagents')).toHaveLength(4)
+    expect(runHook).toHaveBeenCalledTimes(4)
+  })
+
+  it('does not let SubagentStop veto an explicit owner Stop', async () => {
+    const runHook = vi.fn(() =>
+      Promise.resolve({
+        stdout: JSON.stringify({ decision: 'block', reason: 'Keep going' }),
+        stderr: '',
+        exitCode: 0,
+        isTimedOut: false,
+        isCancelled: false,
+      }),
+    )
+    const t = setupSubagents({ hooks: hooksFor('SubagentStop', 'keep-going'), runHook })
+    const { session } = await startApprovedSubagentSession(t)
+    const holdParent = Promise.withResolvers<undefined>()
+    const holdChild = Promise.withResolvers<undefined>()
+    t.api.script(
+      {
+        calls: [
+          {
+            name: 'subagent_spawn',
+            arguments: '{"role":"explorer","objective":"Review files"}',
+            callId: 'spawn_before_explicit_stop',
+          },
+        ],
+      },
+      { text: 'Parent done.', hold: holdParent.promise },
+      { text: 'Child answer.', hold: holdChild.promise },
+    )
+    try {
+      await session.sendTurn([{ type: 'text', text: 'delegate' }])
+      await vi.waitFor(() => {
+        expect(
+          t.api
+            .responseBodies()
+            .filter((body) => String(body['prompt_cache_key']).includes(':subagent-')),
+        ).toHaveLength(1)
+      })
+      await session.controlSubagent('subagent-1', 'stop')
+      expect(runHook).not.toHaveBeenCalled()
+    } finally {
+      holdChild.resolve(undefined)
+      holdParent.resolve(undefined)
+    }
+  })
+})
 
 describe('ModelApiSession: protocol semantics (D26)', () => {
   it('answers a tool call that threw, so the conversation stays valid', async () => {
@@ -4878,6 +6040,62 @@ describe('ModelApiSession: background shell commands (M46)', () => {
     })
   })
 
+  it('runs the post-tool hook on a moved shell result while its background row remains live', async () => {
+    const io = heldShellToolIo({}, ROOT)
+    const observed: unknown[] = []
+    const t = setup({
+      io,
+      hooks: hooksFor('PostToolUse', 'observe'),
+      runHook: (_command, payload) => {
+        observed.push(JSON.parse(payload))
+        return permitHook()
+      },
+    })
+    const { session, events, turnDone } = await startSession(t, 'allowAll')
+    t.api.script({ calls: [DEV_SERVER_CALL] }, { text: 'Started it.' })
+    await session.sendTurn([{ type: 'text', text: 'start the dev server' }])
+    await vi.waitFor(() => {
+      expect(io.runs).toHaveLength(1)
+    })
+    const started = events.find(
+      (event): event is Extract<AgentEvent, { type: 'itemStarted' }> =>
+        event.type === 'itemStarted' && event.item.tool === 'bash',
+    )
+    if (started === undefined) {
+      throw new Error('expected the running shell call')
+    }
+    await session.moveToBackground(started.item.itemId)
+    await turnDone()
+    expect(observed).toContainEqual(
+      expect.objectContaining({
+        hook_event_name: 'PostToolUse',
+        tool_name: 'bash',
+        tool_response: MODEL_TEXT.shellMovedToBackground,
+      }),
+    )
+    expect(requestInput(t, 1)).toContainEqual({
+      type: 'function_call_output',
+      call_id: 'call_dev',
+      output: MODEL_TEXT.shellMovedToBackground,
+    })
+    expect(
+      session.history().items.find((item) => item.itemId === started.item.itemId),
+    ).toMatchObject({
+      status: 'inProgress',
+      background: true,
+    })
+    io.runs[0]?.finish({ stdout: 'ready', exitCode: 0 })
+    expect(await completionOf(events, started.item.itemId)).toMatchObject({
+      status: 'completed',
+      background: true,
+    })
+    expect(
+      events.filter(
+        (event) => event.type === 'itemCompleted' && event.item.itemId === started.item.itemId,
+      ),
+    ).toHaveLength(1)
+  })
+
   it('completes the row when the command ends and tells the model with its next request', async () => {
     const r = await runningShell()
     await r.session.moveToBackground(r.itemId)
@@ -5220,6 +6438,114 @@ function expectRequiredMcpLoss(events: readonly AgentEvent[]): void {
 }
 
 describe('ModelApiHost: MCP servers and the IDE tool (M50)', () => {
+  it('rechecks an MCP hook rewrite through the normal approval and external dispatch', async () => {
+    const mcp = fakeMcpSource([{ server: 'docs', tool: 'search' }])
+    const payloads: unknown[] = []
+    const t = setup({
+      mcpServers: mcp,
+      hooks: [
+        ...hooksFor('PreToolUse', 'rewrite'),
+        ...hooksFor('PostToolUse', 'observe'),
+        ...hooksFor('PostToolBatch', 'observe'),
+      ],
+      runHook: (_command, payload) => {
+        const frame = z.looseObject({ hook_event_name: z.string() }).parse(JSON.parse(payload))
+        payloads.push(frame)
+        return frame.hook_event_name === 'PreToolUse'
+          ? hookReply(
+              JSON.stringify({
+                hookSpecificOutput: {
+                  hookEventName: 'PreToolUse',
+                  updatedInput: { path: 'reviewed.md' },
+                },
+              }),
+            )
+          : hookReply()
+      },
+    })
+    const { session, events, turnDone } = await startSession(t)
+    t.api.script(
+      { calls: [{ name: 'mcp__docs__search', arguments: '{"path":"draft.md"}' }] },
+      { text: 'done' },
+    )
+    await session.sendTurn([{ type: 'text', text: 'search' }])
+    const approval = await approvalRequest(events, 0)
+    expect(approval.rawArgs).toBe('{"path":"reviewed.md"}')
+    await session.decideApproval({
+      approvalId: approval.approvalId,
+      choiceId: 'allow_once',
+      requirementId: approval.requirementId,
+    })
+    await turnDone()
+    expect(mcp.calls).toEqual([{ name: 'mcp__docs__search', args: '{"path":"reviewed.md"}' }])
+    expect(payloads).toEqual([
+      expect.objectContaining({ hook_event_name: 'PreToolUse', tool_input: { path: 'draft.md' } }),
+      expect.objectContaining({
+        hook_event_name: 'PostToolUse',
+        tool_input: { path: 'reviewed.md' },
+      }),
+      expect.objectContaining({
+        hook_event_name: 'PostToolBatch',
+        tool_calls: [expect.objectContaining({ tool_input: { path: 'reviewed.md' } })],
+      }),
+    ])
+  })
+
+  it('keeps MCP media and credential fields out of hook stdin while preserving the model result', async () => {
+    const media = `data:image/png;base64,${'A'.repeat(20_000)}`
+    const secret = 'mcp-private-token'
+    const args = { path: 'notes.md', data: media, authorization: `Bearer ${secret}` }
+    const mcp = fakeMcpSource([{ server: 'docs', tool: 'search' }])
+    mcp.outcomes = [
+      {
+        output: media,
+        outputParts: [
+          { type: 'input_text', text: 'Picture result' },
+          { type: 'input_image', image_url: media, detail: 'auto' },
+        ],
+        visibleOutput: 'Picture result',
+      },
+    ]
+    const payloads: string[] = []
+    const t = setup({
+      mcpServers: mcp,
+      hooks: [
+        ...hooksFor('PreToolUse', 'observe'),
+        ...hooksFor('PermissionRequest', 'observe'),
+        ...hooksFor('PostToolUse', 'observe'),
+        ...hooksFor('PostToolBatch', 'observe'),
+      ],
+      runHook: (_command, payload) => {
+        payloads.push(payload)
+        return hookReply()
+      },
+    })
+    const { session, events, turnDone } = await startSession(t)
+    t.api.script(
+      {
+        calls: [
+          { name: 'mcp__docs__search', arguments: JSON.stringify(args), callId: 'mcp_media' },
+        ],
+      },
+      { text: 'done' },
+    )
+    await session.sendTurn([{ type: 'text', text: 'search the notes' }])
+    const approval = await approvalRequest(events, 0)
+    await session.decideApproval({
+      approvalId: approval.approvalId,
+      choiceId: 'allow_once',
+      requirementId: approval.requirementId,
+    })
+    await turnDone()
+    expect(mcp.calls[0]?.args).toBe(JSON.stringify(args))
+    expect(payloads).toHaveLength(4)
+    expect(payloads.join('\n')).toContain('notes.md')
+    expect(payloads.join('\n').includes(media)).toBe(false)
+    expect(payloads.join('\n').includes(secret)).toBe(false)
+    expect(payloads.every((payload) => Buffer.byteLength(payload) < 8192)).toBe(true)
+    expect(JSON.stringify(t.api.responseBodies().at(-1)?.['input'])).toContain(media)
+  })
+
   const DIAGNOSTICS: McpTool = {
     name: 'getDiagnostics',
     description: 'Problems',
@@ -5265,6 +6591,17 @@ describe('ModelApiHost: MCP servers and the IDE tool (M50)', () => {
         },
       ],
     })
+  }
+
+  function heldRequiredHook(event: string, answer = '{}') {
+    const release = Promise.withResolvers<undefined>()
+    const mcp = connectedRequiredMcp()
+    const runHook = vi.fn(async () => {
+      await release.promise
+      return await hookReply(answer)
+    })
+    const t = setup({ mcpServers: mcp, hooks: hooksFor(event, 'held'), runHook })
+    return { release, mcp, runHook, t }
   }
 
   async function heldMcpCall(mcp: FakeMcpSource, gate: Promise<void>) {
@@ -5536,6 +6873,98 @@ describe('ModelApiHost: MCP servers and the IDE tool (M50)', () => {
     }
   })
 
+  it.each([
+    { event: 'PreLLMCall', answer: '{}', requestCount: 0 },
+    {
+      event: 'PostLLMCall',
+      answer: JSON.stringify({ decision: 'block', reason: 'hook refused' }),
+      requestCount: 1,
+    },
+    { event: 'Stop', answer: '{}', requestCount: 1 },
+  ])('required server loss wins after a held $event hook', async (scenario) => {
+    const held = heldRequiredHook(scenario.event, scenario.answer)
+    const { session, events, turnDone } = await startSession(held.t)
+    held.t.api.script({ text: 'done' })
+    await session.sendTurn([{ type: 'text', text: 'go' }])
+    await vi.waitFor(() => {
+      expect(held.runHook).toHaveBeenCalledOnce()
+    })
+    loseRequiredMcp(held.mcp)
+    held.release.resolve(undefined)
+    await turnDone()
+    expectRequiredMcpLoss(events)
+    expect(held.t.api.responseBodies()).toHaveLength(scenario.requestCount)
+  })
+
+  it('does not fetch after a required server dies during key retrieval', async () => {
+    const release = Promise.withResolvers<undefined>()
+    const mcp = connectedRequiredMcp()
+    let keyReads = 0
+    const t = setup({
+      mcpServers: mcp,
+      apiKey: async () => {
+        keyReads += 1
+        await release.promise
+        return 'LLM|1|secret'
+      },
+    })
+    const { session, events, turnDone } = await startSession(t)
+    t.api.script({ text: 'should not run' })
+    await session.sendTurn([{ type: 'text', text: 'go' }])
+    await vi.waitFor(() => {
+      expect(keyReads).toBeGreaterThan(0)
+    })
+    loseRequiredMcp(mcp)
+    release.resolve(undefined)
+    await turnDone()
+    expectRequiredMcpLoss(events)
+    expect(t.api.responseBodies()).toHaveLength(0)
+  })
+
+  it('fails a paid child when required MCP dies during its SubagentStop hook', async () => {
+    const release = Promise.withResolvers<undefined>()
+    const mcp = connectedRequiredMcp()
+    const runHook = vi.fn(async () => {
+      await release.promise
+      return await hookReply()
+    })
+    const t = setupSubagents({
+      mcpServers: mcp,
+      hooks: hooksFor('SubagentStop', 'held'),
+      runHook,
+    })
+    const { session } = await startApprovedSubagentSession(t)
+    const holdParent = Promise.withResolvers<undefined>()
+    t.api.script(
+      {
+        calls: [
+          {
+            name: 'subagent_spawn',
+            arguments: '{"role":"explorer","objective":"Review files"}',
+            callId: 'spawn_before_required_loss',
+          },
+        ],
+      },
+      { text: 'Parent done.', hold: holdParent.promise },
+      { text: 'Child done.' },
+    )
+    try {
+      await session.sendTurn([{ type: 'text', text: 'delegate' }])
+      await vi.waitFor(() => {
+        expect(runHook).toHaveBeenCalledOnce()
+      })
+      loseRequiredMcp(mcp)
+      release.resolve(undefined)
+      await waitForChildResult(session)
+      expect(session.history().items.find((item) => item.kind === 'subagent')).toMatchObject({
+        status: 'failed',
+      })
+    } finally {
+      release.resolve(undefined)
+      holdParent.resolve(undefined)
+    }
+  })
+
   it('does not start another model round after a required server stops during a tool call', async () => {
     const release = Promise.withResolvers<undefined>()
     const mcp = connectedRequiredMcp()
@@ -5546,6 +6975,39 @@ describe('ModelApiHost: MCP servers and the IDE tool (M50)', () => {
     expectRequiredMcpLoss(events)
     expect(t.api.responseBodies()).toHaveLength(1)
   })
+
+  it.each(['PostToolUse', 'PostToolBatch'] as const)(
+    'reports required MCP loss even when a %s hook asks to stop',
+    async (event) => {
+      const release = Promise.withResolvers<undefined>()
+      const mcp = connectedRequiredMcp()
+      mcp.gate = release.promise
+      const payloads: unknown[] = []
+      const t = setup({
+        mcpServers: mcp,
+        hooks: hooksFor(event, 'stop'),
+        runHook: (_command, payload) => {
+          payloads.push(JSON.parse(payload))
+          return hookReply(JSON.stringify({ continue: false, stopReason: 'hook stopped batch' }))
+        },
+      })
+      const { session, events, turnDone } = await startSession(t, 'allowAll')
+      t.api.script(
+        { calls: [{ name: 'mcp__docs__search', arguments: '{"path":"notes.md"}' }] },
+        { text: 'should not run' },
+      )
+      await session.sendTurn([{ type: 'text', text: 'search' }])
+      await vi.waitFor(() => {
+        expect(mcp.calls).toHaveLength(1)
+      })
+      loseRequiredMcp(mcp)
+      release.resolve(undefined)
+      await turnDone()
+      expect(payloads).toHaveLength(1)
+      expectRequiredMcpLoss(events)
+      expect(t.api.responseBodies()).toHaveLength(1)
+    },
+  )
 
   it('says why no server of the settings is loaded', async () => {
     const cases = [
