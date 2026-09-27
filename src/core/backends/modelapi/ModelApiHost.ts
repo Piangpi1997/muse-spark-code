@@ -2362,11 +2362,13 @@ export class ModelApiSession implements AgentSession {
       return { output: `Error: ${questions}`, visibleOutput: questions, failureReason: questions }
     }
     const userInputId = this.deps.newId()
-    this.emit({ type: 'questionRequested', userInputId, itemId, questions: [...questions] })
     let reply: QuestionReply
     try {
+      // Pending before it is shown, as an approval card is: an answer given
+      // as the card arrives must find it (the live sweep, 2026-09-27).
       reply = await waitFor<QuestionReply>(signal, (pending) => {
         this.pendingQuestions.set(userInputId, pending)
+        this.emit({ type: 'questionRequested', userInputId, itemId, questions: [...questions] })
       })
     } finally {
       this.pendingQuestions.delete(userInputId)

@@ -149,6 +149,15 @@ while they are (PLAN.md D30, D34).
 
 ### Added
 
+- **A live sweep of the Model API backend** (`npm run test:e2e:live:modelapi`,
+  opt-in with `MUSE_LIVE_MODEL_API=1`). The production backend runs against
+  Meta's real API in empty temporary workspaces, one case per feature. Only
+  the UI is replaced, by an answerer that allows each card and accepts each
+  price. Every request to api.meta.ai is counted with its usage, and a run
+  stops sending past $0.50. Every model call uses the contributor tier. Each
+  case checks that the key reached no log line, event or file. Never in CI.
+  See `docs/certification/release-0.9.0.md`.
+
 - **M53 review fixes (pending final gates).** A steered user message now cuts
   conversation rewind at an earlier distinct turn; an unsafe cut is hidden.
   Image restoration names the selected user card. A Muse Code side panel's
@@ -534,6 +543,11 @@ while they are (PLAN.md D30, D34).
 
 ### Fixed
 
+- **A question answered as it appears is taken (Model API).** An `ask_user`
+  card was announced before the session held it as pending. An answer given
+  in the same moment was refused as "not pending", and the turn waited for
+  ever. The card is now pending before it is shown, as an approval card
+  already was. Found by the live Model API sweep.
 - **Bounded paste and drop admission (M54).** The composer checks the shared
   encoded-media limit against existing and pending files before reading a
   pasted or dropped PDF. Host replies settle only their own request ID;
