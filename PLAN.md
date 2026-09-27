@@ -3817,6 +3817,25 @@ translations. The order is D36's table:
 
 ### M51 — Hooks on the Model API backend (D36)
 
+PR #39 review found a `PreToolUse` permission gap at the M49 join: the
+memory-tool branch returned before forwarding the hook's `ask` decision,
+so `add_memory` or `edit_memory` could write in Bypass without a card.
+The forced-approval bit now reaches the memory permission judgment after
+path placement and before execution. A forced card requires a human
+decision even when `PermissionRequest` hooks allow or Edit automatically
+would ordinarily answer a file write; Plan and Restricted Mode refusals
+still take precedence. The Bypass/Edit memory-write red tests found no
+card before this correction and now pass. Positive allow-once and
+hook-forced read paths also pass locally. Exact staged tree `0fbe2c47`
+passed full WIN-11-VM quality: 2,041 tests (3 skipped), 304 accessibility
+pages with zero violations or missing results, zero audit/secret/SAST
+findings, and zero checkout-owned processes. The next documented tree
+`58bcb9c5` passed local Windows `npm run quality` with the same 2,041/3
+unit result and 304-page accessibility result; all static, build, audit,
+secret and SAST gates passed. Redacted staged-patch gitleaks and independent
+process audit also found zero. This latest receipt changes the documented
+tree again, so its exact local gate and hosted review remain before merge.
+
 Independent final review found an unchecked cast in the Model API host test's
 fake response-body helper. The review cleanup replaces it with a runtime
 array/record check. A malformed fake input failed before the change and

@@ -62,6 +62,9 @@ while they are (PLAN.md D30, D34).
   shortening user text, instructions, tool descriptions or assistant output.
   Hook stdin is bounded again at the host adapter before process launch;
   the payload stays off command lines.
+  A `PreToolUse` hook's request for approval now reaches memory tools in
+  Bypass and Edit automatically; its card requires a human, while Plan
+  still refuses writes.
 - **Image edits** (M44, PLAN.md D37). With image generation on, the model
   can also change one workspace image, or combine up to four, by a prompt,
   into a new PNG (`edit_image`, Meta's `/images/edits`, $0.01 per image).
