@@ -477,6 +477,7 @@
   "usagePercentUsed": "Wykorzystano {percent}",
   "usageResetsIn": "reset za {duration}",
   "usageAsOf": "stan na {time}",
+  "usageAwaitingFreshReport": "Oczekiwanie na aktualny raport użycia Muse Code.",
   "usageNoSubscription": "Nie zgłoszono jeszcze użycia subskrypcji. Muse Code zgłasza je po pierwszej turze rozmowy.",
   "usageModelApiNote": "To okno działa na Twoim kluczu Model API: żądania są rozliczane z tego klucza według stawek za faktyczne użycie i zliczane na pulpicie dev.meta.ai.",
   "usageOpenDashboard": "Otwórz dev.meta.ai",
@@ -1126,7 +1127,7 @@
   "scheduleRunConfirmAccept": "Uruchom tym razem",
   "scheduleConfirmationExpired": "Model, rozmowa lub polecenie zmieniły się podczas potwierdzania. Sprawdź harmonogram i wybierz Uruchom ponownie.",
   "paidScheduledName": "Zaplanowane monity",
-  "paidScheduledPrice": "{input}/1 mln tokenów wejściowych, {cached}/1 mln tokenów wejściowych z pamięci podręcznej, {output}/1 mln tokenów wyjściowych (stawka standardowa; stawka dla współtwórców jest niższa)",
+  "paidScheduledPrice": "{input}/1 mln tokenów wejściowych, {cached}/1 mln tokenów wejściowych z pamięci podręcznej, {output}/1 mln tokenów wyjściowych",
   "paidConfirmScheduled": "Monit, którego termin nadszedł, czeka na Twoje uruchomienie. Każde uruchomienie wymaga ponownego potwierdzenia przed wywołaniem Model API. {price}. Rozliczane przez Twój klucz Model API; łączna kwota zależy od użytych tokenów.",
   "usagePaidScheduled": {
     "one": "{count} zaplanowane uruchomienie",

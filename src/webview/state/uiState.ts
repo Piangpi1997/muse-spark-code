@@ -1639,6 +1639,9 @@ function applyHostMessage(state: UiState, message: HostToWebviewMessage, at: num
             (message.status === 'signingIn' && state.auth.backend === 'modelApi'))
             ? state.schedules
             : [],
+        // No account identity accompanies authState: discard prior-account
+        // usage even if the backend name stays the same.
+        usageReport: undefined,
         auth: {
           status: message.status,
           detail: message.detail,

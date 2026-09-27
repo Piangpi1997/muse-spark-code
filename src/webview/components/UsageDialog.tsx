@@ -8,7 +8,7 @@
 // usage row, `/usage` and `/cost`; centred over the transcript with the
 // chat dimmed behind it.
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import {
   META_DASHBOARD_URL,
   MILLISECONDS_PER_SECOND,
@@ -16,6 +16,7 @@ import {
   PAID_PRICES_VERIFIED_ON,
   type PaidFeature,
   UI_TEXT,
+  USAGE_COUNTDOWN_REFRESH_MS,
 } from '../../shared/constants'
 import { fill, formatNumber, formatPercent, plural, templateParts } from '../../shared/l10n/text'
 import {
@@ -76,6 +77,16 @@ function UsageBar({
   readonly detail: string | undefined
   readonly nowMs: number
 }) {
+  if (resetsAtMs <= nowMs) {
+    return (
+      <div className="usage-row">
+        <div className="usage-row-head">
+          <span>{label}</span>
+        </div>
+        <div className="usage-row-meta">{UI_TEXT.usageAwaitingFreshReport}</div>
+      </div>
+    )
+  }
   const meta = [
     detail,
     fill(UI_TEXT.usageResetsIn, { duration: formatDuration(resetsAtMs, nowMs) }),
@@ -420,6 +431,15 @@ export function UsageDialog({
   onOpenExternal,
   onClose,
 }: UsageDialogProps) {
+  const [, setCountdownTick] = useState(0)
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setCountdownTick((tick) => tick + 1)
+    }, USAGE_COUNTDOWN_REFRESH_MS)
+    return () => {
+      clearInterval(interval)
+    }
+  }, [])
   const nowMs = now()
   // Priced on the Model API only, whose usage always carries its cached total.
   const cachedTokens = usage?.cachedTokens

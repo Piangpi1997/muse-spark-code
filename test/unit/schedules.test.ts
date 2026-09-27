@@ -119,4 +119,23 @@ describe('next local cron fire (M52)', () => {
     expect(nextScheduleFire(cadence, 10 * 60 * 1000, 12 * 60 * 1000)).toBe(11 * 60 * 1000)
     expect(nextScheduleFire(cadence, 12 * 60 * 1000, 12 * 60 * 1000)).toBeUndefined()
   })
+
+  it('requires the first fire before the seven-day expiry', () => {
+    const expires = 7 * MILLISECONDS_PER_DAY
+    expect(nextScheduleFire({ kind: 'interval', everyMs: expires }, 0, expires)).toBeUndefined()
+    expect(
+      nextScheduleFire({ kind: 'interval', everyMs: 60 * 1000 }, expires - 60 * 1000, expires),
+    ).toBeUndefined()
+    expect(
+      nextScheduleFire({ kind: 'interval', everyMs: 60 * 1000 }, expires - 2 * 60 * 1000, expires),
+    ).toBe(expires - 60 * 1000)
+    const beforeCron = new Date(2026, 8, 21, 8, 59).getTime()
+    expect(
+      nextScheduleFire(
+        { kind: 'cron', expression: '0 9 * * *' },
+        beforeCron,
+        beforeCron + 60 * 1000,
+      ),
+    ).toBeUndefined()
+  })
 })

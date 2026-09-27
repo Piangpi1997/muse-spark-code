@@ -168,6 +168,7 @@ import {
   paidChoices,
   PermissionEngine,
   type PermissionQuery,
+  type PermissionVerdict,
   type ToolClass,
 } from './permissions'
 import {
@@ -2123,7 +2124,7 @@ export class ModelApiSession implements AgentSession {
           ? paidChoices()
           : choicesFor(call.name, query.command)),
       ],
-      isJudgeEscalated: false,
+      isJudgeEscalated: requiresUserApproval,
       isProtectedWrite: query.isProtected === true,
     }
     let decision: ApprovalDecision
@@ -3071,24 +3072,43 @@ export class ModelApiSession implements AgentSession {
     signal: AbortSignal,
     query: PermissionQuery,
     subject: ApprovalSubject,
+    shouldForceApproval = false,
   ): Promise<CallResult | undefined> {
-    const verdict = this.permissions.verdict(query)
+    const verdict = this.verdictWithHook(query, shouldForceApproval)
     if (verdict === 'deny') {
-      return {
-        outcome: toolFailure(`${call.name} ${MODEL_TEXT.toolRefusedByMode}`),
-        isRejected: true,
-      }
+      return this.refusedByMode(call)
     }
     if (verdict === 'allow') {
       return undefined
     }
-    const approval = await this.askApproval(itemId, call, signal, query, subject)
+    const approval = await this.askApproval(
+      itemId,
+      call,
+      signal,
+      query,
+      subject,
+      undefined,
+      shouldForceApproval,
+    )
     return approval.isApproved
       ? undefined
       : {
           outcome: refusedOutcome(call, approval.feedback, approval.deniedByHook === true),
           isRejected: true,
         }
+  }
+
+  /** A hook may add a card to an allow, never override a mode's denial. */
+  private verdictWithHook(query: PermissionQuery, shouldForceApproval: boolean): PermissionVerdict {
+    const permitted = this.permissions.verdict(query)
+    return permitted === 'allow' && shouldForceApproval ? 'ask' : permitted
+  }
+
+  private refusedByMode(call: FunctionCallItem): CallResult {
+    return {
+      outcome: toolFailure(`${call.name} ${MODEL_TEXT.toolRefusedByMode}`),
+      isRejected: true,
+    }
   }
 
   /**
@@ -3101,6 +3121,7 @@ export class ModelApiSession implements AgentSession {
     call: FunctionCallItem,
     signal: AbortSignal,
     toolClass: ToolClass,
+    shouldForceApproval: boolean,
   ): Promise<CallResult> {
     const { memory } = this.deps
     if (memory === undefined) {
@@ -3113,13 +3134,18 @@ export class ModelApiSession implements AgentSession {
     if (!placed.ok) {
       return { outcome: toolFailure(placed.reason), isRejected: false }
     }
-    if (toolClass !== 'read') {
+    if (toolClass !== 'read' || shouldForceApproval) {
+      const subject: ApprovalSubject =
+        toolClass === 'read'
+          ? { kind: 'tool', toolName: call.name }
+          : { kind: 'fileWrite', path: placed.value.place.display, toolName: call.name }
       const refusal = await this.judge(
         itemId,
         call,
         signal,
         { toolName: call.name, toolClass, isProtected: false },
-        { kind: 'fileWrite', path: placed.value.place.display, toolName: call.name },
+        subject,
+        shouldForceApproval,
       )
       if (refusal !== undefined) {
         return refusal
@@ -3162,7 +3188,7 @@ export class ModelApiSession implements AgentSession {
       return { outcome: toolFailure(`unknown tool ${call.name}`), isRejected: false }
     }
     if (isMemoryTool(call.name)) {
-      return await this.decideAndRunMemory(itemId, call, signal, toolClass)
+      return await this.decideAndRunMemory(itemId, call, signal, toolClass, shouldForceApproval)
     }
     if (
       this.isSubagent &&
@@ -3206,13 +3232,9 @@ export class ModelApiSession implements AgentSession {
       isProtected: target?.ok === true && isProtectedPath(target.canonical),
       isReadOnly: external?.kind === 'mcp' && external.ref.isReadOnly,
     }
-    const permitted = this.permissions.verdict(query)
-    const verdict = permitted === 'allow' && shouldForceApproval ? 'ask' : permitted
+    const verdict = this.verdictWithHook(query, shouldForceApproval)
     if (verdict === 'deny') {
-      return {
-        outcome: toolFailure(`${call.name} ${MODEL_TEXT.toolRefusedByMode}`),
-        isRejected: true,
-      }
+      return this.refusedByMode(call)
     }
     let childGrant: ChildTaskGrant | undefined
     if (childTask !== undefined) {

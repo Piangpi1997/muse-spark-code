@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { EN } from '../../src/shared/l10n/en'
 import { setUiText } from '../../src/shared/l10n/text'
@@ -49,11 +49,103 @@ function renderDialog(overrides: Partial<UsageDialogProps> = {}) {
     onClose: vi.fn(),
     ...overrides,
   }
-  render(<UsageDialog {...props} />)
-  return props
+  const view = render(<UsageDialog {...props} />)
+  return { ...props, unmount: view.unmount }
 }
 
 describe('UsageDialog', () => {
+  it('advances both reset countdowns while open and stops its clock when closed', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(NOW)
+    try {
+      const view = renderDialog({
+        now: () => Date.now(),
+        report: {
+          backend: 'museCode',
+          account: undefined,
+          insights: undefined,
+          subscription: {
+            ...subscription,
+            weekly: { ...subscription.weekly, resetsAtMs: NOW + HOUR + 60_000 },
+          },
+        },
+      })
+      const dialog = screen.getByRole('dialog')
+      expect(dialog).toHaveTextContent('5-hour window · resets in 2h 5m')
+      expect(dialog).toHaveTextContent('resets in 1h 1m')
+      act(() => {
+        vi.advanceTimersByTime(60_000)
+      })
+      expect(dialog).toHaveTextContent('5-hour window · resets in 2h 4m')
+      expect(dialog).toHaveTextContent('resets in 1h')
+      view.unmount()
+      expect(vi.getTimerCount()).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('hides expired percentages and waits for a fresh provider report per row', () => {
+    renderDialog({
+      report: {
+        backend: 'museCode',
+        account: undefined,
+        insights: undefined,
+        subscription: {
+          ...subscription,
+          window: { ...subscription.window, resetsAtMs: NOW - 1 },
+        },
+      },
+    })
+    const dialog = screen.getByRole('dialog')
+    expect(dialog).toHaveTextContent('Current window')
+    expect(dialog).toHaveTextContent('Waiting for a fresh Muse Code usage report.')
+    expect(screen.queryByRole('progressbar', { name: /Current window/ })).toBeNull()
+    expect(dialog).not.toHaveTextContent('resets in now')
+    expect(screen.getByRole('progressbar', { name: 'This week: 130% used' })).toBeVisible()
+  })
+
+  it('expires the weekly row independently of the current five-hour window', () => {
+    renderDialog({
+      report: {
+        backend: 'museCode',
+        account: undefined,
+        insights: undefined,
+        subscription: {
+          ...subscription,
+          weekly: { ...subscription.weekly, resetsAtMs: NOW - 1 },
+        },
+      },
+    })
+    const dialog = screen.getByRole('dialog')
+    expect(screen.getByRole('progressbar', { name: 'Current window: 42% used' })).toBeVisible()
+    expect(screen.queryByRole('progressbar', { name: /This week/ })).toBeNull()
+    expect(dialog).toHaveTextContent('This weekWaiting for a fresh Muse Code usage report.')
+  })
+
+  it('shows opaque tiers generically and provider percentages and reset times verbatim', () => {
+    renderDialog({
+      report: {
+        backend: 'museCode',
+        account: undefined,
+        insights: undefined,
+        subscription: {
+          ...subscription,
+          tier: '27681393394859588',
+          window: { usedPercent: 63, resetsAtMs: NOW + HOUR, windowDurationMins: 90 },
+          weekly: { usedPercent: 11, resetsAtMs: NOW + DAY },
+        },
+      },
+      modelId: 'muse-spark-1.2',
+    })
+    const dialog = screen.getByRole('dialog')
+    expect(dialog).toHaveTextContent('PlanMuse Code subscription')
+    expect(dialog).toHaveTextContent('90-minute window · resets in 1h')
+    expect(screen.getByRole('progressbar', { name: 'Current window: 63% used' })).toHaveValue(63)
+    expect(dialog).toHaveTextContent('This week11% used')
+    expect(dialog).toHaveTextContent('resets in 1d')
+  })
+
   it('shows the plan, both windows as bars with reset times, and the observation age', () => {
     renderDialog()
     const dialog = screen.getByRole('dialog', { name: 'Account & usage' })

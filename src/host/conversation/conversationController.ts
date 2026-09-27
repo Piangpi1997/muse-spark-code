@@ -165,12 +165,6 @@ export interface SessionMemory {
   setLastSession(last: LastSession | undefined): Promise<void>
 }
 
-/** Where the last subscription window lives between sessions (extension global state). */
-export interface UsageCache {
-  read(): SubscriptionUsage | undefined
-  write(usage: SubscriptionUsage): Promise<void>
-}
-
 export interface ConversationDeps {
   readonly surface: ChatSurface
   readonly auth: AuthPort
@@ -224,8 +218,6 @@ export interface ConversationDeps {
   readonly openFile: (path: string, range: LineRange | undefined) => Promise<void>
   /** The picture a tool row names, from the workspace (M43, `loadToolImage`). */
   readonly readToolImage: (path: string) => Promise<ToolImageResult>
-  /** The subscription window the CLI last reported, kept across sessions (M16). */
-  readonly usageCache: UsageCache
   /** The IDE tool server for `session/start`, when it is listening. */
   readonly ideMcpEndpoint: () => Promise<SessionMcpHttpServer | undefined>
   readonly newAttachmentId: () => string
@@ -440,6 +432,11 @@ export class ConversationController {
   private sessionRecords: Map<string, SessionRecord> | undefined
   private readonly listWatch = new HostWatch()
   private readonly usageWatch = new HostWatch()
+  /** Usage belongs to one live host; a restarted host may use another account. */
+  private usageHost: AgentHost | undefined
+  private latestUsage: SubscriptionUsage | undefined
+  private usageEventRevision = 0
+  private usageReadSequence = 0
   /** The dictation driver, created on the first press (M9). */
   private dictation: DictationHandle | undefined
   private dictationStatus: DictationStatus = 'idle'
@@ -2611,12 +2608,30 @@ export class ConversationController {
   private async readUsage(): Promise<void> {
     try {
       const host = await this.deps.ensureHost()
+      if (this.usageHost !== host) {
+        this.usageHost = host
+        this.latestUsage = undefined
+      }
+      const readSequence = ++this.usageReadSequence
+      const eventRevision = this.usageEventRevision
       this.usageWatch.ensure(host, (watched) =>
         watched.onUsageChanged((usage) => {
+          if (this.usageHost === watched) {
+            this.usageEventRevision += 1
+          }
           void this.postUsage(watched, usage)
         }),
       )
-      await this.postUsage(host, await host.readUsage())
+      const subscription = await host.readUsage()
+      if (this.usageHost !== host || this.usageReadSequence !== readSequence) {
+        return
+      }
+      // An empty read can mean account switched within the same CLI host;
+      // only clear observations that preceded this read, not newer events.
+      if (subscription === undefined && this.usageEventRevision !== eventRevision) {
+        return
+      }
+      await this.postUsage(host, subscription)
     } catch (error: unknown) {
       this.notice('error', `${UI_TEXT.usageUnavailable}: ${describe(error)}`)
     }
@@ -2626,17 +2641,24 @@ export class ConversationController {
     host: AgentHost,
     subscription: SubscriptionUsage | undefined,
   ): Promise<void> {
+    if (!this.canPostUsage(host)) {
+      return
+    }
+    if (
+      subscription !== undefined &&
+      this.latestUsage !== undefined &&
+      subscription.observedAtMs < this.latestUsage.observedAtMs
+    ) {
+      return
+    }
+    this.latestUsage = subscription
+    const shown = subscription
     const account = await this.deps.accountFacts(host.info.kind)
     const insights = host.info.kind === 'museCode' ? await this.deps.usageInsights() : undefined
-    // The CLI reports a window only after it has seen a reply (M8, re-probed
-    // 2026-09-22: `usage/read` is empty after a host and even a session
-    // start). Until then the dialog shows the last window it ever reported,
-    // dated by its own `observedAtMs` (M16).
-    if (subscription !== undefined) {
-      await this.deps.usageCache.write(subscription)
+    // An older read or a stopped host must not replace a newer observation.
+    if (!this.canPostUsage(host) || this.latestUsage !== shown) {
+      return
     }
-    const shown =
-      subscription ?? (host.info.kind === 'museCode' ? this.deps.usageCache.read() : undefined)
     this.post({
       type: 'usageReport',
       backend: host.info.kind,
@@ -2644,6 +2666,12 @@ export class ConversationController {
       ...(shown !== undefined && { subscription: shown }),
       ...(insights !== undefined && { insights }),
     })
+  }
+
+  private canPostUsage(host: AgentHost): boolean {
+    return (
+      !this.isDisposed && this.usageHost === host && this.deps.auth.current.status === 'signedIn'
+    )
   }
 
   /** An owner command on a subagent from the Agent map (M18); the CLI's item updates carry the outcome. */
@@ -3237,6 +3265,8 @@ export class ConversationController {
     this.dropSession(false)
     this.listWatch.forget()
     this.usageWatch.forget()
+    this.usageHost = undefined
+    this.latestUsage = undefined
   }
 
   /**
@@ -3254,6 +3284,8 @@ export class ConversationController {
     this.dropSession(false)
     this.listWatch.forget()
     this.usageWatch.forget()
+    this.usageHost = undefined
+    this.latestUsage = undefined
     if (exit.isPersistent) {
       this.deps.auth.markBackendError(`${UI_TEXT.hostExited} (${exit.description})`)
     } else if (didHaveSession) {
@@ -3272,6 +3304,8 @@ export class ConversationController {
     this.dropSession()
     this.listWatch.dispose()
     this.usageWatch.dispose()
+    this.usageHost = undefined
+    this.latestUsage = undefined
     this.dictation?.dispose()
     this.dictation = undefined
     this.retiredDictation?.dispose()

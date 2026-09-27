@@ -455,6 +455,7 @@
   "usagePercentUsed": "{percent} kullanıldı",
   "usageResetsIn": "{duration} içinde sıfırlanır",
   "usageAsOf": "{time} itibarıyla",
+  "usageAwaitingFreshReport": "Güncel Muse Code kullanım raporu bekleniyor.",
   "usageNoSubscription": "Henüz abonelik kullanımı bildirilmedi. Muse Code bunu bir konuşmanın ilk turundan sonra bildirir.",
   "usageModelApiNote": "Bu pencere Model API anahtarınızla çalışıyor: istekler kullandıkça öde ücretleriyle anahtara faturalandırılır ve dev.meta.ai panosunda sayılır.",
   "usageOpenDashboard": "dev.meta.ai adresini aç",
@@ -1066,7 +1067,7 @@
   "scheduleRunConfirmAccept": "Bu kez çalıştır",
   "scheduleConfirmationExpired": "Onay sırasında model, konuşma veya istem değişti. Zamanlamayı gözden geçirip yeniden Çalıştır'ı seçin.",
   "paidScheduledName": "Zamanlanmış istemler",
-  "paidScheduledPrice": "1 milyon giriş tokenı başına {input}, 1 milyon önbelleğe alınmış giriş tokenı başına {cached}, 1 milyon çıkış tokenı başına {output} (standart katman; katkıda bulunan katmanı daha ucuzdur)",
+  "paidScheduledPrice": "1 milyon giriş tokenı başına {input}, 1 milyon önbelleğe alınmış giriş tokenı başına {cached}, 1 milyon çıkış tokenı başına {output}",
   "paidConfirmScheduled": "Zamanı gelen zamanlanmış istem, çalıştırmanızı bekler. Her çalıştırma, Model API çağrısından önce yeniden onay ister. {price}. Model API anahtarınıza faturalandırılır; toplam, kullanılan tokenlara göre değişir.",
   "usagePaidScheduled": {
     "one": "{count} zamanlanmış çalıştırma",

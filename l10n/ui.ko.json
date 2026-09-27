@@ -444,6 +444,7 @@
   "usagePercentUsed": "{percent} 사용됨",
   "usageResetsIn": "{duration} 후 재설정",
   "usageAsOf": "{time} 기준",
+  "usageAwaitingFreshReport": "Muse Code의 최신 사용량 보고서를 기다리는 중입니다.",
   "usageNoSubscription": "아직 보고된 구독 사용량이 없습니다. Muse Code는 대화의 첫 번째 턴 후에 사용량을 보고합니다.",
   "usageModelApiNote": "이 창은 Model API 키로 실행됩니다. 요청은 종량제 요금으로 키에 청구되며 dev.meta.ai 대시보드에 집계됩니다.",
   "usageOpenDashboard": "dev.meta.ai 열기",
@@ -1036,7 +1037,7 @@
   "scheduleRunConfirmAccept": "이번에 실행",
   "scheduleConfirmationExpired": "확인하는 동안 모델, 대화 또는 프롬프트가 변경되었습니다. 일정을 확인하고 실행을 다시 선택하세요.",
   "paidScheduledName": "예약된 프롬프트",
-  "paidScheduledPrice": "입력 토큰 100만 개당 {input}, 캐시된 입력 토큰 100만 개당 {cached}, 출력 토큰 100만 개당 {output}(표준 요금제, 기여자 요금제는 더 저렴함)",
+  "paidScheduledPrice": "입력 토큰 100만 개당 {input}, 캐시된 입력 토큰 100만 개당 {cached}, 출력 토큰 100만 개당 {output}",
   "paidConfirmScheduled": "실행 시점이 된 예약된 프롬프트는 사용자가 실행할 때까지 기다립니다. 실행할 때마다 Model API 호출 전에 다시 확인합니다. {price}. Model API 키로 청구되며 총액은 사용한 토큰 수에 따라 달라집니다.",
   "usagePaidScheduled": {
     "other": "예약된 실행 {count}회"

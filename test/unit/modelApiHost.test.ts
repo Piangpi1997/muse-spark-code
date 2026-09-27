@@ -12,6 +12,7 @@ import {
   MODEL_API_MAX_TOOL_ROUNDS,
   GOAL_OBJECTIVE_MAX_CHARS,
   MODEL_TEXT,
+  SCHEDULE_LIFETIME_MS,
   type PaidFeature,
   UI_TEXT,
 } from '../../src/shared/constants'
@@ -760,6 +761,23 @@ async function startAccountScopedSchedules(
 }
 
 describe('Model API scheduled prompts (M52)', () => {
+  it('refuses a seven-day cadence before storing a never-runnable job', async () => {
+    const scheduleStore = createFileScheduleStore({
+      directory: path.join(scheduleRoot, 'seven-day-boundary'),
+      now: () => 1_000_000,
+      log: new FakeLogOutputChannel(),
+    })
+    const { t, session, schedules } = await startAccountScopedSchedules(scheduleStore, () =>
+      Promise.resolve(FAKE_MODEL_API_ACCOUNT_ID),
+    )
+    await expect(
+      schedules.create({ kind: 'interval', everyMs: SCHEDULE_LIFETIME_MS }, 'Review tests'),
+    ).rejects.toThrow(UI_TEXT.scheduleNoFire)
+    expect(await scheduleStore.list(session.sessionId)).toEqual([])
+    expect(t.api.responseBodies()).toEqual([])
+    await t.host.close()
+  })
+
   it('creates locally without a paid request and keeps key identity out of the panel event', async () => {
     const t = setup({
       store: memorySessionStore(),
@@ -2406,6 +2424,14 @@ const ADD_DEPLOY = {
 const DEPLOY_WRITTEN =
   '{"success":true,"scope":"project","path":"deploy.md","operation":"add","message":"memory note written"}'
 
+function forceMemoryApprovalHook() {
+  return hookReply(
+    JSON.stringify({
+      hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'ask' },
+    }),
+  )
+}
+
 /** The memory rows' final snapshots, in order. */
 const memoryRows = (events: readonly AgentEvent[]) =>
   events.flatMap((event) =>
@@ -2417,6 +2443,119 @@ const memoryRows = (events: readonly AgentEvent[]) =>
   )
 
 describe('ModelApiSession: memory (M49)', () => {
+  it.each(['allowAll', 'onRequest'] as const)(
+    'makes a PreToolUse ask require a human for memory writes in %s',
+    async (mode) => {
+      for (const call of [
+        ADD_DEPLOY,
+        {
+          name: 'edit_memory',
+          arguments: JSON.stringify({
+            scope: 'project',
+            path: 'prefs.md',
+            old_str: 'Tea',
+            new_str: 'Coffee',
+          }),
+          callId: 'call_edit',
+        },
+      ]) {
+        const t = setup({
+          files: { '.agents/memory/prefs.md': 'Tea' },
+          hooks: [
+            ...hooksFor('PreToolUse', 'ask-memory'),
+            ...hooksFor('PermissionRequest', 'allow-memory'),
+          ],
+          runHook: (_command, payload) =>
+            payload.includes('"hook_event_name":"PreToolUse"')
+              ? forceMemoryApprovalHook()
+              : permitHook(),
+        })
+        const { session, events, turnDone } = await startSession(t, mode)
+        t.api.script({ calls: [call] }, { text: 'done' })
+        await session.sendTurn([{ type: 'text', text: 'remember the preference' }])
+        const request = await approvalRequest(events, 0)
+        expect(request).toMatchObject({
+          toolName: call.name,
+          subject: { kind: 'fileWrite', toolName: call.name },
+          isJudgeEscalated: true,
+        })
+        expect(t.files.has(`${ROOT}/.agents/memory/deploy.md`)).toBe(false)
+        expect(t.files.get(`${ROOT}/.agents/memory/prefs.md`)).toBe('Tea')
+        await session.decideApproval({
+          approvalId: request.approvalId,
+          choiceId: 'abort',
+          requirementId: request.requirementId,
+        })
+        await turnDone()
+        expect(memoryRows(events)[0]?.status).toBe('rejected')
+        expect(t.files.has(`${ROOT}/.agents/memory/deploy.md`)).toBe(false)
+        expect(t.files.get(`${ROOT}/.agents/memory/prefs.md`)).toBe('Tea')
+      }
+    },
+  )
+
+  it('runs a hook-forced memory write only after Allow once in Bypass', async () => {
+    const t = setup({
+      hooks: hooksFor('PreToolUse', 'ask-memory'),
+      runHook: forceMemoryApprovalHook,
+    })
+    const { session, events, turnDone } = await startSession(t, 'allowAll')
+    t.api.script({ calls: [ADD_DEPLOY] }, { text: 'saved' })
+    await session.sendTurn([{ type: 'text', text: 'remember deploy day' }])
+    const approval = await approvalRequest(events, 0)
+    expect(t.files.has(`${ROOT}/.agents/memory/deploy.md`)).toBe(false)
+    await session.decideApproval({
+      approvalId: approval.approvalId,
+      choiceId: 'allow_once',
+      requirementId: approval.requirementId,
+    })
+    await turnDone()
+    expect(memoryRows(events)[0]?.status).toBe('completed')
+    expect(t.files.get(`${ROOT}/.agents/memory/deploy.md`)).toContain('Deploys run on Fridays.')
+  })
+
+  it('asks before a hook-forced memory read without presenting it as a write', async () => {
+    const t = setup({
+      files: { '.agents/memory/deploy.md': 'Deploy day' },
+      hooks: hooksFor('PreToolUse', 'ask-memory'),
+      runHook: forceMemoryApprovalHook,
+    })
+    const { session, events, turnDone } = await startSession(t, 'allowAll')
+    t.api.script(
+      { calls: [{ name: 'read_memory', arguments: '{"scope":"project","path":"deploy.md"}' }] },
+      { text: 'read' },
+    )
+    await session.sendTurn([{ type: 'text', text: 'read memory' }])
+    const approval = await approvalRequest(events, 0)
+    expect(approval).toMatchObject({
+      toolName: 'read_memory',
+      subject: { kind: 'tool', toolName: 'read_memory' },
+      isJudgeEscalated: true,
+    })
+    await session.decideApproval({
+      approvalId: approval.approvalId,
+      choiceId: 'allow_once',
+      requirementId: approval.requirementId,
+    })
+    await turnDone()
+    expect(memoryRows(events)[0]?.status).toBe('completed')
+    expect(memoryRows(events)[0]?.visibleOutput).toContain('Deploy day')
+  })
+
+  it('keeps Plan denial ahead of a hook-forced memory approval', async () => {
+    const t = setup({
+      hooks: hooksFor('PreToolUse', 'ask-memory'),
+      runHook: forceMemoryApprovalHook,
+    })
+    const { session, events, turnDone } = await startSession(t, 'denyUnmatched')
+    t.api.script({ calls: [ADD_DEPLOY] }, { text: 'refused' })
+    await session.sendTurn([{ type: 'text', text: 'remember deploy day' }])
+    await turnDone()
+    expect(events.some((event) => event.type === 'approvalRequested')).toBe(false)
+    expect(memoryRows(events)[0]?.status).toBe('rejected')
+    expect(t.files.has(`${ROOT}/.agents/memory/deploy.md`)).toBe(false)
+  })
+
   it('routes a hook-rewritten memory note through its final path approval and store', async () => {
     const t = setup({
       hooks: hooksFor('PreToolUse', 'review-memory'),

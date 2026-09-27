@@ -3844,7 +3844,58 @@ translations. The order is D36's table:
 | M55       | Sign in and install Muse Code from the panel (M41 folded in)                                                                          |
 | M56       | Enterprise network: proxy and certificates, the sandbox network switch, no session log, the CLI's config status                       |
 
+### M53 follow-up — Account & usage reset accuracy
+
+**Status 2026-09-26: focused implementation green on an isolated branch;
+fold into M53 after M52, with no separate hosted run.** Certification record:
+`docs/certification/m53-usage-timing.md`.
+
+- Use Muse Code's `usage/read` and `usage/changed` account percentages and
+  absolute reset timestamps as reported. Its SDK has one account-level usage
+  payload, not model-specific quota or plan-name fields. Meta's public Muse
+  Code subscription page publishes an Everyday five-hour allowance, with
+  High 5× and Power 20× capacity, but no per-model conversion or weekly reset
+  rule. The owner's Muse-account Upgrade screen lists different plan names
+  and weekly token grants; no capture establishes that screen as the CLI's
+  `usage/read` entitlement. Do not derive countdowns or usage weights from
+  either plan table, selected model or opaque MSP tier.
+- Recompute visible countdowns while Account & usage stays open, at least
+  once per minute. When a reported reset has passed without a newer frame,
+  label that row as awaiting fresh usage and hide its old percentage and
+  countdown. Retain the observation's age so the user can see why.
+- Drop the global last-usage fallback and attempt to erase its legacy stored
+  value on activation. Cleanup failure does not block activation because no
+  code reads the old value. It has no account identity, so a new sign-in must not inherit
+  another account's plan, percentages or reset time. Clear the webview's
+  report on authentication changes. An empty `usage/read` also clears a
+  same-host observation because the account may have changed. Within one
+  live host, prefer the newest `observedAtMs`; an older or empty read begun
+  before a newer `usage/changed` must not overwrite that event. Discard
+  results from a host stopped or replaced.
+- Prove the timer, expired row, authentication boundary and out-of-order
+  delivery tests fail before the correction; run focused gates, then the
+  exact integrated M53 quality and hosted gates before any PR claim.
+
 ### M51 — Hooks on the Model API backend (D36)
+
+PR #39 review found a `PreToolUse` permission gap at the M49 join: the
+memory-tool branch returned before forwarding the hook's `ask` decision,
+so `add_memory` or `edit_memory` could write in Bypass without a card.
+The forced-approval bit now reaches the memory permission judgment after
+path placement and before execution. A forced card requires a human
+decision even when `PermissionRequest` hooks allow or Edit automatically
+would ordinarily answer a file write; Plan and Restricted Mode refusals
+still take precedence. The Bypass/Edit memory-write red tests found no
+card before this correction and now pass. Positive allow-once and
+hook-forced read paths also pass locally. Exact staged tree `0fbe2c47`
+passed full WIN-11-VM quality: 2,041 tests (3 skipped), 304 accessibility
+pages with zero violations or missing results, zero audit/secret/SAST
+findings, and zero checkout-owned processes. The next documented tree
+`58bcb9c5` passed local Windows `npm run quality` with the same 2,041/3
+unit result and 304-page accessibility result; all static, build, audit,
+secret and SAST gates passed. Redacted staged-patch gitleaks and independent
+process audit also found zero. This latest receipt changes the documented
+tree again, so its exact local gate and hosted review remain before merge.
 
 Independent final review found an unchecked cast in the Model API host test's
 fake response-body helper. The review cleanup replaces it with a runtime
@@ -3886,10 +3937,10 @@ Run `36282344418` then reported `isTimedOut: true`, `elapsedMs: 11027`,
 empty stdout/stderr and no cancellation. Microsoft documents that
 [stdin is not connected to PowerShell's pipeline for input](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_redirection?view=powershell-5.1),
 while [`Console.In` reads standard input](https://learn.microsoft.com/en-us/dotnet/api/system.console.in?view=netframework-4.8.1).
-On Windows, the hook wrapper now explicitly reads its UTF-8 stdin and pipes
-it to cmd, with the existing 256 KiB hook-input cap enforced before spawn;
-the job-object join, allowlisted environment, 10 second test operation cap
-and child command line stay intact. A local Unicode JSON echo drill passed;
+A diagnostic Windows wrapper explicitly read UTF-8 stdin and piped it to
+cmd, with the existing 256 KiB hook-input cap enforced before spawn; the
+job-object join, allowlisted environment and child command line stayed
+intact. A local Unicode JSON echo drill passed;
 removing the adapter cap made its oversized-input guard test fail before
 restoration. Exact staged tree `c977c836` passed a real Unicode+EOF hook
 drill and full WIN-11-VM `npm run quality`: 2,036 tests passed (3 skipped),
@@ -3898,6 +3949,30 @@ audit, gitleaks and SAST found zero. The remote tree matched before/after
 and process audit found zero checkout-owned processes. This receipt changes
 documentation, so final exact local Windows and hosted branch proof remain
 before a PR.
+Hosted run `36284566101` on `bf559d4` still timed out the controlled
+Windows echo case at 12,232 ms with empty output, despite explicit stdin
+forwarding. That does not prove stdin was the cause. The next diagnostic
+uses a 30 second budget only for this real-process fixture (still far below
+the product's 600 second default) and a 60 second Vitest envelope, while
+keeping the exit/Unicode echo/no-timeout assertions and all separate
+timeout gates. A late success would point to hosted startup pressure; a
+30 second hang would call for deeper I/O work. If late success occurs,
+compare the original wrapper under the same hosted budget before
+retaining extra runtime forwarding code. Run `36285882702` then passed
+all seven hosted jobs on `cadb565`; its Windows Unicode/EOF hook test took
+28,779 ms, near the 30 second fixture cap. An isolated pre-forwarding
+wrapper tree `9ebcdf21` passed that Unicode/EOF test locally and on
+WIN-11-VM with no owned process left. The extra PowerShell read/pipe has
+no demonstrated benefit, so revert only that line while keeping the
+256 KiB adapter guard. Raise this fixture's bounded operation budget to
+60 seconds and its Vitest envelope to 90 seconds, still below the 600
+second product default; all separate timeout behavior tests remain. Exact
+staged tree `b9667382` then passed a focused Unicode/EOF test and full
+WIN-11-VM quality: 2,036 tests passed (3 skipped), all 304 a11y pages
+returned with zero violations/undecided/missing, and audit, gitleaks and
+SAST found zero. Remote tree and process audit were clean. This receipt
+changes documentation; exact host-local and hosted proof on the simpler
+wrapper remain required before a PR.
 An M54 integration review found a separate hook-stdin privacy boundary:
 `input_text`, developer instructions, tool descriptions and assistant output
 can themselves contain pasted `data:` media URLs. The common model-call
@@ -4484,7 +4559,7 @@ later passed its exact-tree local and hosted gates before merge.
 
 ### M52 — Scheduled prompts (D36)
 
-**Status 2026-09-26: M51 join staged; combined certification open.** The
+**Status 2026-09-26: PR #40 expiry and tariff fixes staged; final gate open.** The
 isolated M52 worktree is based on `34002ab`; its pre-M47 79-path staged tree
 is pinned at `refs/backup/m52-before-m47`. Sixteen M47-base fake schedule,
 paid guard, UI and workflow suites passed 622/622; all five TypeScript
@@ -4560,6 +4635,32 @@ emits an empty schedule list before the asynchronous restart, while a CLI
 sign-in attempt that keeps the session live does not drop it. The focused
 test passed after the fix; no real key or Model API call was used. This
 change requires its own exact-tree full gate before a commit.
+PR #40 review exposed two M52 boundaries. A seven-day interval first fires
+exactly at the seven-day expiry, so normal polling after that instant prunes
+the job without a runnable occurrence. Treat expiry as exclusive when
+calculating fires; reject a cadence with no eligible fire before creating
+storage. An eligible due occurrence remains pending until Run, Cancel or the
+seven-day expiry, whichever comes first. Prune and refuse claims at expiry,
+including old stored jobs whose first fire equals it. The scheduled
+feature-enable price currently quotes
+only standard token rates, and the per-run modal reuses those rates even for
+a contributor model. Show both verified tariff tiers at feature enable and
+the selected model's exact tier in each run modal; an unpriced model cannot
+gain consent. Preserve all other paid gates and the zero-request decline.
+Add red/green expiry, contributor, and unknown-model tests, update all
+localized rate templates and docs, then rerun the exact-tree full gate before
+updating PR #40.
+Seven focused cases failed before the expiry/tariff fix and then passed;
+one more test caught a receipt write crossing expiry and passed after the
+post-write guard. Six affected suites pass 273/273, all TypeScript projects,
+localization, targeted ESLint, Prettier and zero-clone duplication pass.
+No live Model API attempt was used. Full exact-tree quality and hosted PR
+checks remain open at this checkpoint.
+The first frozen candidate `f215881a` passed static, type, localization and
+duplication gates but its full unit gate failed one stale palette expectation
+for the old standard-only price (2,089 other tests passed, three skipped).
+The palette's new two-tier output is intended; update that explicit test,
+prove it green, and rerun full quality on the next exact tree.
 The native price-modal decline was observed with a fake Model API in an
 ordinary VS Code development window; see the receipt below. Meta's [interactive
 guide](https://dev.meta.ai/docs/muse-code/interactive) defines `/loop` as a
@@ -4581,11 +4682,12 @@ cron>" <prompt>` create local, session-scoped schedules; `/loop list` opens
   survives a window restart. Only a loaded session observes due work; no
   external or hidden process runs after VS Code closes.
 - **Money boundary**: scheduling, listing, and cancelling make no Model API
-  call. A due occurrence stays pending until the user explicitly chooses Run,
-  accepts that occurrence's prompt and published Model API token prices in a
+  call. A due occurrence stays pending until Run, Cancel or seven-day expiry,
+  whichever comes first. When the user chooses Run, they accept that
+  occurrence's prompt and published Model API token prices in a
   modal, and the machine-scoped, off-by-default scheduled-prompts paid gate
   is on with its price accepted. Bypass cannot skip this. A declined or closed
-  dialog leaves it pending and spends nothing. A paid transcript row and
+  dialog leaves it pending until expiry and spends nothing. A paid transcript row and
   Account & usage count identify every admitted scheduled run; its tokens
   remain in the session's token-cost estimate, not added twice. A price
   confirmation names one model and session; if either changes while the
@@ -4748,19 +4850,32 @@ The CLI itself is not bundled: it is Meta's closed-source binary.
 
 ## 7. Gates
 
-**Pre-PR delivery (2026-09-26: trigger merged at `10522223`; first manual
+**Pre-PR delivery, historical (2026-09-26: trigger merged at `10522223`; first manual
 branch dispatch run `36276240077` succeeded on head `ac9df5a` in all seven
 jobs).** The owner
 wants platform failures found and fixed before a pull request is opened.
-`ci.yml` gains `workflow_dispatch`, calling the same `build.yml` as pushes and
+`ci.yml` gained `workflow_dispatch`, calling the same `build.yml` as pushes and
 pull requests. `CONTRIBUTING.md` gives the order: integrate milestones, run
 local quality on the exact tree, collect platform evidence, get an independent
 review, push, dispatch hosted CI and inspect its SHA and every job before
-opening a pull request. No build job or threshold changes. GitHub requires a
+opening a pull request. No build job or threshold changed. GitHub requires a
 manually dispatched workflow on the default branch, so the first pre-PR branch
 run could happen only after this trigger landed on `main`. Its recorded
-run and job evidence prove the process; each feature branch still needs its
-own exact-SHA run before a PR. Pull-request CI and review still gate merge.
+run and job evidence proved that process. The manual pre-PR dispatch policy
+was superseded by the M52 cleanup below; pull-request CI and review still
+gate merge.
+
+**M52 CI trigger cleanup (2026-09-26).** The owner now uses exact-tree local
+and VM gates as the pre-PR filter, then opens one pull request whose event runs
+the seven hosted jobs. A separate routine manual branch dispatch duplicates
+that run. A protected merge of a reviewed PR already has the same code tree,
+so the automatic `push` to `main` also duplicates the seven jobs. Remove only
+the `ci.yml` main-push trigger; retain `pull_request` and optional
+`workflow_dispatch` for a deliberate branch check without a PR. The release
+workflow remains tag-triggered and still calls the shared `build.yml`; no
+build jobs or thresholds change. Update contributor instructions, PR proof
+fields, the README and workflow comments to match. Verify the trigger locally
+with a red drill, then certify the final M52 tree and PR run before merge.
 
 | Gate                  | Command                                                                                                                                                                                                         | Status                                                                                                                                                                                                     |
 | --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

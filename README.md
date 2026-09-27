@@ -461,7 +461,9 @@ unsupported events and handlers are reported and skipped. Hook commands run as y
 the agent's sandbox, with a narrow environment that excludes the Model API key.
 They get JSON on stdin, have a timeout and output cap, and may approve an
 ordinary tool call that would otherwise ask. Paid calls and protected writes
-still need your confirmation. Review each source with
+still need your confirmation. A `PreToolUse` hook that asks forces a human
+card for memory reads or writes, including in Bypass and Edit automatically;
+Plan still refuses memory writes. Review each source with
 **Muse Spark: Hooks** in the Command Palette before enabling the setting.
 On the Model API backend, that picker shows the machine setting's on/off state
 and opens it. Turning the setting off stops hook dispatch in an open session;
@@ -537,12 +539,16 @@ and **Cancel schedule** controls.
 Each job belongs to this workspace, conversation, and stored Model API key.
 Signing out or switching backends hides its prompts immediately; a temporary
 CLI sign-in attempt leaves the still-active Model API list in place.
-It expires after seven days. Only a loaded conversation checks for due work;
+It expires after seven days; `/loop 7d ...` has no run before that deadline
+and is refused. A due prompt stays pending until Run, Cancel or expiry.
+Only a loaded conversation checks for due work;
 closing VS Code stops checks. A missed recurring interval leaves one due
 occurrence, without a backlog. A due prompt **never runs by itself**: turn
-on **Scheduled prompts (paid)** and accept the published token rates, then
-choose **Run now** and confirm that occurrence's prompt, model and rates in
-a separate modal. Declining leaves it due and makes no API call. Bypass
+on **Scheduled prompts (paid)** and accept both published standard and
+contributor token rates, then choose **Run now** and confirm that
+occurrence's prompt, model and exact tier rates in a separate modal. An
+unpriced model cannot be approved. Declining leaves it due until expiry and
+makes no API call. Bypass
 permissions does not skip either confirmation. A changed model, prompt,
 conversation or paid setting refuses an old confirmation; the client checks
 the key it actually reads before HTTP. A receipt claimed just before such a
@@ -826,8 +832,15 @@ backend runs no workflows.
 
 - **Account:** auth method, plan, backend, Muse Code version and model.
 - **Usage (Muse Code):** the subscription's current window and week. Muse
-  Code reports them only after a reply; until then the modal shows the last
-  window it reported, dated "as of".
+  Code reports them only after a reply. The modal reads the latest report
+  from the signed-in CLI when opened; it does not use an account-agnostic
+  snapshot after a host restart or sign-out. Countdowns update each minute
+  while the modal is open. Once a reported reset has passed, that row waits
+  for a fresh Muse Code report instead of showing an expired percentage or
+  reset countdown. Each observation is dated "as of". The numbers are the
+  CLI's account-level percentages and reset times: changing the selected
+  model does not create a separate local quota or reset calculation, and an
+  opaque plan ID is shown as "Muse Code subscription".
 - **This conversation:** token totals (on Muse Code, prompt tokens as it
   counts them once). On the Model API also the cached tokens, the cache-hit
   rate and a dollar estimate from Meta's published per-token prices
@@ -1402,8 +1415,8 @@ media/                      icons, banner, social preview, README screenshots
 .github/                    workflows (ci, build, release), audit exceptions, pinned semgrep, CODEOWNERS, Dependabot
 ```
 
-**Releases.** CI (`ci.yml`, every push to `main`, every pull request and manual
-branch dispatches) calls
+**Releases.** CI (`ci.yml`, every pull request and optional manual branch
+dispatch) calls
 `build.yml`:
 
 - `quality:gates` on Ubuntu, Windows and macOS;

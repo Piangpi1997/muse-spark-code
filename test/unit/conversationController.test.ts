@@ -153,8 +153,6 @@ function setup(
     /** How long the IDE tool server takes to answer (a retried start, D25). */
     ideMcpStartMs?: number
     grantedCapabilities?: readonly string[]
-    /** The window a previous session left in the cache (M16). */
-    cachedUsage?: SubscriptionUsage
     shellSandbox?: ShellSandboxPosture
     /** Contributor-tier guard (M7). */
     isConfidentialWorkspace?: boolean
@@ -292,7 +290,6 @@ function setup(
   const reviews: [string, string, string][] = []
   const opened: [string, string][] = []
   const openedFiles: [string, LineRange | undefined][] = []
-  let cachedUsage: SubscriptionUsage | undefined = options.cachedUsage
   const contributorPrompts: string[] = []
   let remoteBypassPrompts = 0
   // What "Export conversation…" handed the save dialog (M30).
@@ -421,13 +418,6 @@ function setup(
     },
     readToolImage:
       options.readToolImage ?? (() => Promise.resolve({ ok: false, reason: 'no image here' })),
-    usageCache: {
-      read: () => cachedUsage,
-      write: (usage) => {
-        cachedUsage = usage
-        return Promise.resolve()
-      },
-    },
     ideMcpEndpoint: () =>
       new Promise((resolve) => {
         // A server still (re)starting answers later (D25); the session waits.
@@ -486,7 +476,6 @@ function setup(
     inserted,
     opened,
     openedFiles,
-    cachedUsage: () => cachedUsage,
     onSandboxUnavailable,
     saveAll,
     unsaved,
@@ -1694,6 +1683,31 @@ async function firstUsageReport(t: ReturnType<typeof setup>) {
   return t.surface.posted.at(-1)
 }
 
+async function observeUsage(t: ReturnType<typeof setup>, usage: SubscriptionUsage): Promise<void> {
+  await firstUsageReport(t)
+  t.server.notify('usage/changed', usage)
+  await settle()
+  expect(t.surface.posted.at(-1)).toMatchObject({ subscription: usage })
+}
+
+async function expectEmptyUsageRead(t: ReturnType<typeof setup>): Promise<void> {
+  t.server.handle('usage/read', () => ({}))
+  await t.controller.handle({ type: 'readUsage' })
+  expect(t.surface.posted.at(-1)).not.toHaveProperty('subscription')
+}
+
+async function pendingUsageRead(t: ReturnType<typeof setup>) {
+  await firstUsageReport(t)
+  t.server.silence('usage/read')
+  const read = t.controller.handle({ type: 'readUsage' })
+  await settle()
+  const request = t.server.requestsFor('usage/read').at(-1)
+  if (request?.id === undefined) {
+    throw new Error('usage/read was not sent')
+  }
+  return { read, requestId: request.id }
+}
+
 function withHistory(
   options: Parameters<typeof setup>[0] = {},
   sessionOverrides: Record<string, unknown> = {},
@@ -2621,7 +2635,7 @@ describe('ConversationController (M15)', () => {
   })
 })
 
-describe('ConversationController usage cache (M16)', () => {
+describe('ConversationController usage host boundaries (M53 follow-up)', () => {
   const stale: SubscriptionUsage = {
     observedAtMs: 1000,
     tier: 'tier-1',
@@ -2629,24 +2643,62 @@ describe('ConversationController usage cache (M16)', () => {
     weekly: { usedPercent: 5, resetsAtMs: 9000 },
   }
 
-  it('shows the last reported window while the CLI has none yet, then refreshes the cache', async () => {
-    const t = setup({ cachedUsage: stale })
-    expect(await firstUsageReport(t)).toMatchObject({
-      type: 'usageReport',
-      backend: 'museCode',
-      subscription: stale,
-    })
-    const fresh = { ...stale, observedAtMs: 2000 }
-    t.server.handle('usage/read', () => ({ usage: fresh }))
-    await t.controller.handle({ type: 'readUsage' })
-    expect(t.surface.posted.at(-1)).toMatchObject({ subscription: fresh })
-    expect(t.cachedUsage()).toEqual(fresh)
+  it('drops an old host observation before a new empty usage read', async () => {
+    const t = setup()
+    await observeUsage(t, stale)
+    await t.controller.backendStopping(true)
+    await expectEmptyUsageRead(t)
   })
 
   it('reports no window at all when nothing was ever cached', async () => {
     const t = setup()
     expect(await firstUsageReport(t)).not.toHaveProperty('subscription')
-    expect(t.cachedUsage()).toBeUndefined()
+  })
+
+  it('clears a same-host observation when a later read has no account usage', async () => {
+    const t = setup()
+    await observeUsage(t, stale)
+    await expectEmptyUsageRead(t)
+  })
+
+  it('keeps a newer event when an empty read started before that event', async () => {
+    const t = setup()
+    const { read, requestId } = await pendingUsageRead(t)
+    t.server.notify('usage/changed', stale)
+    await settle()
+    t.server.incoming.push(`${JSON.stringify({ jsonrpc: '2.0', id: requestId, result: {} })}\n`)
+    await read
+    expect(t.surface.posted.at(-1)).toMatchObject({ subscription: stale })
+  })
+
+  it('keeps a newer usage event when an older read finishes later', async () => {
+    const t = setup()
+    const older = { ...stale, observedAtMs: 2000 }
+    const newer = { ...stale, observedAtMs: 3000, weekly: { ...stale.weekly, usedPercent: 90 } }
+    const { read, requestId } = await pendingUsageRead(t)
+    t.server.notify('usage/changed', newer)
+    await settle()
+    t.server.incoming.push(
+      `${JSON.stringify({ jsonrpc: '2.0', id: requestId, result: { usage: older } })}\n`,
+    )
+    await read
+    const reports = t.surface.posted.filter((message) => message.type === 'usageReport')
+    expect(reports.at(-1)).toMatchObject({ subscription: newer })
+    expect(reports).not.toContainEqual(expect.objectContaining({ subscription: older }))
+  })
+
+  it('drops a delayed usage read from a host stopped by sign-out', async () => {
+    const t = setup()
+    const { read, requestId } = await pendingUsageRead(t)
+    const reportsBeforeStop = t.surface.posted.filter((message) => message.type === 'usageReport')
+    await t.controller.backendStopping(true)
+    t.server.incoming.push(
+      `${JSON.stringify({ jsonrpc: '2.0', id: requestId, result: { usage: stale } })}\n`,
+    )
+    await read
+    expect(t.surface.posted.filter((message) => message.type === 'usageReport')).toEqual(
+      reportsBeforeStop,
+    )
   })
 })
 

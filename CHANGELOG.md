@@ -12,12 +12,12 @@ while they are (PLAN.md D30, D34).
 
 ### Added
 
-- **Pre-PR branch CI.** The existing cross-platform CI can be run
-  manually on a pushed branch before a pull request. It runs the same shared
-  build as pull requests; the PR template records the exact tested tree,
-  independent review, staged-change secret scan, branch run and seven job
-  conclusions. See the sequence in `CONTRIBUTING.md`. Manual dispatch is
-  available now that the trigger is on `main`.
+- **Optional branch CI.** The cross-platform CI can be run manually on a
+  pushed branch when a pull request is not being opened. It uses the same
+  shared build as pull requests. The normal path uses local and VM gates as
+  the filter, then records the exact tested tree, independent review,
+  staged-change secret scan and the pull request's seven job conclusions.
+  See `CONTRIBUTING.md`.
 - **Subagents on the Model API backend** (M48, PLAN.md D45). Child sessions
   run in parallel with bounded capacity, their own transcript, the existing
   tool approvals and workspace rules, and usage counted with the parent.
@@ -62,8 +62,10 @@ while they are (PLAN.md D30, D34).
   cannot be hidden by a post-tool hook stop.
   Model-call hook text previews also remove pasted media data URLs before
   shortening user text, instructions, tool descriptions or assistant output.
-  Windows hook commands now receive their bounded UTF-8 JSON stdin through
-  PowerShell's explicit pipe to cmd; the payload stays off command lines.
+  Hook stdin is bounded again at the host adapter before process launch;
+  the payload stays off command lines. A `PreToolUse` hook's request for
+  approval now reaches memory tools in Bypass and Edit automatically; its
+  card requires a human, while Plan still refuses writes.
 
 - **Model API scheduled prompts** (M52). `/loop` stores an interval or local
   five-field cron prompt in the current conversation; the panel lists due
@@ -83,6 +85,10 @@ while they are (PLAN.md D30, D34).
   prompts from the panel immediately. Replacing the Model API key also clears
   the old account's prompts before the backend restarts; a temporary CLI
   sign-in attempt keeps the still-active Model API list.
+  A seven-day cadence with no fire before expiry is refused; an already due
+  prompt can be claimed only before expiry. Feature enable shows both verified
+  token tiers, and each run quotes its selected model's exact tier, including
+  the contributor cached-input rate; an unknown model cannot gain consent.
 
 - **Conversation rewind and side chats** (M53, PLAN.md D46). A sent message
   can branch before itself and return its prompt to the composer. Model API
@@ -98,7 +104,6 @@ while they are (PLAN.md D30, D34).
   side chat returns focus to its original tab while that tab remains open.
   Its locked Plan mode leaves `Shift+Tab` available for keyboard navigation.
   Muse Code's Windows 1.3.0 fork limitation still hides these actions.
-
 
 - **Image edits** (M44, PLAN.md D37). With image generation on, the model
   can also change one workspace image, or combine up to four, by a prompt,
@@ -248,6 +253,10 @@ while they are (PLAN.md D30, D34).
 
 ### Changed
 
+- **One hosted CI run per reviewed tree.** Pull requests still run the seven
+  cross-platform jobs. Protected `main` merges no longer launch the same jobs
+  again on an identical tree; manual branch dispatch remains available for
+  diagnostics without an open pull request.
 - **Windows unit test scheduling (M50).** Vitest runs test files one at a time
   on Windows so concurrent MCP job-helper launches cannot starve the hosted
   runner past the MCP startup deadline. Test selection, coverage, and deadlines
@@ -260,6 +269,14 @@ while they are (PLAN.md D30, D34).
 
 ### Fixed
 
+- **Account & usage reset timing (M53 follow-up).** The open modal updates
+  its countdown each minute and stops treating an expired report as current.
+  It uses Muse Code's reported account-level percentages and reset timestamps
+  without guessing model or plan multipliers. Sign-out and authentication
+  changes clear visible usage; the old global snapshot is no longer read and
+  is removed during activation when storage permits. An empty CLI read also
+  clears a same-host snapshot. A late
+  read cannot replace a newer report or restore a stopped host's usage.
 - **Windows MCP stdio startup (M50).** A compiled C# job executable now starts
   each configured server directly. PowerShell only compiles it once, avoiding
   per-server startup delay while retaining binary pipes, job containment and

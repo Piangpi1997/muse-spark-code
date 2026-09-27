@@ -132,6 +132,47 @@ describe('uiReducer: shell', () => {
     })
     expect(state.model).toEqual({ modelId: 'muse-spark-1.3', contextLimit: 1_007_997 })
   })
+
+  it('clears account usage on sign-out and backend change', () => {
+    const subscription = {
+      observedAtMs: NOW,
+      tier: 'prior-account',
+      window: { usedPercent: 42, resetsAtMs: NOW + 60_000, windowDurationMins: 300 },
+      weekly: { usedPercent: 9, resetsAtMs: NOW + 86_400_000 },
+    }
+    const initial = reduceAll([
+      host({ type: 'authState', status: 'signedIn', backend: 'museCode' }),
+      host({ type: 'usageReport', backend: 'museCode', subscription }),
+    ])
+    expect(initial.usageReport?.subscription).toEqual(subscription)
+    expect(
+      uiReducer(initial, host({ type: 'authState', status: 'signedOut' })).usageReport,
+    ).toBeUndefined()
+    expect(
+      uiReducer(initial, host({ type: 'authState', status: 'signedIn', backend: 'modelApi' }))
+        .usageReport,
+    ).toBeUndefined()
+  })
+
+  it('keeps provider account usage unchanged when only the selected model changes', () => {
+    const subscription = {
+      observedAtMs: NOW,
+      tier: 'opaque-plan-id',
+      window: { usedPercent: 63, resetsAtMs: NOW + 60_000, windowDurationMins: 300 },
+      weekly: { usedPercent: 11, resetsAtMs: NOW + 86_400_000 },
+    }
+    const initial = reduceAll([
+      host({ type: 'authState', status: 'signedIn', backend: 'museCode' }),
+      host({ type: 'usageReport', backend: 'museCode', subscription }),
+      host({ type: 'sessionInfo', modelId: 'muse-spark-1.2', contextLimit: 1_007_997 }),
+    ])
+    const switched = uiReducer(
+      initial,
+      host({ type: 'sessionInfo', modelId: 'muse-spark-1.3', contextLimit: 1_007_997 }),
+    )
+    expect(switched.usageReport).toEqual(initial.usageReport)
+    expect(switched.model?.modelId).toBe('muse-spark-1.3')
+  })
 })
 
 describe('uiReducer: sending', () => {

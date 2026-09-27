@@ -131,7 +131,7 @@ import {
 } from './shared/constants'
 import { fill } from './shared/l10n/text'
 import type { HostAction } from './shared/protocol'
-import { type AccountFacts, subscriptionUsageSchema } from './shared/usage'
+import type { AccountFacts } from './shared/usage'
 
 // `context.extension.packageJSON` is typed `any` by VS Code; validate the one
 // field we read instead of trusting it.
@@ -443,6 +443,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   log.info(
     `Activating ${PRODUCT_NAME} ${version} (VS Code ${vscode.version}, Node ${process.versions.node}, ${process.platform})`,
   )
+  // M16 stored an account-agnostic usage snapshot. Remove it before any
+  // surface opens: a later sign-in may belong to another Meta account.
+  try {
+    if (context.globalState.get(GLOBAL_STATE_KEYS.lastUsage) !== undefined) {
+      await context.globalState.update(GLOBAL_STATE_KEYS.lastUsage, undefined)
+    }
+  } catch {
+    // This obsolete value is never read again. A failed cleanup must not
+    // prevent the extension from activating for the current account.
+    log.warn('Could not remove the obsolete subscription usage snapshot')
+  }
   // The display language's table goes in before anything registers a view
   // or says a word (PLAN.md D33); the webviews get the same table.
   const l10n = await loadUiTable({
@@ -1222,17 +1233,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             },
             readFile: async (fsPath) => await vscode.workspace.fs.readFile(vscode.Uri.file(fsPath)),
           }),
-        usageCache: {
-          read: () => {
-            const parsed = subscriptionUsageSchema.safeParse(
-              context.globalState.get(GLOBAL_STATE_KEYS.lastUsage),
-            )
-            return parsed.success ? parsed.data : undefined
-          },
-          write: async (usage) => {
-            await context.globalState.update(GLOBAL_STATE_KEYS.lastUsage, usage)
-          },
-        },
         // A server that failed to start is started again, and the session
         // that asked waits for it, so it gets the tool too (D25).
         ideMcpEndpoint: async () => {

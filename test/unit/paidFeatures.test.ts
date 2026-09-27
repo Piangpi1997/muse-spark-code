@@ -245,7 +245,10 @@ describe('PaidUsage and the prices (M33)', () => {
     expect(paidFeaturePrice('webSearch')).toBe('$2.50 per 1,000 searches')
     expect(paidFeaturePrice('imageGeneration')).toBe('$0.01 per image')
     expect(paidFeaturePrice('voice')).toBe('$0.18 per hour of audio')
-    expect(paidFeaturePrice('scheduledPrompts')).toContain('$1.25/1M input')
+    const schedulePrices = paidFeaturePrice('scheduledPrompts')
+    expect(schedulePrices).toContain('$1.250/1M input')
+    expect(schedulePrices).toContain('$0.100/1M input')
+    expect(schedulePrices).toContain('$0.002/1M cached input')
   })
 
   it('reports the features that are on with the tally', () => {
