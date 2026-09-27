@@ -577,13 +577,17 @@ panel cannot present an authoritative native job list or direct cancel.
   messages still queued, which read "Not sent". A picked text file on Muse
   Code queues a new turn so its file annotation survives History resume.
 - The `+` button attaches images (PNG, JPEG, GIF, WebP), PDFs on the Model
-  API backend, and UTF-8 text files up to 1 MB from trusted, indexed workspace
+  API backend, and UTF-8 text files up to 1 MiB from trusted, indexed workspace
   paths. Text files travel with their names as text on both backends. Files
   attached to Muse Code share its 10 MiB message limit; the composer counts
   their serialized content, including escaping, and refuses combinations
   that leave too little room for the prompt. Remove an attachment or shorten
-  the message if that happens.
-  outside that set become `@` path mentions; known binary types and private
+  the message if that happens. Model API text attachments share a separate
+  768 KiB allowance for their UTF-8 content and file-name wrappers. A large
+  single file can be refused despite the 1 MiB per-file read cap; attach a
+  shorter excerpt or remove another text attachment. A long conversation may
+  still exceed the Model API context limit. Files outside that set
+  become `@` path mentions; known binary types and private
   files are refused.
   Images and PDFs also paste and drop. The panel reports a refused file in a dismissible
   banner. Muse Code's MSP 1.3.0 cannot take a PDF part, so a PDF attachment
@@ -1113,7 +1117,7 @@ What stays in English:
 | Images                           | 10 MB each, 20 per message                                                                                                                                                               |
 | PDFs on the Model API backend    | 32 MB each locally (Meta allows 50 MB per inline file); images and PDF page images together: 50 per message. Meta reads text from the first 100 pages and page images from the first 50. |
 | Model API encoded media          | 48 million data URL characters total per new message and replay request; older replayed media is named but omitted when over the cap.                                                    |
-| Picked UTF-8 text attachments    | 1 MiB each, from trusted and indexed workspace paths only                                                                                                                                |
+| Picked UTF-8 text attachments    | 1 MiB per-file read cap from trusted and indexed workspace paths; Model API also caps combined text and file-name wrappers at 768 KiB to leave context room.                             |
 | A message to Muse Code           | 10 MiB. Attachment admission reserves 2 MiB for the prompt, context and frame; serialized text and base64 images count toward the rest. The exact outbound frame is checked at send.     |
 | Model API: tool rounds           | 50 per turn                                                                                                                                                                              |
 | Model API: shell commands        | 2 minutes by default, 10 at most                                                                                                                                                         |

@@ -319,6 +319,7 @@
   "toolVisualReadFailed": "無法讀取檔案 `{path}`。",
   "textFileTooLarge": "文字檔案不得超過 1 MB。",
   "textFilesOverBudget": "附件超過 Muse Code 訊息限制。請移除附件或縮短訊息。",
+  "textFilesOverModelApiBudget": "附加的文字檔案超過 Model API 上下文限制。請移除檔案或附加較短的摘錄。",
   "textFileInvalid": "此檔案不是有效的 UTF-8 文字。",
   "textFilePrivate": "無法附加此私人檔案。",
   "textFileLabel": "文字",

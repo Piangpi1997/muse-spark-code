@@ -5,8 +5,9 @@
 // images and PDFs of every earlier message ride along each time, and enough
 // of them would fail every later request, the compaction's included. Each
 // request therefore keeps its newest images and PDFs within the budget and
-// names each older one in a line instead (M54, PLAN.md D47). The model is
-// told what it no longer sees; nothing is dropped from the stored session.
+// names each older one in a line instead (M54, PLAN.md D47). The caller
+// commits this fitted view to durable replay only after a successful model
+// response; transcript attachment metadata remains for History.
 //
 // A PDF weighs its page images, at most 50. One whose pages could not be
 // counted weighs the full 50, so the budget errs toward leaving a PDF out,
@@ -106,6 +107,8 @@ export class MediaBudget {
   /**
    * The input with its images and PDFs, newest first, kept while they fit
    * the budget and named in a line past it. The same array when all fit.
+   * A changed item keeps retained content-part identities so the caller can
+   * tell which pending tool-read media actually reached that request.
    */
   public fit(input: readonly InputItem[]): readonly InputItem[] {
     let left = MODEL_API_MEDIA_PER_REQUEST

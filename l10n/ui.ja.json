@@ -319,6 +319,7 @@
   "toolVisualReadFailed": "ファイル `{path}` を読み取れませんでした。",
   "textFileTooLarge": "テキストファイルは 1 MB 以下である必要があります。",
   "textFilesOverBudget": "添付ファイルが Muse Code のメッセージ上限を超えています。添付ファイルを削除するか、メッセージを短くしてください。",
+  "textFilesOverModelApiBudget": "添付したテキストファイルが Model API のコンテキスト上限を超えています。ファイルを削除するか、短い抜粋を添付してください。",
   "textFileInvalid": "このファイルは有効な UTF-8 テキストではありません。",
   "textFilePrivate": "この非公開ファイルは添付できません。",
   "textFileLabel": "テキスト",

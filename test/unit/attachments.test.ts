@@ -192,13 +192,33 @@ describe('AttachmentStore', () => {
     expect(outcomes.at(-1)).toEqual({ ok: false, reason: UI_TEXT.textFilesOverBudget })
     expect(outcomes.some((outcome) => !outcome.ok)).toBe(true)
     expect(attachments.list().length).toBeLessThan(10)
-    const modelApi = store()
-    expect(
-      Array.from(
-        { length: 10 },
-        (_, index) => modelApi.add(`note-${String(index)}.txt`, bytes, true, true).ok,
-      ).every(Boolean),
-    ).toBe(true)
+  })
+
+  it('refuses Model API text combinations that can exceed the context by themselves', () => {
+    const attachments = store()
+    const bytes = new Uint8Array(MAX_TEXT_ATTACHMENT_BYTES).fill(0x78)
+    const outcomes = Array.from({ length: MAX_ATTACHMENTS_PER_MESSAGE }, (_, index) =>
+      attachments.add(`source-${String(index)}.txt`, bytes, true, true),
+    )
+    expect(outcomes.every((outcome) => !outcome.ok)).toBe(true)
+    expect(outcomes[0]).toEqual({ ok: false, reason: UI_TEXT.textFilesOverModelApiBudget })
+    expect(attachments.list()).toHaveLength(0)
+  })
+
+  it('budgets dense Model API text together and restores room after removal', () => {
+    const attachments = store()
+    const dense = new TextEncoder().encode('"\\\n'.repeat(200 * 1024))
+    const first = attachments.add('source.ts', dense, true, true)
+    expect(first.ok).toBe(true)
+    const later = new TextEncoder().encode('[]{}"'.repeat(40 * 1024))
+    expect(attachments.add('second.ts', later, true, true)).toEqual({
+      ok: false,
+      reason: UI_TEXT.textFilesOverModelApiBudget,
+    })
+    if (first.ok) {
+      expect(attachments.remove(first.attachment.id)).toBe(true)
+    }
+    expect(attachments.add('second.ts', later, true, true).ok).toBe(true)
   })
 
   it('counts JSON escaping and frees the Muse frame budget when an attachment is removed', () => {

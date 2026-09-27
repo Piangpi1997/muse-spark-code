@@ -331,6 +331,7 @@
   "toolVisualReadFailed": "Não foi possível ler o arquivo `{path}`.",
   "textFileTooLarge": "Os arquivos de texto devem ter 1 MB ou menos.",
   "textFilesOverBudget": "Os anexos excedem o limite de mensagem do Muse Code. Remova um anexo ou encurte a mensagem.",
+  "textFilesOverModelApiBudget": "Os arquivos de texto anexados excedem o limite de contexto da Model API. Remova um arquivo ou anexe um trecho menor.",
   "textFileInvalid": "Este arquivo não contém texto UTF-8 válido.",
   "textFilePrivate": "Este arquivo privado não pode ser anexado.",
   "textFileLabel": "Texto",

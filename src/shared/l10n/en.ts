@@ -375,6 +375,8 @@ export const EN = {
   textFileTooLarge: 'Text files must be 1 MB or smaller.',
   textFilesOverBudget:
     'Attachments fill Muse Code’s message limit. Remove an attachment or shorten the message.',
+  textFilesOverModelApiBudget:
+    'Text attachments exceed the Model API context allowance. Remove a file or attach a smaller excerpt.',
   textFileInvalid: 'This file is not valid UTF-8 text.',
   textFilePrivate: 'This private file cannot be attached.',
   textFileLabel: 'Text',

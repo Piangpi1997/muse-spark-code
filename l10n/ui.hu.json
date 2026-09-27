@@ -325,6 +325,7 @@
   "toolVisualReadFailed": "A(z) `{path}` fájl nem olvasható.",
   "textFileTooLarge": "A szövegfájlok legfeljebb 1 MB méretűek lehetnek.",
   "textFilesOverBudget": "A mellékletek túllépik a Muse Code üzenetkorlátját. Távolítson el egy mellékletet, vagy rövidítse le az üzenetet.",
+  "textFilesOverModelApiBudget": "A csatolt szövegfájlok túllépik a Model API kontextuskorlátját. Távolítson el egy fájlt, vagy csatoljon rövidebb részletet.",
   "textFileInvalid": "Ez a fájl nem érvényes UTF-8 szöveg.",
   "textFilePrivate": "Ez a privát fájl nem csatolható.",
   "textFileLabel": "Szöveg",

@@ -2048,6 +2048,12 @@ export class ConversationController {
         return
       }
       const images = source.sentImages?.(message.turnId, message.itemId) ?? []
+      const recordedImageCount =
+        selected.attachments?.filter((attachment) => attachment.type === 'image').length ?? 0
+      if (images.length < Math.max(recordedImageCount, message.imageCount)) {
+        this.notice('warning', UI_TEXT.rewindImagesUnavailable)
+        return
+      }
       if (message.lastTurnId === undefined) {
         this.clear()
       } else {
@@ -2065,9 +2071,6 @@ export class ConversationController {
         if (added.ok) {
           this.post({ type: 'attachmentAdded', attachment: added.attachment })
         }
-      }
-      if (images.length < message.imageCount) {
-        this.notice('warning', UI_TEXT.rewindImagesUnavailable)
       }
       this.post({ type: 'restoreDraft', text: message.text })
     } catch (error: unknown) {

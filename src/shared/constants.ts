@@ -577,6 +577,12 @@ export const TOKENS_PER_MILLION = 1_000_000
 // output cap is well under the documented 131,072 maximum.
 export const MODEL_API_CONTEXT_WINDOW = 1_048_576
 export const MODEL_API_MAX_OUTPUT_TOKENS = 32_768
+// Conservatively bound named text attachments by UTF-8 bytes. The reserve
+// covers output and leaves room for prompt/replay; already long replay still
+// needs the backend's request/context handling.
+export const MODEL_API_TEXT_CONTEXT_RESERVE_TOKENS = 256 * 1024
+export const MAX_MODEL_API_TEXT_ATTACHMENT_BYTES =
+  MODEL_API_CONTEXT_WINDOW - MODEL_API_TEXT_CONTEXT_RESERVE_TOKENS
 // dev.meta.ai/docs/error-handling: 429 and the server errors are retryable
 // with exponential backoff and jitter, honouring Retry-After; 3–5 attempts.
 // A 504 is not: the guide says to stream instead, which every long request

@@ -1945,6 +1945,13 @@ leaving 2 MiB of its 10 MiB MSP frame for the prompt, context and envelope;
 an impossible file combination is refused before it becomes a chip. The
 exact outbound frame check remains the final guard for unusually large
 prompts or selections.
+Model API text attachments have a separate 768 KiB aggregate UTF-8 content
+and named-wrapper allowance. This conservative byte bound stays below the
+1,048,576-token context even for dense text and reserves roughly 256K tokens
+for prompt, replay and output (32,768 maximum); a large single file can be
+refused despite its 1 MiB per-file read cap. It does not account for an
+already long replay, which the Model API may still refuse at its context
+limit.
 
 - **Model API:** PDF bytes, checked by header, may be attached from the file
   picker, clipboard or drop, up to 32 MB each; the inline base64 stays below
@@ -1993,7 +2000,14 @@ prompts or selections.
   attachment is refused with a localized banner. The Model API replay,
   including compaction, keeps newest visible media within both budgets and
   replaces older media with a plain explanation; the panel announces that
-  older media was left out. Stored history retains the original parts. The
+  older media was left out. After a fitted request succeeds, its replacement
+  text becomes the durable replay: omitted PDF/image base64 must not remain in
+  `snapshot()` or a resumed session. Transcript history keeps attachment
+  names, types and counts for the UI without retaining those omitted bytes.
+  A request that has not completed must not prune pending tool-read media;
+  its later Stop/failure still gets the path-only cleanup in this decision.
+  Red/green tests bind the fitted request, snapshot, resume and unchanged
+  history chips to that boundary. The
   `read_file` tool also stops collecting media in one tool round at the same
   encoded-size cap, returning a failed tool result for the excess file before
   it is retained; a burst of reads must not fill host memory before replay
@@ -5067,6 +5081,17 @@ image output now shares the PDF page/encoded-media budget, and M51 hook stop
 paths remove unsent PDF/image bytes from replay without copying those bytes
 to hook stdin. The MCP budget and PostToolBatch Stop red drills failed before
 their fixes and passed after restoration (`docs/certification/m54.md`).
+When a completed Model API request omits older PDF or image parts to fit the
+media budget, durable replay adopts that fitted request after delivery; the
+saved session no longer retains bytes the model will never receive again.
+History keeps attachment names and types. Failed or stopped requests retain
+their prior replay state. Rewind of an image card checks the trusted History
+attachment count and available replay bytes before clear or fork, including
+after resume and when a webview request reports too few images. Model API
+send and steer also check the aggregate UTF-8 size of named text file parts
+against their separate context allowance before accepting a turn. This
+closes the path where text chips admitted under Muse Code are later sent on
+Model API without its admission check.
 The M51-joined pre-review tree `2903468656a370d7d4c9a821a56421f03bacd287`
 passed full WIN-11-VM quality: 2,070 tests, 304 accessibility pages with zero
 findings, audit, Gitleaks and Semgrep clean. It precedes the M51 hook-preview

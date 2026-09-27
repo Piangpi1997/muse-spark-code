@@ -11,18 +11,20 @@ import {
   MODEL_API_MAX_RETRIES,
   MODEL_API_MAX_TOOL_ROUNDS,
   GOAL_OBJECTIVE_MAX_CHARS,
+  MAX_MODEL_API_TEXT_ATTACHMENT_BYTES,
   MODEL_TEXT,
   SCHEDULE_LIFETIME_MS,
   type PaidFeature,
   UI_TEXT,
 } from '../../src/shared/constants'
 import type { AgentSession } from '../../src/core/agent/agentBackend'
+import { AttachmentStore } from '../../src/core/attachments'
 import { ModelApiClient } from '../../src/core/backends/modelapi/client'
 import type { SubagentTaskConfirmation } from '../../src/shared/paid'
 import {
   ModelApiHost,
+  ModelApiSession,
   type ModelApiHostDeps,
-  type ModelApiSession,
 } from '../../src/core/backends/modelapi/ModelApiHost'
 import { FakeLogOutputChannel } from './helpers/fakes'
 import { EN } from '../../src/shared/l10n/en'
@@ -2155,7 +2157,8 @@ describe('ModelApiSession: turns', () => {
 
   it('notices when replay leaves older media out while preserving local history', async () => {
     const imageUrl = 'data:image/png;base64,AAAA'
-    const t = setup({ mediaBudgetMaxEncodedChars: imageUrl.length })
+    const store = memorySessionStore()
+    const t = setup({ mediaBudgetMaxEncodedChars: imageUrl.length, store })
     const { session, events, turnDone } = await startSession(t)
     t.api.script({ text: 'first image seen' })
     await session.sendTurn([
@@ -2198,6 +2201,45 @@ describe('ModelApiSession: turns', () => {
       { attachments: [{ type: 'image' }] },
       { attachments: [{ type: 'image' }] },
     ])
+    const firstCard = session.history().items.find((item) => item.kind === 'userMessage')
+    if (firstCard?.kind !== 'userMessage' || firstCard.turnId === undefined) {
+      throw new Error('expected first image card')
+    }
+    expect(session.sentImages(firstCard.turnId, firstCard.itemId)).toEqual([])
+    const saved = session.snapshot()
+    expect(JSON.stringify(saved.replay)).not.toContain(imageUrl)
+    expect(JSON.stringify(saved.replay)).toContain(MODEL_TEXT.imageLeftOut)
+    await t.host.close()
+    const restored = setup({ mediaBudgetMaxEncodedChars: imageUrl.length, store })
+    await restored.host.load()
+    const resumed = await restored.host.resumeSession(session.sessionId, session.modelId)
+    if (!(resumed.session instanceof ModelApiSession)) {
+      throw new TypeError('expected Model API session')
+    }
+    expect(JSON.stringify(resumed.session.snapshot().replay)).not.toContain(imageUrl)
+    expect(resumed.history.items.filter((item) => item.kind === 'userMessage')).toMatchObject([
+      { attachments: [{ type: 'image' }] },
+      { attachments: [{ type: 'image' }] },
+    ])
+    expect(resumed.session.sentImages(firstCard.turnId, firstCard.itemId)).toEqual([])
+  })
+
+  it('keeps old image bytes when the fitted request fails before delivery', async () => {
+    const imageUrl = 'data:image/png;base64,AAAA'
+    const t = setup({ mediaBudgetMaxEncodedChars: imageUrl.length })
+    const { session, turnDone } = await startSession(t)
+    t.api.script({ text: 'first image seen' })
+    await session.sendTurn([
+      { type: 'image', base64Data: 'AAAA', mediaType: 'image/png', width: 1, height: 1 },
+    ])
+    await turnDone()
+    t.api.script({ failed: { code: 'invalid_request_error', message: 'request failed' } })
+    await session.sendTurn([
+      { type: 'image', base64Data: 'AQ==', mediaType: 'image/png', width: 1, height: 1 },
+    ])
+    await turnDone()
+    expect(JSON.stringify(t.api.responseBodies()[1])).not.toContain(imageUrl)
+    expect(JSON.stringify(session.snapshot().replay)).toContain(imageUrl)
   })
 
   it('sends a named text attachment as input_text with a file chip in history', async () => {
@@ -2230,6 +2272,48 @@ describe('ModelApiSession: turns', () => {
     expect(session.history().items[0]).toMatchObject({
       attachments: [{ type: 'file', name: 'a.ts', mediaType: 'text/plain' }],
     })
+  })
+
+  it('rejects aggregate named text over the Model API allowance before HTTP', async () => {
+    const t = setup()
+    const { session, turnDone } = await startSession(t)
+    const largeText = 'x'.repeat(Math.ceil(MAX_MODEL_API_TEXT_ATTACHMENT_BYTES / 2))
+    const file = (name: string) => ({
+      type: 'textFile' as const,
+      name,
+      mediaType: 'text/plain',
+      text: largeText,
+      sizeBytes: Buffer.byteLength(largeText),
+    })
+    await expect(
+      session.sendTurn([{ type: 'text', text: 'Read both' }, file('a.txt'), file('b.txt')]),
+    ).rejects.toThrow(UI_TEXT.textFilesOverModelApiBudget)
+    expect(t.api.responseBodies()).toEqual([])
+    expect(session.history().items).toEqual([])
+
+    t.api.script({ text: 'Small file read' })
+    await session.sendTurn([
+      { type: 'text', text: 'Read one excerpt' },
+      { type: 'textFile', name: 'small.txt', mediaType: 'text/plain', text: 'ok', sizeBytes: 2 },
+    ])
+    await turnDone()
+    expect(t.api.responseBodies()).toHaveLength(1)
+  })
+
+  it('rejects Muse-admitted text chips after a switch to Model API', async () => {
+    const t = setup()
+    const { session } = await startSession(t)
+    let nextId = 0
+    const attachments = new AttachmentStore(() => `att-${String(++nextId)}`)
+    const bytes = Buffer.from('x'.repeat(700 * 1024))
+    expect(attachments.add('first.txt', bytes, false, true).ok).toBe(true)
+    expect(attachments.add('second.txt', bytes, false, true).ok).toBe(true)
+    await expect(session.sendTurn(attachments.partsFor(['att-1', 'att-2']))).rejects.toThrow(
+      UI_TEXT.textFilesOverModelApiBudget,
+    )
+    expect(t.api.responseBodies()).toEqual([])
+    expect(session.history().items).toEqual([])
+    expect(JSON.stringify(session.snapshot().replay)).not.toContain(bytes.toString('utf8'))
   })
 
   it('fits an MCP result image ahead of an older 50-page PDF in the next request', async () => {

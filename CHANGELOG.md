@@ -9,8 +9,21 @@ happened, not what was planned; superseded entries are kept.
 
 Muse Code now refuses a combination of text attachments whose serialized
 message would exceed its frame limit, before retaining the last file chip.
-Escaped text and existing images count; removing a file frees room. The Model
-API's separate attachment allowance is unchanged.
+Escaped text and existing images count; removing a file frees room. Model API
+uses the separate context allowance below.
+
+Model API text attachments now have a 768 KiB combined UTF-8 content and
+file-name wrapper allowance. A large single file may be refused before it
+becomes a chip, leaving context room for the prompt, replay and output.
+
+After a completed Model API request omits older PDF or image bytes to fit its
+media budget, saved replay now adopts the fitted text-only version. History
+retains attachment metadata, and failed requests keep prior replay bytes.
+Image rewind refuses missing bytes before clearing or forking, using the
+History card's image count even if the webview reports zero. Model API sends
+and steers reject aggregate named text over its allowance before retaining a
+turn or issuing HTTP, including chips admitted under Muse Code before a
+backend switch.
 
 Three paid extras of Meta's Model API, off until you turn them on, and loud
 while they are (PLAN.md D30, D34).
@@ -129,10 +142,11 @@ while they are (PLAN.md D30, D34).
   announced while its local history remains. Excess `read_file` media in one
   tool round gets a failed tool result before the host retains it. Muse Code's
   MSP 1.3.0 has no file input part, so PDF attachments
-  give a clear refusal there. A picked UTF-8 text file up to 1 MiB in a
-  trusted, indexed workspace becomes a named text attachment on both
-  backends; excluded and outside files stay path mentions, and private files
-  are refused. The PDF page budget reads the page tree's own count even
+  give a clear refusal there. A picked UTF-8 text file in a trusted, indexed
+  workspace becomes a named text attachment on both backends, subject to its
+  1 MiB per-file read cap and each backend's aggregate allowance; excluded
+  and outside files stay path mentions, and private files are refused. The
+  PDF page budget reads the page tree's own count even
   when nested metadata has another count, preventing an oversized request.
   A document with too many page-tree markers gets the conservative full
   50-slot reservation, keeping host inspection bounded. Escaped PDF object

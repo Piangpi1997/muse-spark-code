@@ -38,6 +38,7 @@ import {
   MODEL_API_MAX_RETRIES,
   MODEL_API_MAX_TOOL_ROUNDS,
   MAX_ENCODED_MEDIA_CHARS,
+  MAX_MODEL_API_TEXT_ATTACHMENT_BYTES,
   MODEL_API_HOOK_PROVIDER,
   MODEL_API_RETRYABLE_STREAM_CODES,
   MODEL_API_MODEL_PREFIX,
@@ -885,6 +886,21 @@ function contentPartsFor(
   })
 }
 
+/** Reject an aggregate named-text payload before it can enter replay or an HTTP request. */
+function textAttachmentBudgetError(parts: readonly TurnPart[]): Error | undefined {
+  let bytes = 0
+  for (const part of parts) {
+    if (part.type !== 'textFile') {
+      continue
+    }
+    bytes += Buffer.byteLength(textFileInput(part))
+    if (bytes > MAX_MODEL_API_TEXT_ATTACHMENT_BYTES) {
+      return new Error(UI_TEXT.textFilesOverModelApiBudget)
+    }
+  }
+  return undefined
+}
+
 function typedText(parts: readonly TurnPart[]): string {
   return parts
     .flatMap((part) => {
@@ -1439,6 +1455,34 @@ export class ModelApiSession implements AgentSession {
       max_output_tokens: MODEL_API_MAX_OUTPUT_TOKENS,
       prompt_cache_key: this.sessionId,
     }
+  }
+
+  /** Retain only what a completed request carried; History keeps its file chips separately. */
+  private commitFittedReplay(
+    requestReplay: readonly ReplayItem[],
+    fittedInput: readonly InputItem[],
+  ): boolean {
+    if (requestReplay.length !== fittedInput.length) {
+      this.deps.log.warn('Model API media fit changed replay length; durable replacement skipped')
+      return false
+    }
+    let hasChanged = false
+    for (const [index, entry] of requestReplay.entries()) {
+      const fitted = fittedInput[index]
+      if (fitted === undefined || fitted === entry.item) {
+        continue
+      }
+      const currentIndex = this.replay.indexOf(entry)
+      if (currentIndex === -1) {
+        continue
+      }
+      this.replay[currentIndex] = { ...entry, item: fitted }
+      // Any tracked media not sent was replaced by budget text, so it has no
+      // bytes left for a later Stop to scrub from this replay entry.
+      this.readFileMessages.delete(entry)
+      hasChanged = true
+    }
+    return hasChanged
   }
 
   /** In-process, IDE, MCP and paid search tools offered to this request. */
@@ -2036,6 +2080,7 @@ export class ModelApiSession implements AgentSession {
       })
     }
     const body = this.body()
+    const requestReplay = [...this.replay]
     let final: ResponseObject | undefined
     const admitAttempt = this.responseAttemptGuard(body)
     const responseStream = this.deps.client.streamResponse(
@@ -2058,7 +2103,11 @@ export class ModelApiSession implements AgentSession {
       )
     }
     this.markReadFileMediaDelivered(turnId, body.input)
+    const wasFitted = this.commitFittedReplay(requestReplay, body.input)
     const calls = this.adoptOutput(turnId, final, open, chargedGoalId)
+    if (wasFitted) {
+      this.touch()
+    }
     const post = await this.runHooks(
       'PostLLMCall',
       turnId,
@@ -4661,6 +4710,10 @@ export class ModelApiSession implements AgentSession {
     displayText?: string,
     requestFor?: (turnId: string) => ConfirmedModelRequest,
   ): Promise<TurnSubmission> {
+    const textBudgetError = textAttachmentBudgetError(parts)
+    if (textBudgetError !== undefined) {
+      return Promise.reject(textBudgetError)
+    }
     const turnId = this.isSubagent ? `${this.sessionId}:${this.deps.newId()}` : this.deps.newId()
     const userMessageId = this.deps.newId()
     const confirmedRequest = requestFor?.(turnId)
@@ -4684,6 +4737,10 @@ export class ModelApiSession implements AgentSession {
   public steer(expectedTurnId: string, parts: readonly TurnPart[]): Promise<TurnSubmission> {
     if (this.active?.turnId !== expectedTurnId || this.active.abort.signal.aborted) {
       return Promise.reject(new Error(TURN_NOT_RUNNING))
+    }
+    const textBudgetError = textAttachmentBudgetError(parts)
+    if (textBudgetError !== undefined) {
+      return Promise.reject(textBudgetError)
     }
     const userMessageId = this.deps.newId()
     this.active.steered.push({ parts, userMessageId })

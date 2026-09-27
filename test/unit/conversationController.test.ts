@@ -2390,6 +2390,7 @@ describe('ConversationController: session history (M6)', () => {
     )
     t.server.handle('session/fork', () => loaded('forked', [first]))
     await expectForkBeforeCardAfterT1(t, { itemId: 'u2', turnId: 't2', text: 'second' })
+    t.surface.posted.length = 0
     await requestRewind(t, {
       sourceSessionId: 'forked',
       itemId: 'u1',
@@ -2397,13 +2398,37 @@ describe('ConversationController: session history (M6)', () => {
       text: 'first',
       imageCount: 1,
     })
-    expect(t.surface.posted).toContainEqual({ type: 'conversationCleared' })
-    expect(t.surface.posted).toContainEqual({ type: 'restoreDraft', text: 'first' })
+    expect(t.surface.posted).not.toContainEqual({ type: 'conversationCleared' })
+    expect(t.surface.posted).not.toContainEqual({ type: 'restoreDraft', text: 'first' })
     expect(t.surface.posted).toContainEqual({
       type: 'notice',
       level: 'warning',
       text: UI_TEXT.rewindImagesUnavailable,
     })
+  })
+
+  it('refuses a History image rewind with missing replay bytes even when the caller claims zero images', async () => {
+    const t = withHistory()
+    serveHistoryItems(t, [
+      {
+        ...historyUserItem('image-card', 't1', 'Look at this'),
+        attachments: [{ type: 'image', mediaType: 'image/png' }],
+      },
+    ])
+    await t.controller.handle({ type: 'resumeSession', sessionId: 'old' })
+    t.surface.posted.length = 0
+    await requestRewind(t, {
+      itemId: 'image-card',
+      turnId: 't1',
+      text: 'Look at this',
+      imageCount: 0,
+    })
+    expect(t.server.requestsFor('session/fork')).toHaveLength(0)
+    expect(
+      t.surface.posted.filter((message) =>
+        ['conversationCleared', 'restoreDraft', 'notice'].includes(message.type),
+      ),
+    ).toEqual([{ type: 'notice', level: 'warning', text: UI_TEXT.rewindImagesUnavailable }])
   })
 
   it.each([

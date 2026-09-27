@@ -331,6 +331,7 @@
   "toolVisualReadFailed": "Impossible de lire le fichier `{path}`.",
   "textFileTooLarge": "Les fichiers texte ne doivent pas dépasser 1 Mo.",
   "textFilesOverBudget": "Les pièces jointes dépassent la limite de message de Muse Code. Retirez une pièce jointe ou raccourcissez le message.",
+  "textFilesOverModelApiBudget": "Les fichiers texte joints dépassent la limite de contexte de Model API. Retirez un fichier ou joignez un extrait plus court.",
   "textFileInvalid": "Ce fichier n’est pas un texte UTF-8 valide.",
   "textFilePrivate": "Ce fichier privé ne peut pas être joint.",
   "textFileLabel": "Texte",

@@ -14,6 +14,7 @@ import {
   MAX_DOCUMENT_BYTES,
   MAX_ENCODED_MEDIA_CHARS,
   MAX_IMAGE_BYTES,
+  MAX_MODEL_API_TEXT_ATTACHMENT_BYTES,
   MAX_TEXT_ATTACHMENT_BYTES,
   MODEL_API_MEDIA_PER_REQUEST,
   MODEL_API_PDF_PAGE_IMAGES,
@@ -39,6 +40,7 @@ interface StoredAttachment {
   readonly bytes: Uint8Array
   readonly text?: string
   readonly mspPartBytes?: number
+  readonly modelApiTextBytes?: number
 }
 
 const FIRST_PRINTABLE_CODE_POINT = 0x20
@@ -97,6 +99,14 @@ export class AttachmentStore {
   /** Serialized MSP attachment parts, before prompt/context and command envelope. */
   private mspAttachmentBytes(): number {
     return Array.from(this.entries.values(), (entry) => entry.mspPartBytes ?? 0).reduce(
+      (total, length) => total + length,
+      0,
+    )
+  }
+
+  /** Conservative text-only share of the Model API context window. */
+  private modelApiTextBytes(): number {
+    return Array.from(this.entries.values(), (entry) => entry.modelApiTextBytes ?? 0).reduce(
       (total, length) => total + length,
       0,
     )
@@ -207,16 +217,18 @@ export class AttachmentStore {
       mediaType: TEXT_ATTACHMENT_MEDIA_TYPE,
       sizeBytes: bytes.byteLength,
     }
+    const modelText = textFileInput({
+      type: 'textFile',
+      name,
+      mediaType: TEXT_ATTACHMENT_MEDIA_TYPE,
+      sizeBytes: bytes.byteLength,
+      text: content,
+    })
+    const modelApiTextBytes = Buffer.byteLength(modelText)
     const mspPartBytes = Buffer.byteLength(
       JSON.stringify({
         type: 'text',
-        text: textFileInput({
-          type: 'textFile',
-          name,
-          mediaType: TEXT_ATTACHMENT_MEDIA_TYPE,
-          sizeBytes: bytes.byteLength,
-          text: content,
-        }),
+        text: modelText,
       }),
     )
     if (
@@ -225,7 +237,13 @@ export class AttachmentStore {
     ) {
       return { ok: false, reason: UI_TEXT.textFilesOverBudget }
     }
-    this.entries.set(summary.id, { summary, bytes, text: content, mspPartBytes })
+    if (
+      !shouldCheckMspBudget &&
+      this.modelApiTextBytes() + modelApiTextBytes > MAX_MODEL_API_TEXT_ATTACHMENT_BYTES
+    ) {
+      return { ok: false, reason: UI_TEXT.textFilesOverModelApiBudget }
+    }
+    this.entries.set(summary.id, { summary, bytes, text: content, mspPartBytes, modelApiTextBytes })
     return { ok: true, attachment: summary }
   }
 
