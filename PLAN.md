@@ -1235,7 +1235,7 @@ milestone that closes each gap (the rows updated on 2026-09-27 to what
 | PDFs and files as input           | MSP takes text, images and skills only: picked UTF-8 text files travel as named text; a PDF names the Model API backend                                                                                   | PDFs and images attached or read by `read_file`; UTF-8 text files as named text (M54, D47)                                                         | M54 (merged)                 |
 | Questions: clarify                | `userInput/clarify` wired to Explain instead (M46)                                                                                                                                                        | `ask_user` accepts the explanation (M46)                                                                                                           | M46 (merged)                 |
 | Sign-in in the panel, install     | `account/*` device-code sign-in in the panel; **Install Muse Code** runs Meta's installer in a terminal (M55)                                                                                             | key pasted, or added from Account & usage while Muse Code is signed in                                                                             | M55 (M41; merged)            |
-| Network posture, enterprise       | `--sandbox-network` from `museSpark.sandboxNetwork`; VS Code's proxy handed to Muse Code; `muse config status` in Diagnostics (M56); `--no-session-log` not offered (D43)                                 | fetch and the voice socket through VS Code's proxy and certificates; network failures named; a stable prompt-cache key and retention setting (M56) | M56 (PR #44)                 |
+| Network posture, enterprise       | `--sandbox-network` from `museSpark.sandboxNetwork`; VS Code's proxy handed to Muse Code; `muse config status` in Diagnostics (M56); `--no-session-log` not offered (D43)                                 | fetch and the voice socket through VS Code's proxy and certificates; network failures named; a stable prompt-cache key and retention setting (M56) | M56 (merged)                 |
 | Voice                             | the OS recogniser (free); Muse Code's own voice is TUI-only and not on Windows                                                                                                                            | the OS recogniser, or Muse Voice (paid, M35)                                                                                                       | —                            |
 | Everything else already at parity | sessions, history, fork, rename, compaction, export, steering, queue, approvals with stages and scopes, questions, todos, usage, model, effort, modes, skills, rules, worktrees, attachments, diagnostics | the same, through the extension's own harness                                                                                                      | —                            |
 
@@ -4102,7 +4102,7 @@ merged as PR #28 (`0e09b63`).
 
 ### M43–M56 — Parity with everything Muse Code and the Model API offer (D36)
 
-**Status 2026-09-27: M43–M55 merged; M56 open as PR #44. All ship in
+**Status 2026-09-27: M43–M56 merged (M56 as PR #44). All ship in
 0.9.0.** The program the owner asked for (2026-09-25): one pull request per
 milestone, each with its tests, red drills, documents and fourteen
 translations. The order is D36's table:
@@ -4122,7 +4122,7 @@ translations. The order is D36's table:
 | M53       | Rewind a conversation; a side chat                                                                                                    | merged, PR #41 (with the usage follow-up)            |
 | M54       | PDFs and other files as input                                                                                                         | merged, PR #42                                       |
 | M55       | Sign in and install Muse Code from the panel (M41 folded in)                                                                          | merged, PR #43 (with the sign-in reducer review fix) |
-| M56       | Enterprise network: proxy and certificates, the sandbox network switch, no session log, the CLI's config status                       | open, PR #44                                         |
+| M56       | Enterprise network: proxy and certificates, the sandbox network switch, no session log, the CLI's config status                       | merged, PR #44                                       |
 
 ### M43 — A row for every tool Muse Code runs (D36)
 
@@ -5791,9 +5791,10 @@ carries main's merged M54 (PR #42, `cf33cb2`). Both trees passed local
 `npm run quality`, and the receipts are in their commit messages. M55's
 review fix and main after PR #43 (`0cf5e7e`) are merged in, and that tree
 passed `npm run quality` too (2,497 unit tests passed, 5 skipped; 328
-accessibility pages; `dist/extension.js` 596.7 KiB). Open as PR #44; ships
-in 0.9.0. Still open: hosted CI on PR #44, and live proof behind a real
-enterprise proxy with a private root, including Muse Code's IDE route**
+accessibility pages; `dist/extension.js` 596.7 KiB). Merged as PR #44
+(`890e37b`) after all seven hosted jobs passed (run 36350220096, the Windows
+job on its second attempt); ships in 0.9.0. Still open: live proof behind a
+real enterprise proxy with a private root, including Muse Code's IDE route**
 (`docs/certification/m56.md`, "Final join onto M55").
 
 That join keeps M54's and M55's records as they were. It restores
@@ -5937,9 +5938,9 @@ joins, combined M56 gates and live enterprise proxy/private-root proof.
   certificates, Privacy and security, Troubleshooting), PRIVACY, CHANGELOG.
 - **Acceptance**: tests from the captured shapes and drills N1–N20 passed;
   the join onto M55 added the job-source contract test and drills N21–N25,
-  and its exact tree passed local full quality. Hosted checks on PR #44
-  (M54 merged as PR #42, M55 as PR #43) and live enterprise-network proof
-  remain pending.
+  and its exact tree passed local full quality. Merged as PR #44
+  (`890e37b`, run 36350220096, seven jobs green); live enterprise-network
+  proof remains open.
 - **Left**: `--no-session-log` until Muse Code serves a memory-only host's
   view over MSP (an upstream report, D43); Muse Code's own
   `endpoint_transport.proxy` is the user's to set in its settings file. No
@@ -6455,13 +6456,13 @@ parity with what Muse Code and the Model API offer (D36):
 - PDFs and files as input (D47, M54, #42);
 - install and sign in from the panel, with the review fix to the sign-in
   reducer (M55, #43, merged);
-- enterprise network and posture (D43, M56, #44, open);
+- enterprise network and posture (D43, M56, #44, merged);
 - CI on pull requests and on demand, no longer on every push to main (#38,
   #40).
 
 Before the tag:
 
-- M56 (#44) merged, with hosted CI green;
+- M56 (#44) merged, with hosted CI green (done: `890e37b`);
 - on `release/0.9.0` (`1d1b281`, `docs/certification/release-0.9.0.md`),
   the Model API key-format fix: Meta's current keys (`LLM_` and letters,
   digits and underscores, no `|`) are accepted and redacted, as are the

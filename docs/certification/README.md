@@ -67,5 +67,5 @@ The PNGs beside the records are that day's harness renders.
 - [M53](m53.md): conversation rewind and side chat (PLAN.md D46; merged as PR #41), with the Account & usage reset-timing follow-up in [m53-usage-timing.md](m53-usage-timing.md)
 - [M54](m54.md): PDF and file input on the Model API backend (PLAN.md D47; merged as PR #42)
 - [M55](m55.md): install and sign in to Muse Code from the panel; absorbs the M41 installer proposal (PLAN.md M55; merged as PR #43; ships in 0.9.0)
-- [M56](m56.md): enterprise network and posture: proxies and certificates, the sandbox network, `muse config status`, prompt caching (PLAN.md D43; open as PR #44; ships in 0.9.0)
+- [M56](m56.md): enterprise network and posture: proxies and certificates, the sandbox network, `muse config status`, prompt caching (PLAN.md D43; merged as PR #44; ships in 0.9.0)
 - [0.9.0 release fixes](release-0.9.0.md): Model API keys in Meta's current format, hooks only in a trusted workspace, the search worker's parsed job (PLAN.md §10)

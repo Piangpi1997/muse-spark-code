@@ -129,6 +129,39 @@ The audit also asked for a reason beside the two `as never` casts in
 two hunks and passes them in the wrong order directly, so
 `noUncheckedIndexedAccess` has nothing to widen. Their §8 row is removed.
 
+## The hosted-Windows hook stdin timeout
+
+`test/unit/toolIo.test.ts` › "delivers hook JSON on stdin without placing it
+in the command line (M51)" timed out on a hosted Windows runner twice, each
+time on the first attempt of a pull request's run:
+
+- PR #43 (run 36348351793, attempt 1): no stdout, no stderr, exit 1 after
+  the 60 s hook timeout killed the tree;
+- PR #44 (run 36350220096, attempt 1): the full echo and exit 0, but only
+  after the 60 s timer had fired, so the result was marked timed out.
+
+A rerun of each passed. Locally the same launch (Windows PowerShell 5.1,
+the job join, `cmd.exe /D /S /C`, then Node reading stdin) passed 80 of 80
+runs, four at a time, with and without `-InputFormat None`.
+
+A temporary branch `diag/hook-stdin-windows` ran a push-triggered workflow
+on `windows-latest` (run 36351144214). The runner had 4 CPUs and Defender
+real-time protection off, and PowerShell 5.1 started in 131–153 ms. The
+test passed in 20 isolated runs (20–28 s each, most of it compiling the job
+helper) and in 5 runs of the whole file with coverage (32 passed, 2 skipped
+each). One full `npm run test:unit` passed 2,513 tests (5 skipped). The
+timeout did not reproduce.
+
+The exit codes point at a slow start rather than lost stdin. A killed tree
+reports 1, so the second failure's exit 0 means the hook finished on its
+own just after 60 s. That fits the wrapper taking about 60 s to start the
+hook on a fresh runner. Hook stdin that never ends fits less well. The test
+now makes the hook write `hook started at <epoch ms>` to stderr. It also
+fails on `isTimedOut` with that time and the run's start. A future failure
+will therefore show whether the hook started late or started on time and
+never saw its stdin end. The test's behaviour is otherwise unchanged. The
+diagnostic branch and its workflow were deleted; they never reached `main`.
+
 ## Documentation
 
 A read-only audit of every shipped and project document against the code
