@@ -283,10 +283,20 @@ export type InputContentPart =
   | { readonly type: 'input_image'; readonly image_url: string; readonly detail: 'auto' }
   | { readonly type: 'output_text'; readonly text: string }
 
+/**
+ * A part of a function's output given as content (the Responses schema's
+ * `FunctionCallOutputContentListParam`, read 2026-09-25): text and pictures,
+ * which an MCP tool may return (M50).
+ */
+export type FunctionOutputPart =
+  | { readonly type: 'input_text'; readonly text: string }
+  | { readonly type: 'input_image'; readonly image_url: string; readonly detail: 'auto' }
+
 export interface FunctionCallOutputItem {
   readonly type: 'function_call_output'
   readonly call_id: string
-  readonly output: string
+  /** The result as text, or as content parts when it holds pictures. */
+  readonly output: string | readonly FunctionOutputPart[]
 }
 
 /**

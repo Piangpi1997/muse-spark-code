@@ -20,6 +20,7 @@ import {
   LIST_FILES_DEFAULT_LIMIT,
   MAX_DOCUMENT_BYTES,
   MAX_IMAGE_BYTES,
+  MODEL_API_SUBAGENT_TOOLS,
   MODEL_API_TOOLS,
   MODEL_TEXT,
   PDF_EXTENSION,
@@ -27,6 +28,8 @@ import {
   READ_FILE_DEFAULT_LIMIT,
   READ_FILE_MAX_LINE_CHARS,
   SEARCH_MAX_CANDIDATES,
+  SEARCH_MAX_FILE_BYTES,
+  SEARCH_MAX_HITS,
   SEARCH_MAX_RESULTS,
   SEARCH_PATTERN_MAX_LENGTH,
   SEARCH_TIMEOUT_MS,
@@ -56,9 +59,11 @@ import {
   GENERATE_IMAGE_PARAMETERS,
 } from './imageToolDefinitions'
 import { GOAL_TOOL_DEFINITIONS } from './goals'
+import { MEMORY_TOOL_DEFINITIONS } from './memoryTools'
 
 import type { ToolClass } from './permissions'
-import type { FunctionToolDefinition } from './schemas'
+import type { FunctionOutputPart, FunctionToolDefinition } from './schemas'
+import { SUBAGENT_TOOL_DEFINITIONS } from './subagentTools'
 
 export interface ShellResult {
   readonly stdout: string
@@ -67,6 +72,8 @@ export interface ShellResult {
   readonly isTimedOut: boolean
   /** Stopped because the turn was (the Stop button, PLAN.md D25). */
   readonly isCancelled: boolean
+  /** The command exceeded its per-stream byte budget (M51 hooks). */
+  readonly isOutputTooLarge?: boolean
 }
 
 /**
@@ -100,6 +107,9 @@ export interface SearchJob {
   /** The workspace root: a file whose canonical path leaves it is skipped (D24). */
   readonly root: string
   readonly files: readonly { readonly relative: string; readonly absolute: string }[]
+  /** The canonical limits travel with the job so the worker stays small. */
+  readonly maxFileBytes: number
+  readonly maxHits: number
 }
 
 export interface SearchHit {
@@ -164,6 +174,15 @@ export interface ToolIo {
     signal?: AbortSignal,
     limit?: ShellTimeLimit,
   ): Promise<ShellResult>
+  /** An explicitly enabled M51 hook, with JSON stdin and a cleared environment. */
+  runHook?(
+    command: string,
+    payload: string,
+    cwd: string,
+    timeoutMs: number,
+    signal?: AbortSignal,
+    extraEnvNames?: readonly string[],
+  ): Promise<ShellResult>
   /**
    * The canonical form of an absolute path: links, junctions and short
    * names resolved through the nearest existing ancestor (PLAN.md D24).
@@ -208,6 +227,8 @@ export interface VisibleFile {
 export interface ToolOutcome {
   /** What the model receives as the function result. */
   readonly output: string
+  /** The result as content parts instead, when it holds pictures (an MCP tool's, M50). */
+  readonly outputParts?: readonly FunctionOutputPart[]
   /** What the transcript row shows. */
   readonly visibleOutput: string
   readonly failureReason?: string
@@ -230,6 +251,16 @@ const TOOL_CLASSES: Readonly<Record<string, ToolClass>> = {
   [MODEL_API_TOOLS.readSkill]: 'read',
   [MODEL_API_TOOLS.generateImage]: 'paid',
   [MODEL_API_TOOLS.editImage]: 'paid',
+  [MODEL_API_SUBAGENT_TOOLS.spawn]: 'spawn',
+  [MODEL_API_SUBAGENT_TOOLS.status]: 'interactive',
+  [MODEL_API_SUBAGENT_TOOLS.wait]: 'interactive',
+  [MODEL_API_SUBAGENT_TOOLS.sendMessage]: 'interactive',
+  [MODEL_API_SUBAGENT_TOOLS.readResult]: 'interactive',
+  [MODEL_API_SUBAGENT_TOOLS.cancel]: 'interactive',
+  // M49 (PLAN.md D41): a memory write is judged as an edit, never a protected one.
+  [MODEL_API_TOOLS.readMemory]: 'read',
+  [MODEL_API_TOOLS.addMemory]: 'edit',
+  [MODEL_API_TOOLS.editMemory]: 'edit',
   // The goal tools change only the session's goal (M45): no card, in any mode.
   [MODEL_API_TOOLS.createGoal]: 'interactive',
   [MODEL_API_TOOLS.getGoal]: 'interactive',
@@ -284,6 +315,12 @@ export interface ToolDefinitionOptions {
   readonly hasSkills: boolean
   /** True while paid image generation is on (M34, PLAN.md D30). */
   readonly hasImageGeneration?: boolean
+  /** Child sessions cannot spawn again (M48, PLAN.md D45). */
+  readonly hasSubagents?: boolean
+  /** Child sessions cannot ask the panel or set its task list. */
+  readonly isSubagent?: boolean
+  /** Muse Code's memory tools, trusted workspaces only (M49, PLAN.md D41). */
+  readonly hasMemory?: boolean
 }
 
 const DEFAULT_TOOL_OPTIONS: ToolDefinitionOptions = { hasShell: true, hasSkills: false }
@@ -402,65 +439,79 @@ export function toolDefinitions(
           ),
         ]
       : []),
-    define(
-      MODEL_API_TOOLS.askUser,
-      'Ask the user one or more questions and wait for the answers. Use it for decisions only the user can make.',
-      {
-        questions: {
-          type: 'array',
-          items: {
-            type: 'object',
-            properties: {
-              id: { type: 'string' },
-              header: { type: 'string', description: 'Short label (a few words)' },
-              question: { type: 'string' },
-              selection: {
-                type: 'object',
-                properties: { mode: { type: 'string', enum: ['single', 'multiple'] } },
-                required: ['mode'],
-              },
-              options: {
+    ...(options.isSubagent === true
+      ? []
+      : [
+          define(
+            MODEL_API_TOOLS.askUser,
+            'Ask the user one or more questions and wait for the answers. Use it for decisions only the user can make.',
+            {
+              questions: {
                 type: 'array',
                 items: {
                   type: 'object',
-                  properties: { label: { type: 'string' }, description: { type: 'string' } },
-                  required: ['label'],
+                  properties: {
+                    id: { type: 'string' },
+                    header: { type: 'string', description: 'Short label (a few words)' },
+                    question: { type: 'string' },
+                    selection: {
+                      type: 'object',
+                      properties: { mode: { type: 'string', enum: ['single', 'multiple'] } },
+                      required: ['mode'],
+                    },
+                    options: {
+                      type: 'array',
+                      items: {
+                        type: 'object',
+                        properties: { label: { type: 'string' }, description: { type: 'string' } },
+                        required: ['label'],
+                      },
+                    },
+                  },
+                  required: ['id', 'header', 'question', 'selection', 'options'],
                 },
               },
             },
-            required: ['id', 'header', 'question', 'selection', 'options'],
-          },
-        },
-      },
-      ['questions'],
-    ),
-    define(
-      MODEL_API_TOOLS.todoWrite,
-      'Replace your task list, shown to the user while you work.',
-      {
-        items: {
-          type: 'array',
-          items: {
-            type: 'object',
-            properties: {
-              text: { type: 'string' },
-              status: { type: 'string', enum: ['pending', 'inProgress', 'completed'] },
-              activeForm: {
-                type: 'string',
-                description: 'Present-tense form shown while in progress',
+            ['questions'],
+          ),
+          define(
+            MODEL_API_TOOLS.todoWrite,
+            'Replace your task list, shown to the user while you work.',
+            {
+              items: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  properties: {
+                    text: { type: 'string' },
+                    status: { type: 'string', enum: ['pending', 'inProgress', 'completed'] },
+                    activeForm: {
+                      type: 'string',
+                      description: 'Present-tense form shown while in progress',
+                    },
+                  },
+                  required: ['text', 'status'],
+                },
               },
             },
-            required: ['text', 'status'],
-          },
-        },
-      },
-      ['items'],
-    ),
-    // Muse Code's goal tools (M45, PLAN.md D38), offered in every session as
-    // `muse serve` offers them.
-    ...GOAL_TOOL_DEFINITIONS.map((tool) =>
-      define(tool.name, tool.description, tool.properties, tool.required),
-    ),
+            ['items'],
+          ),
+          // Muse Code's goal tools (M45, PLAN.md D38), offered in every session as
+          // `muse serve` offers them.
+          ...GOAL_TOOL_DEFINITIONS.map((tool) =>
+            define(tool.name, tool.description, tool.properties, tool.required),
+          ),
+        ]),
+    ...(options.hasSubagents === true
+      ? SUBAGENT_TOOL_DEFINITIONS.map((tool) =>
+          define(tool.name, tool.description, tool.properties, tool.required),
+        )
+      : []),
+    ...(options.hasMemory === true
+      ? MEMORY_TOOL_DEFINITIONS.map((tool) =>
+          define(tool.name, tool.description, tool.properties, tool.required),
+        )
+      : []),
   ]
 }
 
@@ -1044,6 +1095,8 @@ async function search(
   const outcome = await context.io.searchFiles({
     pattern: args.pattern,
     root: context.workspaceRoot,
+    maxFileBytes: SEARCH_MAX_FILE_BYTES,
+    maxHits: SEARCH_MAX_HITS,
     files: searched.map((relative) => ({
       relative,
       absolute: p.join(context.workspaceRoot, ...relative.split('/')),

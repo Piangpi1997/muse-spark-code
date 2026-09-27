@@ -82,6 +82,7 @@ export const ViewColumn = {
 } as const
 
 export const window = {
+  state: { focused: true },
   createWebviewPanel: vi.fn<typeof vscode.window.createWebviewPanel>(),
   // The pickers, dialogs and editors behind the CLI features (M30).
   showQuickPick: vi.fn<typeof vscode.window.showQuickPick>(),
@@ -95,7 +96,11 @@ export const window = {
 
 export const workspace = {
   isTrusted: true,
-  fs: { writeFile: vi.fn<typeof vscode.workspace.fs.writeFile>() },
+  fs: {
+    writeFile: vi.fn<typeof vscode.workspace.fs.writeFile>(),
+    // The Memory view's delete, to the trash (M49).
+    delete: vi.fn<typeof vscode.workspace.fs.delete>(),
+  },
 }
 
 export const env = {

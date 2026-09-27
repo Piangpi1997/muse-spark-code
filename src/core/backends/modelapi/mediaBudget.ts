@@ -21,7 +21,13 @@ import {
 } from '../../../shared/constants'
 import { fill } from '../../../shared/l10n/text'
 import { pdfPageCount } from '../../pdf'
-import type { InputContentPart, InputFilePart, InputItem, InputMessageItem } from './schemas'
+import type {
+  FunctionOutputPart,
+  InputContentPart,
+  InputFilePart,
+  InputItem,
+  InputMessageItem,
+} from './schemas'
 
 // `data:application/pdf;base64,<data>`: the payload follows the first comma.
 const DATA_URL_SEPARATOR = ','
@@ -104,25 +110,34 @@ export class MediaBudget {
   public fit(input: readonly InputItem[]): readonly InputItem[] {
     let left = MODEL_API_MEDIA_PER_REQUEST
     let encodedLeft = this.maxEncodedMediaChars
+    const canRetain = (part: InputContentPart): boolean => {
+      const weight = this.weightOf(part)
+      if (weight === 0) {
+        return true
+      }
+      const encodedChars = this.encodedChars(part)
+      if (weight > left || encodedChars > encodedLeft) {
+        return false
+      }
+      left -= weight
+      encodedLeft -= encodedChars
+      return true
+    }
     const reversedInput = input.toReversed()
     const fitted = reversedInput.map((item) => {
+      if (item.type === 'function_call_output' && typeof item.output !== 'string') {
+        const reversedOutput = item.output.toReversed()
+        const output = reversedOutput.map((part): FunctionOutputPart =>
+          canRetain(part) ? part : { type: 'input_text', text: MODEL_TEXT.imageLeftOut },
+        )
+        const isItemChanged = output.some((part, index) => part !== reversedOutput[index])
+        return isItemChanged ? { ...item, output: output.toReversed() } : item
+      }
       if (!isUserMessage(item)) {
         return item
       }
       const reversedContent = item.content.toReversed()
-      const content = reversedContent.map((part) => {
-        const weight = this.weightOf(part)
-        if (weight === 0) {
-          return part
-        }
-        const encodedChars = this.encodedChars(part)
-        if (weight <= left && encodedChars <= encodedLeft) {
-          left -= weight
-          encodedLeft -= encodedChars
-          return part
-        }
-        return leftOut(part)
-      })
+      const content = reversedContent.map((part) => (canRetain(part) ? part : leftOut(part)))
       const isItemChanged = content.some((part, index) => part !== reversedContent[index])
       return isItemChanged ? { ...item, content: content.toReversed() } : item
     })

@@ -15,7 +15,6 @@ import type {
   SearchOutcome,
   SearchWorkerMessage,
 } from '../../core/backends/modelapi/tools'
-import { SEARCH_MAX_FILE_BYTES, SEARCH_MAX_HITS } from '../../shared/constants'
 
 const LINE_BREAK = /\r?\n/
 
@@ -48,13 +47,17 @@ function isInside(root: string, target: string): boolean {
 }
 
 /** The file's text when it is a small, confined, readable text file. */
-async function searchableText(realRoot: string, absolute: string): Promise<string | undefined> {
+async function searchableText(
+  realRoot: string,
+  absolute: string,
+  maxFileBytes: number,
+): Promise<string | undefined> {
   try {
     if (!isInside(realRoot, await realpath(absolute))) {
       return undefined
     }
     const info = await stat(absolute)
-    if (!info.isFile() || info.size > SEARCH_MAX_FILE_BYTES) {
+    if (!info.isFile() || info.size > maxFileBytes) {
       return undefined
     }
     const text = await readFile(absolute, 'utf8')
@@ -79,14 +82,14 @@ async function run(job: SearchJob): Promise<SearchOutcome> {
   const realRoot = await realpath(job.root)
   let found = 0
   for (const file of job.files) {
-    if (found >= SEARCH_MAX_HITS) {
+    if (found >= job.maxHits) {
       break
     }
-    const text = await searchableText(realRoot, file.absolute)
+    const text = await searchableText(realRoot, file.absolute, job.maxFileBytes)
     if (text === undefined) {
       continue
     }
-    const hits = matchesIn(regex, file.relative, text, SEARCH_MAX_HITS - found)
+    const hits = matchesIn(regex, file.relative, text, job.maxHits - found)
     if (hits.length === 0) {
       continue
     }

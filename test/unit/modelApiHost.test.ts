@@ -4,6 +4,7 @@ import * as z from 'zod/mini'
 import type { AgentEvent } from '../../src/shared/agentEvents'
 import {
   CLARIFICATION_MAX_CHARS,
+  HOOK_MAX_STOP_CONTINUATIONS,
   MODEL_API_MAX_RETRIES,
   MODEL_API_MAX_TOOL_ROUNDS,
   GOAL_OBJECTIVE_MAX_CHARS,
@@ -12,6 +13,8 @@ import {
   UI_TEXT,
 } from '../../src/shared/constants'
 import type { AgentSession } from '../../src/core/agent/agentBackend'
+import { ModelApiClient } from '../../src/core/backends/modelapi/client'
+import type { SubagentTaskConfirmation } from '../../src/shared/paid'
 import {
   ModelApiHost,
   type ModelApiHostDeps,
@@ -19,7 +22,7 @@ import {
 } from '../../src/core/backends/modelapi/ModelApiHost'
 import { FakeLogOutputChannel } from './helpers/fakes'
 import { EN } from '../../src/shared/l10n/en'
-import { BASE_LOCALE, setUiText } from '../../src/shared/l10n/text'
+import { BASE_LOCALE, fill, setUiText } from '../../src/shared/l10n/text'
 import {
   fakeModelApi,
   fakeModelApiClient,
@@ -28,11 +31,108 @@ import {
 } from './helpers/fakeModelApi'
 import { memoryContextIo } from './helpers/fakeContextIo'
 import { memorySessionStore } from './helpers/fakeSessionStore'
-import { parseStoredSession } from '../../src/core/backends/modelapi/sessionStore'
+import {
+  parseStoredSession,
+  type StoredSession,
+} from '../../src/core/backends/modelapi/sessionStore'
 import { heldShellToolIo, type MemoryToolIo, memoryToolIo } from './helpers/fakeToolIo'
 import { pdfFixture } from './helpers/pdfFixture'
+import { parseHookConfig, type HookDefinition } from '../../src/core/backends/modelapi/hooks'
+import type { ToolIo } from '../../src/core/backends/modelapi/tools'
+import { type FakeMcpSource, fakeMcpSource } from './helpers/fakeMcpSource'
+import { countLogged } from './helpers/logText'
+import type { McpTool } from '../../src/core/mcp'
+import { memoryStoreOver, PERSONAL } from './helpers/fakeMemoryIo'
 
 const ROOT = '/ws'
+
+function hooksFor(event: string, command: string): readonly HookDefinition[] {
+  return parseHookConfig(
+    JSON.stringify({
+      hooks: {
+        [event]: [{ hooks: [{ type: 'command', command }] }],
+      },
+    }),
+    'project',
+    'linux',
+  ).hooks
+}
+
+function permitHook() {
+  return hookReply(JSON.stringify({ decision: { behavior: 'allow' } }))
+}
+
+function hookReply(stdout = '{}') {
+  return Promise.resolve({
+    stdout,
+    stderr: '',
+    exitCode: 0,
+    isTimedOut: false,
+    isCancelled: false,
+  })
+}
+
+function recordHookPayloads(payloads: unknown[]): NonNullable<ToolIo['runHook']> {
+  return (_command, payload) => {
+    payloads.push(z.unknown().parse(JSON.parse(payload)))
+    return hookReply()
+  }
+}
+
+function recordRawHookPayloads(payloads: string[]): NonNullable<ToolIo['runHook']> {
+  return (_command, payload) => {
+    payloads.push(payload)
+    return hookReply('')
+  }
+}
+
+function postVetoHook(isBlocked: () => boolean): NonNullable<ToolIo['runHook']> {
+  return () =>
+    hookReply(isBlocked() ? JSON.stringify({ decision: 'block', reason: 'Post veto' }) : '{}')
+}
+
+function modelCallObserver(payloads: unknown[]): ReturnType<typeof setup> {
+  return setup({
+    hooks: [...hooksFor('PreLLMCall', 'observe'), ...hooksFor('PostLLMCall', 'observe')],
+    runHook: recordHookPayloads(payloads),
+  })
+}
+
+function scriptWriteCalls(
+  t: ReturnType<typeof setup>,
+  ...calls: readonly { readonly path: string; readonly content: string; readonly callId?: string }[]
+): void {
+  t.api.script(
+    {
+      calls: calls.map(({ path, content, callId }) => ({
+        name: 'write_file',
+        arguments: JSON.stringify({ path, content }),
+        ...(callId !== undefined && { callId }),
+      })),
+    },
+    { text: 'done' },
+  )
+}
+
+async function completeWriteTurn(
+  t: ReturnType<typeof setup>,
+  session: ModelApiSession,
+  turnDone: () => Promise<void>,
+  path: string,
+  content: string,
+  callId?: string,
+): Promise<void> {
+  scriptWriteCalls(t, { path, content, ...(callId !== undefined && { callId }) })
+  await session.sendTurn([{ type: 'text', text: 'write' }])
+  await turnDone()
+}
+
+async function completeUnpromptedWrite(t: ReturnType<typeof setup>): Promise<AgentEvent[]> {
+  const { session, events, turnDone } = await startSession(t)
+  await completeWriteTurn(t, session, turnDone, 'notes.txt', 'x', 'c')
+  expect(events.some((event) => event.type === 'approvalRequested')).toBe(false)
+  return events
+}
 
 function setup(
   options: {
@@ -44,18 +144,59 @@ function setup(
     describeEnvironment?: ModelApiHostDeps['describeEnvironment']
     /** The paid features that are on (M33–M35); none unless a test says so. */
     paid?: readonly PaidFeature[]
+    confirmSubagentTask?: ModelApiHostDeps['confirmSubagentTask']
+    apiKey?: () => Promise<string | undefined>
     /** The tools' files and shell, when a test needs its own (M46: a held shell). */
     io?: MemoryToolIo
     mediaBudgetMaxEncodedChars?: number
+    hooks?: readonly HookDefinition[]
+    runHook?: NonNullable<ToolIo['runHook']>
+    isHooksEnabled?: () => boolean
+    hookNotificationDelayMs?: number
+    /** The MCP servers and the IDE tools (M50). */
+    mcpServers?: ModelApiHostDeps['mcpServers']
+    ideTools?: ModelApiHostDeps['ideTools']
+    /** False: the host has no memory store (M49). */
+    hasMemory?: boolean
+    /** Folders the memory fake reports as links to elsewhere (M49). */
+    memoryLinks?: Record<string, string>
   } = {},
 ) {
   const paidUses: { readonly feature: PaidFeature; readonly units: number }[] = []
+  const subagentUsage: {
+    readonly modelId: string
+    readonly inputTokens: number
+    readonly outputTokens: number
+    readonly cachedTokens: number
+  }[] = []
   const api = fakeModelApi()
   const log = new FakeLogOutputChannel()
   const io = options.io ?? memoryToolIo(options.files ?? {}, ROOT)
+  if (options.runHook !== undefined) {
+    io.runHook = options.runHook
+  }
+  // Muse Code's memory over the same files the tools see (M49).
+  const memory =
+    options.hasMemory === false
+      ? undefined
+      : memoryStoreOver(io.files, {
+          platform: options.platform ?? 'linux',
+          ...(options.memoryLinks !== undefined && { links: options.memoryLinks }),
+        }).store
   let ids = 0
   let clock = 1_000_000
-  const client = fakeModelApiClient(api, log)
+  const client =
+    options.apiKey === undefined
+      ? fakeModelApiClient(api, log)
+      : new ModelApiClient({
+          fetch: api.fetch,
+          baseUrl: 'https://api.example.test/v1',
+          apiKey: options.apiKey,
+          sleep: () => Promise.resolve(),
+          now: () => 0,
+          random: () => 0,
+          log,
+        })
   const host = new ModelApiHost({
     client,
     workspaceRoot: ROOT,
@@ -83,8 +224,28 @@ function setup(
     ...(options.mediaBudgetMaxEncodedChars !== undefined && {
       mediaBudgetMaxEncodedChars: options.mediaBudgetMaxEncodedChars,
     }),
+    mcpServers: options.mcpServers,
+    ideTools: options.ideTools,
+    confirmSubagentTask: options.confirmSubagentTask ?? (() => Promise.resolve(true)),
+    noteSubagentUsage: (modelId, usage) => {
+      subagentUsage.push({ modelId, ...usage })
+    },
+    loadHooks: () => Promise.resolve(options.hooks ?? []),
+    isHooksEnabled: options.isHooksEnabled,
+    hookNotificationDelayMs: options.hookNotificationDelayMs,
+    memory,
   })
-  return { api, client, host, log, io, files: io.files, shellCalls: io.shellCalls, paidUses }
+  return {
+    api,
+    client,
+    host,
+    log,
+    io,
+    files: io.files,
+    shellCalls: io.shellCalls,
+    paidUses,
+    subagentUsage,
+  }
 }
 
 async function startSession(
@@ -590,18 +751,10 @@ describe('ModelApiSession: turns', () => {
   it('asks for a protected write even in Auto, and refuses a choice it never offered (D24)', async () => {
     const t = setup({ files: { 'a.txt': 'alpha\n' } })
     const { session, events, turnDone } = await startSession(t, 'onRequest')
-    t.api.script(
-      {
-        calls: [
-          { name: 'write_file', arguments: '{"path":"notes.txt","content":"x"}', callId: 'c1' },
-          {
-            name: 'write_file',
-            arguments: '{"path":".git/hooks/pre-commit","content":"evil"}',
-            callId: 'c2',
-          },
-        ],
-      },
-      { text: 'done' },
+    scriptWriteCalls(
+      t,
+      { path: 'notes.txt', content: 'x', callId: 'c1' },
+      { path: '.git/hooks/pre-commit', content: 'evil', callId: 'c2' },
     )
     await session.sendTurn([{ type: 'text', text: 'write' }])
     const request = await approvalRequest(events, 0)
@@ -630,12 +783,7 @@ describe('ModelApiSession: turns', () => {
   it('refuses an edit outside the workspace before any card', async () => {
     const t = setup()
     const { session, events, turnDone } = await startSession(t)
-    t.api.script(
-      { calls: [{ name: 'write_file', arguments: '{"path":"../x","content":"y"}' }] },
-      { text: 'done' },
-    )
-    await session.sendTurn([{ type: 'text', text: 'write' }])
-    await turnDone()
+    await completeWriteTurn(t, session, turnDone, '../x', 'y')
     expect(events.some((event) => event.type === 'approvalRequested')).toBe(false)
     const row = events.findLast(
       (event): event is Extract<AgentEvent, { type: 'itemCompleted' }> =>
@@ -894,6 +1042,36 @@ describe('ModelApiSession: turns', () => {
     })
   })
 
+  it('keeps PDF data URLs out of pre- and post-model hook input', async () => {
+    const payloads: string[] = []
+    const t = setup({
+      hooks: [...hooksFor('PreLLMCall', 'observe'), ...hooksFor('PostLLMCall', 'observe')],
+      runHook: (_command, payload) => {
+        payloads.push(payload)
+        return hookReply()
+      },
+    })
+    const { session, turnDone } = await startSession(t)
+    const bytes = pdfFixture(1)
+    const base64Data = Buffer.from(bytes).toString('base64')
+    t.api.script({ text: 'I read it' })
+    await session.sendTurn([
+      { type: 'text', text: 'Summarize' },
+      {
+        type: 'file',
+        name: 'private.pdf',
+        mediaType: 'application/pdf',
+        base64Data,
+        sizeBytes: bytes.length,
+        pageCount: 1,
+      },
+    ])
+    await turnDone()
+    expect(payloads).toHaveLength(2)
+    expect(payloads.join('\n')).not.toContain(base64Data)
+    expect(payloads.join('\n')).not.toContain('data:application/pdf')
+  })
+
   it('notices when replay leaves older media out while preserving local history', async () => {
     const imageUrl = 'data:image/png;base64,AAAA'
     const t = setup({ mediaBudgetMaxEncodedChars: imageUrl.length })
@@ -970,6 +1148,65 @@ describe('ModelApiSession: turns', () => {
     })
     expect(session.history().items[0]).toMatchObject({
       attachments: [{ type: 'file', name: 'a.ts', mediaType: 'text/plain' }],
+    })
+  })
+
+  it('fits an MCP result image ahead of an older 50-page PDF in the next request', async () => {
+    const mcp = fakeMcpSource([{ server: 'docs', tool: 'picture', isReadOnly: true }])
+    const imageUrl = `data:image/png;base64,${TINY_PNG_BASE64}`
+    mcp.outcomes = [
+      {
+        output: 'a picture',
+        visibleOutput: 'a picture',
+        outputParts: [
+          { type: 'input_text', text: 'a picture' },
+          { type: 'input_image', image_url: imageUrl, detail: 'auto' },
+        ],
+      },
+    ]
+    const t = setup({ mcpServers: mcp })
+    const { session, events, turnDone } = await startSession(t, 'allowAll')
+    const pdf = pdfFixture(50)
+    t.api.script(
+      { calls: [{ name: 'mcp__docs__picture', arguments: '{}', callId: 'mcp_picture' }] },
+      { text: 'done' },
+    )
+    await session.sendTurn([
+      { type: 'text', text: 'Compare the PDF and picture' },
+      {
+        type: 'file',
+        name: 'report.pdf',
+        mediaType: 'application/pdf',
+        base64Data: Buffer.from(pdf).toString('base64'),
+        sizeBytes: pdf.length,
+        pageCount: 50,
+      },
+    ])
+    await turnDone()
+    expect(t.api.responseBodies()[1]).toMatchObject({
+      input: expect.arrayContaining([
+        expect.objectContaining({
+          type: 'message',
+          role: 'user',
+          content: [
+            { type: 'input_text', text: 'Compare the PDF and picture' },
+            { type: 'input_text', text: expect.stringContaining('report.pdf') },
+          ],
+        }),
+        expect.objectContaining({
+          type: 'function_call_output',
+          call_id: 'mcp_picture',
+          output: [
+            { type: 'input_text', text: 'a picture' },
+            { type: 'input_image', image_url: imageUrl, detail: 'auto' },
+          ],
+        }),
+      ]),
+    })
+    expect(events).toContainEqual({
+      type: 'backendNotice',
+      level: 'warning',
+      text: UI_TEXT.olderMediaOmitted,
     })
   })
 
@@ -1086,10 +1323,891 @@ describe('ModelApiSession: turns', () => {
     await turnDone()
     expect(await nextInputAfterStop(t, session, turnDone)).not.toContain('input_file')
   })
+
+  it.each(['PostToolUse', 'PostToolBatch'] as const)(
+    'does not replay a PDF when a %s hook stops its tool round',
+    async (event) => {
+      const t = setup({
+        hooks: hooksFor(event, 'stop-pdf'),
+        runHook: () => hookReply(JSON.stringify({ continue: false, stopReason: 'stop PDF' })),
+      })
+      t.io.binaries.set('/ws/docs/report.pdf', pdfFixture(1))
+      const { session, turnDone } = await startSession(t, 'allowAll')
+      t.api.script(
+        { calls: [{ name: 'read_file', arguments: '{"path":"docs/report.pdf"}' }] },
+        { text: 'should not run' },
+      )
+      await session.sendTurn([{ type: 'text', text: 'Read the PDF' }])
+      await turnDone()
+      expect(t.api.responseBodies()).toHaveLength(1)
+      const nextInput = await nextInputAfterStop(t, session, turnDone)
+      expect(nextInput).not.toContain('input_file')
+      expect(nextInput).toContain('was not delivered because that tool round ended early')
+    },
+  )
+})
+
+describe('ModelApiSession: hook boundaries (M51)', () => {
+  it('vetoes a captured PreLLMCall before any Model API request', async () => {
+    const payloads: unknown[] = []
+    const t = setup({
+      hooks: hooksFor('PreLLMCall', 'veto'),
+      runHook: (_command, payload) => {
+        payloads.push(JSON.parse(payload))
+        return Promise.resolve({
+          stdout: JSON.stringify({ decision: 'block', reason: 'M51 pre-call veto' }),
+          stderr: '',
+          exitCode: 0,
+          isTimedOut: false,
+          isCancelled: false,
+        })
+      },
+    })
+    const { session, events, turnDone } = await startSession(t)
+    t.api.script({ text: 'not sent' })
+    await session.sendTurn([{ type: 'text', text: 'Do work' }])
+    await turnDone()
+    expect(t.api.responseBodies()).toHaveLength(0)
+    expect(payloads).toEqual([
+      expect.objectContaining({
+        hook_event_name: 'PreLLMCall',
+        provider: 'meta',
+        attempt: 1,
+        step: 0,
+        messages: [{ role: 'user', content: [{ type: 'text', text: 'Do work' }] }],
+      }),
+    ])
+    expect(events.find((event) => event.type === 'turnCompleted')).toMatchObject({
+      terminal: 'failed',
+      reason: 'M51 pre-call veto',
+    })
+  })
+
+  it('observes successful model calls and compaction with captured PostLLMCall fields', async () => {
+    const payloads: unknown[] = []
+    const t = modelCallObserver(payloads)
+    const { session, turnDone } = await startSession(t)
+    t.api.script({ text: 'Reply' })
+    await session.sendTurn([{ type: 'text', text: 'First prompt' }])
+    await turnDone()
+    t.api.script({ text: 'Summary' })
+    await expect(session.compact()).resolves.toMatchObject({ status: 'accepted' })
+    expect(payloads).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          hook_event_name: 'PreLLMCall',
+          provider: 'meta',
+          attempt: 1,
+          step: 0,
+          message_count: 1,
+          tool_count: expect.any(Number),
+        }),
+        expect.objectContaining({
+          hook_event_name: 'PostLLMCall',
+          provider: 'meta',
+          status: 'success',
+          response_id: expect.any(String),
+          output_text_preview: 'Reply',
+          tool_call_count: 0,
+          usage: expect.objectContaining({ input_tokens: expect.any(Number) }),
+        }),
+        expect.objectContaining({
+          hook_event_name: 'PreLLMCall',
+          tool_count: 0,
+        }),
+        expect.objectContaining({
+          hook_event_name: 'PostLLMCall',
+          tool_count: 0,
+          output_text_preview: 'Summary',
+        }),
+      ]),
+    )
+    expect(t.api.responseBodies()).toHaveLength(2)
+  })
+
+  it('issues a fresh PreLLMCall for a whole-stream retry and one successful PostLLMCall', async () => {
+    const payloads: unknown[] = []
+    const t = modelCallObserver(payloads)
+    const { session, turnDone } = await startSession(t)
+    t.api.script(
+      { text: 'partial', streamError: { code: 'server_shutting_down', message: 'draining' } },
+      { text: 'final' },
+    )
+    await session.sendTurn([{ type: 'text', text: 'Try again' }])
+    await turnDone()
+    expect(t.api.responseBodies()).toHaveLength(2)
+    expect(payloads).toMatchObject([
+      { hook_event_name: 'PreLLMCall', attempt: 1, step: 0 },
+      { hook_event_name: 'PreLLMCall', attempt: 2, step: 0 },
+      { hook_event_name: 'PostLLMCall', attempt: 2, step: 0, status: 'success' },
+    ])
+  })
+
+  it('stops after a captured PostLLMCall block without executing returned tools', async () => {
+    let shouldBlock = true
+    const t = setup({
+      hooks: hooksFor('PostLLMCall', 'veto'),
+      runHook: postVetoHook(() => shouldBlock),
+    })
+    const { session, events, turnDone } = await startSession(t, 'allowAll')
+    t.api.script({
+      calls: [
+        {
+          name: 'write_file',
+          arguments: '{"path":"blocked.txt","content":"bad"}',
+          callId: 'blocked-call',
+        },
+      ],
+    })
+    await session.sendTurn([{ type: 'text', text: 'Write it' }])
+    await turnDone()
+    expect(t.files.has(`${ROOT}/blocked.txt`)).toBe(false)
+    expect(t.api.responseBodies()).toHaveLength(1)
+    expect(events.find((event) => event.type === 'turnCompleted')).toMatchObject({
+      terminal: 'failed',
+      reason: 'Post veto',
+    })
+    shouldBlock = false
+    t.api.script({ text: 'Next reply' })
+    await session.sendTurn([{ type: 'text', text: 'Continue later' }])
+    await turnDone()
+    expect(t.api.responseBodies()[1]).toMatchObject({
+      input: expect.arrayContaining([
+        expect.objectContaining({
+          type: 'function_call_output',
+          call_id: 'blocked-call',
+          output: expect.stringContaining('Post veto'),
+        }),
+      ]),
+    })
+  })
+
+  it('replays model hook context after tool outputs, keeping the request valid', async () => {
+    const t = setup({
+      hooks: [...hooksFor('PreLLMCall', 'pre-context'), ...hooksFor('PostLLMCall', 'post-context')],
+      files: { 'a.txt': 'alpha' },
+      runHook: (_command, payload) =>
+        Promise.resolve({
+          stdout: JSON.stringify({
+            hookSpecificOutput: {
+              hookEventName: payload.includes('"hook_event_name":"PreLLMCall"')
+                ? 'PreLLMCall'
+                : 'PostLLMCall',
+              additionalContext: payload.includes('"hook_event_name":"PreLLMCall"')
+                ? 'Pre note'
+                : 'Post note',
+            },
+          }),
+          stderr: '',
+          exitCode: 0,
+          isTimedOut: false,
+          isCancelled: false,
+        }),
+    })
+    const { session, turnDone } = await startSession(t)
+    t.api.script(
+      { calls: [{ name: 'read_file', arguments: '{"path":"a.txt"}', callId: 'read-one' }] },
+      { text: 'done' },
+    )
+    await session.sendTurn([{ type: 'text', text: 'Read it' }])
+    await turnDone()
+    const second = t.api.responseBodies()[1]?.['input']
+    const input: readonly unknown[] = Array.isArray(second) ? second : []
+    const outputIndex = input.findIndex(
+      (item) =>
+        typeof item === 'object' &&
+        item !== null &&
+        'type' in item &&
+        item.type === 'function_call_output',
+    )
+    const postContextIndex = input.findIndex((item) => JSON.stringify(item).includes('Post note'))
+    expect(outputIndex).toBeGreaterThan(0)
+    expect(postContextIndex).toBeGreaterThan(outputIndex)
+    expect(JSON.stringify(second)).toContain('Pre note')
+  })
+
+  it('keeps old history and counts usage when a PostLLMCall hook stops compaction', async () => {
+    let shouldBlock = false
+    const t = setup({
+      hooks: hooksFor('PostLLMCall', 'veto'),
+      runHook: postVetoHook(() => shouldBlock),
+    })
+    const { session, turnDone } = await startSession(t)
+    t.api.script({ text: 'Before' })
+    await session.sendTurn([{ type: 'text', text: 'First' }])
+    await turnDone()
+    const before = session.snapshot()
+    shouldBlock = true
+    t.api.script({ text: 'Summary', usage: { input: 20, output: 3 } })
+    await expect(session.compact()).rejects.toThrow('Post veto')
+    expect(t.api.responseBodies()).toHaveLength(2)
+    expect(session.snapshot().usage.inputTokens - before.usage.inputTokens).toBe(20)
+    expect(session.snapshot().usage.outputTokens - before.usage.outputTokens).toBe(3)
+    expect(session.history().items.some((item) => item.kind === 'compaction')).toBe(false)
+    expect(JSON.stringify(session.snapshot().replay)).toContain('First')
+  })
+
+  it('runs SessionStart when a session opens, before its first prompt', async () => {
+    const payloads: string[] = []
+    const t = setup({
+      hooks: hooksFor('SessionStart', 'start'),
+      runHook: recordRawHookPayloads(payloads),
+    })
+    await startSession(t)
+    expect(payloads).toHaveLength(1)
+    const payload: unknown = JSON.parse(payloads[0] ?? '')
+    expect(payload).toMatchObject({ hook_event_name: 'SessionStart', source: 'startup' })
+    expect(JSON.stringify(payload)).not.toContain('turn_id')
+    expect(t.api.responseBodies()).toHaveLength(0)
+  })
+
+  it('fires SessionStart again for a fork and after accepted compaction', async () => {
+    const payloads: string[] = []
+    const t = setup({
+      hooks: hooksFor('SessionStart', 'start'),
+      runHook: recordRawHookPayloads(payloads),
+    })
+    const { session, turnDone } = await startSession(t)
+    await answerFirst(t, session, turnDone)
+    await t.host.forkSession(session.sessionId, 'muse-spark-1.3')
+    t.api.script({ text: 'summary' })
+    expect(await session.compact()).toMatchObject({ status: 'accepted' })
+    expect(payloads).toHaveLength(3)
+    const fork: unknown = JSON.parse(payloads[1] ?? '')
+    const compact: unknown = JSON.parse(payloads[2] ?? '')
+    expect(fork).toMatchObject({ hook_event_name: 'SessionStart', source: 'fork' })
+    expect(compact).toMatchObject({ hook_event_name: 'SessionStart', source: 'compact' })
+  })
+
+  it('blocks a prompt before any API request and excludes it from later replay', async () => {
+    let shouldBlock = true
+    const t = setup({
+      hooks: hooksFor('UserPromptSubmit', 'guard'),
+      runHook: () =>
+        Promise.resolve({
+          stdout: '',
+          stderr: shouldBlock ? 'prompt blocked' : '',
+          exitCode: shouldBlock ? 2 : 0,
+          isTimedOut: false,
+          isCancelled: false,
+        }),
+    })
+    const { session, events, turnDone } = await startSession(t)
+    await session.sendTurn([{ type: 'text', text: 'blocked prompt' }])
+    await turnDone()
+    expect(events.find((event) => event.type === 'turnCompleted')).toMatchObject({
+      terminal: 'failed',
+      reason: 'prompt blocked',
+    })
+    expect(JSON.stringify(t.log.warn.mock.calls)).not.toContain('prompt blocked')
+    expect(t.api.responseBodies()).toHaveLength(0)
+
+    shouldBlock = false
+    t.api.script({ text: 'allowed' })
+    await session.sendTurn([{ type: 'text', text: 'allowed prompt' }])
+    await turnDone()
+    const input = JSON.stringify(t.api.responseBodies()[0]?.['input'])
+    expect(input).toContain('allowed prompt')
+    expect(input).not.toContain('blocked prompt')
+  })
+
+  it('accepts but ignores continue false on prompt submission, as Muse does', async () => {
+    const t = setup({
+      hooks: hooksFor('UserPromptSubmit', 'stop'),
+      runHook: () =>
+        Promise.resolve({
+          stdout: JSON.stringify({ continue: false, stopReason: 'stop here' }),
+          stderr: '',
+          exitCode: 0,
+          isTimedOut: false,
+          isCancelled: false,
+        }),
+    })
+    const { session, events, turnDone } = await startSession(t)
+    t.api.script({ text: 'received' })
+    await session.sendTurn([{ type: 'text', text: 'send me' }])
+    await turnDone()
+    expect(events.find((event) => event.type === 'turnCompleted')).toMatchObject({
+      terminal: 'completed',
+    })
+    expect(t.api.responseBodies()).toHaveLength(1)
+  })
+
+  it('rechecks permissions after a hook rewrites a tool to a protected path', async () => {
+    const t = setup({
+      hooks: hooksFor('PreToolUse', 'rewrite'),
+      runHook: () =>
+        Promise.resolve({
+          stdout: JSON.stringify({
+            hookSpecificOutput: {
+              hookEventName: 'PreToolUse',
+              permissionDecision: 'allow',
+              updatedInput: { path: '.muse/hooks.json', content: 'reviewed' },
+            },
+          }),
+          stderr: '',
+          exitCode: 0,
+          isTimedOut: false,
+          isCancelled: false,
+        }),
+    })
+    const { session, events, turnDone } = await startSession(t, 'onRequest')
+    scriptWriteCalls(t, { path: 'notes.txt', content: 'x', callId: 'hook_write' })
+    await session.sendTurn([{ type: 'text', text: 'write' }])
+    const request = await approvalRequest(events, 0)
+    expect(request).toMatchObject({
+      subject: { kind: 'fileWrite', path: '.muse/hooks.json' },
+      isProtectedWrite: true,
+    })
+    expect(t.files.has(`${ROOT}/notes.txt`)).toBe(false)
+    await session.decideApproval({
+      approvalId: request.approvalId,
+      choiceId: 'abort',
+      requirementId: request.requirementId,
+    })
+    await turnDone()
+    expect(t.files.has(`${ROOT}/.muse/hooks.json`)).toBe(false)
+  })
+
+  it('lets a PermissionRequest hook deny without showing an approval card', async () => {
+    const t = setup({
+      hooks: hooksFor('PermissionRequest', 'deny'),
+      runHook: () =>
+        hookReply(
+          JSON.stringify({
+            hookSpecificOutput: {
+              hookEventName: 'PermissionRequest',
+              decision: { behavior: 'deny', message: 'policy denied' },
+            },
+          }),
+        ),
+    })
+    const events = await completeUnpromptedWrite(t)
+    expect(t.files.has(`${ROOT}/notes.txt`)).toBe(false)
+    expect(
+      events.find((event) => event.type === 'itemCompleted' && event.item.kind === 'toolCall'),
+    ).toMatchObject({
+      item: { status: 'rejected', failureReason: 'write_file rejected by a hook' },
+    })
+  })
+
+  it('lets an opted-in PermissionRequest hook allow an ordinary edit', async () => {
+    const t = setup({
+      hooks: hooksFor('PermissionRequest', 'allow'),
+      runHook: permitHook,
+    })
+    await completeUnpromptedWrite(t)
+    expect(t.files.get(`${ROOT}/notes.txt`)).toBe('x')
+  })
+
+  it('keeps protected writes and paid calls on user cards despite hook allow', async () => {
+    const protectedWrite = setup({
+      hooks: hooksFor('PermissionRequest', 'allow'),
+      runHook: permitHook,
+    })
+    const first = await startSession(protectedWrite, 'onRequest')
+    protectedWrite.api.script(
+      {
+        calls: [
+          {
+            name: 'write_file',
+            arguments: '{"path":".muse/hooks.json","content":"x"}',
+            callId: 'c',
+          },
+        ],
+      },
+      { text: 'done' },
+    )
+    await first.session.sendTurn([{ type: 'text', text: 'write hooks' }])
+    const protectedCard = await approvalRequest(first.events, 0)
+    expect(protectedCard.isProtectedWrite).toBe(true)
+    await first.session.decideApproval({
+      approvalId: protectedCard.approvalId,
+      choiceId: 'abort',
+      requirementId: protectedCard.requirementId,
+    })
+    await first.turnDone()
+    expect(protectedWrite.files.has(`${ROOT}/.muse/hooks.json`)).toBe(false)
+
+    const paid = setup({
+      paid: ['imageGeneration'],
+      hooks: hooksFor('PermissionRequest', 'allow'),
+      runHook: permitHook,
+    })
+    const second = await startSession(paid, 'allowAll')
+    paid.api.script({ calls: [imageCall({ prompt: 'one', path: 'one.png' })] }, { text: 'done' })
+    await second.session.sendTurn([{ type: 'text', text: 'draw' }])
+    const paidCard = await approvalRequest(second.events, 0)
+    expect(paidCard.subject).toMatchObject({ kind: 'paidTool', paidFeature: 'imageGeneration' })
+    await second.session.decideApproval({
+      approvalId: paidCard.approvalId,
+      choiceId: 'abort',
+      requirementId: paidCard.requirementId,
+    })
+    await second.turnDone()
+    expect(paid.paidUses).toEqual([])
+    expect(paid.io.binaries.has(`${ROOT}/one.png`)).toBe(false)
+  })
+
+  it('emits success, failure, batch and stop hook payloads at their boundaries', async () => {
+    const payloads: unknown[] = []
+    const hooks = [
+      ...hooksFor('PostToolUse', 'observe'),
+      ...hooksFor('PostToolUseFailure', 'observe'),
+      ...hooksFor('PostToolBatch', 'observe'),
+      ...hooksFor('Stop', 'observe'),
+    ]
+    const t = setup({
+      hooks,
+      files: { 'a.txt': 'alpha' },
+      runHook: recordHookPayloads(payloads),
+    })
+    const { session, turnDone } = await startSession(t)
+    t.api.script(
+      {
+        calls: [
+          { name: 'read_file', arguments: '{"path":"a.txt"}', callId: 'read_a' },
+          { name: 'read_file', arguments: '{"path":"missing.txt"}', callId: 'read_missing' },
+        ],
+      },
+      { text: 'done' },
+    )
+    await session.sendTurn([{ type: 'text', text: 'Read files' }])
+    await turnDone()
+    expect(payloads).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          hook_event_name: 'PostToolUse',
+          tool_name: 'read_file',
+          tool_input: { path: 'a.txt' },
+          tool_use_id: expect.any(String),
+          tool_response: expect.stringContaining('alpha'),
+        }),
+        expect.objectContaining({
+          hook_event_name: 'PostToolUseFailure',
+          tool_name: 'read_file',
+          tool_input: { path: 'missing.txt' },
+          tool_use_id: expect.any(String),
+          is_interrupt: false,
+          duration_ms: expect.any(Number),
+          error: expect.any(String),
+        }),
+        expect.objectContaining({
+          hook_event_name: 'PostToolBatch',
+          tool_calls: [
+            expect.objectContaining({ tool_name: 'read_file', tool_input: { path: 'a.txt' } }),
+            expect.objectContaining({
+              tool_name: 'read_file',
+              tool_input: { path: 'missing.txt' },
+            }),
+          ],
+        }),
+        expect.objectContaining({
+          hook_event_name: 'Stop',
+          stop_hook_active: false,
+          last_assistant_message: 'done',
+        }),
+      ]),
+    )
+  })
+
+  it('bounds Stop hook continuations to avoid an unending paid model loop', async () => {
+    const runHook = vi.fn(() =>
+      Promise.resolve({
+        stdout: JSON.stringify({ decision: 'block', reason: 'continue' }),
+        stderr: '',
+        exitCode: 0,
+        isTimedOut: false,
+        isCancelled: false,
+      }),
+    )
+    const t = setup({ hooks: hooksFor('Stop', 'keep-going'), runHook })
+    const { session, turnDone } = await startSession(t)
+    t.api.script(
+      ...Array.from({ length: HOOK_MAX_STOP_CONTINUATIONS + 1 }, () => ({ text: 'reply' })),
+    )
+    await session.sendTurn([{ type: 'text', text: 'finish' }])
+    await turnDone()
+    expect(t.api.responseBodies()).toHaveLength(HOOK_MAX_STOP_CONTINUATIONS + 1)
+    expect(runHook).toHaveBeenCalledTimes(HOOK_MAX_STOP_CONTINUATIONS + 1)
+    expect(t.log.warn).toHaveBeenCalledWith('Model API Stop hook reached its continuation limit')
+  })
+
+  it('lets PreCompact veto a manual compaction before the model is called', async () => {
+    const t = setup({
+      hooks: hooksFor('PreCompact', 'veto'),
+      runHook: () =>
+        Promise.resolve({
+          stdout: JSON.stringify({ continue: false, stopReason: 'keep context' }),
+          stderr: '',
+          exitCode: 0,
+          isTimedOut: false,
+          isCancelled: false,
+        }),
+    })
+    const { session, turnDone } = await startSession(t)
+    t.api.script({ text: 'first' })
+    await session.sendTurn([{ type: 'text', text: 'first' }])
+    await turnDone()
+    expect(await session.compact()).toEqual({ status: 'noop', reason: 'keep context' })
+    expect(t.api.responseBodies()).toHaveLength(1)
+  })
+
+  it('emits compaction and model-failure hook payloads at their boundaries', async () => {
+    const payloads: unknown[] = []
+    const t = setup({
+      hooks: [
+        ...hooksFor('PreCompact', 'observe'),
+        ...hooksFor('PostCompact', 'observe'),
+        ...hooksFor('StopFailure', 'observe'),
+      ],
+      runHook: recordHookPayloads(payloads),
+    })
+    const { session, turnDone } = await startSession(t)
+    t.api.script({ text: 'first' })
+    await session.sendTurn([{ type: 'text', text: 'first' }])
+    await turnDone()
+    t.api.script({ text: 'summary' })
+    expect(await session.compact()).toMatchObject({ status: 'accepted' })
+    t.api.script({
+      httpError: {
+        status: 400,
+        body: { error: { message: 'bad request', type: 'invalid_request_error' } },
+      },
+    })
+    await session.sendTurn([{ type: 'text', text: 'fail' }])
+    await turnDone()
+    expect(payloads).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ hook_event_name: 'PreCompact', trigger: 'manual' }),
+        expect.objectContaining({ hook_event_name: 'PostCompact', trigger: 'manual' }),
+        expect.objectContaining({
+          hook_event_name: 'StopFailure',
+          error: 'modelApi',
+          error_details: 'bad request',
+        }),
+      ]),
+    )
+  })
+
+  it('fires Notification for an approval that stays open', async () => {
+    const runHook = vi.fn((_command: string, _payload: string) =>
+      Promise.resolve({
+        stdout: '',
+        stderr: '',
+        exitCode: 0,
+        isTimedOut: false,
+        isCancelled: false,
+      }),
+    )
+    const t = setup({
+      hooks: hooksFor('Notification', 'notify'),
+      hookNotificationDelayMs: 10,
+      runHook,
+    })
+    const { session, events, turnDone } = await startSession(t)
+    scriptWriteCalls(t, { path: 'notes.txt', content: 'x', callId: 'c' })
+    await session.sendTurn([{ type: 'text', text: 'write' }])
+    const request = await approvalRequest(events, 0)
+    await vi.waitFor(() => {
+      expect(runHook).toHaveBeenCalledOnce()
+    })
+    const payload: unknown = JSON.parse(String(runHook.mock.calls[0]?.[1]))
+    expect(payload).toMatchObject({
+      hook_event_name: 'Notification',
+      notification_type: 'permission_prompt',
+      title: 'write_file',
+    })
+    await session.decideApproval({
+      approvalId: request.approvalId,
+      choiceId: 'abort',
+      requirementId: request.requirementId,
+    })
+    await turnDone()
+  })
+
+  it('fires SessionEnd on orderly host shutdown, once per live session', async () => {
+    const payloads: string[] = []
+    const t = setup({
+      hooks: hooksFor('SessionEnd', 'finish'),
+      runHook: (_command, payload) => {
+        payloads.push(payload)
+        return Promise.resolve({
+          stdout: '',
+          stderr: '',
+          exitCode: 0,
+          isTimedOut: false,
+          isCancelled: false,
+        })
+      },
+    })
+    const { session, turnDone } = await startSession(t)
+    await answerFirst(t, session, turnDone)
+    await t.host.close()
+    expect(payloads).toHaveLength(1)
+    const parsed: unknown = JSON.parse(payloads[0] ?? '')
+    expect(parsed).toMatchObject({
+      hook_event_name: 'SessionEnd',
+      reason: 'shutdown',
+      session_id: session.sessionId,
+    })
+  })
 })
 
 const skillFile = (name: string, description: string, body: string) =>
   `---\nname: ${name}\ndescription: ${description}\n---\n\n${body}\n`
+
+const toolNames = (body: Record<string, unknown> | undefined) =>
+  (body?.['tools'] as { name?: string }[]).map((tool) => tool.name)
+const MEMORY_TOOL_NAMES = ['read_memory', 'add_memory', 'edit_memory']
+const ADD_DEPLOY = {
+  name: 'add_memory',
+  arguments: JSON.stringify({
+    scope: 'project',
+    path: 'deploy.md',
+    content: 'Deploys run on Fridays.',
+    type: 'reference',
+    description: 'Deploy day',
+  }),
+  callId: 'call_add',
+}
+const DEPLOY_WRITTEN =
+  '{"success":true,"scope":"project","path":"deploy.md","operation":"add","message":"memory note written"}'
+
+/** The memory rows' final snapshots, in order. */
+const memoryRows = (events: readonly AgentEvent[]) =>
+  events.flatMap((event) =>
+    event.type === 'itemCompleted' &&
+    event.item.kind === 'toolCall' &&
+    MEMORY_TOOL_NAMES.includes(event.item.tool ?? '')
+      ? [event.item]
+      : [],
+  )
+
+describe('ModelApiSession: memory (M49)', () => {
+  it('routes a hook-rewritten memory note through its final path approval and store', async () => {
+    const t = setup({
+      hooks: hooksFor('PreToolUse', 'review-memory'),
+      runHook: () =>
+        hookReply(
+          JSON.stringify({
+            hookSpecificOutput: {
+              hookEventName: 'PreToolUse',
+              permissionDecision: 'allow',
+              updatedInput: {
+                scope: 'project',
+                path: 'reviewed.md',
+                content: 'Reviewed memory content.',
+                type: 'reference',
+                description: 'Reviewed note',
+              },
+            },
+          }),
+        ),
+    })
+    const { session, events, turnDone } = await startSession(t)
+    t.api.script({ calls: [ADD_DEPLOY] }, { text: 'saved' })
+    await session.sendTurn([{ type: 'text', text: 'remember the review' }])
+    const approval = await approvalRequest(events, 0)
+    expect(approval.subject).toMatchObject({
+      kind: 'fileWrite',
+      path: '.agents/memory/reviewed.md',
+    })
+    await session.decideApproval({
+      approvalId: approval.approvalId,
+      choiceId: 'allow_once',
+      requirementId: approval.requirementId,
+    })
+    await turnDone()
+    expect(t.files.get(`${ROOT}/.agents/memory/reviewed.md`)).toContain('Reviewed memory content.')
+    expect(t.files.has(`${ROOT}/.agents/memory/deploy.md`)).toBe(false)
+  })
+
+  it('offers the memory tools and the snapshot only in a trusted workspace with a store', async () => {
+    const trusted = setup({ files: { '.agents/memory/MEMORY.md': '- [Build](build.md) | npm\n' } })
+    const first = await startSession(trusted)
+    await answerFirst(trusted, first.session, first.turnDone)
+    const body = trusted.api.responseBodies()[0]
+    expect(toolNames(body)).toEqual(expect.arrayContaining(MEMORY_TOOL_NAMES))
+    expect(body?.['instructions']).toContain('## project\n\nMEMORY.md:\n- [Build](build.md) | npm')
+    for (const t of [setup({ isTrusted: false }), setup({ hasMemory: false })]) {
+      const { session, turnDone } = await startSession(t)
+      await answerFirst(t, session, turnDone)
+      const other = t.api.responseBodies()[0]
+      expect(toolNames(other)).not.toContain('add_memory')
+      expect(other?.['instructions']).not.toContain('# Memory')
+    }
+  })
+
+  it('writes a note in Manual after a card that names it, and answers as Muse Code does', async () => {
+    const t = setup()
+    const { session, events, turnDone } = await startSession(t)
+    t.api.script({ calls: [ADD_DEPLOY] }, { text: 'saved' })
+    await session.sendTurn([{ type: 'text', text: 'remember the deploy day' }])
+    const request = await approvalRequest(events, 0)
+    expect(request).toMatchObject({
+      toolName: 'add_memory',
+      subject: { kind: 'fileWrite', path: '.agents/memory/deploy.md', toolName: 'add_memory' },
+      isProtectedWrite: false,
+    })
+    expect(t.files.has(`${ROOT}/.agents/memory/deploy.md`)).toBe(false)
+    await session.decideApproval({
+      approvalId: request.approvalId,
+      choiceId: 'allow_once',
+      requirementId: request.requirementId,
+    })
+    await turnDone()
+    expect(memoryRows(events)).toEqual([
+      expect.objectContaining({ status: 'completed', visibleOutput: DEPLOY_WRITTEN }),
+    ])
+    expect(t.files.get(`${ROOT}/.agents/memory/deploy.md`)).toBe(
+      '---\ntype: reference\ndescription: Deploy day\n---\n\nDeploys run on Fridays.',
+    )
+    expect(t.files.get(`${ROOT}/.agents/memory/MEMORY.md`)).toBe(
+      '- [deploy](deploy.md) | Deploy day\n',
+    )
+    const replayed = t.api.responseBodies()[1]?.['input'] as Record<string, unknown>[]
+    expect(replayed.at(-1)).toEqual({
+      type: 'function_call_output',
+      call_id: 'call_add',
+      output: DEPLOY_WRITTEN,
+    })
+  })
+
+  it('writes without a card in Auto, reads without one in Manual, and refuses writes in Plan', async () => {
+    const auto = setup()
+    const autoRun = await startSession(auto, 'onRequest')
+    auto.api.script(
+      {
+        calls: [
+          ADD_DEPLOY,
+          {
+            name: 'read_memory',
+            arguments: '{"scope":"project","path":"deploy.md","offset":6}',
+            callId: 'call_read',
+          },
+        ],
+      },
+      { text: 'ok' },
+    )
+    await autoRun.session.sendTurn([{ type: 'text', text: 'go' }])
+    await autoRun.turnDone()
+    expect(autoRun.events.some((event) => event.type === 'approvalRequested')).toBe(false)
+    expect(JSON.parse(memoryRows(autoRun.events)[1]?.visibleOutput ?? '')).toEqual({
+      success: true,
+      scope: 'project',
+      path: 'deploy.md',
+      start_line_number: 6,
+      content: 'Deploys run on Fridays.',
+      truncated: false,
+    })
+    const plan = setup({ files: { '.agents/memory/deploy.md': 'Fridays.' } })
+    const planRun = await startSession(plan, 'denyUnmatched')
+    plan.api.script(
+      {
+        calls: [
+          ADD_DEPLOY,
+          { name: 'read_memory', arguments: '{"scope":"project","path":"deploy.md"}', callId: 'r' },
+        ],
+      },
+      { text: 'ok' },
+    )
+    await planRun.session.sendTurn([{ type: 'text', text: 'go' }])
+    await planRun.turnDone()
+    expect(memoryRows(planRun.events).map((row) => row.status)).toEqual(['rejected', 'completed'])
+    expect(memoryRows(planRun.events)[0]?.failureReason).toBe(
+      'add_memory refused by the permission mode',
+    )
+    expect(plan.files.get(`${ROOT}/.agents/memory/deploy.md`)).toBe('Fridays.')
+  })
+
+  it('refuses a bad path before any card, and memory altogether in Restricted Mode', async () => {
+    const t = setup()
+    const { session, events, turnDone } = await startSession(t)
+    t.api.script(
+      {
+        calls: [
+          { name: 'add_memory', arguments: '{"path":"../escape.md","content":"x"}', callId: 'a' },
+          {
+            name: 'edit_memory',
+            arguments: '{"path":"prefs.md","scope":"personal","old_str":"a","new_str":"b"}',
+            callId: 'b',
+          },
+        ],
+      },
+      { text: 'ok' },
+    )
+    await session.sendTurn([{ type: 'text', text: 'go' }])
+    const request = await approvalRequest(events, 0)
+    expect(request.subject).toMatchObject({ path: `${PERSONAL}/prefs.md` })
+    await session.decideApproval({
+      approvalId: request.approvalId,
+      choiceId: 'allow_once',
+      requirementId: request.requirementId,
+    })
+    await turnDone()
+    expect(memoryRows(events).map((row) => [row.status, row.failureReason])).toEqual([
+      ['failed', 'memory path traversal is not allowed'],
+      ['failed', 'memory file not found'],
+    ])
+    expect(events.filter((event) => event.type === 'approvalRequested')).toHaveLength(1)
+    const restricted = setup({ isTrusted: false })
+    const restrictedRun = await startSession(restricted, 'allowAll')
+    restricted.api.script({ calls: [ADD_DEPLOY] }, { text: 'ok' })
+    await restrictedRun.session.sendTurn([{ type: 'text', text: 'go' }])
+    await restrictedRun.turnDone()
+    expect(memoryRows(restrictedRun.events)[0]).toMatchObject({
+      status: 'rejected',
+      failureReason:
+        'memory is not available while the workspace is in Restricted Mode; trust the workspace to use it',
+    })
+    const storeless = setup({ hasMemory: false })
+    const storelessRun = await startSession(storeless, 'allowAll')
+    storeless.api.script({ calls: [ADD_DEPLOY] }, { text: 'ok' })
+    await storelessRun.session.sendTurn([{ type: 'text', text: 'go' }])
+    await storelessRun.turnDone()
+    expect(memoryRows(storelessRun.events)[0]?.failureReason).toBe('unknown tool add_memory')
+  })
+
+  it('re-locates a memory write after its approval, refusing a swapped link', async () => {
+    const links: Record<string, string> = {}
+    const t = setup({
+      files: { '.agents/memory/prefs.md': 'Tea.' },
+      memoryLinks: links,
+    })
+    // Beyond the link the swap will point at: the same text, so a stale
+    // place would read, match and overwrite it.
+    t.files.set('/elsewhere/prefs.md', 'Tea.')
+    const { session, events, turnDone } = await startSession(t)
+    t.api.script(
+      {
+        calls: [
+          {
+            name: 'edit_memory',
+            arguments: '{"scope":"project","path":"prefs.md","old_str":"Tea","new_str":"Coffee"}',
+            callId: 'call_swap',
+          },
+        ],
+      },
+      { text: 'ok' },
+    )
+    await session.sendTurn([{ type: 'text', text: 'switch to coffee' }])
+    const request = await approvalRequest(events, 0)
+    expect(request.toolName).toBe('edit_memory')
+    // A swap while the card is open: the folder now leads outside.
+    links[`${ROOT}/.agents/memory`] = '/elsewhere'
+    await session.decideApproval({
+      approvalId: request.approvalId,
+      choiceId: 'allow_once',
+      requirementId: request.requirementId,
+    })
+    await turnDone()
+    expect(memoryRows(events).map((row) => row.status)).toEqual(['failed'])
+    expect(memoryRows(events)[0]?.failureReason).toContain('link')
+    expect(t.files.get(`${ROOT}/.agents/memory/prefs.md`)).toBe('Tea.')
+    expect(t.files.get('/elsewhere/prefs.md')).toBe('Tea.')
+  })
+})
 
 describe('ModelApiSession: workspace context (M10)', () => {
   it('sends the rules, the catalogue and the memory index, serves read_skill, and loads deeper rules on touch', async () => {
@@ -1450,24 +2568,1881 @@ describe('ModelApiSession question cancel (M16)', () => {
   })
 })
 
-describe('ModelApiSession subagents (M18)', () => {
-  it('refuses owner controls and notes: this backend runs no subagents', async () => {
+async function waitForChildReady(
+  t: ReturnType<typeof setup>,
+  session: ModelApiSession,
+  responseCount?: number,
+): Promise<void> {
+  await vi.waitFor(() => {
+    expect(session.history().items.find((item) => item.kind === 'subagent')?.controlStatus).toBe(
+      'resultReady',
+    )
+    if (responseCount !== undefined) {
+      expect(t.api.responseBodies()).toHaveLength(responseCount)
+    }
+    expect(session.status).toBe('idle')
+  })
+}
+
+/** A child can finish while its parent request remains held. */
+async function waitForChildResult(session: ModelApiSession): Promise<void> {
+  await vi.waitFor(() => {
+    expect(session.history().items.find((item) => item.kind === 'subagent')).toMatchObject({
+      controlStatus: 'resultReady',
+    })
+  })
+}
+
+/** Every stored replay — the parent's and each nested child's — answers every call. */
+function expectStoredReplaysSettled(saved: StoredSession | undefined): void {
+  expect(saved?.children).toHaveLength(1)
+  const replays = [
+    saved?.replay ?? [],
+    ...(saved?.children ?? []).map((child) => child.session.replay),
+  ]
+  for (const replay of replays) {
+    const answered = new Set(
+      replay.flatMap((entry) =>
+        entry.item.type === 'function_call_output' ? [entry.item.call_id] : [],
+      ),
+    )
+    expect(
+      replay.filter(
+        (entry) => entry.item.type === 'function_call' && !answered.has(entry.item.call_id),
+      ),
+    ).toEqual([])
+  }
+}
+
+async function delegateAndWaitForChild(
+  session: ModelApiSession,
+  expected: { readonly controlStatus: string; readonly status?: string; readonly result?: object },
+  isParentIdle = false,
+): Promise<void> {
+  await session.sendTurn([{ type: 'text', text: 'delegate' }])
+  await vi.waitFor(() => {
+    expect(session.history().items.find((item) => item.kind === 'subagent')).toMatchObject(expected)
+    if (isParentIdle) {
+      expect(session.status).toBe('idle')
+    }
+  })
+}
+
+async function waitForIdleResponses(
+  t: ReturnType<typeof setup>,
+  session: ModelApiSession,
+  responseCount: number,
+): Promise<void> {
+  await vi.waitFor(() => {
+    expect(t.api.responseBodies()).toHaveLength(responseCount)
+    expect(session.status).toBe('idle')
+  })
+}
+
+function scriptWorkerSpawn(t: ReturnType<typeof setup>, objective: string): void {
+  t.api.script(
+    {
+      calls: [
+        {
+          name: 'subagent_spawn',
+          arguments: JSON.stringify({ role: 'worker', objective }),
+          callId: 'spawn',
+        },
+      ],
+    },
+    { text: 'First task done.' },
+    { text: 'Parent continues.' },
+  )
+}
+
+async function queueChildren(
+  t: ReturnType<typeof setup>,
+  session: ModelApiSession,
+  count = 9,
+  isCancelLast = false,
+) {
+  const hold = Promise.withResolvers<undefined>()
+  const calls = Array.from({ length: count }, (_, index) => ({
+    name: 'subagent_spawn',
+    arguments: JSON.stringify({
+      role: `worker-${String(index)}`,
+      objective: `Task ${String(index)}`,
+    }),
+    callId: `spawn-${String(index)}`,
+  }))
+  t.api.script(
+    {
+      calls: isCancelLast
+        ? [
+            ...calls,
+            {
+              name: 'subagent_send_message',
+              arguments: JSON.stringify({
+                subagent_id: `subagent-${String(count)}`,
+                message: 'Cancelled queued note',
+              }),
+              callId: 'note-last',
+            },
+            {
+              name: 'subagent_cancel',
+              arguments: JSON.stringify({ subagent_id: `subagent-${String(count)}` }),
+              callId: 'cancel-last',
+            },
+          ]
+        : calls,
+    },
+    ...Array.from({ length: 10 }, () => ({ text: 'Done.', hold: hold.promise })),
+  )
+  await session.sendTurn([{ type: 'text', text: 'delegate tasks' }])
+  await vi.waitFor(() => {
+    expect(
+      session
+        .history()
+        .items.filter((item) => item.kind === 'toolCall' && item.tool === 'subagent_spawn'),
+    ).toHaveLength(count)
+  })
+  return hold
+}
+
+function setupSubagents(options: Parameters<typeof setup>[0] = {}) {
+  return setup({ ...options, paid: [...(options.paid ?? []), 'subagents'] })
+}
+
+async function startApprovedSubagentSession(t: ReturnType<typeof setup>) {
+  const started = await startSession(t, 'allowAll')
+  started.session.onEvent((event) => {
+    if (event.type === 'approvalRequested' && event.subject.paidFeature === 'subagents') {
+      void started.session.decideApproval({
+        approvalId: event.approvalId,
+        choiceId: 'allow_once',
+        requirementId: event.requirementId,
+      })
+    }
+  })
+  return started
+}
+
+async function refusePaidSpawnDecision(
+  t: ReturnType<typeof setup>,
+  session: ModelApiSession,
+  approval: Extract<AgentEvent, { type: 'approvalRequested' }>,
+  turnDone: () => Promise<void>,
+  choiceId: 'abort' | 'allow_session',
+): Promise<void> {
+  await session.decideApproval({
+    approvalId: approval.approvalId,
+    choiceId,
+    requirementId: approval.requirementId,
+  })
+  await turnDone()
+  expect(session.history().items.some((item) => item.kind === 'subagent')).toBe(false)
+  expect(t.paidUses).toEqual([])
+}
+
+/** A settled first child, so follow-up consent tests have no parent race. */
+async function completePaidChild(
+  t: ReturnType<typeof setup>,
+  session: ModelApiSession,
+  callId: string,
+): Promise<number> {
+  t.api.script(
+    {
+      calls: [
+        {
+          name: 'subagent_spawn',
+          arguments: '{"role":"explorer","objective":"First task"}',
+          callId,
+        },
+      ],
+    },
+    { text: 'First child task done.' },
+    { text: 'Parent done.' },
+  )
+  await session.sendTurn([{ type: 'text', text: 'delegate' }])
+  await waitForChildReady(t, session)
+  return t.api.responseBodies().length
+}
+
+describe('ModelApiSession subagents (M48)', () => {
+  it('refuses child creation while its paid gate is off', async () => {
+    const t = setup()
+    const { session, turnDone } = await startSession(t, 'allowAll')
+    t.api.script(
+      {
+        calls: [
+          {
+            name: 'subagent_spawn',
+            arguments: '{"role":"explorer","objective":"Map files"}',
+            callId: 'paid_off_spawn',
+          },
+        ],
+      },
+      { text: 'Parent continues.' },
+    )
+    await session.sendTurn([{ type: 'text', text: 'delegate' }])
+    await turnDone()
+    expect(session.history().items.some((item) => item.kind === 'subagent')).toBe(false)
+    expect(t.paidUses).toEqual([])
+  })
+
+  it('asks once for a bounded BYOK child task even in Bypass', async () => {
+    const t = setup({ paid: ['subagents'] })
+    const { session, events, turnDone } = await startSession(t, 'allowAll')
+    t.api.script(
+      {
+        calls: [
+          {
+            name: 'subagent_spawn',
+            arguments: '{"role":"explorer","objective":"Map files"}',
+            callId: 'paid_spawn',
+          },
+        ],
+      },
+      { text: 'Parent continues.' },
+    )
+    await session.sendTurn([{ type: 'text', text: 'delegate' }])
+    const approval = await approvalRequest(events, 0)
+    expect(approval.subject).toMatchObject({
+      paidFeature: 'subagents',
+      modelId: 'muse-spark-1.3',
+      requestLimit: 4,
+    })
+    expect(approval.availableChoices.map((choice) => choice.choiceId)).toEqual([
+      'allow_once',
+      'abort',
+    ])
+    expect(t.api.responseBodies()).toHaveLength(1)
+    expect(session.history().items.some((item) => item.kind === 'subagent')).toBe(false)
+    await refusePaidSpawnDecision(t, session, approval, turnDone, 'abort')
+  })
+
+  it('rejects a forged session-wide decision on a one-use child card', async () => {
+    const t = setupSubagents()
+    const { session, events, turnDone } = await startSession(t, 'allowAll')
+    t.api.script(
+      {
+        calls: [
+          {
+            name: 'subagent_spawn',
+            arguments: '{"role":"explorer","objective":"Map files"}',
+            callId: 'forged_session_spawn',
+          },
+        ],
+      },
+      { text: 'Parent continues.' },
+    )
+    await session.sendTurn([{ type: 'text', text: 'delegate' }])
+    const approval = await approvalRequest(events, 0)
+    expect(approval.availableChoices.some((choice) => choice.choiceId === 'allow_session')).toBe(
+      false,
+    )
+    await refusePaidSpawnDecision(t, session, approval, turnDone, 'allow_session')
+  })
+
+  it('expires a pending paid spawn card when the parent switches to Plan', async () => {
+    const t = setupSubagents()
+    const { session, events, turnDone } = await startSession(t, 'allowAll')
+    t.api.script(
+      {
+        calls: [
+          {
+            name: 'subagent_spawn',
+            arguments: '{"role":"explorer","objective":"Map files"}',
+            callId: 'spawn_before_plan',
+          },
+        ],
+      },
+      { text: 'Parent continues.' },
+    )
+    await session.sendTurn([{ type: 'text', text: 'delegate' }])
+    const approval = await approvalRequest(events, 0)
+    await session.setApprovalMode('denyUnmatched')
+    await session.decideApproval({
+      approvalId: approval.approvalId,
+      choiceId: 'allow_once',
+      requirementId: approval.requirementId,
+    })
+    await turnDone()
+    expect(session.history().items.some((item) => item.kind === 'subagent')).toBe(false)
+    expect(t.api.responseBodies()).toHaveLength(2)
+    expect(t.paidUses).toEqual([])
+  })
+
+  it('refuses a child on a model without a verified tariff', async () => {
+    const t = setupSubagents()
+    const { session, events, turnDone } = await startSession(t, 'allowAll')
+    await session.setModel('muse-spark-future')
+    t.api.script(
+      {
+        calls: [
+          {
+            name: 'subagent_spawn',
+            arguments: '{"role":"explorer","objective":"Map files"}',
+            callId: 'unpriced_spawn',
+          },
+        ],
+      },
+      { text: 'Parent continues.' },
+    )
+    await session.sendTurn([{ type: 'text', text: 'delegate' }])
+    await turnDone()
+    expect(events.some((event) => event.type === 'approvalRequested')).toBe(false)
+    expect(session.history().items.some((item) => item.kind === 'subagent')).toBe(false)
+    expect(t.paidUses).toEqual([])
+  })
+
+  it.each(['gate', 'key', 'missingKey', 'model'] as const)(
+    'rechecks %s at the child HTTP boundary',
+    async (variant) => {
+      const paid: PaidFeature[] = ['subagents']
+      let key: string | undefined = 'LLM|1|secret'
+      const t = setup({ paid, apiKey: () => Promise.resolve(key) })
+      const { session } = await startApprovedSubagentSession(t)
+      session.onEvent((event) => {
+        if (event.type !== 'turnStarted' || !event.turnId.includes(':subagent-')) {
+          return
+        }
+        switch (variant) {
+          case 'gate': {
+            paid.length = 0
+            break
+          }
+          case 'key': {
+            key = 'LLM|1|changed'
+            break
+          }
+          case 'missingKey': {
+            key = undefined
+            break
+          }
+          case 'model': {
+            void session.setModel('muse-spark-1.2')
+            break
+          }
+        }
+      })
+      t.api.script(
+        {
+          calls: [
+            {
+              name: 'subagent_spawn',
+              arguments: '{"role":"explorer","objective":"Map files"}',
+              callId: `spawn_${variant}`,
+            },
+          ],
+        },
+        { text: 'Parent continues.' },
+      )
+      await session.sendTurn([{ type: 'text', text: 'delegate' }])
+      const expectedKind = {
+        gate: 'paidOff',
+        key: 'keyChanged',
+        missingKey: 'keyChanged',
+        model: 'modelChanged',
+      }[variant]
+      await vi.waitFor(() => {
+        expect(session.history().items.find((item) => item.kind === 'subagent')).toMatchObject({
+          controlStatus: 'resultReady',
+          result: { errorKind: `subagent_${expectedKind}` },
+        })
+        expect(session.status).toBe('idle')
+      })
+      expect(t.api.responseBodies()).toHaveLength(variant === 'missingKey' ? 1 : 2)
+      expect(t.paidUses).toEqual([])
+      expect(t.subagentUsage).toEqual([])
+    },
+  )
+
+  it.each(['stop', 'dispose'] as const)(
+    'does not revive a closed child after %s while reopen consent waits',
+    async (action) => {
+      const pending = Promise.withResolvers<boolean>()
+      const confirm = vi.fn(() => pending.promise)
+      const t = setupSubagents({ confirmSubagentTask: confirm })
+      const { session } = await startApprovedSubagentSession(t)
+      const before = await completePaidChild(t, session, `spawn_before_${action}`)
+      await session.controlSubagent('subagent-1', 'readResult')
+      const attempts = t.paidUses.filter((use) => use.feature === 'subagents').length
+      const reopening = session.controlSubagent('subagent-1', 'reopen')
+      await vi.waitFor(() => {
+        expect(confirm).toHaveBeenCalledTimes(1)
+      })
+      if (action === 'stop') {
+        await session.controlSubagent('subagent-1', 'stop')
+      } else {
+        session.disposeAll()
+      }
+      pending.resolve(true)
+      await expect(reopening).rejects.toThrow()
+      expect(t.api.responseBodies()).toHaveLength(before)
+      expect(t.paidUses.filter((use) => use.feature === 'subagents')).toHaveLength(attempts)
+      if (action !== 'stop') {
+        return
+      }
+      t.api.script({ text: 'Deliberate later reopen.' })
+      await session.controlSubagent('subagent-1', 'reopen')
+      await vi.waitFor(() => {
+        expect(t.paidUses.filter((use) => use.feature === 'subagents')).toHaveLength(attempts + 1)
+      })
+    },
+  )
+
+  it('does not spend a child attempt when Stop wins during its key read', async () => {
+    const keyRead = Promise.withResolvers<string>()
+    let isKeyHeld = false
+    const pendingKeyReads = vi.fn()
+    const t = setupSubagents({
+      apiKey: () => {
+        if (isKeyHeld) {
+          pendingKeyReads()
+          return keyRead.promise
+        }
+        return Promise.resolve('LLM|1|secret')
+      },
+    })
+    const { session } = await startApprovedSubagentSession(t)
+    const before = await completePaidChild(t, session, 'spawn_before_held_key')
+    const paidBefore = t.paidUses.filter((use) => use.feature === 'subagents').length
+    session.onEvent((event) => {
+      if (event.type === 'turnStarted' && event.turnId.includes(':subagent-')) {
+        isKeyHeld = true
+      }
+    })
+    t.api.script({ text: 'Must not run after Stop.' })
+    await session.messageSubagent('subagent-1', 'Second task', true)
+    await vi.waitFor(() => {
+      expect(pendingKeyReads).toHaveBeenCalled()
+    })
+    await session.controlSubagent('subagent-1', 'stop')
+    keyRead.resolve('LLM|1|secret')
+    await vi.waitFor(() => {
+      expect(session.history().items.find((item) => item.kind === 'subagent')).toMatchObject({
+        controlStatus: 'closed',
+      })
+    })
+    expect(t.api.responseBodies()).toHaveLength(before)
+    expect(t.paidUses.filter((use) => use.feature === 'subagents')).toHaveLength(paidBefore)
+  })
+
+  it('holds the parent save while a child tool call waits for approval', async () => {
+    const store = memorySessionStore()
+    const t = setupSubagents({ store })
+    const { session, events } = await startSession(t, 'promptUnmatched')
+    // Only the spawn consent is answered; the child's own tool approval waits.
+    session.onEvent((event) => {
+      if (event.type === 'approvalRequested' && event.subject.paidFeature === 'subagents') {
+        void session.decideApproval({
+          approvalId: event.approvalId,
+          choiceId: 'allow_once',
+          requirementId: event.requirementId,
+        })
+      }
+    })
+    await completePaidChild(t, session, 'spawn_persist')
+    // A follow-up starts a second child turn while the parent stays idle, so
+    // only the child consumes the scripted calls below.
+    t.api.script(
+      {
+        calls: [
+          {
+            name: 'write_file',
+            arguments: '{"path":"a.txt","content":"new"}',
+            callId: 'child_write',
+          },
+        ],
+      },
+      { text: 'Mapped.' },
+      { text: 'Noted.' },
+    )
+    await session.messageSubagent('subagent-1', 'Second task', true)
+    await vi.waitFor(() => {
+      expect(
+        events.filter(
+          (event) => event.type === 'approvalRequested' && event.toolName === 'write_file',
+        ),
+      ).toHaveLength(1)
+    })
+    const writeApproval = events.find(
+      (event): event is Extract<AgentEvent, { type: 'approvalRequested' }> =>
+        event.type === 'approvalRequested' && event.toolName === 'write_file',
+    )
+    if (writeApproval === undefined) {
+      throw new Error('expected the child write approval')
+    }
+    // The parent is idle while the child still waits: a touch must not save
+    // the nested replay with its unanswered call.
+    expect(session.status).toBe('idle')
+    await session.setModel('muse-spark-1.3')
+    await t.host.flush()
+    expectStoredReplaysSettled(store.saved.get(session.sessionId))
+    // Once the child's call is answered the saves resume with settled replays.
+    await session.decideApproval({
+      approvalId: writeApproval.approvalId,
+      choiceId: 'allow_once',
+      requirementId: writeApproval.requirementId,
+    })
+    await waitForChildResult(session)
+    await t.host.flush()
+    expectStoredReplaysSettled(store.saved.get(session.sessionId))
+  })
+
+  it.each(['resume', 'followup'] as const)(
+    'shows a retained queued note in restored child %s consent before its request',
+    async (action) => {
+      const store = memorySessionStore()
+      const first = setupSubagents({ store })
+      const { session } = await startApprovedSubagentSession(first)
+      await completePaidChild(first, session, `spawn_before_restore_${action}`)
+      await first.host.flush()
+      session.dispose()
+      const stored = store.saved.get(session.sessionId)
+      if (stored?.children === undefined) {
+        throw new Error('child snapshot missing')
+      }
+      store.saved.set(session.sessionId, {
+        ...stored,
+        children: stored.children.map((child) => ({
+          ...child,
+          state: 'queued',
+          pendingMessages: ['Retained note B'],
+        })),
+      })
+      const confirmed: SubagentTaskConfirmation[] = []
+      const second = setupSubagents({
+        store,
+        confirmSubagentTask: (task) => {
+          confirmed.push(task)
+          return Promise.resolve(true)
+        },
+      })
+      await second.host.load()
+      const restored = await second.host.resumeSession(session.sessionId, 'muse-spark-1.3')
+      second.api.script({ text: 'Child resumed.' })
+      if (action === 'resume') {
+        await restored.session.controlSubagent('subagent-1', 'resume')
+      } else {
+        await restored.session.messageSubagent('subagent-1', 'Follow-up C', true)
+      }
+      const expected =
+        action === 'resume'
+          ? `Retained note B\n\n${MODEL_TEXT.subagentResume}`
+          : 'Retained note B\n\nFollow-up C'
+      expect(confirmed).toHaveLength(1)
+      expect(confirmed[0]?.objective).toBe(expected)
+      await vi.waitFor(() => {
+        expect(second.api.responseBodies()).toHaveLength(1)
+      })
+      expect(JSON.stringify(second.api.responseBodies()[0])).toContain('Retained note B')
+    },
+  )
+
+  it('refuses a child request after its originating goal is paused', async () => {
+    const t = setupSubagents()
+    const { session } = await startApprovedSubagentSession(t)
+    session.onEvent((event) => {
+      if (event.type === 'turnStarted' && event.turnId.includes(':subagent-')) {
+        void session.controlGoal({ verb: 'pause' })
+      }
+    })
+    t.api.script(
+      {
+        calls: [
+          {
+            name: 'create_goal',
+            arguments: '{"objective":"Ship it","token_budget":100}',
+            callId: 'child_goal',
+          },
+          {
+            name: 'subagent_spawn',
+            arguments: '{"role":"explorer","objective":"Map files"}',
+            callId: 'goal_child',
+          },
+        ],
+      },
+      { text: 'Parent continues.' },
+    )
+    await delegateAndWaitForChild(session, {
+      controlStatus: 'resultReady',
+      result: { errorKind: 'subagent_goalEnded' },
+    })
+    expect(t.api.responseBodies()).toHaveLength(2)
+    expect(t.paidUses).toEqual([])
+  })
+
+  it('does not send a child request carrying web search after that gate turns off', async () => {
+    const paid: PaidFeature[] = ['subagents', 'webSearch']
+    const t = setup({ paid })
+    const { session } = await startApprovedSubagentSession(t)
+    const streamResponse = t.client.streamResponse.bind(t.client)
+    let didSeeSearchTool = false
+    vi.spyOn(t.client, 'streamResponse').mockImplementation(
+      (body, signal, retry, budget, guard) => {
+        if (body.prompt_cache_key.includes(':subagent-')) {
+          didSeeSearchTool = body.tools.some((tool) => tool.type === 'web_search')
+          paid.splice(paid.indexOf('webSearch'), 1)
+        }
+        return streamResponse(body, signal, retry, budget, guard)
+      },
+    )
+    t.api.script(
+      {
+        calls: [
+          {
+            name: 'subagent_spawn',
+            arguments: '{"role":"explorer","objective":"Research files"}',
+            callId: 'search_child',
+          },
+        ],
+      },
+      { text: 'Parent continues.' },
+    )
+    await delegateAndWaitForChild(session, {
+      controlStatus: 'resultReady',
+      result: { errorKind: 'subagent_webSearchOff' },
+    })
+    expect(didSeeSearchTool).toBe(true)
+    expect(t.api.responseBodies()).toHaveLength(2)
+    expect(t.paidUses.filter((use) => use.feature === 'subagents')).toEqual([])
+  })
+
+  it('leaves UI follow-up and reopen stopped when their new price modal is declined', async () => {
+    const confirm = vi.fn((_task: SubagentTaskConfirmation) => Promise.resolve(false))
+    const t = setupSubagents({ confirmSubagentTask: confirm })
+    const { session } = await startApprovedSubagentSession(t)
+    const before = await completePaidChild(t, session, 'spawn_for_ui_decline')
+    await expect(session.messageSubagent('subagent-1', 'Second task', true)).rejects.toThrow(
+      UI_TEXT.subagentConsentDeclined,
+    )
+    await session.controlSubagent('subagent-1', 'readResult')
+    await expect(session.controlSubagent('subagent-1', 'reopen')).rejects.toThrow(
+      UI_TEXT.subagentConsentDeclined,
+    )
+    expect(confirm).toHaveBeenCalledTimes(2)
+    expect(confirm.mock.calls[0]?.[0]).toMatchObject({
+      role: 'explorer',
+      objective: 'Second task',
+      modelId: 'muse-spark-1.3',
+      attemptLimit: 4,
+    })
+    expect(t.api.responseBodies()).toHaveLength(before)
+    expect(t.paidUses.filter((use) => use.feature === 'subagents')).toHaveLength(1)
+  })
+
+  it.each(['gate', 'key', 'missingKey', 'model'] as const)(
+    'expires a UI child-task consent when %s changes while its modal is open',
+    async (variant) => {
+      const paid: PaidFeature[] = ['subagents']
+      let key: string | undefined = 'LLM|1|secret'
+      const pending = Promise.withResolvers<boolean>()
+      const confirm = vi.fn(() => pending.promise)
+      const t = setup({ paid, apiKey: () => Promise.resolve(key), confirmSubagentTask: confirm })
+      const { session } = await startApprovedSubagentSession(t)
+      const before = await completePaidChild(t, session, `spawn_modal_${variant}`)
+      const continuation = session.messageSubagent('subagent-1', 'Second task', true)
+      await vi.waitFor(() => {
+        expect(confirm).toHaveBeenCalledTimes(1)
+      })
+      switch (variant) {
+        case 'gate': {
+          paid.length = 0
+          break
+        }
+        case 'key': {
+          key = 'LLM|1|changed'
+          break
+        }
+        case 'missingKey': {
+          key = undefined
+          break
+        }
+        case 'model': {
+          await session.setModel('muse-spark-1.2')
+          break
+        }
+      }
+      pending.resolve(true)
+      const reason = {
+        gate: UI_TEXT.subagentPaidOff,
+        key: UI_TEXT.subagentKeyChanged,
+        missingKey: UI_TEXT.subagentKeyChanged,
+        model: UI_TEXT.subagentModelChanged,
+      }[variant]
+      await expect(continuation).rejects.toThrow(reason)
+      expect(t.api.responseBodies()).toHaveLength(before)
+      expect(t.paidUses.filter((use) => use.feature === 'subagents')).toHaveLength(1)
+    },
+  )
+
+  it('refuses owner controls and notes for an unknown child', async () => {
     const t = setup()
     const { session } = await startSession(t)
-    // Through the backend interface, as the controller calls it.
     const asSession: AgentSession = session
-    await expect(asSession.controlSubagent('sub-1', 'stop')).rejects.toThrow('runs no subagents')
-    await expect(asSession.messageSubagent('sub-1', 'hi', false)).rejects.toThrow(
-      'runs no subagents',
+    await expect(asSession.controlSubagent('sub-1', 'stop')).rejects.toThrow('unknown subagent')
+    await expect(asSession.messageSubagent('sub-1', 'hi', false)).rejects.toThrow('unavailable')
+  })
+
+  it('runs a child independently, shows its result, and lets the owner read and reopen it', async () => {
+    const t = setupSubagents()
+    const { session, events } = await startApprovedSubagentSession(t)
+    t.api.script(
+      {
+        calls: [
+          {
+            name: 'subagent_spawn',
+            arguments: '{"role":"explorer","objective":"Map files","command_id":"one"}',
+            callId: 'spawn',
+          },
+        ],
+      },
+      { text: 'Mapped files', usage: { input: 30, output: 10 } },
+      { text: 'Mapped files', usage: { input: 30, output: 10 } },
     )
+    await session.sendTurn([{ type: 'text', text: 'delegate' }])
+    await vi.waitFor(() => {
+      expect(
+        events.some(
+          (event) =>
+            event.type === 'itemUpdated' &&
+            event.item.kind === 'subagent' &&
+            event.item.controlStatus === 'resultReady',
+        ),
+      ).toBe(true)
+    })
+    const row = session.history().items.find((item) => item.kind === 'subagent')
+    expect(row).toMatchObject({
+      role: 'explorer',
+      objective: 'Map files',
+      result: { summary: 'Mapped files' },
+    })
+    expect(row?.usage?.inputTokens).toBe(30)
+    expect(session.snapshot().usage.inputTokens).toBeGreaterThanOrEqual(30)
+    expect(row?.childSessionId).toBeDefined()
+    const childHistory = await t.host.readSession(row?.childSessionId ?? '')
+    expect(
+      childHistory.items.some(
+        (item) => item.kind === 'agentMessage' && item.text === 'Mapped files',
+      ),
+    ).toBe(true)
+    await session.controlSubagent('subagent-1', 'readResult')
+    expect(session.history().items.find((item) => item.kind === 'subagent')?.controlStatus).toBe(
+      'closed',
+    )
+    await session.controlSubagent('subagent-1', 'reopen')
+    await vi.waitFor(() => {
+      expect(session.history().items.find((item) => item.kind === 'subagent')?.controlStatus).toBe(
+        'resultReady',
+      )
+    })
+    await session.sendTurn([{ type: 'text', text: 'What did the child find?' }])
+    await vi.waitFor(() => {
+      expect(
+        t.api
+          .responseBodies()
+          .some((body) => JSON.stringify(body['input']).includes(MODEL_TEXT.subagentResult)),
+      ).toBe(true)
+    })
+  })
+
+  it('refuses spawn in Plan before any child starts', async () => {
+    const t = setupSubagents()
+    const { session, events, turnDone } = await startSession(t, 'denyUnmatched')
+    t.api.script(
+      {
+        calls: [
+          {
+            name: 'subagent_spawn',
+            arguments: '{"role":"explorer","objective":"Map files"}',
+            callId: 'spawn',
+          },
+        ],
+      },
+      { text: 'cannot delegate' },
+    )
+    await session.sendTurn([{ type: 'text', text: 'delegate' }])
+    await turnDone()
+    expect(
+      events.some((event) => event.type === 'itemStarted' && event.item.kind === 'subagent'),
+    ).toBe(false)
+    expect(
+      events.some(
+        (event) =>
+          event.type === 'itemCompleted' &&
+          event.item.tool === 'subagent_spawn' &&
+          event.item.status === 'rejected',
+      ),
+    ).toBe(true)
+  })
+
+  it('asks before spawning in Manual and keeps a child transcript after session disposal', async () => {
+    const store = memorySessionStore()
+    const t = setupSubagents({ store })
+    const { session, events } = await startSession(t)
+    t.api.script(
+      {
+        calls: [
+          {
+            name: 'subagent_spawn',
+            arguments: '{"role":"reviewer","objective":"Review files"}',
+            callId: 'spawn',
+          },
+        ],
+      },
+      { text: 'Reviewed files' },
+      { text: 'Reviewed files' },
+    )
+    await session.sendTurn([{ type: 'text', text: 'delegate' }])
+    const approval = await approvalRequest(events, 0)
+    expect(approval.subject).toMatchObject({
+      kind: 'paidTool',
+      toolName: 'subagent_spawn',
+      paidFeature: 'subagents',
+    })
+    expect(session.history().items.some((item) => item.kind === 'subagent')).toBe(false)
+    await session.decideApproval({
+      approvalId: approval.approvalId,
+      choiceId: 'allow_once',
+      requirementId: approval.requirementId,
+    })
+    await vi.waitFor(() => {
+      expect(session.history().items.find((item) => item.kind === 'subagent')?.controlStatus).toBe(
+        'resultReady',
+      )
+    })
+    const childId =
+      session.history().items.find((item) => item.kind === 'subagent')?.childSessionId ?? ''
+    expect(JSON.stringify(session.snapshot())).not.toContain('keyDigest')
+    await t.host.flush()
+    expect(parseStoredSession(store.saved.get(session.sessionId)).ok).toBe(true)
+    session.dispose()
+    const child = await t.host.readSession(childId)
+    expect(
+      child.items.some((item) => item.kind === 'agentMessage' && item.text === 'Reviewed files'),
+    ).toBe(true)
+    await expect(t.host.readSession(`${session.sessionId}:subagent-404`)).rejects.toThrow(
+      'not held by this window',
+    )
+    const confirmRestored = vi.fn(() => Promise.resolve(false))
+    const second = setupSubagents({ store, confirmSubagentTask: confirmRestored })
+    await second.host.load()
+    const restored = await second.host.resumeSession(session.sessionId, 'muse-spark-1.3')
+    expect(restored.history.items.find((item) => item.kind === 'subagent')).toMatchObject({
+      childSessionId: childId,
+      controlStatus: 'resultReady',
+    })
+    const restoredChild = await second.host.readSession(childId)
+    expect(restoredChild.items).toEqual(child.items)
+    await restored.session.controlSubagent('subagent-1', 'readResult')
+    const restoredParent = await second.host.readSession(session.sessionId)
+    expect(restoredParent.items.find((item) => item.kind === 'subagent')).toMatchObject({
+      controlStatus: 'closed',
+    })
+    await expect(restored.session.controlSubagent('subagent-1', 'reopen')).rejects.toThrow(
+      UI_TEXT.subagentConsentDeclined,
+    )
+    expect(confirmRestored).toHaveBeenCalledOnce()
+    expect(second.api.responseBodies()).toEqual([])
+  })
+
+  it('routes a child write approval through the parent session', async () => {
+    const t = setupSubagents()
+    const { session, events } = await startSession(t)
+    t.api.script(
+      {
+        calls: [
+          {
+            name: 'subagent_spawn',
+            arguments: '{"role":"writer","objective":"Write child-note.txt"}',
+            callId: 'spawn',
+          },
+        ],
+      },
+      { text: 'Child ready.' },
+      { text: 'Parent continues.' },
+    )
+    await session.sendTurn([{ type: 'text', text: 'delegate the write' }])
+    const spawn = await approvalRequest(events, 0)
+    expect(spawn.subject).toMatchObject({
+      kind: 'paidTool',
+      toolName: 'subagent_spawn',
+      paidFeature: 'subagents',
+    })
+    await session.decideApproval({
+      approvalId: spawn.approvalId,
+      choiceId: 'allow_once',
+      requirementId: spawn.requirementId,
+    })
+    await waitForChildReady(t, session)
+    const childSessionId = session
+      .history()
+      .items.find((item) => item.kind === 'subagent')?.childSessionId
+    if (childSessionId === undefined) {
+      throw new Error('expected child session id')
+    }
+    t.api.script(
+      {
+        calls: [
+          {
+            name: 'write_file',
+            arguments: '{"path":"child-note.txt","content":"from child"}',
+            callId: 'child_write',
+          },
+        ],
+      },
+      { text: 'Child finished.' },
+    )
+    await session.messageSubagent('subagent-1', 'Write child-note.txt now', true)
+    const write = await approvalRequest(events, 1)
+    expect(write.subject).toMatchObject({ kind: 'fileWrite', path: 'child-note.txt' })
+    expect(
+      events.find((event) => event.type === 'itemStarted' && event.item.itemId === write.itemId),
+    ).toMatchObject({ item: { turnId: expect.stringContaining(`${childSessionId}:`) } })
+    const lateEvents: AgentEvent[] = []
+    const detachLate = session.onEvent((event) => {
+      lateEvents.push(event)
+    })
+    try {
+      const pending = lateEvents.filter((event) => event.type === 'approvalRequested')
+      expect(pending).toHaveLength(1)
+      expect(pending[0]).toMatchObject({ approvalId: write.approvalId, isReplayed: true })
+    } finally {
+      await session.decideApproval({
+        approvalId: write.approvalId,
+        choiceId: 'allow_once',
+        requirementId: write.requirementId,
+      })
+      detachLate()
+    }
+    await vi.waitFor(() => {
+      expect(t.files.get(`${ROOT}/child-note.txt`)).toBe('from child')
+    })
+  })
+
+  it('reuses the same child when a spawn command id is retried', async () => {
+    const t = setupSubagents()
+    const { session, events } = await startApprovedSubagentSession(t)
+    const spawn = {
+      name: 'subagent_spawn',
+      arguments: '{"role":"explorer","objective":"Map files","command_id":"same-command"}',
+    }
+    t.api.script(
+      { calls: [{ ...spawn, callId: 'first_spawn' }] },
+      { text: 'Child mapped files.' },
+      { text: 'Parent ready.' },
+    )
+    await session.sendTurn([{ type: 'text', text: 'delegate once' }])
+    await waitForChildReady(t, session)
+    t.api.script({ calls: [{ ...spawn, callId: 'retried_spawn' }] }, { text: 'Same child.' })
+    await session.sendTurn([{ type: 'text', text: 'retry the same command' }])
+    await vi.waitFor(() => {
+      expect(
+        events.filter(
+          (event) => event.type === 'itemCompleted' && event.item.tool === 'subagent_spawn',
+        ),
+      ).toHaveLength(2)
+      expect(session.status).toBe('idle')
+    })
+    expect(session.history().items.filter((item) => item.kind === 'subagent')).toHaveLength(1)
+    expect(session.history().items.find((item) => item.kind === 'subagent')?.subagentId).toBe(
+      'subagent-1',
+    )
+    t.api.script(
+      {
+        calls: [
+          {
+            ...spawn,
+            arguments:
+              '{"role":"explorer","objective":"Different task","command_id":"same-command"}',
+            callId: 'conflicting_spawn',
+          },
+        ],
+      },
+      { text: 'Refused.' },
+    )
+    await session.sendTurn([{ type: 'text', text: 'reuse the id for another task' }])
+    await vi.waitFor(() => {
+      expect(
+        events.filter(
+          (event) => event.type === 'itemCompleted' && event.item.tool === 'subagent_spawn',
+        ),
+      ).toHaveLength(3)
+      expect(session.status).toBe('idle')
+    })
+    expect(
+      events.findLast(
+        (event) => event.type === 'itemCompleted' && event.item.tool === 'subagent_spawn',
+      ),
+    ).toMatchObject({ item: { status: 'failed' } })
+    expect(session.history().items.filter((item) => item.kind === 'subagent')).toHaveLength(1)
+  })
+
+  it('runs at most eight children and starts the ninth when a slot opens', async () => {
+    const t = setupSubagents()
+    const { session } = await startApprovedSubagentSession(t)
+    const hold = await queueChildren(t, session)
+    const rows = session.history().items.filter((item) => item.kind === 'subagent')
+    expect(rows.filter((item) => item.controlStatus === 'running')).toHaveLength(8)
+    expect(rows.filter((item) => item.controlStatus === 'queued')).toHaveLength(1)
+    expect(rows.at(-1)?.subagentId).toBe('subagent-9')
+    hold.resolve(undefined)
+    await vi.waitFor(() => {
+      expect(
+        session
+          .history()
+          .items.filter((item) => item.kind === 'subagent' && item.controlStatus === 'resultReady'),
+      ).toHaveLength(9)
+    })
+  })
+
+  it('refuses the 65th child without losing the first 64', async () => {
+    const t = setupSubagents()
+    const { session } = await startApprovedSubagentSession(t)
+    const hold = await queueChildren(t, session, 65)
+    try {
+      const rows = session.history().items.filter((item) => item.kind === 'subagent')
+      expect(rows).toHaveLength(64)
+      expect(rows.at(-1)?.subagentId).toBe('subagent-64')
+      expect(
+        session
+          .history()
+          .items.findLast((item) => item.kind === 'toolCall' && item.tool === 'subagent_spawn'),
+      ).toMatchObject({ status: 'failed' })
+    } finally {
+      await t.host.close()
+      hold.resolve(undefined)
+    }
+  })
+
+  it('marks a queued child stopped without ever starting its turn', async () => {
+    const t = setupSubagents()
+    const { session } = await startApprovedSubagentSession(t)
+    const hold = await queueChildren(t, session)
+    try {
+      await session.controlSubagent('subagent-9', 'stop')
+      const ninth = session
+        .history()
+        .items.find((item) => item.kind === 'subagent' && item.subagentId === 'subagent-9')
+      expect(ninth).toMatchObject({ status: 'cancelled', controlStatus: 'closed' })
+      const childHistory = await t.host.readSession(ninth?.childSessionId ?? '')
+      expect(childHistory.items).toEqual([])
+    } finally {
+      hold.resolve(undefined)
+    }
+    await vi.waitFor(() => {
+      expect(
+        session
+          .history()
+          .items.filter((item) => item.kind === 'subagent' && item.controlStatus === 'resultReady'),
+      ).toHaveLength(8)
+    })
+  })
+
+  it('drops a stopped queued child’s note from persistence and a later reopen', async () => {
+    const t = setupSubagents({ store: memorySessionStore() })
+    const { session } = await startApprovedSubagentSession(t)
+    const hold = await queueChildren(t, session)
+    try {
+      await session.messageSubagent('subagent-9', 'Cancelled queued note', true)
+      await session.controlSubagent('subagent-9', 'stop')
+      const saved = session.snapshot().children?.find((child) => child.id === 'subagent-9')
+      expect(saved?.pendingMessages).toEqual([])
+      await session.controlSubagent('subagent-9', 'reopen')
+      hold.resolve(undefined)
+      await vi.waitFor(() => {
+        expect(
+          session
+            .history()
+            .items.find((item) => item.kind === 'subagent' && item.subagentId === 'subagent-9'),
+        ).toMatchObject({ controlStatus: 'resultReady' })
+      })
+      const history = await t.host.readSession(`${session.sessionId}:subagent-9`)
+      expect(JSON.stringify(history.items)).not.toContain('Cancelled queued note')
+    } finally {
+      hold.resolve(undefined)
+      await t.host.close()
+    }
+  })
+
+  it('lets the model cancel a queued child without reporting completion', async () => {
+    const t = setupSubagents()
+    const { session } = await startApprovedSubagentSession(t)
+    const hold = await queueChildren(t, session, 9, true)
+    try {
+      await vi.waitFor(() => {
+        expect(
+          session
+            .history()
+            .items.find((item) => item.kind === 'subagent' && item.subagentId === 'subagent-9'),
+        ).toMatchObject({ status: 'cancelled', controlStatus: 'closed' })
+      })
+      const saved = session.snapshot().children?.find((child) => child.id === 'subagent-9')
+      expect(saved?.pendingMessages).toEqual([])
+    } finally {
+      hold.resolve(undefined)
+    }
+  })
+
+  it('stops a running child before its held model response can complete', async () => {
+    const t = setupSubagents()
+    const { session, events } = await startApprovedSubagentSession(t)
+    const hold = Promise.withResolvers<undefined>()
+    scriptWorkerSpawn(t, 'Wait for work')
+    await session.sendTurn([{ type: 'text', text: 'delegate' }])
+    await waitForChildReady(t, session, 3)
+    const childSessionId =
+      session.history().items.find((item) => item.kind === 'subagent')?.childSessionId ?? ''
+    const priorChildTurns = events.filter(
+      (event) => event.type === 'turnCompleted' && event.turnId.startsWith(`${childSessionId}:`),
+    ).length
+    t.api.script({ text: 'A late child reply.', hold: hold.promise })
+    await session.messageSubagent('subagent-1', 'Wait again', true)
+    await vi.waitFor(() => {
+      expect(session.history().items.find((item) => item.kind === 'subagent')?.controlStatus).toBe(
+        'running',
+      )
+      expect(t.api.responseBodies()).toHaveLength(4)
+    })
+    await session.controlSubagent('subagent-1', 'stop')
+    hold.resolve(undefined)
+    await vi.waitFor(() => {
+      expect(
+        events.filter(
+          (event) =>
+            event.type === 'turnCompleted' && event.turnId.startsWith(`${childSessionId}:`),
+        ).length,
+      ).toBe(priorChildTurns + 1)
+    })
+    expect(session.history().items.find((item) => item.kind === 'subagent')).toMatchObject({
+      status: 'cancelled',
+      controlStatus: 'closed',
+    })
+  })
+
+  it('returns a completed child result to a waiting parent call', async () => {
+    const t = setupSubagents()
+    const { session } = await startApprovedSubagentSession(t)
+    t.api.script(
+      {
+        calls: [
+          {
+            name: 'subagent_spawn',
+            arguments: '{"role":"worker","objective":"Finish task"}',
+            callId: 'spawn',
+          },
+          {
+            name: 'subagent_wait',
+            arguments: '{"subagent_id":"subagent-1","timeout_ms":1000}',
+            callId: 'wait_child',
+          },
+        ],
+      },
+      { text: 'Child result.' },
+      { text: 'Parent received it.' },
+    )
+    await session.sendTurn([{ type: 'text', text: 'delegate and wait' }])
+    await waitForIdleResponses(t, session, 3)
+    expect(outputFor(t.api.responseBodies()[2], 'wait_child')).toMatchObject({
+      output: expect.stringContaining('"summary":"Child result."'),
+    })
+    expect(session.history().items.find((item) => item.kind === 'subagent')?.controlStatus).toBe(
+      'resultReady',
+    )
+  })
+
+  it('times out a wait without stopping the child', async () => {
+    const t = setupSubagents()
+    const { session } = await startApprovedSubagentSession(t)
+    const hold = Promise.withResolvers<undefined>()
+    t.api.script(
+      {
+        calls: [
+          {
+            name: 'subagent_spawn',
+            arguments: '{"role":"worker","objective":"Finish later"}',
+            callId: 'spawn',
+          },
+          {
+            name: 'subagent_wait',
+            arguments: '{"subagent_id":"subagent-1","timeout_ms":1}',
+            callId: 'wait_child',
+          },
+        ],
+      },
+      { text: 'Child finished.', hold: hold.promise },
+      { text: 'Parent saw the timeout.' },
+    )
+    try {
+      await session.sendTurn([{ type: 'text', text: 'delegate and wait briefly' }])
+      await waitForIdleResponses(t, session, 3)
+      expect(outputFor(t.api.responseBodies()[2], 'wait_child')).toMatchObject({
+        output: expect.stringContaining('"timed_out":true'),
+      })
+      expect(session.history().items.find((item) => item.kind === 'subagent')?.controlStatus).toBe(
+        'running',
+      )
+    } finally {
+      hold.resolve(undefined)
+    }
+    await vi.waitFor(() => {
+      expect(session.history().items.find((item) => item.kind === 'subagent')?.controlStatus).toBe(
+        'resultReady',
+      )
+    })
+  })
+
+  it('delivers a follow-up task to the same child conversation', async () => {
+    const t = setupSubagents()
+    const { session } = await startApprovedSubagentSession(t)
+    scriptWorkerSpawn(t, 'First task')
+    await session.sendTurn([{ type: 'text', text: 'delegate' }])
+    await waitForChildReady(t, session)
+    const childSessionId =
+      session.history().items.find((item) => item.kind === 'subagent')?.childSessionId ?? ''
+    t.api.script({ text: 'Second task done.' })
+    await session.messageSubagent('subagent-1', 'Second task', true)
+    await vi.waitFor(() => {
+      expect(
+        session.history().items.find((item) => item.kind === 'subagent')?.result?.summary,
+      ).toBe('Second task done.')
+    })
+    const child = await t.host.readSession(childSessionId)
+    expect(
+      child.items.filter((item) => item.kind === 'userMessage').map((item) => item.text),
+    ).toEqual(['First task', 'Second task'])
+  })
+
+  it('counts two children and a follow-up in the parent usage exactly once', async () => {
+    const t = setupSubagents()
+    const { session } = await startApprovedSubagentSession(t)
+    t.api.script(
+      {
+        calls: [
+          {
+            name: 'subagent_spawn',
+            arguments: '{"role":"first","objective":"First task"}',
+            callId: 'first',
+          },
+          {
+            name: 'subagent_spawn',
+            arguments: '{"role":"second","objective":"Second task"}',
+            callId: 'second',
+          },
+        ],
+        usage: { input: 2, output: 1 },
+      },
+      { text: 'First child done.', usage: { input: 10, output: 2 } },
+      { text: 'Second child done.', usage: { input: 20, output: 3 } },
+      { text: 'Parent done.', usage: { input: 5, output: 1 } },
+    )
+    await session.sendTurn([{ type: 'text', text: 'delegate twice' }])
+    await vi.waitFor(() => {
+      expect(
+        session
+          .history()
+          .items.filter((item) => item.kind === 'subagent' && item.controlStatus === 'resultReady'),
+      ).toHaveLength(2)
+      expect(session.status).toBe('idle')
+    })
+    expect(t.api.responseBodies()).toHaveLength(4)
+    expect(session.snapshot().usage).toMatchObject({ inputTokens: 37, outputTokens: 7 })
+    expect(t.paidUses.filter((use) => use.feature === 'subagents')).toHaveLength(2)
+    expect(t.subagentUsage).toHaveLength(2)
+    const rows = session.history().items.filter((item) => item.kind === 'subagent')
+    expect(t.subagentUsage.reduce((sum, use) => sum + use.inputTokens, 0)).toBe(
+      rows.reduce((sum, item) => sum + (item.usage?.inputTokens ?? 0), 0),
+    )
+    expect(t.subagentUsage.reduce((sum, use) => sum + use.outputTokens, 0)).toBe(
+      rows.reduce((sum, item) => sum + (item.usage?.outputTokens ?? 0), 0),
+    )
+    t.api.script({ text: 'Follow-up done.', usage: { input: 7, output: 3 } })
+    await session.messageSubagent('subagent-1', 'Follow-up', true)
+    await vi.waitFor(() => {
+      expect(t.api.responseBodies()).toHaveLength(5)
+      expect(
+        session.history().items.find((item) => item.kind === 'subagent')?.result?.summary,
+      ).toBe('Follow-up done.')
+    })
+    expect(session.snapshot().usage).toMatchObject({ inputTokens: 44, outputTokens: 10 })
+    expect(t.paidUses.filter((use) => use.feature === 'subagents')).toHaveLength(3)
+    expect(t.subagentUsage.at(-1)).toMatchObject({ inputTokens: 7, outputTokens: 3 })
+  })
+
+  it('stops a newly approved follow-up before its fifth HTTP attempt', async () => {
+    const t = setupSubagents()
+    const { session } = await startApprovedSubagentSession(t)
+    const before = await completePaidChild(t, session, 'spawn_limited')
+    t.api.script(
+      ...Array.from({ length: 4 }, (_unused, index) => ({
+        calls: [
+          {
+            name: 'read_file',
+            arguments: '{"path":"missing.txt"}',
+            callId: `child_read_${String(index)}`,
+          },
+        ],
+      })),
+      { text: 'Must not run.' },
+    )
+    await session.messageSubagent('subagent-1', 'Check missing.txt again', true)
+    await vi.waitFor(() => {
+      expect(session.history().items.find((item) => item.kind === 'subagent')).toMatchObject({
+        controlStatus: 'resultReady',
+        result: {
+          summary: expect.stringContaining('4 requests'),
+          errorKind: 'subagent_requestLimit',
+        },
+      })
+    })
+    expect(t.api.responseBodies()).toHaveLength(before + 4)
+    expect(t.paidUses.filter((use) => use.feature === 'subagents')).toHaveLength(5)
+  })
+
+  it('asks anew before a model-requested child follow-up in Bypass', async () => {
+    const t = setupSubagents()
+    const { session, events } = await startApprovedSubagentSession(t)
+    await completePaidChild(t, session, 'spawn_before_model_followup')
+    const priorApprovals = events.filter(
+      (event) => event.type === 'approvalRequested' && event.subject.paidFeature === 'subagents',
+    ).length
+    t.api.script(
+      {
+        calls: [
+          {
+            name: 'subagent_send_message',
+            arguments: '{"subagent_id":"subagent-1","message":"Next task"}',
+            callId: 'model_followup',
+          },
+        ],
+      },
+      { text: 'Second task done.' },
+      { text: 'Parent done.' },
+    )
+    await session.sendTurn([{ type: 'text', text: 'give the child another task' }])
+    await vi.waitFor(() => {
+      expect(
+        events.filter(
+          (event) =>
+            event.type === 'approvalRequested' && event.subject.paidFeature === 'subagents',
+        ),
+      ).toHaveLength(priorApprovals + 1)
+      expect(t.paidUses.filter((use) => use.feature === 'subagents')).toHaveLength(2)
+      expect(session.history().items.find((item) => item.kind === 'subagent')).toMatchObject({
+        controlStatus: 'resultReady',
+      })
+    })
+  })
+
+  it('lets a running-child note use its existing grant without renewing consent', async () => {
+    const t = setupSubagents()
+    const { session, events } = await startApprovedSubagentSession(t)
+    const holdChild = Promise.withResolvers<undefined>()
+    t.api.script(
+      {
+        calls: [
+          {
+            name: 'subagent_spawn',
+            arguments: '{"role":"explorer","objective":"First task"}',
+            callId: 'spawn_for_note',
+          },
+        ],
+      },
+      { text: 'Parent done.' },
+      { text: 'Child done.', hold: holdChild.promise },
+    )
+    try {
+      await delegateAndWaitForChild(session, { controlStatus: 'running' }, true)
+      const priorApprovals = events.filter(
+        (event) => event.type === 'approvalRequested' && event.subject.paidFeature === 'subagents',
+      ).length
+      const priorAttempts = t.paidUses.filter((use) => use.feature === 'subagents').length
+      t.api.script(
+        {
+          calls: [
+            {
+              name: 'subagent_send_message',
+              arguments: '{"subagent_id":"subagent-1","message":"Check the next file"}',
+              callId: 'running_note',
+            },
+          ],
+        },
+        { text: 'Parent noted.' },
+      )
+      await session.sendTurn([{ type: 'text', text: 'send a note' }])
+      await vi.waitFor(() => {
+        expect(session.status).toBe('idle')
+      })
+      expect(
+        events.filter(
+          (event) =>
+            event.type === 'approvalRequested' && event.subject.paidFeature === 'subagents',
+        ),
+      ).toHaveLength(priorApprovals)
+      expect(t.paidUses.filter((use) => use.feature === 'subagents')).toHaveLength(priorAttempts)
+    } finally {
+      holdChild.resolve(undefined)
+    }
+  })
+
+  it('spends the same four-attempt child grant on HTTP retries', async () => {
+    const t = setupSubagents()
+    const { session } = await startApprovedSubagentSession(t)
+    const before = await completePaidChild(t, session, 'spawn_retry_limited')
+    t.api.script(...Array.from({ length: 4 }, () => ({ httpError: { status: 429 } })), {
+      text: 'Must not run.',
+    })
+    await session.messageSubagent('subagent-1', 'Try again', true)
+    await vi.waitFor(() => {
+      expect(session.history().items.find((item) => item.kind === 'subagent')).toMatchObject({
+        controlStatus: 'resultReady',
+        result: { errorKind: 'subagent_requestLimit' },
+      })
+    })
+    expect(t.api.responseBodies()).toHaveLength(before + 4)
+    expect(t.paidUses.filter((use) => use.feature === 'subagents')).toHaveLength(5)
+    expect(t.subagentUsage).toHaveLength(1)
+  })
+
+  it('charges reported usage on a failed child response once to its parent and goal', async () => {
+    const t = setupSubagents()
+    const { session } = await startApprovedSubagentSession(t)
+    const holdParent = Promise.withResolvers<undefined>()
+    t.api.script(
+      {
+        calls: [
+          {
+            name: 'create_goal',
+            arguments: '{"objective":"Ship it","token_budget":100}',
+            callId: 'goal_before_failed_child',
+          },
+          {
+            name: 'subagent_spawn',
+            arguments: '{"role":"explorer","objective":"Review tests"}',
+            callId: 'spawn_failed_child',
+          },
+        ],
+        usage: { input: 1, output: 1 },
+      },
+      { text: 'Parent done.', usage: { input: 2, output: 1 }, hold: holdParent.promise },
+      {
+        failed: { code: 'model_failure', message: 'The child failed.' },
+        usage: { input: 30, output: 7, cached: 4 },
+      },
+    )
+    try {
+      await delegateAndWaitForChild(session, { controlStatus: 'resultReady', status: 'failed' })
+    } finally {
+      holdParent.resolve(undefined)
+    }
+    await vi.waitFor(() => {
+      expect(session.status).toBe('idle')
+    })
+    expect(t.subagentUsage).toEqual([
+      { modelId: 'muse-spark-1.3', inputTokens: 30, outputTokens: 7, cachedTokens: 4 },
+    ])
+    expect(session.snapshot().goal).toMatchObject({ tokens_used: 40 })
+    expect(session.snapshot().usage).toMatchObject({ inputTokens: 33, outputTokens: 9 })
+  })
+
+  it('charges child tokens to the goal active when that child turn began', async () => {
+    const t = setupSubagents()
+    const { session, turnDone } = await startApprovedSubagentSession(t)
+    const holdParent = Promise.withResolvers<undefined>()
+    t.api.script(
+      {
+        calls: [
+          {
+            name: 'create_goal',
+            arguments: '{"objective":"Ship it","token_budget":100}',
+            callId: 'goal_for_child',
+          },
+          {
+            name: 'subagent_spawn',
+            arguments: '{"role":"explorer","objective":"Review tests"}',
+            callId: 'spawn_for_goal',
+          },
+        ],
+        usage: { input: 1, output: 1 },
+      },
+      { text: 'Parent finished', hold: holdParent.promise },
+      { text: 'Reviewed tests', usage: { input: 90, output: 20 } },
+    )
+    try {
+      await session.sendTurn([{ type: 'text', text: 'delegate the review' }])
+      await waitForChildResult(session)
+      expect(session.snapshot().goal).toMatchObject({ status: 'budget_limited' })
+      expect(session.snapshot().goal?.tokens_used).toBeGreaterThanOrEqual(100)
+      const attempts = t.paidUses.filter((use) => use.feature === 'subagents').length
+      await expect(session.messageSubagent('subagent-1', 'Keep going', true)).rejects.toThrow(
+        UI_TEXT.subagentGoalEnded,
+      )
+      expect(t.paidUses.filter((use) => use.feature === 'subagents')).toHaveLength(attempts)
+    } finally {
+      holdParent.resolve(undefined)
+      await turnDone()
+    }
+  })
+
+  it('does not charge a replacement goal for an earlier child turn', async () => {
+    const t = setupSubagents()
+    const { session, turnDone } = await startApprovedSubagentSession(t)
+    const holdParent = Promise.withResolvers<undefined>()
+    const holdChild = Promise.withResolvers<undefined>()
+    t.api.script(
+      {
+        calls: [
+          {
+            name: 'create_goal',
+            arguments: '{"objective":"Original","token_budget":100}',
+            callId: 'original_goal',
+          },
+          {
+            name: 'subagent_spawn',
+            arguments: '{"role":"explorer","objective":"Review tests"}',
+            callId: 'spawn_for_original_goal',
+          },
+        ],
+      },
+      { text: 'Parent finished', hold: holdParent.promise },
+      { text: 'Reviewed tests', usage: { input: 90, output: 20 }, hold: holdChild.promise },
+    )
+    try {
+      await session.sendTurn([{ type: 'text', text: 'delegate the review' }])
+      await vi.waitFor(() => {
+        expect(t.api.responseBodies()).toHaveLength(3)
+        expect(session.history().items.find((item) => item.kind === 'subagent')).toMatchObject({
+          controlStatus: 'running',
+        })
+      })
+      await session.controlGoal({ verb: 'set', objective: 'Replacement' })
+      const replacementId = session.snapshot().goal?.goal_id
+      holdChild.resolve(undefined)
+      await waitForChildResult(session)
+      expect(session.snapshot().goal).toMatchObject({
+        goal_id: replacementId,
+        status: 'active',
+        tokens_used: 0,
+      })
+      expect(session.snapshot().usage.inputTokens).toBeGreaterThanOrEqual(90)
+    } finally {
+      holdChild.resolve(undefined)
+      holdParent.resolve(undefined)
+      await turnDone()
+    }
   })
 })
 
 /** The `function_call_output` the replay holds for one call id, from a request body. */
 function outputFor(body: Record<string, unknown> | undefined, callId: string): unknown {
-  const input = (body?.['input'] ?? []) as readonly Record<string, unknown>[]
-  return input.find((item) => item['type'] === 'function_call_output' && item['call_id'] === callId)
+  const raw = body?.['input']
+  if (!Array.isArray(raw)) {
+    return undefined
+  }
+  const input: readonly unknown[] = raw
+  return input.find(
+    (item) =>
+      typeof item === 'object' &&
+      item !== null &&
+      !Array.isArray(item) &&
+      'type' in item &&
+      item.type === 'function_call_output' &&
+      'call_id' in item &&
+      item.call_id === callId,
+  )
 }
+
+it('refuses malformed fake response input before replay inspection', () => {
+  expect(
+    outputFor({ input: { type: 'function_call_output', call_id: 'one' } }, 'one'),
+  ).toBeUndefined()
+  expect(
+    outputFor({ input: [null, 1, { type: 'function_call_output', call_id: 'one' }] }, 'one'),
+  ).toMatchObject({ call_id: 'one' })
+})
+
+describe('ModelApiSession: child hook boundaries (M51 with M48)', () => {
+  it('stops dispatching stored hooks as soon as the machine opt-in turns off', async () => {
+    let isEnabled = true
+    const runHook = vi.fn(() =>
+      Promise.resolve({
+        stdout: '',
+        stderr: '',
+        exitCode: 0,
+        isTimedOut: false,
+        isCancelled: false,
+      }),
+    )
+    const t = setup({
+      hooks: hooksFor('UserPromptSubmit', 'observe'),
+      isHooksEnabled: () => isEnabled,
+      runHook,
+    })
+    const { session, turnDone } = await startSession(t)
+    t.api.script({ text: 'First done.' }, { text: 'Second done.' })
+    await session.sendTurn([{ type: 'text', text: 'first' }])
+    await turnDone()
+    expect(runHook).toHaveBeenCalledOnce()
+    isEnabled = false
+    await session.sendTurn([{ type: 'text', text: 'second' }])
+    await turnDone()
+    expect(runHook).toHaveBeenCalledOnce()
+  })
+
+  it('runs SubagentStart once at the admitted child turn and keeps its context in the child', async () => {
+    const seen: unknown[] = []
+    const t = setupSubagents({
+      hooks: hooksFor('SubagentStart', 'announce'),
+      runHook: (_command, payload) => {
+        seen.push(z.unknown().parse(JSON.parse(payload)))
+        return Promise.resolve({
+          stdout: 'Child-only start context',
+          stderr: '',
+          exitCode: 0,
+          isTimedOut: false,
+          isCancelled: false,
+        })
+      },
+    })
+    const { session } = await startApprovedSubagentSession(t)
+    await completePaidChild(t, session, 'spawn_child_start_hook')
+    expect(seen).toMatchObject([
+      {
+        hook_event_name: 'SubagentStart',
+        subagent_id: 'subagent-1',
+        child_session_id: `${session.sessionId}:subagent-1`,
+      },
+    ])
+    const bodies = t.api.responseBodies()
+    const childBody = bodies.find((body) => String(body['prompt_cache_key']).includes(':subagent-'))
+    expect(JSON.stringify(childBody?.['input'])).toContain('Child-only start context')
+    expect(
+      bodies
+        .filter((body) => !String(body['prompt_cache_key']).includes(':subagent-'))
+        .some((body) => JSON.stringify(body['input']).includes('Child-only start context')),
+    ).toBe(false)
+    t.api.script({ text: 'Follow-up done.' })
+    await session.messageSubagent('subagent-1', 'Another task', true)
+    await vi.waitFor(() => {
+      expect(t.api.responseBodies()).toHaveLength(bodies.length + 1)
+    })
+    expect(seen).toHaveLength(1)
+  })
+
+  it('does not start a child hook when paid spawn consent is declined', async () => {
+    const runHook = vi.fn(() =>
+      Promise.resolve({
+        stdout: 'Must not run',
+        stderr: '',
+        exitCode: 0,
+        isTimedOut: false,
+        isCancelled: false,
+      }),
+    )
+    const t = setupSubagents({ hooks: hooksFor('SubagentStart', 'announce'), runHook })
+    const { session, events, turnDone } = await startSession(t, 'allowAll')
+    t.api.script(
+      {
+        calls: [
+          {
+            name: 'subagent_spawn',
+            arguments: '{"role":"explorer","objective":"Review files"}',
+            callId: 'declined_start_hook',
+          },
+        ],
+      },
+      { text: 'Parent continues.' },
+    )
+    await session.sendTurn([{ type: 'text', text: 'delegate' }])
+    const approval = await approvalRequest(events, 0)
+    await session.decideApproval({
+      approvalId: approval.approvalId,
+      choiceId: 'abort',
+      requirementId: approval.requirementId,
+    })
+    await turnDone()
+    expect(runHook).not.toHaveBeenCalled()
+    expect(t.paidUses.filter((use) => use.feature === 'subagents')).toHaveLength(0)
+  })
+
+  it('does not start a hook for a queued child cancelled before capacity opens', async () => {
+    const runHook = vi.fn(() =>
+      Promise.resolve({
+        stdout: '',
+        stderr: '',
+        exitCode: 0,
+        isTimedOut: false,
+        isCancelled: false,
+      }),
+    )
+    const t = setupSubagents({ hooks: hooksFor('SubagentStart', 'announce'), runHook })
+    const { session } = await startApprovedSubagentSession(t)
+    const hold = await queueChildren(t, session)
+    try {
+      await vi.waitFor(() => {
+        expect(runHook).toHaveBeenCalledTimes(8)
+      })
+      await session.controlSubagent('subagent-9', 'stop')
+      expect(runHook).toHaveBeenCalledTimes(8)
+    } finally {
+      hold.resolve(undefined)
+      await t.host.close()
+    }
+  })
+
+  it('uses SubagentStop to continue a natural child reply within its existing paid grant', async () => {
+    const seen: unknown[] = []
+    const t = setupSubagents({
+      hooks: hooksFor('SubagentStop', 'continue-child'),
+      runHook: (_command, payload) => {
+        seen.push(z.unknown().parse(JSON.parse(payload)))
+        return Promise.resolve({
+          stdout:
+            seen.length === 1
+              ? JSON.stringify({ decision: 'block', reason: 'Review one more file' })
+              : '',
+          stderr: '',
+          exitCode: 0,
+          isTimedOut: false,
+          isCancelled: false,
+        })
+      },
+    })
+    const { session, events } = await startApprovedSubagentSession(t)
+    const holdParent = Promise.withResolvers<undefined>()
+    t.api.script(
+      {
+        calls: [
+          {
+            name: 'subagent_spawn',
+            arguments: '{"role":"explorer","objective":"Review files"}',
+            callId: 'spawn_for_stop_hook',
+          },
+        ],
+      },
+      { text: 'Parent done.', hold: holdParent.promise },
+      { text: 'Child first answer.' },
+      { text: 'Child final answer.' },
+    )
+    try {
+      await session.sendTurn([{ type: 'text', text: 'delegate' }])
+      await waitForChildResult(session)
+    } finally {
+      holdParent.resolve(undefined)
+    }
+    expect(seen).toMatchObject([
+      {
+        hook_event_name: 'SubagentStop',
+        subagent_id: 'subagent-1',
+        child_session_id: `${session.sessionId}:subagent-1`,
+        stop_hook_active: false,
+        last_assistant_message: 'Child first answer.',
+      },
+      {
+        hook_event_name: 'SubagentStop',
+        stop_hook_active: true,
+        last_assistant_message: 'Child final answer.',
+      },
+    ])
+    expect(
+      t.api
+        .responseBodies()
+        .filter((body) => String(body['prompt_cache_key']).includes(':subagent-')),
+    ).toHaveLength(2)
+    expect(t.paidUses.filter((use) => use.feature === 'subagents')).toHaveLength(2)
+    expect(
+      events.filter(
+        (event) => event.type === 'approvalRequested' && event.subject.paidFeature === 'subagents',
+      ),
+    ).toHaveLength(1)
+  })
+
+  it('lets SubagentStop block only within the four-request child grant', async () => {
+    const runHook = vi.fn(() =>
+      Promise.resolve({
+        stdout: JSON.stringify({ decision: 'block', reason: 'Keep reviewing' }),
+        stderr: '',
+        exitCode: 0,
+        isTimedOut: false,
+        isCancelled: false,
+      }),
+    )
+    const t = setupSubagents({ hooks: hooksFor('SubagentStop', 'keep-reviewing'), runHook })
+    const { session } = await startApprovedSubagentSession(t)
+    const holdParent = Promise.withResolvers<undefined>()
+    t.api.script(
+      {
+        calls: [
+          {
+            name: 'subagent_spawn',
+            arguments: '{"role":"explorer","objective":"Review files"}',
+            callId: 'spawn_for_stop_cap',
+          },
+        ],
+      },
+      { text: 'Parent done.', hold: holdParent.promise },
+      ...Array.from({ length: 4 }, () => ({ text: 'Child keeps reviewing.' })),
+      { text: 'Must not run.' },
+    )
+    try {
+      await session.sendTurn([{ type: 'text', text: 'delegate' }])
+      await waitForChildResult(session)
+    } finally {
+      holdParent.resolve(undefined)
+    }
+    expect(session.history().items.find((item) => item.kind === 'subagent')).toMatchObject({
+      result: { errorKind: 'subagent_requestLimit' },
+    })
+    expect(
+      t.api
+        .responseBodies()
+        .filter((body) => String(body['prompt_cache_key']).includes(':subagent-')),
+    ).toHaveLength(4)
+    expect(t.paidUses.filter((use) => use.feature === 'subagents')).toHaveLength(4)
+    expect(runHook).toHaveBeenCalledTimes(4)
+  })
+
+  it('does not let SubagentStop veto an explicit owner Stop', async () => {
+    const runHook = vi.fn(() =>
+      Promise.resolve({
+        stdout: JSON.stringify({ decision: 'block', reason: 'Keep going' }),
+        stderr: '',
+        exitCode: 0,
+        isTimedOut: false,
+        isCancelled: false,
+      }),
+    )
+    const t = setupSubagents({ hooks: hooksFor('SubagentStop', 'keep-going'), runHook })
+    const { session } = await startApprovedSubagentSession(t)
+    const holdParent = Promise.withResolvers<undefined>()
+    const holdChild = Promise.withResolvers<undefined>()
+    t.api.script(
+      {
+        calls: [
+          {
+            name: 'subagent_spawn',
+            arguments: '{"role":"explorer","objective":"Review files"}',
+            callId: 'spawn_before_explicit_stop',
+          },
+        ],
+      },
+      { text: 'Parent done.', hold: holdParent.promise },
+      { text: 'Child answer.', hold: holdChild.promise },
+    )
+    try {
+      await session.sendTurn([{ type: 'text', text: 'delegate' }])
+      await vi.waitFor(() => {
+        expect(
+          t.api
+            .responseBodies()
+            .filter((body) => String(body['prompt_cache_key']).includes(':subagent-')),
+        ).toHaveLength(1)
+      })
+      await session.controlSubagent('subagent-1', 'stop')
+      expect(runHook).not.toHaveBeenCalled()
+    } finally {
+      holdChild.resolve(undefined)
+      holdParent.resolve(undefined)
+    }
+  })
+})
 
 describe('ModelApiSession: protocol semantics (D26)', () => {
   it('answers a tool call that threw, so the conversation stays valid', async () => {
@@ -3310,6 +6285,62 @@ describe('ModelApiSession: background shell commands (M46)', () => {
     })
   })
 
+  it('runs the post-tool hook on a moved shell result while its background row remains live', async () => {
+    const io = heldShellToolIo({}, ROOT)
+    const observed: unknown[] = []
+    const t = setup({
+      io,
+      hooks: hooksFor('PostToolUse', 'observe'),
+      runHook: (_command, payload) => {
+        observed.push(JSON.parse(payload))
+        return permitHook()
+      },
+    })
+    const { session, events, turnDone } = await startSession(t, 'allowAll')
+    t.api.script({ calls: [DEV_SERVER_CALL] }, { text: 'Started it.' })
+    await session.sendTurn([{ type: 'text', text: 'start the dev server' }])
+    await vi.waitFor(() => {
+      expect(io.runs).toHaveLength(1)
+    })
+    const started = events.find(
+      (event): event is Extract<AgentEvent, { type: 'itemStarted' }> =>
+        event.type === 'itemStarted' && event.item.tool === 'bash',
+    )
+    if (started === undefined) {
+      throw new Error('expected the running shell call')
+    }
+    await session.moveToBackground(started.item.itemId)
+    await turnDone()
+    expect(observed).toContainEqual(
+      expect.objectContaining({
+        hook_event_name: 'PostToolUse',
+        tool_name: 'bash',
+        tool_response: MODEL_TEXT.shellMovedToBackground,
+      }),
+    )
+    expect(requestInput(t, 1)).toContainEqual({
+      type: 'function_call_output',
+      call_id: 'call_dev',
+      output: MODEL_TEXT.shellMovedToBackground,
+    })
+    expect(
+      session.history().items.find((item) => item.itemId === started.item.itemId),
+    ).toMatchObject({
+      status: 'inProgress',
+      background: true,
+    })
+    io.runs[0]?.finish({ stdout: 'ready', exitCode: 0 })
+    expect(await completionOf(events, started.item.itemId)).toMatchObject({
+      status: 'completed',
+      background: true,
+    })
+    expect(
+      events.filter(
+        (event) => event.type === 'itemCompleted' && event.item.itemId === started.item.itemId,
+      ),
+    ).toHaveLength(1)
+  })
+
   it('completes the row when the command ends and tells the model with its next request', async () => {
     const r = await runningShell()
     await r.session.moveToBackground(r.itemId)
@@ -3618,5 +6649,663 @@ describe('ModelApiSession: an explanation instead of an answer (M46)', () => {
         output: `${MODEL_TEXT.clarificationLead}\nNeither: I prefer green.`,
       }),
     )
+  })
+})
+
+/** The tool rows as they completed. */
+function toolRows(events: readonly AgentEvent[]) {
+  return events.flatMap((event) =>
+    event.type === 'itemCompleted' && event.item.kind === 'toolCall' ? [event.item] : [],
+  )
+}
+
+/** Every function output the fake API was sent, in order (each request replays the earlier ones). */
+function outputs(t: ReturnType<typeof setup>): readonly unknown[] {
+  const last = t.api.responseBodies().at(-1)?.['input'] as { type: string; output?: unknown }[]
+  return last.filter((item) => item.type === 'function_call_output').map((item) => item.output)
+}
+
+function loseRequiredMcp(mcp: FakeMcpSource): void {
+  mcp.snapshotValue = {
+    ...mcp.snapshotValue,
+    servers: [{ name: 'docs', isRequired: true, state: { status: 'failed', reason: 'gone' } }],
+  }
+}
+
+function expectRequiredMcpLoss(events: readonly AgentEvent[]): void {
+  expect(events).toContainEqual(
+    expect.objectContaining({
+      type: 'turnCompleted',
+      terminal: 'failed',
+      reason: fill(UI_TEXT.mcpRequiredFailed, { name: 'docs', reason: 'gone' }),
+    }),
+  )
+}
+
+describe('ModelApiHost: MCP servers and the IDE tool (M50)', () => {
+  it('rechecks an MCP hook rewrite through the normal approval and external dispatch', async () => {
+    const mcp = fakeMcpSource([{ server: 'docs', tool: 'search' }])
+    const payloads: unknown[] = []
+    const t = setup({
+      mcpServers: mcp,
+      hooks: [
+        ...hooksFor('PreToolUse', 'rewrite'),
+        ...hooksFor('PostToolUse', 'observe'),
+        ...hooksFor('PostToolBatch', 'observe'),
+      ],
+      runHook: (_command, payload) => {
+        const frame = z.looseObject({ hook_event_name: z.string() }).parse(JSON.parse(payload))
+        payloads.push(frame)
+        return frame.hook_event_name === 'PreToolUse'
+          ? hookReply(
+              JSON.stringify({
+                hookSpecificOutput: {
+                  hookEventName: 'PreToolUse',
+                  updatedInput: { path: 'reviewed.md' },
+                },
+              }),
+            )
+          : hookReply()
+      },
+    })
+    const { session, events, turnDone } = await startSession(t)
+    t.api.script(
+      { calls: [{ name: 'mcp__docs__search', arguments: '{"path":"draft.md"}' }] },
+      { text: 'done' },
+    )
+    await session.sendTurn([{ type: 'text', text: 'search' }])
+    const approval = await approvalRequest(events, 0)
+    expect(approval.rawArgs).toBe('{"path":"reviewed.md"}')
+    await session.decideApproval({
+      approvalId: approval.approvalId,
+      choiceId: 'allow_once',
+      requirementId: approval.requirementId,
+    })
+    await turnDone()
+    expect(mcp.calls).toEqual([{ name: 'mcp__docs__search', args: '{"path":"reviewed.md"}' }])
+    expect(payloads).toEqual([
+      expect.objectContaining({ hook_event_name: 'PreToolUse', tool_input: { path: 'draft.md' } }),
+      expect.objectContaining({
+        hook_event_name: 'PostToolUse',
+        tool_input: { path: 'reviewed.md' },
+      }),
+      expect.objectContaining({
+        hook_event_name: 'PostToolBatch',
+        tool_calls: [expect.objectContaining({ tool_input: { path: 'reviewed.md' } })],
+      }),
+    ])
+  })
+
+  it('keeps MCP media and credential fields out of hook stdin while preserving the model result', async () => {
+    const media = `data:image/png;base64,${'A'.repeat(20_000)}`
+    const secret = 'mcp-private-token'
+    const args = { path: 'notes.md', data: media, authorization: `Bearer ${secret}` }
+    const mcp = fakeMcpSource([{ server: 'docs', tool: 'search' }])
+    mcp.outcomes = [
+      {
+        output: media,
+        outputParts: [
+          { type: 'input_text', text: 'Picture result' },
+          { type: 'input_image', image_url: media, detail: 'auto' },
+        ],
+        visibleOutput: 'Picture result',
+      },
+    ]
+    const payloads: string[] = []
+    const t = setup({
+      mcpServers: mcp,
+      hooks: [
+        ...hooksFor('PreToolUse', 'observe'),
+        ...hooksFor('PermissionRequest', 'observe'),
+        ...hooksFor('PostToolUse', 'observe'),
+        ...hooksFor('PostToolBatch', 'observe'),
+      ],
+      runHook: (_command, payload) => {
+        payloads.push(payload)
+        return hookReply()
+      },
+    })
+    const { session, events, turnDone } = await startSession(t)
+    t.api.script(
+      {
+        calls: [
+          { name: 'mcp__docs__search', arguments: JSON.stringify(args), callId: 'mcp_media' },
+        ],
+      },
+      { text: 'done' },
+    )
+    await session.sendTurn([{ type: 'text', text: 'search the notes' }])
+    const approval = await approvalRequest(events, 0)
+    await session.decideApproval({
+      approvalId: approval.approvalId,
+      choiceId: 'allow_once',
+      requirementId: approval.requirementId,
+    })
+    await turnDone()
+    expect(mcp.calls[0]?.args).toBe(JSON.stringify(args))
+    expect(payloads).toHaveLength(4)
+    expect(payloads.join('\n')).toContain('notes.md')
+    expect(payloads.join('\n').includes(media)).toBe(false)
+    expect(payloads.join('\n').includes(secret)).toBe(false)
+    expect(payloads.every((payload) => Buffer.byteLength(payload) < 8192)).toBe(true)
+    expect(JSON.stringify(t.api.responseBodies().at(-1)?.['input'])).toContain(media)
+  })
+
+  const DIAGNOSTICS: McpTool = {
+    name: 'getDiagnostics',
+    description: 'Problems',
+    inputSchema: { type: 'object', properties: { uri: { type: 'string' } } },
+    call: (args) =>
+      args['uri'] === 'bad'
+        ? Promise.reject(new Error('no such file'))
+        : Promise.resolve('No diagnostics.'),
+  }
+  const TOOLS = [
+    { server: 'docs', tool: 'search' },
+    { server: 'docs', tool: 'lookup', isReadOnly: true },
+  ]
+
+  /** A session on a host with the fake servers, scripted to call `calls` and then answer. */
+  async function mcpTurn(
+    options: {
+      mode?: string
+      isTrusted?: boolean
+      mcp?: FakeMcpSource
+      calls?: readonly { name: string; arguments: string }[]
+    } = {},
+  ) {
+    const mcp = options.mcp ?? fakeMcpSource(TOOLS)
+    const t = setup({
+      mcpServers: mcp,
+      ideTools: [DIAGNOSTICS],
+      isTrusted: options.isTrusted ?? true,
+    })
+    const started = await startSession(t, options.mode)
+    t.api.script({ calls: options.calls ?? [] }, { text: 'done' })
+    await started.session.sendTurn([{ type: 'text', text: 'go' }])
+    return { ...started, t, mcp }
+  }
+
+  function connectedRequiredMcp(): FakeMcpSource {
+    return fakeMcpSource(TOOLS, {
+      servers: [
+        {
+          name: 'docs',
+          isRequired: true,
+          state: { status: 'connected', toolCount: 2, unofferedCount: 0 },
+        },
+      ],
+    })
+  }
+
+  function heldRequiredHook(event: string, answer = '{}') {
+    const release = Promise.withResolvers<undefined>()
+    const mcp = connectedRequiredMcp()
+    const runHook = vi.fn(async () => {
+      await release.promise
+      return await hookReply(answer)
+    })
+    const t = setup({ mcpServers: mcp, hooks: hooksFor(event, 'held'), runHook })
+    return { release, mcp, runHook, t }
+  }
+
+  async function heldMcpCall(mcp: FakeMcpSource, gate: Promise<void>) {
+    mcp.gate = gate
+    const started = await mcpTurn({
+      mode: 'allowAll',
+      mcp,
+      calls: [{ name: 'mcp__docs__search', arguments: '{}' }],
+    })
+    await vi.waitFor(() => {
+      expect(mcp.calls).toHaveLength(1)
+    })
+    return started
+  }
+
+  it('offers the IDE tool always, and the MCP tools in a trusted workspace', async () => {
+    const trusted = await mcpTurn()
+    await trusted.turnDone()
+    const names = (trusted.t.api.responseBodies()[0]?.['tools'] as { name?: string }[]).map(
+      (tool) => tool.name,
+    )
+    expect(names).toEqual(
+      expect.arrayContaining([
+        'mcp__ide__getDiagnostics',
+        'mcp__docs__search',
+        'mcp__docs__lookup',
+      ]),
+    )
+    expect(trusted.mcp.starts).toBeGreaterThan(0)
+    const restricted = await mcpTurn({ isTrusted: false })
+    await restricted.turnDone()
+    const offered = (restricted.t.api.responseBodies()[0]?.['tools'] as { name?: string }[]).map(
+      (tool) => tool.name,
+    )
+    expect(offered).toContain('mcp__ide__getDiagnostics')
+    expect(offered).not.toContain('mcp__docs__search')
+  })
+
+  it('asks before an MCP tool in Manual, as a tool, and remembers "always allow"', async () => {
+    const { session, events, turnDone, t, mcp } = await mcpTurn({
+      calls: [
+        { name: 'mcp__docs__search', arguments: '{"path":"notes.md"}' },
+        { name: 'mcp__docs__search', arguments: '{"q":2}' },
+      ],
+    })
+    const request = await approvalRequest(events, 0)
+    expect(request).toMatchObject({
+      toolName: 'mcp__docs__search',
+      subject: { kind: 'tool', toolName: 'mcp__docs__search' },
+    })
+    expect(request.availableChoices.map((choice) => choice.choiceId)).toEqual([
+      'allow_once',
+      'allow_session',
+      'abort',
+    ])
+    await session.decideApproval({
+      approvalId: request.approvalId,
+      choiceId: 'allow_session',
+      requirementId: request.requirementId,
+    })
+    await turnDone()
+    expect(events.filter((event) => event.type === 'approvalRequested')).toHaveLength(1)
+    expect(mcp.calls).toEqual([
+      { name: 'mcp__docs__search', args: '{"path":"notes.md"}' },
+      { name: 'mcp__docs__search', args: '{"q":2}' },
+    ])
+    expect(outputs(t)).toEqual(['mcp ok', 'mcp ok'])
+    expect(toolRows(events).map((row) => [row.tool, row.status])).toEqual([
+      ['mcp__docs__search', 'completed'],
+      ['mcp__docs__search', 'completed'],
+    ])
+  })
+
+  it('runs a read-only tool without a card in Auto, and asks for the rest', async () => {
+    const { session, events, turnDone, mcp } = await mcpTurn({
+      mode: 'onRequest',
+      calls: [
+        { name: 'mcp__docs__lookup', arguments: '{}' },
+        { name: 'mcp__docs__search', arguments: '{}' },
+      ],
+    })
+    const request = await approvalRequest(events, 0)
+    expect(request.toolName).toBe('mcp__docs__search')
+    expect(mcp.calls.map((call) => call.name)).toEqual(['mcp__docs__lookup'])
+    await session.decideApproval({
+      approvalId: request.approvalId,
+      choiceId: 'abort',
+      requirementId: request.requirementId,
+    })
+    await turnDone()
+    expect(toolRows(events).map((row) => row.status)).toEqual(['completed', 'rejected'])
+  })
+
+  it('refuses an MCP tool in Plan unless its server marks it read-only, which asks', async () => {
+    const { session, events, turnDone, mcp } = await mcpTurn({
+      mode: 'denyUnmatched',
+      calls: [
+        { name: 'mcp__docs__search', arguments: '{}' },
+        { name: 'mcp__docs__lookup', arguments: '{}' },
+        { name: 'mcp__ide__getDiagnostics', arguments: '{}' },
+      ],
+    })
+    const request = await approvalRequest(events, 0)
+    expect(request.toolName).toBe('mcp__docs__lookup')
+    await session.decideApproval({
+      approvalId: request.approvalId,
+      choiceId: 'allow_once',
+      requirementId: request.requirementId,
+    })
+    await turnDone()
+    const rows = toolRows(events)
+    expect(rows.map((row) => [row.tool, row.status])).toEqual([
+      ['mcp__docs__search', 'rejected'],
+      ['mcp__docs__lookup', 'completed'],
+      ['mcp__ide__getDiagnostics', 'completed'],
+    ])
+    expect(rows[0]?.failureReason).toBe(`mcp__docs__search ${MODEL_TEXT.toolRefusedByMode}`)
+    expect(rows[2]?.visibleOutput).toBe('No diagnostics.')
+    expect(mcp.calls.map((call) => call.name)).toEqual(['mcp__docs__lookup'])
+  })
+
+  it('runs MCP tools without asking in Bypass', async () => {
+    const { events, turnDone, mcp } = await mcpTurn({
+      mode: 'allowAll',
+      calls: [{ name: 'mcp__docs__search', arguments: '{}' }],
+    })
+    await turnDone()
+    expect(events.some((event) => event.type === 'approvalRequested')).toBe(false)
+    expect(mcp.calls).toHaveLength(1)
+  })
+
+  it('refuses an MCP tool in Restricted Mode without a card', async () => {
+    const { events, turnDone, mcp } = await mcpTurn({
+      isTrusted: false,
+      calls: [{ name: 'mcp__docs__search', arguments: '{}' }],
+    })
+    await turnDone()
+    expect(events.some((event) => event.type === 'approvalRequested')).toBe(false)
+    expect(toolRows(events)[0]).toMatchObject({
+      status: 'rejected',
+      failureReason: MODEL_TEXT.mcpRestrictedMode,
+    })
+    expect(mcp.calls).toEqual([])
+  })
+
+  it('hands the model pictures as content parts, and marks a tool error failed', async () => {
+    const mcp = fakeMcpSource(TOOLS)
+    const parts = [
+      { type: 'input_text', text: 'a dot' },
+      { type: 'input_image', image_url: 'data:image/png;base64,AAAA', detail: 'auto' },
+    ] as const
+    mcp.outcomes = [
+      { output: 'a dot', outputParts: parts, visibleOutput: 'a dot\n[image image/png]' },
+      { output: 'Error: it broke', visibleOutput: 'it broke', failureReason: 'it broke' },
+      new Error('the connection closed: it exited with code 1'),
+    ]
+    const { events, turnDone, t, session } = await mcpTurn({
+      mode: 'allowAll',
+      mcp,
+      calls: [
+        { name: 'mcp__docs__search', arguments: '{}' },
+        { name: 'mcp__docs__search', arguments: '{}' },
+        { name: 'mcp__docs__search', arguments: '{}' },
+      ],
+    })
+    await turnDone()
+    expect(outputs(t)).toEqual([
+      parts,
+      'Error: it broke',
+      'Error: the connection closed: it exited with code 1',
+    ])
+    expect(toolRows(events).map((row) => [row.status, row.visibleOutput])).toEqual([
+      ['completed', 'a dot\n[image image/png]'],
+      ['failed', 'it broke'],
+      ['failed', 'the connection closed: it exited with code 1'],
+    ])
+    const stored = parseStoredSession(structuredClone(session.snapshot()))
+    expect(stored.ok).toBe(true)
+  })
+
+  it('cancels an MCP call on Stop', async () => {
+    const mcp = fakeMcpSource(TOOLS)
+    const { session, events, turnDone } = await heldMcpCall(
+      mcp,
+      new Promise<never>(() => undefined),
+    )
+    await session.cancel()
+    await turnDone()
+    expect(toolRows(events)[0]?.status).toBe('cancelled')
+  })
+
+  it('reports a failed IDE tool call as a failed row', async () => {
+    const { events, turnDone } = await mcpTurn({
+      calls: [{ name: 'mcp__ide__getDiagnostics', arguments: '{"uri":"bad"}' }],
+    })
+    await turnDone()
+    expect(toolRows(events)[0]).toMatchObject({ status: 'failed', failureReason: 'no such file' })
+  })
+
+  it('says once per session that an optional server is not running', async () => {
+    const mcp = fakeMcpSource(TOOLS, {
+      servers: [
+        {
+          name: 'flaky',
+          isRequired: false,
+          state: { status: 'failed', reason: 'it exited with code 1' },
+        },
+        {
+          name: 'docs',
+          isRequired: true,
+          state: { status: 'connected', toolCount: 2, unofferedCount: 0 },
+        },
+      ],
+    })
+    const { session, events, turnDone, t } = await mcpTurn({ mcp })
+    await turnDone()
+    t.api.script({ text: 'again' })
+    await session.sendTurn([{ type: 'text', text: 'again' }])
+    await turnDone()
+    const notices = events.filter((event) => event.type === 'backendNotice')
+    expect(notices).toEqual([
+      {
+        type: 'backendNotice',
+        level: 'warning',
+        text: fill(UI_TEXT.mcpServerUnavailable, {
+          name: 'flaky',
+          reason: 'it exited with code 1',
+        }),
+      },
+    ])
+  })
+
+  it('fails the turn while a required server is not running, saying how to fix it', async () => {
+    const mcp = fakeMcpSource(TOOLS, {
+      servers: [{ name: 'must', isRequired: true, state: { status: 'failed', reason: 'boom' } }],
+    })
+    const { events, turnDone, t } = await mcpTurn({ mcp })
+    await turnDone()
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: 'turnCompleted',
+        terminal: 'failed',
+        reason: fill(UI_TEXT.mcpRequiredFailed, { name: 'must', reason: 'boom' }),
+      }),
+    )
+    expect(t.api.responseBodies()).toHaveLength(0)
+  })
+
+  it('fails the active turn when a required server stops during the model stream', async () => {
+    for (const reply of [
+      { text: 'done' },
+      { calls: [{ name: 'mcp__docs__search', arguments: '{}' }] },
+    ]) {
+      const release = Promise.withResolvers<undefined>()
+      const mcp = connectedRequiredMcp()
+      const t = setup({ mcpServers: mcp, ideTools: [DIAGNOSTICS] })
+      const { session, events, turnDone } = await startSession(t)
+      t.api.script({ ...reply, hold: release.promise }, { text: 'second' })
+      await session.sendTurn([{ type: 'text', text: 'go' }])
+      await vi.waitFor(() => {
+        expect(t.api.responseBodies()).toHaveLength(1)
+      })
+      loseRequiredMcp(mcp)
+      release.resolve(undefined)
+      await turnDone()
+      expectRequiredMcpLoss(events)
+      expect(mcp.calls).toEqual([])
+      expect(t.api.responseBodies()).toHaveLength(1)
+    }
+  })
+
+  it.each([
+    { event: 'PreLLMCall', answer: '{}', requestCount: 0 },
+    {
+      event: 'PostLLMCall',
+      answer: JSON.stringify({ decision: 'block', reason: 'hook refused' }),
+      requestCount: 1,
+    },
+    { event: 'Stop', answer: '{}', requestCount: 1 },
+  ])('required server loss wins after a held $event hook', async (scenario) => {
+    const held = heldRequiredHook(scenario.event, scenario.answer)
+    const { session, events, turnDone } = await startSession(held.t)
+    held.t.api.script({ text: 'done' })
+    await session.sendTurn([{ type: 'text', text: 'go' }])
+    await vi.waitFor(() => {
+      expect(held.runHook).toHaveBeenCalledOnce()
+    })
+    loseRequiredMcp(held.mcp)
+    held.release.resolve(undefined)
+    await turnDone()
+    expectRequiredMcpLoss(events)
+    expect(held.t.api.responseBodies()).toHaveLength(scenario.requestCount)
+  })
+
+  it('does not fetch after a required server dies during key retrieval', async () => {
+    const release = Promise.withResolvers<undefined>()
+    const mcp = connectedRequiredMcp()
+    let keyReads = 0
+    const t = setup({
+      mcpServers: mcp,
+      apiKey: async () => {
+        keyReads += 1
+        await release.promise
+        return 'LLM|1|secret'
+      },
+    })
+    const { session, events, turnDone } = await startSession(t)
+    t.api.script({ text: 'should not run' })
+    await session.sendTurn([{ type: 'text', text: 'go' }])
+    await vi.waitFor(() => {
+      expect(keyReads).toBeGreaterThan(0)
+    })
+    loseRequiredMcp(mcp)
+    release.resolve(undefined)
+    await turnDone()
+    expectRequiredMcpLoss(events)
+    expect(t.api.responseBodies()).toHaveLength(0)
+  })
+
+  it('fails a paid child when required MCP dies during its SubagentStop hook', async () => {
+    const release = Promise.withResolvers<undefined>()
+    const mcp = connectedRequiredMcp()
+    const runHook = vi.fn(async () => {
+      await release.promise
+      return await hookReply()
+    })
+    const t = setupSubagents({
+      mcpServers: mcp,
+      hooks: hooksFor('SubagentStop', 'held'),
+      runHook,
+    })
+    const { session } = await startApprovedSubagentSession(t)
+    const holdParent = Promise.withResolvers<undefined>()
+    t.api.script(
+      {
+        calls: [
+          {
+            name: 'subagent_spawn',
+            arguments: '{"role":"explorer","objective":"Review files"}',
+            callId: 'spawn_before_required_loss',
+          },
+        ],
+      },
+      { text: 'Parent done.', hold: holdParent.promise },
+      { text: 'Child done.' },
+    )
+    try {
+      await session.sendTurn([{ type: 'text', text: 'delegate' }])
+      await vi.waitFor(() => {
+        expect(runHook).toHaveBeenCalledOnce()
+      })
+      loseRequiredMcp(mcp)
+      release.resolve(undefined)
+      await waitForChildResult(session)
+      expect(session.history().items.find((item) => item.kind === 'subagent')).toMatchObject({
+        status: 'failed',
+      })
+    } finally {
+      release.resolve(undefined)
+      holdParent.resolve(undefined)
+    }
+  })
+
+  it('does not start another model round after a required server stops during a tool call', async () => {
+    const release = Promise.withResolvers<undefined>()
+    const mcp = connectedRequiredMcp()
+    const { events, turnDone, t } = await heldMcpCall(mcp, release.promise)
+    loseRequiredMcp(mcp)
+    release.resolve(undefined)
+    await turnDone()
+    expectRequiredMcpLoss(events)
+    expect(t.api.responseBodies()).toHaveLength(1)
+  })
+
+  it.each(['PostToolUse', 'PostToolBatch'] as const)(
+    'reports required MCP loss even when a %s hook asks to stop',
+    async (event) => {
+      const release = Promise.withResolvers<undefined>()
+      const mcp = connectedRequiredMcp()
+      mcp.gate = release.promise
+      const payloads: unknown[] = []
+      const t = setup({
+        mcpServers: mcp,
+        hooks: hooksFor(event, 'stop'),
+        runHook: (_command, payload) => {
+          payloads.push(JSON.parse(payload))
+          return hookReply(JSON.stringify({ continue: false, stopReason: 'hook stopped batch' }))
+        },
+      })
+      const { session, events, turnDone } = await startSession(t, 'allowAll')
+      t.api.script(
+        { calls: [{ name: 'mcp__docs__search', arguments: '{"path":"notes.md"}' }] },
+        { text: 'should not run' },
+      )
+      await session.sendTurn([{ type: 'text', text: 'search' }])
+      await vi.waitFor(() => {
+        expect(mcp.calls).toHaveLength(1)
+      })
+      loseRequiredMcp(mcp)
+      release.resolve(undefined)
+      await turnDone()
+      expect(payloads).toHaveLength(1)
+      expectRequiredMcpLoss(events)
+      expect(t.api.responseBodies()).toHaveLength(1)
+    },
+  )
+
+  it('says why no server of the settings is loaded', async () => {
+    const cases = [
+      [{ kind: 'keys' }, UI_TEXT.mcpNoServersKeys],
+      [{ kind: 'mode', servers: ['a', 'b'] }, fill(UI_TEXT.mcpNoServersMode, { servers: 'a, b' })],
+      [
+        { kind: 'unreadable', reason: 'EACCES' },
+        fill(UI_TEXT.mcpNoServersUnreadable, { reason: 'EACCES' }),
+      ],
+    ] as const
+    for (const [fault, text] of cases) {
+      const { events, turnDone } = await mcpTurn({ mcp: fakeMcpSource([], { fault }) })
+      await turnDone()
+      expect(events.filter((event) => event.type === 'backendNotice')).toEqual([
+        { type: 'backendNotice', level: 'warning', text },
+      ])
+    }
+  })
+
+  it('ends the wait for the servers on Stop', async () => {
+    const mcp = fakeMcpSource(TOOLS)
+    mcp.start = () => new Promise(() => undefined)
+    const t = setup({ mcpServers: mcp })
+    const { session, events, turnDone } = await startSession(t)
+    await session.sendTurn([{ type: 'text', text: 'go' }])
+    await session.cancel()
+    await turnDone()
+    expect(events).toContainEqual(
+      expect.objectContaining({ type: 'turnCompleted', terminal: 'cancelled' }),
+    )
+  })
+
+  it('starts the servers with a conversation, shows their state, and stops them with the host', async () => {
+    const mcp = fakeMcpSource(TOOLS)
+    const t = setup({ mcpServers: mcp })
+    expect(t.host.mcpSnapshot()).toEqual(mcp.snapshotValue)
+    const { session, turnDone } = await startSession(t)
+    expect(mcp.starts).toBe(1)
+    await answerFirst(t, session, turnDone)
+    await t.host.resumeSession(session.sessionId, 'muse-spark-1.3')
+    expect(mcp.starts).toBe(3)
+    await t.host.close()
+    expect(mcp.isClosed).toBe(true)
+    expect(setup().host.mcpSnapshot()).toBeUndefined()
+  })
+
+  it('logs a start that failed outright', async () => {
+    const mcp = fakeMcpSource(TOOLS)
+    mcp.start = () => Promise.reject(new Error('nope'))
+    const t = setup({ mcpServers: mcp })
+    await startSession(t)
+    await vi.waitFor(() => {
+      expect(countLogged(t.log, 'The MCP servers could not be started: nope')).toBe(1)
+    })
   })
 })

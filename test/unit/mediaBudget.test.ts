@@ -111,4 +111,70 @@ describe('Model API replay media budget', () => {
     expect(budget.fit([input[1]!])).toEqual([input[1]])
     expect(budget.omitted).toBe(false)
   })
+
+  it('counts an MCP tool-result image before an older 50-page PDF', () => {
+    const input: readonly InputItem[] = [
+      {
+        type: 'message',
+        role: 'user',
+        content: [
+          {
+            type: 'input_file',
+            filename: 'earlier.pdf',
+            file_data: `data:application/pdf;base64,${Buffer.from(pdfFixture(50)).toString('base64')}`,
+          },
+        ],
+      },
+      {
+        type: 'function_call_output',
+        call_id: 'mcp-image',
+        output: [
+          { type: 'input_text', text: 'MCP returned a picture' },
+          { type: 'input_image', image_url: 'data:image/png;base64,AA==', detail: 'auto' },
+        ],
+      },
+    ]
+    const budget = new MediaBudget()
+    expect(budget.fit(input)).toEqual([
+      {
+        type: 'message',
+        role: 'user',
+        content: [{ type: 'input_text', text: expect.stringContaining('earlier.pdf') }],
+      },
+      input[1],
+    ])
+    expect(budget.omitted).toBe(true)
+  })
+
+  it('counts MCP output image bytes against a newer PDF request cap', () => {
+    const pdfData = `data:application/pdf;base64,${Buffer.from(pdfFixture(1)).toString('base64')}`
+    const input: readonly InputItem[] = [
+      {
+        type: 'function_call_output',
+        call_id: 'mcp-older',
+        output: [
+          { type: 'input_text', text: 'old result' },
+          { type: 'input_image', image_url: 'data:image/png;base64,AA==', detail: 'auto' },
+        ],
+      },
+      {
+        type: 'message',
+        role: 'user',
+        content: [{ type: 'input_file', filename: 'new.pdf', file_data: pdfData }],
+      },
+    ]
+    const budget = new MediaBudget(pdfData.length)
+    expect(budget.fit(input)).toEqual([
+      {
+        type: 'function_call_output',
+        call_id: 'mcp-older',
+        output: [
+          { type: 'input_text', text: 'old result' },
+          { type: 'input_text', text: MODEL_TEXT.imageLeftOut },
+        ],
+      },
+      input[1],
+    ])
+    expect(budget.omitted).toBe(true)
+  })
 })

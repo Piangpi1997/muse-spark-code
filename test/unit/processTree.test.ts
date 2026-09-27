@@ -19,6 +19,7 @@ import {
   killTree,
   parseProcessTable,
   type RunProgram,
+  sweepExitedTree,
   type TreeRoot,
   treeSpawnOptions,
   windowsPowerShell,
@@ -372,7 +373,9 @@ function scripted(shell: FakeShell, script: Script = {}) {
       return Promise.resolve(`${script.job ?? 'absent'}\r\n`)
     }
     if (body.includes('Stop-Process')) {
-      const ids = Array.from(body.matchAll(/@\((\d+), \d+\)/g), (match) => Number(match[1]))
+      const ids = Array.from(body.matchAll(/@\{ Id = (\d+); Ticks = \d+ \}/g), (match) =>
+        Number(match[1]),
+      )
       const done = ids.filter((id) => !(script.changed ?? []).includes(id))
       killed.push(...done)
       return Promise.resolve(done.map(String).join('\r\n'))
@@ -466,7 +469,7 @@ describe('the fallback sweep (M27)', () => {
     await killTree(shell, world.scriptedDeps, now - 10 * SECOND)
     const kill = world.calls.find((call) => call.body.includes('Stop-Process'))
     // The id and the creation time the table showed travel with the kill.
-    expect(kill?.body).toContain(`@(200, ${fileTime(now - 5 * SECOND)})`)
+    expect(kill?.body).toContain(`@{ Id = 200; Ticks = ${fileTime(now - 5 * SECOND)} }`)
     expect(kill?.body).toContain('$process.StartTime.ToFileTimeUtc()')
     expect(world.killed).toEqual([])
     expect(world.logged).toEqual([])
@@ -525,5 +528,25 @@ describe('the fallback sweep (M27)', () => {
     expect(
       parseProcessTable(`${table([[7, 3, at, 'My Tool.exe']])}\r\n\r\nGet-CimInstance : error\r\n`),
     ).toEqual([{ pid: 7, parent: 3, ticks: fileTime(at), createdAt: at, name: 'My Tool.exe' }])
+  })
+})
+
+describe('the exited MCP parent sweep (M50)', () => {
+  it('ends only a child born while that parent lived, without taskkill on a reused PID', async () => {
+    const now = Date.now()
+    const world = scripted(new FakeShell(100), {
+      tables: [
+        table([
+          [200, 100, now - 5 * SECOND, 'mcp-child.exe'],
+          [300, 100, now - 60 * SECOND, 'older.exe'],
+          [400, 100, now + 60 * SECOND, 'later.exe'],
+        ]),
+        table([]),
+      ],
+    })
+    await sweepExitedTree(100, now - 10 * SECOND, now, world.scriptedDeps)
+    expect(world.taskkills()).toHaveLength(0)
+    expect(world.killed).toEqual([200])
+    expect(world.lookups()).toHaveLength(2)
   })
 })

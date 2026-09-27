@@ -42,6 +42,24 @@ export interface StoredUsage {
   readonly reasoningTokens: number
 }
 
+export interface StoredChild {
+  readonly id: string
+  readonly role: string
+  readonly objective: string
+  readonly itemId: string
+  readonly parentTurnId: string
+  readonly startedAt: number
+  readonly state: 'queued' | 'running' | 'interrupted' | 'result_ready' | 'closed'
+  readonly result?: {
+    readonly summary: string
+    readonly text?: string
+    readonly errorKind?: string
+  }
+  readonly terminal?: string
+  readonly pendingMessages: readonly string[]
+  readonly session: StoredSession
+}
+
 /** One session on disk. Optional fields are absent, never null. */
 export interface StoredSession {
   readonly version: typeof STORED_SESSION_VERSION
@@ -64,6 +82,11 @@ export interface StoredSession {
   /** Patch documents by output reference (`tool_patch-<itemId>`). */
   readonly outputs: Readonly<Record<string, string>>
   readonly usage: StoredUsage
+  /** Children are nested in the parent's file; they do not appear in History. */
+  readonly children?: readonly StoredChild[]
+  /** Completed children whose results have not entered the next model request. */
+  readonly pendingChildResults?: readonly string[]
+  readonly spawnCommands?: Readonly<Record<string, string>>
 }
 
 /**
@@ -129,7 +152,8 @@ const inputMessageSchema = z.object({
 const functionCallOutputSchema = z.object({
   type: z.literal('function_call_output'),
   call_id: z.string(),
-  output: z.string(),
+  // Content parts when an MCP tool returned pictures (M50).
+  output: z.union([z.string(), z.array(z.union([inputTextPartSchema, inputImagePartSchema]))]),
 })
 const webSearchCallReplaySchema = z.object({
   type: z.literal('web_search_call'),
@@ -145,7 +169,7 @@ const storedInputItemSchema = z.union([
   webSearchCallReplaySchema,
 ])
 
-export const storedSessionSchema = z.object({
+const storedSessionFields = {
   version: z.literal(STORED_SESSION_VERSION),
   sessionId: z.string(),
   workspaceRoot: z.string(),
@@ -176,6 +200,35 @@ export const storedSessionSchema = z.object({
     cachedTokens: z.number(),
     reasoningTokens: z.number(),
   }),
+} as const
+
+export const storedSessionSchema = z.object({
+  ...storedSessionFields,
+  children: z.optional(
+    z.array(
+      z.object({
+        id: z.string(),
+        role: z.string(),
+        objective: z.string(),
+        itemId: z.string(),
+        parentTurnId: z.string(),
+        startedAt: z.number(),
+        state: z.enum(['queued', 'running', 'interrupted', 'result_ready', 'closed']),
+        result: z.optional(
+          z.object({
+            summary: z.string(),
+            text: z.optional(z.string()),
+            errorKind: z.optional(z.string()),
+          }),
+        ),
+        terminal: z.optional(z.string()),
+        pendingMessages: z.array(z.string()),
+        session: z.object(storedSessionFields),
+      }),
+    ),
+  ),
+  pendingChildResults: z.optional(z.array(z.string())),
+  spawnCommands: z.optional(z.record(z.string(), z.string())),
 })
 
 export type StoredSessionParse =
@@ -189,11 +242,41 @@ export function parseStoredSession(raw: unknown): StoredSessionParse {
     return { ok: false, reason: z.prettifyError(result.error) }
   }
   // Optional fields are absent in a StoredSession, never undefined.
-  const { name, forkedFrom, firstPrompt, goal, ...rest } = result.data
+  const {
+    name,
+    forkedFrom,
+    firstPrompt,
+    goal,
+    children,
+    pendingChildResults,
+    spawnCommands,
+    ...rest
+  } = result.data
   const replay = rest.replay.map(({ backgroundTaskId, ...entry }) => ({
     ...entry,
     ...(backgroundTaskId !== undefined && { backgroundTaskId }),
   }))
+  const restoredChildren: StoredChild[] = []
+  const storedChildren = children ?? []
+  for (const child of storedChildren) {
+    const parsedChild = parseStoredSession(child.session)
+    if (!parsedChild.ok) {
+      return parsedChild
+    }
+    const { result: childResult, terminal, session: _session, ...childRest } = child
+    restoredChildren.push({
+      ...childRest,
+      session: parsedChild.session,
+      ...(childResult !== undefined && {
+        result: {
+          summary: childResult.summary,
+          ...(childResult.text !== undefined && { text: childResult.text }),
+          ...(childResult.errorKind !== undefined && { errorKind: childResult.errorKind }),
+        },
+      }),
+      ...(terminal !== undefined && { terminal }),
+    })
+  }
   return {
     ok: true,
     session: {
@@ -203,6 +286,9 @@ export function parseStoredSession(raw: unknown): StoredSessionParse {
       ...(forkedFrom !== undefined && { forkedFrom }),
       ...(firstPrompt !== undefined && { firstPrompt }),
       ...(goal !== undefined && { goal }),
+      ...(children !== undefined && { children: restoredChildren }),
+      ...(pendingChildResults !== undefined && { pendingChildResults }),
+      ...(spawnCommands !== undefined && { spawnCommands }),
     },
   }
 }

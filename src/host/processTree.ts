@@ -168,8 +168,10 @@ function processTableScript(parents: Iterable<number>): string {
  * killed; one that has gone, or whose id another process now holds, is left.
  */
 function identityKillScript(rows: readonly ProcessRow[]): string {
-  const targets = rows.map((row) => `@(${String(row.pid)}, ${row.ticks})`).join(', ')
-  return `foreach ($target in @(${targets})) { $process = Get-Process -Id $target[0] -ErrorAction SilentlyContinue; if ($null -ne $process -and [math]::Abs($process.StartTime.ToFileTimeUtc() - $target[1]) -lt ${String(TICKS_PER_MICROSECOND)}) { Stop-Process -InputObject $process -Force; [Console]::Out.WriteLine($target[0]) } }`
+  // Nested @() arrays flatten in PowerShell's pipeline, turning a FILETIME
+  // into the next PID. Hashtable records keep each identity pair together.
+  const targets = rows.map((row) => `@{ Id = ${String(row.pid)}; Ticks = ${row.ticks} }`).join(', ')
+  return `foreach ($target in @(${targets})) { $process = Get-Process -Id $target.Id -ErrorAction SilentlyContinue; if ($null -ne $process -and [math]::Abs($process.StartTime.ToFileTimeUtc() - $target.Ticks) -lt ${String(TICKS_PER_MICROSECOND)}) { Stop-Process -InputObject $process -Force; [Console]::Out.WriteLine($target.Id) } }`
 }
 
 /** The script's rows; a line that is not one (an error, a blank) is skipped. */
@@ -267,6 +269,47 @@ async function sweepOrphans(
   deps.log(
     `children of ${String(shellPid)} kept appearing for ${String(ORPHAN_SWEEP_ROUNDS)} rounds after its tree kill`,
   )
+}
+
+/**
+ * A stdio server may exit before its child does (M50). On POSIX, a child that
+ * stayed in the server's process group keeps that group alive after its leader
+ * exits; signal it before close resolves. On Windows, the parent is gone, so
+ * taskkill has no tree to enumerate; the checked orphan sweep uses its PID and
+ * exit time. Neither path contains a child that deliberately detaches itself.
+ */
+export async function sweepExitedTree(
+  pid: number | undefined,
+  startedAt: number,
+  diedAt: number,
+  deps: ProcessTreeDeps,
+): Promise<void> {
+  if (pid === undefined) {
+    return
+  }
+  if (deps.platform !== 'win32') {
+    try {
+      process.kill(-pid, SIGKILL)
+    } catch (error: unknown) {
+      if (
+        typeof error === 'object' &&
+        error !== null &&
+        'code' in error &&
+        error.code === 'ESRCH'
+      ) {
+        return
+      }
+      deps.log(
+        `the process group of exited ${String(pid)} could not be signalled: ${String(error)}`,
+      )
+    }
+    return
+  }
+  if (deps.systemRoot === undefined) {
+    deps.log(`the children of exited ${String(pid)} could not be swept: SystemRoot is not set`)
+    return
+  }
+  await sweepOrphans(pid, diedAt, startedAt, deps.systemRoot, deps)
 }
 
 /** Terminates the command's job: false (logged) when that could not be done. */

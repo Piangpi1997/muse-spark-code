@@ -17,6 +17,8 @@ import {
 } from '../shared/constants'
 
 const PDF_HEADER = '%PDF-'
+const OBJECT_STREAM_MARKER = '/ObjStm'
+const ENCRYPTION_MARKER = '/Encrypt'
 const DICTIONARY_OPEN = '<<'
 const DICTIONARY_CLOSE = '>>'
 // A name ends where a regular character does not follow (PDF names are
@@ -182,5 +184,8 @@ function pageTreeCount(text: string): number | undefined {
 /** The PDF's page count, when its page tree can be read cheaply; undefined otherwise. */
 export function pdfPageCount(bytes: Uint8Array): number | undefined {
   const text = latin1(bytes)
-  return pageTreeCount(text)
+  // An object stream or encryption can hide the real Pages dictionary.
+  // An unrelated visible one must not lower its budget reservation.
+  const hasHiddenObjects = text.includes(OBJECT_STREAM_MARKER) || text.includes(ENCRYPTION_MARKER)
+  return hasHiddenObjects ? undefined : pageTreeCount(text)
 }

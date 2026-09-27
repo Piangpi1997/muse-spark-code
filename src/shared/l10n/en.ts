@@ -209,8 +209,46 @@ export const EN = {
   mcpStdioPlaceholder: 'A local server needs no sign-in; edit its entry in the settings file',
   mcpCliMissing: 'Signing in to an MCP server needs the Muse Code CLI, which is not installed.',
   mcpTerminalName: 'Muse Code MCP sign-in',
+  // MCP servers on the Model API backend (M50, D42).
+  mcpItemDetailModelApi: 'The servers in Muse Code’s settings, run by this window',
+  mcpTitleModelApi: 'MCP servers on the Model API backend',
+  mcpRequiredModelApi: 'required (a message stops if it is not running)',
+  mcpStateNotStarted: 'Starts with your next message',
+  mcpStateStarting: 'Starting…',
+  mcpStateConnected: forms({ one: 'Connected: {count} tool', other: 'Connected: {count} tools' }),
+  mcpStateUnoffered: forms({
+    one: '{count} more not offered',
+    other: '{count} more not offered',
+  }),
+  mcpStateFailed: 'Not running: {reason}',
+  mcpStateRestricted: 'Not started: this workspace is in Restricted Mode',
+  mcpStateNotLoaded: 'Not loaded: see the warning',
+  mcpBuiltIn: 'built in',
+  mcpBuiltInDetail:
+    'The extension’s own getDiagnostics: the errors and warnings in VS Code’s Problems panel',
+  mcpRestartModelApi: 'Restart the MCP servers',
+  mcpRestartModelApiDetail:
+    'A reply that is running stops; the servers start again with your next message, from the settings as they are then',
+  mcpRestartedModelApi:
+    'The MCP servers stopped; your next message starts them from the settings as they are now.',
+  mcpShowLog: 'Show the log',
+  mcpShowLogDetail: 'What the server wrote to stderr, and why it stopped',
+  mcpModelApiPlaceholder:
+    'This window runs the server itself; a sign-in with muse mcp login is for Muse Code only',
+  mcpServerUnavailable: 'MCP server {name} is not available: {reason}',
+  mcpRequiredFailed:
+    'MCP server {name} is required and is not running: {reason}. Fix its entry in Muse Code’s settings, or set "mode": "optional", then restart the MCP servers (MCP servers… in the palette).',
+  mcpNoServersKeys:
+    'No MCP server is loaded: Muse Code’s settings hold both “mcpServers” and “mcp_servers”. Keep one key.',
+  mcpNoServersMode:
+    'No MCP server is loaded: {servers} set both “required” and “mode”. Keep only “mode”.',
+  mcpNoServersUnreadable:
+    'No MCP server is loaded: Muse Code’s settings file could not be read ({reason}).',
   hooksTitle: 'Muse Code hooks',
+  hooksTitleModelApi: 'Model API hooks',
   hooksWarning: 'Hooks run through your shell, outside Muse Code’s sandbox and approvals',
+  hooksModelApiWarning:
+    'Hooks run through your shell outside tool approvals. Turn on museSpark.modelApiHooks only after reviewing these sources.',
   hooksProject: 'Project hooks',
   hooksProjectFile: '.muse/hooks.json',
   hooksProjectNone: 'This workspace has no .muse/hooks.json.',
@@ -229,6 +267,34 @@ export const EN = {
   hooksManagedSet: 'Set by your settings; whoever controls this file controls what runs',
   hooksManagedMissing: 'Your settings name this file, but it does not exist.',
   hooksDocs: 'Hooks in Muse Code (documentation)',
+  // Memory (M49, D41): the notes Muse Code keeps, on both backends.
+  memoryItem: 'Memory…',
+  memoryItemDetail: 'The notes Muse keeps for later sessions',
+  memoryTitle: 'Muse memory',
+  memoryNone: 'No memory notes yet for this workspace',
+  memoryCount: forms({ one: '{count} memory note', other: '{count} memory notes' }),
+  memoryIndexDetail: 'The index Muse reads at the start of every session',
+  memoryNewNote: 'New note…',
+  memoryNewNoteDetail: 'A Markdown note Muse reads in later sessions, listed in MEMORY.md',
+  memoryDocs: 'Memory in Muse Code (documentation)',
+  memoryOpen: 'Open',
+  memoryDelete: 'Delete…',
+  memoryDeleteDetail: 'Moves the note to the trash and takes its line out of MEMORY.md',
+  memoryDeleteIndexDetail: 'Moves the index to the trash; the notes stay',
+  memoryDeleteConfirm: 'Delete the memory note {path}?',
+  memoryDeleteConfirmDetail:
+    'It moves to the trash. Muse no longer sees it from its next session on.',
+  memoryDeleteAction: 'Delete',
+  memoryDeleted: 'Deleted {path}',
+  memoryNewTitle: 'New memory note',
+  memoryScopePlaceholder: 'Where the note lives',
+  memoryNamePrompt: 'Name the note',
+  memoryNamePlaceholder: 'deploy-steps.md',
+  memoryNameInvalid: 'Muse Code does not accept that name',
+  memoryNameTaken: 'A note with that name already exists.',
+  memoryDescriptionPrompt: 'What is the note about? One line for MEMORY.md (optional)',
+  memoryDescriptionPlaceholder: 'How we deploy to staging',
+  memoryFailed: 'The memory could not be changed',
   // Worktrees (M32, D30).
   newWorktreeItem: 'New worktree…',
   newWorktreeDetail: 'A new branch in its own folder and window; this checkout is untouched',
@@ -580,6 +646,8 @@ export const EN = {
     cancelled: 'cancelled',
     interrupted: 'interrupted',
     resultReady: 'result ready',
+    queued: 'queued',
+    closed: 'closed',
   },
   agentTokens: '{tokens} tokens',
   agentContextTokens: '{tokens} tokens in context',
@@ -593,13 +661,14 @@ export const EN = {
   agentStop: 'Stop',
   agentResume: 'Resume',
   agentClose: 'Close agent',
+  agentReopen: 'Reopen agent',
+  agentReadResult: 'Mark result read',
   agentSendMessage: 'Send message',
   agentFollowup: 'Follow-up task',
   agentMessagePlaceholder: 'A note for this agent, or its next task…',
   agentControlsLabel: 'Agent controls',
   agentControlFailed: 'The agent command was refused',
   agentResultText: 'Result',
-  subagentsUnsupported: 'The Model API backend runs no subagents',
   agentNoTranscript: 'No transcript for this agent.',
   agentTranscriptLabel: 'Agent transcript',
   agentDelegationOff:
@@ -1047,6 +1116,13 @@ export const EN = {
   paidWebSearchName: 'Web search',
   paidImageGenerationName: 'Images',
   paidVoiceName: 'Muse Voice',
+  paidSubagentsName: 'Subagents',
+  paidSubagentRates:
+    '{model}: {input} input, {cached} cached input, {output} output per million tokens; up to {limit} requests per task, including retries.',
+  paidSubagentTaskTitle: 'Approve paid task for {role}?',
+  paidSubagentTaskDetail:
+    '{objective}\n\n{price}\n\nBilled to your Model API key. Actual cost depends on tokens used. Other enabled paid tools are charged separately. This approval covers this task only.',
+  approvalRunSubagent: 'Run paid subagent task {action}?',
   paidWebSearchPrice: '{price} per 1,000 searches',
   paidImagePrice: '{price} per image',
   paidVoicePrice: '{price} per hour of audio',
@@ -1058,6 +1134,8 @@ export const EN = {
     'The model may create image files in the workspace, or edit workspace images into new ones. Each image is billed to your Model API key at {price}, and you are asked before every one, in every permission mode. Used on the Model API backend, and on the Muse Code backend while a key is stored (never billed to the subscription).',
   paidConfirmVoice:
     'The microphone will send what you record to Meta’s Muse Voice Transcribe instead of your computer’s own recogniser, billed to your Model API key at {price}. Used on the Model API backend, and on the Muse Code backend while a key is stored.',
+  paidConfirmSubagents:
+    'Child agents make additional requests billed to your Model API key. {price} Each new task asks for approval in every permission mode, including Bypass. Actual cost depends on tokens used; other paid tools cost extra. Model API backend only.',
   paidConfirmAccept: 'Turn on',
   // The composer's badge while a paid feature is on; {features} lists their names.
   paidBadge: 'Paid: {features}',
@@ -1075,9 +1153,35 @@ export const EN = {
   usagePaidSearches: forms({ one: '{count} search', other: '{count} searches' }),
   usagePaidImages: forms({ one: '{count} image', other: '{count} images' }),
   usagePaidAudio: '{duration} of audio',
+  usagePaidSubagentRequests: forms({
+    one: '{count} child request',
+    other: '{count} child requests',
+  }),
+  usagePaidSubagentUnknown: forms({
+    one: '{count} request has no reported cost yet',
+    other: '{count} requests have no reported cost yet',
+  }),
+  usagePaidSubagentSubset:
+    'Reported child costs are included in their parent conversations’ token estimates. They are not added to the extra-feature total. Requests without reported usage may still be billed.',
+  usagePaidExtraTotal: 'Estimated extra-feature total',
+  usagePaidSubagentReported: 'Reported token estimate: {cost}',
   usagePaidTotal: 'Estimated paid total',
   usagePaidNote:
     'Estimated at Meta’s published prices, read on {date}, for this window since it opened; the dev.meta.ai dashboard is the bill.',
+  subagentPaidOff:
+    'Paid subagents are off. Enable them and accept the price before starting a child task.',
+  subagentConsentDeclined: 'The paid child task was not approved.',
+  subagentRequestLimit:
+    'The child task reached its approved limit of {limit} requests, including retries.',
+  subagentKeyChanged:
+    'The Model API key changed after approval. Approve a new child task to continue.',
+  subagentModelChanged: 'The model changed after approval. Approve a new child task to continue.',
+  subagentGoalEnded:
+    'The originating goal is no longer active. The child task cannot make another request.',
+  subagentTariffUnknown:
+    'No verified price is available for this model. The child task cannot start.',
+  subagentPlanMode: 'Plan mode refuses paid child tasks; switch mode and approve a new task.',
+  subagentWebSearchOff: 'Web search was turned off before this child request; no request was sent.',
   webSearchFailed: 'The search failed',
   // Under a reply that cites web pages (M33).
   citationsHeading: 'Sources',
