@@ -279,7 +279,7 @@ describe('UsageDialog: paid features (M33, PLAN.md D30)', () => {
       report: modelApiReport,
       paid: {
         features: ['webSearch'],
-        tally: { webSearches: 4, images: 2, voiceSeconds: 90 },
+        tally: { webSearches: 4, images: 2, voiceSeconds: 90, scheduledRuns: 0 },
         isKeyStored: true,
       },
     })
@@ -292,6 +292,22 @@ describe('UsageDialog: paid features (M33, PLAN.md D30)', () => {
     expect(dialog).toHaveTextContent('published prices, read on 2026-09-24')
   })
 
+  it('counts scheduled runs without adding their tokens twice to the paid extra total (M52)', () => {
+    renderDialog({
+      report: modelApiReport,
+      paid: {
+        features: ['scheduledPrompts'],
+        tally: { webSearches: 0, images: 0, voiceSeconds: 0, scheduledRuns: 2 },
+        isKeyStored: true,
+      },
+    })
+    const dialog = screen.getByRole('dialog')
+    expect(dialog).toHaveTextContent(
+      'Scheduled prompts (on)2 scheduled runs · token cost included above',
+    )
+    expect(dialog).toHaveTextContent('Estimated extra-feature total$0.0000')
+  })
+
   it('has no paid section on the Muse Code backend without a stored key', () => {
     renderDialog()
     expect(screen.getByRole('dialog')).not.toHaveTextContent('Paid features')
@@ -301,7 +317,7 @@ describe('UsageDialog: paid features (M33, PLAN.md D30)', () => {
     renderDialog({
       paid: {
         features: ['imageGeneration'],
-        tally: { webSearches: 0, images: 3, voiceSeconds: 0 },
+        tally: { webSearches: 0, images: 3, voiceSeconds: 0, scheduledRuns: 0 },
         isKeyStored: true,
       },
     })
@@ -316,7 +332,7 @@ describe('UsageDialog: paid features (M33, PLAN.md D30)', () => {
     renderDialog({
       paid: {
         features: ['imageGeneration'],
-        tally: { webSearches: 4, images: 3, voiceSeconds: 0 },
+        tally: { webSearches: 4, images: 3, voiceSeconds: 0, scheduledRuns: 0 },
         isKeyStored: true,
       },
     })

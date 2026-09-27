@@ -827,6 +827,7 @@ export const EN = {
     cron_create: 'Schedule prompt',
     cron_list: 'Scheduled prompts',
     cron_delete: 'Cancel scheduled prompt',
+    scheduled_prompt: 'Run scheduled prompt',
     web_fetch: 'Fetch page',
     work_stop: 'Stop work',
     work_status: 'Work status',
@@ -918,6 +919,49 @@ export const EN = {
   scheduleNextRun: 'Next run {date}',
   scheduleFired: forms({ one: 'Ran {count} time', other: 'Ran {count} times' }),
   scheduleNone: 'No scheduled prompts',
+  // M52: extension-owned schedules on the Model API backend. Muse Code's cron
+  // jobs stay model-mediated until its MSP exposes scheduler verbs.
+  loopItem: '/loop',
+  loopItemDetail: 'Schedule a prompt in this Model API conversation',
+  loopSyntax:
+    'Use /loop 10m <prompt>, /loop "0 9 * * 1-5" <prompt>, /loop list, or /loop cancel <id>.',
+  schedulePanelLabel: 'Scheduled prompts for this conversation',
+  schedulePanelTitle: 'Scheduled prompts',
+  schedulePanelScope: 'Model API · this workspace, conversation and key',
+  scheduleEvery: 'Every {duration}',
+  schedulePending: 'Due · waiting for you to run it',
+  scheduleRun: 'Run now (paid)',
+  scheduleCancel: 'Cancel schedule',
+  scheduleEnablePaid: 'Enable paid runs',
+  scheduleRunJob: 'Run scheduled prompt {id}',
+  scheduleEnableJob: 'Enable paid runs for scheduled prompt {id}',
+  scheduleCancelJob: 'Cancel scheduled prompt {id}',
+  scheduleCreated: 'Scheduled prompt {id} created. It will wait for you when due.',
+  scheduleCancelled: 'Scheduled prompt {id} cancelled.',
+  scheduleUnknown: 'Scheduled prompt {id} was not found in this conversation and key.',
+  scheduleCommandFailed: 'The schedule command failed',
+  scheduleModelApiOnly:
+    'These schedules belong to the Model API backend. Ask Muse Code to manage its own cron jobs in chat.',
+  scheduleAccountMissing: 'Store a Model API key to use schedules.',
+  scheduleStorageMissing: 'Workspace storage is unavailable; this schedule cannot be saved.',
+  scheduleInvalid: 'The scheduled prompt or cadence is invalid.',
+  scheduleTooMany: 'This conversation has reached its scheduled prompt limit.',
+  scheduleNoFire: 'This cadence has no run within the seven-day schedule lifetime.',
+  schedulePaidOff:
+    'Turn on Scheduled prompts (paid) and accept its price before running a due prompt.',
+  scheduleBusy: 'Wait for the current turn to finish before running this prompt.',
+  scheduleNotDue: 'This scheduled prompt is not due or is no longer available.',
+  scheduleAlreadyRun: 'This occurrence was already admitted in another window or before a restart.',
+  scheduleRunStarted:
+    'Started after your price confirmation. Model API tokens are billed to your key.',
+  scheduleRunConfirmTitle: 'Run this scheduled prompt with {model}?',
+  scheduleRunConfirmPrompt: 'Prompt: {prompt}',
+  scheduleRunConfirmPrice: 'Billed to your Model API key: {price}. Total varies with tokens used.',
+  scheduleRunConfirmExtras:
+    'Other enabled paid tools may add their own charges. Bypass does not skip this confirmation.',
+  scheduleRunConfirmAccept: 'Run this time',
+  scheduleConfirmationExpired:
+    'The model, conversation or prompt changed during confirmation. Review the schedule and choose Run again.',
   webNoResults: 'No results',
   backgroundRunning: 'Running in the background',
   // M46 (PLAN.md D39): moving a running command to the background, stopping
@@ -1111,6 +1155,7 @@ export const EN = {
   paidWebSearchName: 'Web search',
   paidImageGenerationName: 'Images',
   paidVoiceName: 'Muse Voice',
+  paidScheduledName: 'Scheduled prompts',
   paidSubagentsName: 'Subagents',
   paidSubagentRates:
     '{model}: {input} input, {cached} cached input, {output} output per million tokens; up to {limit} requests per task, including retries.',
@@ -1121,6 +1166,8 @@ export const EN = {
   paidWebSearchPrice: '{price} per 1,000 searches',
   paidImagePrice: '{price} per image',
   paidVoicePrice: '{price} per hour of audio',
+  paidScheduledPrice:
+    '{input}/1M input, {cached}/1M cached input, {output}/1M output tokens (standard tier; contributor tier costs less)',
   // The confirmation shown when a paid feature is turned on; {feature} is its name.
   paidConfirmTitle: 'Turn on {feature}?',
   paidConfirmWebSearch:
@@ -1129,6 +1176,8 @@ export const EN = {
     'The model may create image files in the workspace, or edit workspace images into new ones. Each image is billed to your Model API key at {price}, and you are asked before every one, in every permission mode. Used on the Model API backend, and on the Muse Code backend while a key is stored (never billed to the subscription).',
   paidConfirmVoice:
     'The microphone will send what you record to Meta’s Muse Voice Transcribe instead of your computer’s own recogniser, billed to your Model API key at {price}. Used on the Model API backend, and on the Muse Code backend while a key is stored.',
+  paidConfirmScheduled:
+    'A due scheduled prompt waits for you to run it. Each run asks again before any Model API call. {price}. Billed to your Model API key; total varies with tokens used.',
   paidConfirmSubagents:
     'Child agents make additional requests billed to your Model API key. {price} Each new task asks for approval in every permission mode, including Bypass. Actual cost depends on tokens used; other paid tools cost extra. Model API backend only.',
   paidConfirmAccept: 'Turn on',
@@ -1161,6 +1210,8 @@ export const EN = {
   usagePaidExtraTotal: 'Estimated extra-feature total',
   usagePaidSubagentReported: 'Reported token estimate: {cost}',
   usagePaidTotal: 'Estimated paid total',
+  usagePaidScheduled: forms({ one: '{count} scheduled run', other: '{count} scheduled runs' }),
+  usageScheduledIncluded: 'token cost included above',
   usagePaidNote:
     'Estimated at Meta’s published prices, read on {date}, for this window since it opened; the dev.meta.ai dashboard is the bill.',
   subagentPaidOff:

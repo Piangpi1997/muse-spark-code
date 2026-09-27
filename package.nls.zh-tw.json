@@ -82,5 +82,6 @@
   "config.modelApiImageGeneration.description": "付費，預設為關閉。允許模型使用 muse-image-1.0 在工作區中建立 PNG 圖片檔案，或將工作區中的圖片編輯為新圖片，每張圖片 US$0.01，向您的 Model API 金鑰計費：用於 Model API 後端，以及儲存了金鑰時的 Muse Code 後端（絕不會向訂閱計費）。在任何權限模式下，每張圖片產生前都會詢問您。開啟時會請您確認價格。",
   "config.modelApiVoice.description": "付費，預設為關閉。麥克風會將您錄製的內容傳送至 Meta 的 Muse Voice Transcribe，而不是使用您電腦本身的辨識器，每小時音訊 US$0.18，向您的 Model API 金鑰計費：用於 Model API 後端，以及儲存了金鑰時的 Muse Code 後端。開啟時會請您確認價格；使用付費引擎時，麥克風會加以標示。",
   "config.modelApiSubagents.description": "付費功能，預設關閉。在 Model API 後端，子代理程式使用您的 Model API 金鑰。啟用時會要求您接受權杖價格。每項新子工作都須核准，包括 略過權限 模式；每項工作最多四次請求，包含重試。子代理程式權杖費用已包含在對話估算中。",
-  "config.modelApiHooks.description": "在 Model API 後端執行 Muse Code 鉤子命令。預設關閉。命令會以您的權限在代理沙箱之外執行。啟用前請在 Muse Spark: Hooks 中檢查命令。Model API 金鑰不會傳給鉤子程序。"
+  "config.modelApiHooks.description": "在 Model API 後端執行 Muse Code 鉤子命令。預設關閉。命令會以您的權限在代理沙箱之外執行。啟用前請在 Muse Spark: Hooks 中檢查命令。Model API 金鑰不會傳給鉤子程序。",
+  "config.modelApiScheduledPrompts.description": "付費功能，預設關閉。到期的 /loop 提示詞只有在您接受權杖價格並確認本次執行後，才能透過 Model API 後端執行。已排程的提示詞絕不會在無人確認時執行；每次執行均依模型公布的權杖費率向您的 Model API 金鑰計費。"
 }

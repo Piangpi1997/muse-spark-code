@@ -14,6 +14,11 @@ import type {
 } from '../../shared/agentEvents'
 import type { GoalCommandVerb, SubagentAction } from '../../shared/constants'
 import type { SubscriptionUsage } from '../../shared/usage'
+import type {
+  ScheduleCadence,
+  ScheduledPrompt,
+  ScheduleRunConfirmation,
+} from '../../shared/schedule'
 
 export type BackendKind = 'museCode' | 'modelApi'
 
@@ -293,6 +298,18 @@ export interface AgentSession {
    * `GoalRefusedError`.
    */
   controlGoal(command: GoalCommand): Promise<GoalCommandOutcome>
+  /** Extension-owned schedules only. Muse Code's native cron has no MSP control verbs (M52). */
+  readonly schedules?: {
+    create(cadence: ScheduleCadence, prompt: string): Promise<ScheduledPrompt>
+    list(): Promise<readonly ScheduledPrompt[]>
+    cancel(id: string): Promise<boolean>
+    /** Admit one due occurrence after host-side price confirmation. */
+    run(
+      id: string,
+      occurrenceMs: number,
+      confirmed: ScheduleRunConfirmation,
+    ): Promise<TurnSubmission>
+  }
   readOutput(request: OutputPageRequest): Promise<OutputPage>
   listSkills(): Promise<readonly SkillSummary[]>
   /** Resolves to the canonical name, or undefined when it arrives as an event. */

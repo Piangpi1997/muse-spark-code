@@ -33,6 +33,7 @@ import {
   DICTATION_KEY,
   type DictationAction,
   GOAL_SLASH_COMMAND,
+  LOOP_SLASH_COMMAND,
   IME_PROCESS_KEY,
   MAX_ATTACHMENTS_PER_MESSAGE,
   MAX_IMAGE_BYTES,
@@ -573,8 +574,10 @@ export function Composer(props: ComposerProps) {
     const { action } = command
     if (action.type === 'insertSkill') {
       replaceDraft(`/${action.selector} `)
-    } else if (action.type === 'startGoal') {
-      replaceDraft(`/${GOAL_SLASH_COMMAND} `)
+    } else if (action.type === 'startGoal' || action.type === 'startLoop') {
+      replaceDraft(
+        action.type === 'startGoal' ? `/${GOAL_SLASH_COMMAND} ` : `/${LOOP_SLASH_COMMAND} `,
+      )
     } else if (isCompleting) {
       replaceDraft(`/${command.name}`)
     } else {

@@ -14,8 +14,10 @@ while they are (PLAN.md D30, D34).
 
 - **Pre-PR branch CI.** The existing cross-platform CI can be run
   manually on a pushed branch before a pull request. It runs the same shared
-  build as pull requests; see the sequence in `CONTRIBUTING.md`. Manual
-  dispatch becomes available after this trigger reaches `main`.
+  build as pull requests; the PR template records the exact tested tree,
+  independent review, staged-change secret scan, branch run and seven job
+  conclusions. See the sequence in `CONTRIBUTING.md`. Manual dispatch is
+  available now that the trigger is on `main`.
 - **Subagents on the Model API backend** (M48, PLAN.md D45). Child sessions
   run in parallel with bounded capacity, their own transcript, the existing
   tool approvals and workspace rules, and usage counted with the parent.
@@ -33,8 +35,8 @@ while they are (PLAN.md D30, D34).
   conversation total.
   Muse Code's `subagent/readResult` and `subagent/reopen` controls remain
   deferred until an accepted-command capture establishes their behavior.
-  Muse Code's two uncaptured owner verbs remain a later follow-up. Final
-  M48 quality and hosted checks remain open.
+  Muse Code's two uncaptured owner verbs remain a later follow-up. M48's
+  local and hosted quality gates passed before its PR #35 merge.
 
 - **Model API hooks, initial M51 increment (certification pending).** The
   machine-scoped `modelApiHooks` setting enables all 17 documented hook event
@@ -60,6 +62,28 @@ while they are (PLAN.md D30, D34).
   cannot be hidden by a post-tool hook stop.
   Model-call hook text previews also remove pasted media data URLs before
   shortening user text, instructions, tool descriptions or assistant output.
+  Windows hook commands now receive their bounded UTF-8 JSON stdin through
+  PowerShell's explicit pipe to cmd; the payload stays off command lines.
+
+- **Model API scheduled prompts** (M52). `/loop` stores an interval or local
+  five-field cron prompt in the current conversation; the panel lists due
+  jobs and cancels them. Every due run waits for a machine-scoped paid gate
+  and a separate prompt-and-token-price confirmation. Jobs are scoped to the
+  workspace, conversation and stored key; an atomic receipt prevents two
+  windows or a restart from replaying one admitted occurrence. A model,
+  conversation, prompt or paid-gate change while the price dialog is open
+  expires that approval without sending a request; cancellation during the
+  dialog does too. The scheduled turn keeps its confirmed model and key
+  digest in memory through admission and retries; a changed key is refused
+  before HTTP. Stop during the key read sends no request or paid count, and
+  a slow job read cannot show another key's prompts after an account switch.
+  The paid row and tally appear only when the first request starts. Muse Code's
+  native cron remains available through its model tools; MSP offers no direct
+  scheduler controls. Sign-out or a backend switch clears account-bound
+  prompts from the panel immediately. Replacing the Model API key also clears
+  the old account's prompts before the backend restarts; a temporary CLI
+  sign-in attempt keeps the still-active Model API list.
+
 - **Conversation rewind and side chats** (M53, PLAN.md D46). A sent message
   can branch before itself and return its prompt to the composer. Model API
   images return when replay still holds them; otherwise the panel warns.
@@ -67,12 +91,14 @@ while they are (PLAN.md D30, D34).
   On the Model API backend, its stored side marker survives reopen, keeps
   Plan and the cleared goal, suppresses hooks, and refuses external MCP tools
   even when a server marks them read only. A failed fork save opens no panel.
-  Scheduled prompt controls await the M52 integration gate.
+  Scheduled prompt creation, cancellation and runs are refused in core before
+  storage, claim or paid use, including after a side fork is reopened.
   Rewind and side-chat clicks carry their source session, so a late request
   is ignored if that tab has moved to another session. Closing a
   side chat returns focus to its original tab while that tab remains open.
   Its locked Plan mode leaves `Shift+Tab` available for keyboard navigation.
   Muse Code's Windows 1.3.0 fork limitation still hides these actions.
+
 
 - **Image edits** (M44, PLAN.md D37). With image generation on, the model
   can also change one workspace image, or combine up to four, by a prompt,

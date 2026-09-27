@@ -523,6 +523,12 @@ describe('buildPalette: paid features (M33, PLAN.md D30)', () => {
         { kind: 'toggle', isOn: false },
         { type: 'setPaidFeature', feature: 'subagents', isOn: true },
       ],
+      [
+        'Scheduled prompts (paid)',
+        '$1.25/1M input, $0.15/1M cached input, $4.25/1M output tokens (standard tier; contributor tier costs less)',
+        { kind: 'toggle', isOn: false },
+        { type: 'setPaidFeature', feature: 'scheduledPrompts', isOn: true },
+      ],
     ])
   })
 })

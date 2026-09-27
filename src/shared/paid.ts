@@ -28,6 +28,7 @@ export const paidTallySchema = z.object({
   webSearches: z.number(),
   images: z.number(),
   voiceSeconds: z.number(),
+  scheduledRuns: z.number(),
   // Optional for panels saved before M48; absent means no child use recorded.
   subagentRequests: z.optional(z.int().check(z.nonnegative())),
   subagentUnknownRequests: z.optional(z.int().check(z.nonnegative())),
@@ -36,7 +37,12 @@ export const paidTallySchema = z.object({
 })
 export type PaidTally = z.infer<typeof paidTallySchema>
 
-export const EMPTY_PAID_TALLY: PaidTally = { webSearches: 0, images: 0, voiceSeconds: 0 }
+export const EMPTY_PAID_TALLY: PaidTally = {
+  webSearches: 0,
+  images: 0,
+  voiceSeconds: 0,
+  scheduledRuns: 0,
+}
 
 export interface SubagentTaskConfirmation {
   readonly role: string
@@ -115,6 +121,11 @@ export function paidCostUsd(feature: PaidFeature, tally: PaidTally): number {
     case 'voice': {
       return (tally.voiceSeconds * PAID_PRICES_USD.voicePerHour) / SECONDS_PER_HOUR
     }
+    case 'scheduledPrompts': {
+      // Scheduled runs use ordinary Model API tokens. UsageDialog prices those
+      // tokens already; adding them to the extra-features total doubles them.
+      return 0
+    }
     case 'subagents': {
       return tally.subagentCostUsd ?? 0
     }
@@ -134,6 +145,7 @@ export function listedPaidFeatures(
     (feature) =>
       usable.includes(feature) ||
       paidCostUsd(feature, tally) > 0 ||
+      (feature === 'scheduledPrompts' && tally.scheduledRuns > 0) ||
       (feature === 'subagents' && (tally.subagentRequests ?? 0) > 0),
   )
 }
@@ -159,6 +171,7 @@ export function paidFeatureName(feature: PaidFeature): string {
     webSearch: UI_TEXT.paidWebSearchName,
     imageGeneration: UI_TEXT.paidImageGenerationName,
     voice: UI_TEXT.paidVoiceName,
+    scheduledPrompts: UI_TEXT.paidScheduledName,
     subagents: UI_TEXT.paidSubagentsName,
   }
   return names[feature]
@@ -177,6 +190,14 @@ export function paidFeaturePrice(feature: PaidFeature): string {
     }
     case 'voice': {
       return fill(UI_TEXT.paidVoicePrice, { price: formatUsd(PAID_PRICES_USD.voicePerHour, 2) })
+    }
+    case 'scheduledPrompts': {
+      const prices = MODEL_API_PRICES_PER_MILLION.standard
+      return fill(UI_TEXT.paidScheduledPrice, {
+        input: formatUsd(prices.input, 2),
+        cached: formatUsd(prices.cachedInput, 2),
+        output: formatUsd(prices.output, 2),
+      })
     }
     case 'subagents': {
       return [

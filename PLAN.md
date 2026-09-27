@@ -1227,7 +1227,7 @@ milestone that closes each gap:
 | Workflows                         | captured run and agents render as a read-only card (M47, D40); owner controls wait for a live accepted-command capture                                                                                    | none (Muse Code's own engine)                                                                                          | M47          |
 | Subagents                         | map and controls (M14, M18); native `reopen` and `readResult` wait for live success captures                                                                                                              | opt-in paid child tasks with one-use consent and four-request cap (M48, D45)                                           | M48 (merged) |
 | Memory                            | Muse Code memory tools and the shared Memory view (M49, D41)                                                                                                                                              | memory tools and snapshot over the same notes; native writer-lock parity remains unproved                              | M49 (merged) |
-| MCP servers                       | loaded by Muse Code; read-only view (M31)                                                                                                                                                                 | extension MCP client and Windows job containment staged; hosted code-head checks passed, final docs gate before merge  | M50          |
+| MCP servers                       | loaded by Muse Code; read-only view (M31)                                                                                                                                                                 | extension MCP client and Windows job containment built; merged as PR #37 after local and hosted gates                  | M50          |
 | Hooks                             | run by Muse Code; read-only view (M31)                                                                                                                                                                    | machine opt-in hooks from managed, user and trusted-project sources; 17 event names wired, final certification pending | M51          |
 | Scheduled prompts (`/loop`, cron) | the agent's `cron_*` tools only; no list or cancel                                                                                                                                                        | none                                                                                                                   | M52          |
 | Rewind a conversation, side chat  | TUI only; the panel has fork and code rewind                                                                                                                                                              | fork and code rewind                                                                                                   | M53          |
@@ -1911,10 +1911,10 @@ Muse Code model call on the selected backend, never a paid Model API feature
 called through a Muse subscription.
 
 The Model API Plan statement covers its tool-permission engine. The provisional
-M51 join now suppresses hooks in a durable side session and refuses external
-MCP tools regardless of a server's read-only hint. M52 scheduled prompts still
-need a core refusal after that milestone joins; final side-branch read-only
-certification remains open (M53 below).
+M51 join suppresses hooks in a durable side session and refuses external MCP
+tools regardless of a server's read-only hint. The M52 join adds core refusal
+of scheduled create, cancel and run before storage, claim or paid use. Focused
+tests pass; final side-branch certification remains open (M53 below).
 
 ## 3. Open questions (need the owner)
 
@@ -3866,6 +3866,38 @@ documented tree `0b990287` passed full local Windows quality (2,034 tests,
 gitleaks and SAST zero) and a process audit of zero. The verified pre-PR
 workflow receipt below changes documentation again, so the final candidate
 must receive its own exact-tree gate before commit and branch dispatch.
+The second M51 branch dispatch on `d9602f9` passed all other jobs but Windows
+again failed the real hook stdin fixture: with an adequate outer deadline,
+`more` returned exit code 1 in hosted CI. The test must exercise the same
+PowerShell-to-cmd hook runner using a deterministic Node stdin echo child,
+not a terminal pager whose behavior depends on runner console state. Keep
+the 10 second product deadline and the assertions that stdin is echoed,
+exit is zero and no timeout occurred. The exact staged tree `e46ece3`
+passed the focused real hook test on WIN-11-VM after `npm ci`, with zero
+checkout-owned processes. Repeat exact documented-tree local quality and
+branch dispatch before opening a PR.
+The third M51 pre-PR run on `348ac4f` failed the same Windows hook case
+after 10,962 ms even with the Node echo child. The next bounded diagnostic
+must report the controlled fixture's exit code, timeout/cancel flags and
+stdout/stderr on failure, without secrets. Do not infer a terminal-pager
+cause or relax the 10 second product limit before that result is known;
+the PowerShell-to-cmd stdin forwarding boundary may need a runtime fix.
+Run `36282344418` then reported `isTimedOut: true`, `elapsedMs: 11027`,
+empty stdout/stderr and no cancellation. Microsoft documents that
+[stdin is not connected to PowerShell's pipeline for input](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_redirection?view=powershell-5.1),
+while [`Console.In` reads standard input](https://learn.microsoft.com/en-us/dotnet/api/system.console.in?view=netframework-4.8.1).
+On Windows, the hook wrapper now explicitly reads its UTF-8 stdin and pipes
+it to cmd, with the existing 256 KiB hook-input cap enforced before spawn;
+the job-object join, allowlisted environment, 10 second test operation cap
+and child command line stay intact. A local Unicode JSON echo drill passed;
+removing the adapter cap made its oversized-input guard test fail before
+restoration. Exact staged tree `c977c836` passed a real Unicode+EOF hook
+drill and full WIN-11-VM `npm run quality`: 2,036 tests passed (3 skipped),
+304 accessible pages returned with zero violations/undecided/missing, and
+audit, gitleaks and SAST found zero. The remote tree matched before/after
+and process audit found zero checkout-owned processes. This receipt changes
+documentation, so final exact local Windows and hosted branch proof remain
+before a PR.
 An M54 integration review found a separate hook-stdin privacy boundary:
 `input_text`, developer instructions, tool descriptions and assistant output
 can themselves contain pasted `data:` media URLs. The common model-call
@@ -4359,8 +4391,8 @@ attempts stopped in unit tests.
 
 ### M50 — MCP servers on the Model API backend (D36, D42)
 
-**Status 2026-09-26: reconciled onto merged M49; combined local quality
-passed after review fixes, hosted recheck pending**
+**Status 2026-09-26: merged as PR #37 at `fa370ee`; local and all seven
+hosted checks passed**
 (`docs/certification/m50.md`). The
 isolated M50 branch passed `npm run quality` on exact M47-base staged tree
 `9a2399aa4b15f401c5e0c73d5f21846af3fff06c`: 1,820 unit tests passed
@@ -4371,8 +4403,8 @@ and M49 tree (`4694803`). The combined staged tree
 `28eea6f74ef17c7a9c72bf00325ce3a6d5737f96` passed `npm run quality`:
 1,967 unit tests passed (3 skipped), 304 accessibility pages had zero
 violations/undecided rules, the production bundles met budgets, audit found
-zero advisories, and secret/SAST scans found zero findings. Hosted rechecks
-and review of the fixes remain before merge. Corrected staged tree
+zero advisories, and secret/SAST scans found zero findings. At that
+checkpoint, hosted review remained. Corrected staged tree
 `8ce10a01a2aeb5f01d9bf33108d7ebaf9f8563dd` passed `npm run quality`
 after review fixes: 1,970 unit tests passed (3 skipped), 304 accessibility
 pages had zero violations or undecided rules, and audit, secret and SAST
@@ -4380,8 +4412,8 @@ scans found zero findings. PR #37's first hosted run passed Linux and macOS
 quality but failed 13 Windows MCP stdio tests: overlapping real-process test
 files delayed PowerShell job-helper launches beyond the existing 10 s MCP
 initialize and 30 s pool startup deadlines. Windows Vitest files now run
-serially while keeping every test, coverage threshold, and deadline. Hosted
-Windows recheck remains open.
+serially while keeping every test, coverage threshold, and deadline. That
+first hosted Windows recheck remained open at the time.
 
 The next hosted Windows run (`36268614149`) still failed seven real MCP
 process tests after file serialization; the same tree passed local Windows
@@ -4401,8 +4433,8 @@ staged tree `fcf1375157ce7f720fb2bb951d942481c9554720` then passed full
 quality with 1,974 unit tests and 304 accessibility pages. PR #37 run
 `36272726372` then passed all seven hosted jobs on direct-executable head
 `d39e02a`, including Windows quality, accessibility, VS Code integration and
-VSIX packaging. The final documentation receipt has its own exact-tree gate
-and hosted checks before merge.
+VSIX packaging. The final documentation receipt also passed its exact-tree
+local gate and all seven hosted checks before PR #37 merged.
 
 PR #37's Codex review found three valid faults: closing during a batch of
 more than four servers could launch a later batch after shutdown; a required
@@ -4411,7 +4443,7 @@ and `_ide` normalized to the reserved `ide` function name. All three are
 fixed locally. The new tests failed **3/3** on the reviewed code; removing
 the new mid-call loss checks made its test fail **1/1** before restoration.
 The affected suites passed **194/194** after the fixes. The corrected tree
-still needs its full quality gate and hosted recheck.
+later passed its exact-tree local and hosted gates before merge.
 
 - **Goal**: the key backend runs the MCP servers Muse Code would, from the
   same settings, with Muse Code's names for their tools and its approvals,
@@ -4439,7 +4471,7 @@ still needs its full quality gate and hosted recheck.
   when owner confirmation is disabled and passes when restored. Real binary,
   batch, Stop, exited-parent and extension-parent death fixtures pass. The
   combined M48–M49 tree passed local quality before PR #37's review fixes;
-  the corrected tree needs an exact-tree gate and hosted recheck.
+  the corrected tree later passed exact-tree local and hosted checks.
 - **Remote error boundary**: HTTP response bodies, malformed event payloads and authentication challenge parameters are untrusted. Errors and logs keep status and the authentication scheme, not raw server text that could echo a configured header or token.
 - **Windows batch launch**: `cmd.exe /v:off` disables delayed `!` expansion even when the machine default enables it; `/d` continues to bypass AutoRun. The configured command and arguments remain quoted and percent signs refused.
 - **Startup pressure**: connect at most four configured servers at once. Keep the settings order and start every enabled server, but avoid a simultaneous burst of child processes when a settings file has many entries.
@@ -4450,17 +4482,188 @@ still needs its full quality gate and hosted recheck.
 - **Left for later**: resources, prompts, sampling, roots, elicitation and
   OAuth for remote servers; a server's own event stream over HTTP.
 
+### M52 — Scheduled prompts (D36)
+
+**Status 2026-09-26: M51 join staged; combined certification open.** The
+isolated M52 worktree is based on `34002ab`; its pre-M47 79-path staged tree
+is pinned at `refs/backup/m52-before-m47`. Sixteen M47-base fake schedule,
+paid guard, UI and workflow suites passed 622/622; all five TypeScript
+projects and localization passed. On the exact later pre-integration tree
+`a248d9c18b51818e5e95234ee13d7a1f4c02a4b3`, WIN-11-VM ran full
+`npm run quality` with exit 0 (1,728 tests passed, three skipped; 288
+accessibility pages with zero findings; audit, secret and SAST checks clean).
+Kubuntu ran `npm run quality:gates` with exit 0 (1,724 passed, seven skipped;
+build and audit clean). Linux browser accessibility was not certified.
+The later native-proof tree `e4e5a8f24ce513e6eb24e0aa463ccefb2f7647c4`
+also passed full Windows `npm run quality` with exit 0: 1,730 tests passed,
+three skipped, 288 accessibility pages with zero findings, and clean build,
+audit, secret and SAST gates. Its log and process audit are recorded in
+`docs/certification/m52.md`. This receipt precedes the ordered join.
+The following documentation-only tree
+`9e293770599794a2a7b95ad8780b12fc6885577a` passed Mac mini
+`npm run quality:gates` with exit 0: 1,726 tests passed, seven skipped,
+and build, localization, lint, type, duplication and audit gates clean.
+PSScriptAnalyzer is Windows-only; Mac browser accessibility, secret scan and
+SAST were not part of that run. Its exact log and process audit are in the
+same certification record.
+The no-commit join with M51 (`bb2bd61`) now retains M48 paid-child admission,
+M49 memory, M50 MCP and M51 hook boundaries alongside scheduled consent.
+The client rechecks the key, model and paid gate after SecretStorage, before
+each fetch and retry; a synchronous child-admission abort prevents the
+scheduled paid row and request. Four red drills caught retry-key changes,
+Stop-hook continuation, PreLLM veto and the final admission-abort race before
+their fixes (`docs/certification/m52.md`). Focused suites, host/unit/webview
+types, localization, lint and duplication pass on the staged join. The exact
+combined full gate and final M51 ancestry remain open.
+Independent review found that strict schedule persistence could save a parent
+or child with an unanswered tool call, and that losing the Model API key left
+the old account's schedule prompts visible. Two tests failed before the fixes
+and all three focused cases passed after: creation now refuses and removes its
+new job while replay is unsafe; listing without a key emits an empty schedule
+view. A storage-error red test then showed that clearing after the disk read
+could still leave stale prompts visible. The list now clears immediately on
+missing identity, before storage I/O, and rechecks identity after the read.
+A claim followed by account removal makes no HTTP request or paid tally.
+The pre-fix combined tree `88cb798730d12517fc3075753d9aca77d4b403de`
+passed Mac `quality:gates` (2,059 passed, 14 skipped); the post-fix tree still
+needs the full local, platform and hosted gates. The later M51 hook media
+preview correction must also join before final certification.
+The cron matcher now follows standard crontab day-field semantics: when either
+day field contains `*`, both fields' actual values must match; when neither
+contains `*`, either may match. Red tests caught `*/1` wrongly firing on an
+unlisted weekday and preserve the `*/2` step and full-range cases. Meta
+documents local five-field cron but does not specify this combination rule,
+so this is a standard-cron inference, not live Muse parity.
+The first M51-joined full WIN-11-VM gate then found four missing results in
+the `paid-subagent-usage` accessibility scenario. M48's harness paid tally
+omitted M52's required `scheduledRuns` field; protocol validation dropped
+that state before the paid badge rendered. A protocol test confirmed the
+rejection. Adding `scheduledRuns: 0` to the shared fixture made the targeted
+scenario pass all four themes with zero findings. This is pre-fix full-gate
+evidence; the corrected exact tree still needs its full rerun.
+The corrected staged tree `8ed1a123a584a9e5ac6dc6cef37efd342c92afc7`
+then passed literal WIN-11-VM full quality: 2,075 unit tests passed, 312
+accessibility pages had zero findings or missing results, and audit, secret,
+SAST and PowerShell checks were clean. Its commit `bb9fd538` preserves that
+tested tree. This receipt precedes the later M51 fixture and hook-stdin fix.
+M55 review found one further display edge: sign-out left a prior schedule
+list in webview state even though the core would refuse its key. A reducer
+test failed with the old prompt still visible, then passed after auth-state
+clearing. Backend switches also clear it; transient CLI sign-in on the still
+active Model API backend preserves it until auth actually changes. The
+webview suite passed 98/98 after the fix. Final exact-tree gates remain open.
+A same-backend Model API key replacement then exposed one more boundary:
+`backendStopping(false)` dropped the old session, but its schedule event stayed
+visible and the next `signedIn` event retained it. A controller test failed
+with the old account's prompt still shown. Dropping a Model API session now
+emits an empty schedule list before the asynchronous restart, while a CLI
+sign-in attempt that keeps the session live does not drop it. The focused
+test passed after the fix; no real key or Model API call was used. This
+change requires its own exact-tree full gate before a commit.
+The native price-modal decline was observed with a fake Model API in an
+ordinary VS Code development window; see the receipt below. Meta's [interactive
+guide](https://dev.meta.ai/docs/muse-code/interactive) defines `/loop` as a
+recurring prompt with an interval or local five-field cron expression. Its
+[loop and cron recipe](https://dev.meta.ai/docs/cookbook/loop-and-cron) says
+jobs are session-scoped, need a running process, skip a fire during an active
+run, recover at most one missed recurring fire, and expire after seven days.
+The captured Muse Code 1.3.0 `cron_create`, `cron_list`, and `cron_delete`
+tool rows are in `docs/certification/m43.md`; MSP exposes no cron verb, and
+the CLI exposes no `muse cron` command. A panel could ask the model to list or
+cancel native jobs, but could not prove that its answer is authoritative.
+
+- **Model API scope**: `/loop <interval> <prompt>` and `/loop "<five-field
+cron>" <prompt>` create local, session-scoped schedules; `/loop list` opens
+  the stored jobs, and `/loop cancel <id>` removes one. The panel lists prompt,
+  cadence, next eligible time, run count, and pending state, with accessible
+  run and cancel controls. A schedule belongs to the workspace and the stored
+  Model API key identity that created it. It persists with its session and
+  survives a window restart. Only a loaded session observes due work; no
+  external or hidden process runs after VS Code closes.
+- **Money boundary**: scheduling, listing, and cancelling make no Model API
+  call. A due occurrence stays pending until the user explicitly chooses Run,
+  accepts that occurrence's prompt and published Model API token prices in a
+  modal, and the machine-scoped, off-by-default scheduled-prompts paid gate
+  is on with its price accepted. Bypass cannot skip this. A declined or closed
+  dialog leaves it pending and spends nothing. A paid transcript row and
+  Account & usage count identify every admitted scheduled run; its tokens
+  remain in the session's token-cost estimate, not added twice. A price
+  confirmation names one model and session; if either changes while the
+  dialog is open, that approval expires without a claim or request. A
+  cancelled job is rechecked after the dialog too. Admission carries the
+  confirmed model and account digest into the turn; the client compares the
+  key it actually reads from SecretStorage with that digest before HTTP,
+  and a changed model fails before each scheduled request. Stop during the
+  key read refuses before the paid row, tally or HTTP request. No raw key is
+  stored in a schedule, transcript or receipt. A local receipt alone does
+  not count as paid use; the paid row and tally appear when the first HTTP
+  attempt begins, after the final guard.
+- **Account isolation during reads**: a list or poll reads the stored jobs
+  before resolving the current key identity. An older, delayed read cannot
+  publish a previous account's prompts after a key switch.
+- **Delivery**: an occurrence is atomically claimed in the workspace store
+  before its turn starts. A failed or interrupted turn is recorded as attempted
+  and never silently replayed. A recurring job computes its next eligible
+  time without a backlog; a one-time job ends after its attempt. An active
+  turn leaves the occurrence pending. The run is refused if the API key has
+  changed, the workspace differs, the paid gate is off, the session is no
+  longer loaded, or the claim cannot be recorded. Resume restores the job
+  list before any due notification. Cancel is idempotent and never cancels a
+  turn already admitted. A receipt claimed just before a model, key or gate
+  change is retained even if the client refuses before HTTP: the missed
+  occurrence is skipped rather than risk a replay of a possibly billed one.
+- **Muse Code boundary**: its native cron tools remain available through
+  ordinary model turns, including the captured tool rows. The panel does not
+  claim a native job list or issue a direct cancel until Meta exposes a
+  schedulers API over MSP or the CLI; add that wire shape only from a live
+  capture. The panel's `/loop` management applies only to the extension's
+  Model API schedules, with backend/account/workspace scope shown in the UI.
+- **Acceptance**: pure schedule parsing and local-time next-fire tests,
+  restart/due/cancel/active-turn tests, atomic-claim and cross-window race
+  tests, changed-key and workspace isolation, gate-off/decline/Bypass drills,
+  paid row and tally, all translations, accessibility harness, and the full
+  `npm run quality` gate. Record red drills and exact evidence in
+  `docs/certification/m52.md` before certification.
+
+**Native modal proof plan and result (2026-09-26).** Reuse the same VS Code
+`showWarningMessage` helper in production and a disposable ordinary VS Code
+development extension. `@vscode/test-cli` explicitly refuses modal dialogs
+while it runs extension tests, as the session-1 test-mode attempt showed, so its test
+mode cannot certify this gate. The probe uses an in-memory key identity, fake
+Model API fetch, session and schedule stores, and an injected clock; it never
+reads or stores the owner's key or calls Meta. For Manual and Bypass, make a
+job due, open the native per-run price modal, dismiss it in the active WIN-11-VM
+console session, and assert zero fake fetches, zero paid-run tally, no receipt
+and unchanged fire count. First prove a disposable user-scope interactive task
+actually runs in session 1 and can inspect VS Code's UI Automation tree.
+Wait for other VM gates to finish before opening a window; remove only the
+identified temporary task and helper afterward. If session-1 UI access is
+unavailable, leave this acceptance gate open rather than treating a mocked
+modal as proof. The disposable task ran in session 1 and UI Automation saw
+the actual modal, including the prompt, standard token prices, and Cancel
+control. Cancel declined Manual and Bypass runs. The fake host recorded zero
+HTTP fetches, paid-run tallies, schedule claims and fire counts in both cases;
+the owner key was never read. `@vscode/test-cli` refused the modal in test
+mode, and injected Escape did not dismiss the ordinary VS Code modal, so
+keyboard Escape is not certified. The temporary task, helper files, private
+Code process, profile and extensions directory were removed after a process
+audit. The capture and red drill are in `docs/certification/m52.md`; ordered
+integration and full gates on the later tree remain open.
+
 ### M53 — Conversation rewind and side chat (D46)
 
-**Status 2026-09-26: provisional M51 join staged; M52 join and certification
+**Status 2026-09-26: M52 join staged; corrected M51 review and certification
 pending** (`docs/certification/m53.md`). Focused tests and merge red drills
 passed on the isolated trees: 628 focused tests on M47 main `34002ab` and
 the combined-fork red drill on M46. The pre-move stage is pinned at
 `refs/codex-backups/m53-pre-m47-20260926`. M48–M51 are present in staged
 tree `01fe750c246b16a527ca51eeb989c672571e7eb8`; six focused suites
 passed 561/561 with five TypeScript projects, lint, localization and format
-green. Corrected M51 ancestry, M52 integration, full quality and visual gates
-remain open.
+green. The later M52 join passed eight focused suites 681/681, five-project
+typecheck, localization, lint, formatting and duplication. Side-schedule
+create, cancel and run failed their red tests, then were refused before
+storage, claim, HTTP or paid tally. Corrected M51 PR #39 ancestry and exact
+combined quality and browser gates remain open.
 
 - **Goal**: rewind conversation context to a selected user turn, preserving
   its prompt as a new draft; ask a side question in a separate branch while
@@ -4515,9 +4718,10 @@ remain open.
   sessions. The fork clears its inherited goal before a strict save; a failed
   save opens no panel or orphan record, and a slow save finishes before the
   source hold is released. History/restart keeps the side label and Plan lock.
-  These focused checks passed on the provisional M51 join. M52 schedule
-  create/run denial, corrected M51 ancestry and exact combined quality still
-  need verification before delivery.
+  These focused checks passed on the provisional M51 join. The M52 join now
+  refuses schedule create, cancel and run in core before paid admission;
+  red/green tests cover a resumed side fork and a Bypass source. Corrected
+  M51 ancestry and exact combined quality still need verification.
 - **Stale action boundary**: a rewind message names the session whose
   transcript supplied the selected prompt; a side-chat message names the
   session shown when its header button was clicked. If the surface switched

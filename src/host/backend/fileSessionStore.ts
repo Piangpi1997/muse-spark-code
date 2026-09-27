@@ -27,6 +27,7 @@ import {
 } from '../../shared/constants'
 import { writeFileAtomically } from '../fsAtomic'
 import type { Logger } from '../logger'
+import { describeStoreError, storeErrorCode } from './storeErrors'
 
 export interface FileSessionStoreDeps {
   readonly directory: string
@@ -46,16 +47,6 @@ const ENOENT = 'ENOENT'
 // A session id names a file; only the UUID alphabet is allowed into a path.
 const SESSION_ID_PATTERN = /^[A-Za-z0-9_-]+$/
 
-function errorCode(error: unknown): string | undefined {
-  return typeof error === 'object' && error !== null && 'code' in error
-    ? String(error.code)
-    : undefined
-}
-
-function describe(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
-}
-
 function assertSessionId(sessionId: string): void {
   if (!SESSION_ID_PATTERN.test(sessionId)) {
     throw new Error(`session id ${sessionId} cannot name a file`)
@@ -71,8 +62,8 @@ export function createFileSessionStore(deps: FileSessionStoreDeps): SessionStore
     try {
       raw = JSON.parse(await readFile(file, 'utf8'))
     } catch (error: unknown) {
-      if (errorCode(error) !== ENOENT) {
-        deps.log.warn(`Session file ${name} skipped: ${describe(error)}`)
+      if (storeErrorCode(error) !== ENOENT) {
+        deps.log.warn(`Session file ${name} skipped: ${describeStoreError(error)}`)
       }
       return undefined
     }
@@ -93,7 +84,7 @@ export function createFileSessionStore(deps: FileSessionStoreDeps): SessionStore
         await rm(file, { force: true })
       }
     } catch (error: unknown) {
-      deps.log.warn(`Leftover ${name} could not be removed: ${describe(error)}`)
+      deps.log.warn(`Leftover ${name} could not be removed: ${describeStoreError(error)}`)
     }
   }
 
@@ -109,7 +100,9 @@ export function createFileSessionStore(deps: FileSessionStoreDeps): SessionStore
       await rm(fileFor(session.sessionId), { force: true })
       deps.log.info(`Session ${session.sessionId} idle for more than ${String(days)} days deleted`)
     } catch (error: unknown) {
-      deps.log.warn(`Expired session ${session.sessionId} not deleted: ${describe(error)}`)
+      deps.log.warn(
+        `Expired session ${session.sessionId} not deleted: ${describeStoreError(error)}`,
+      )
     }
     return true
   }
@@ -120,7 +113,7 @@ export function createFileSessionStore(deps: FileSessionStoreDeps): SessionStore
       try {
         names = await readdir(deps.directory)
       } catch (error: unknown) {
-        if (errorCode(error) === ENOENT) {
+        if (storeErrorCode(error) === ENOENT) {
           return []
         }
         throw error

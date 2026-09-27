@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import { createHash } from 'node:crypto'
 import {
   MissingApiKeyError,
   ModelApiClient,
@@ -7,6 +8,7 @@ import {
   retryAfterMs,
 } from '../../src/core/backends/modelapi/client'
 import type { CreateResponseBody, StreamEvent } from '../../src/core/backends/modelapi/schemas'
+import { UI_TEXT } from '../../src/shared/constants'
 import { FakeLogOutputChannel } from './helpers/fakes'
 import { fakeModelApi } from './helpers/fakeModelApi'
 
@@ -69,6 +71,150 @@ function collect(stream: AsyncIterable<StreamEvent>): Promise<StreamEvent[]> {
 }
 
 describe('ModelApiClient', () => {
+  it('rechecks a scheduled paid gate before retrying a request', async () => {
+    const api = fakeModelApi()
+    api.script({ httpError: { status: 429 } }, { text: 'should not run' })
+    const key = 'LLM|1|secret'
+    let isOn = true
+    const onRequestStarted = vi.fn()
+    const client = new ModelApiClient({
+      fetch: api.fetch,
+      baseUrl: 'https://api.example.test/v1',
+      apiKey: () => Promise.resolve(key),
+      sleep: () => {
+        isOn = false
+        return Promise.resolve()
+      },
+      now: () => NOW,
+      random: () => 0,
+      log: new FakeLogOutputChannel(),
+    })
+    await expect(
+      collect(
+        client.streamResponse(body, new AbortController().signal, undefined, undefined, undefined, {
+          modelId: body.model,
+          keyDigest: createHash('sha256').update(key).digest('hex'),
+          isStillAllowed: () => isOn,
+          onRequestStarted,
+        }),
+      ),
+    ).rejects.toThrow(UI_TEXT.scheduleConfirmationExpired)
+    expect(api.responseBodies()).toHaveLength(1)
+    expect(onRequestStarted).toHaveBeenCalledOnce()
+  })
+
+  it('rechecks the scheduled key before a paid attempt guard on HTTP retry', async () => {
+    const api = fakeModelApi()
+    api.script({ httpError: { status: 429 } }, { text: 'must not run' })
+    const originalKey = 'LLM|1|secret'
+    let currentKey = originalKey
+    const admitted = vi.fn()
+    const onRequestStarted = vi.fn()
+    const client = new ModelApiClient({
+      fetch: api.fetch,
+      baseUrl: 'https://api.example.test/v1',
+      apiKey: () => Promise.resolve(currentKey),
+      sleep: () => {
+        currentKey = 'LLM|1|changed'
+        return Promise.resolve()
+      },
+      now: () => NOW,
+      random: () => 0,
+      log: new FakeLogOutputChannel(),
+    })
+    const originalDigest = createHash('sha256').update(originalKey).digest('hex')
+    await expect(
+      collect(
+        client.streamResponse(body, new AbortController().signal, undefined, undefined, admitted, {
+          modelId: body.model,
+          keyDigest: originalDigest,
+          isStillAllowed: () => true,
+          onRequestStarted,
+        }),
+      ),
+    ).rejects.toThrow(UI_TEXT.scheduleConfirmationExpired)
+    expect(api.responseBodies()).toHaveLength(1)
+    expect(admitted).toHaveBeenCalledExactlyOnceWith(originalDigest)
+    expect(onRequestStarted).toHaveBeenCalledOnce()
+  })
+
+  it('refuses a scheduled paid row when final admission aborts synchronously', async () => {
+    const api = fakeModelApi()
+    api.script({ text: 'must not run' })
+    const fetch = vi.fn(api.fetch)
+    const key = 'LLM|1|secret'
+    const stop = new AbortController()
+    const onRequestStarted = vi.fn()
+    const client = new ModelApiClient({
+      fetch,
+      baseUrl: 'https://api.example.test/v1',
+      apiKey: () => Promise.resolve(key),
+      sleep: () => Promise.resolve(),
+      now: () => NOW,
+      random: () => 0,
+      log: new FakeLogOutputChannel(),
+    })
+    await expect(
+      collect(
+        client.streamResponse(
+          body,
+          stop.signal,
+          undefined,
+          undefined,
+          () => {
+            stop.abort()
+          },
+          {
+            modelId: body.model,
+            keyDigest: createHash('sha256').update(key).digest('hex'),
+            isStillAllowed: () => true,
+            onRequestStarted,
+          },
+        ),
+      ),
+    ).rejects.toMatchObject({ status: 0 })
+    expect(onRequestStarted).not.toHaveBeenCalled()
+    expect(fetch).not.toHaveBeenCalled()
+  })
+
+  it('keeps a stopped scheduled run free while its SecretStorage key read settles', async () => {
+    const api = fakeModelApi()
+    const fetch = vi.fn(api.fetch)
+    const key = 'LLM|1|secret'
+    const keyStarted = Promise.withResolvers<undefined>()
+    const keyResult = Promise.withResolvers<string>()
+    const onRequestStarted = vi.fn()
+    const admitted = vi.fn()
+    const client = new ModelApiClient({
+      fetch,
+      baseUrl: 'https://api.example.test/v1',
+      apiKey: () => {
+        keyStarted.resolve(undefined)
+        return keyResult.promise
+      },
+      sleep: () => Promise.resolve(),
+      now: () => NOW,
+      random: () => 0,
+      log: new FakeLogOutputChannel(),
+    })
+    const stop = new AbortController()
+    const result = collect(
+      client.streamResponse(body, stop.signal, undefined, undefined, admitted, {
+        modelId: body.model,
+        keyDigest: createHash('sha256').update(key).digest('hex'),
+        isStillAllowed: () => true,
+        onRequestStarted,
+      }),
+    )
+    await keyStarted.promise
+    stop.abort()
+    keyResult.resolve(key)
+    await expect(result).rejects.toMatchObject({ status: 0 })
+    expect(onRequestStarted).not.toHaveBeenCalled()
+    expect(admitted).not.toHaveBeenCalled()
+    expect(fetch).not.toHaveBeenCalled()
+  })
+
   it('sends the bearer key and lists the catalogue ids', async () => {
     const { api, client } = setup()
     await expect(client.listModels()).resolves.toEqual([

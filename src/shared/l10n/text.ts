@@ -17,6 +17,7 @@ interface LocaleState {
   pluralRules: Intl.PluralRules
   relativeTimes: Intl.RelativeTimeFormat
   dates: Intl.DateTimeFormat
+  dateTimes: Intl.DateTimeFormat
   readonly formatters: Map<string, Intl.NumberFormat>
 }
 
@@ -26,6 +27,7 @@ function stateFor(locale: string, formatters: Map<string, Intl.NumberFormat>): L
     pluralRules: new Intl.PluralRules(locale),
     relativeTimes: new Intl.RelativeTimeFormat(locale, { numeric: 'auto', style: 'short' }),
     dates: new Intl.DateTimeFormat(locale, { dateStyle: 'medium' }),
+    dateTimes: new Intl.DateTimeFormat(locale, { dateStyle: 'medium', timeStyle: 'short' }),
     formatters,
   }
 }
@@ -101,6 +103,11 @@ export function formatRelativeTime(value: number, unit: Intl.RelativeTimeFormatU
 /** A calendar date in the display language. */
 export function formatDate(epochMs: number): string {
   return current.dates.format(epochMs)
+}
+
+/** A local calendar date and time in the installed language. */
+export function formatDateTime(epochMs: number): string {
+  return current.dateTimes.format(epochMs)
 }
 
 /** The template with each `{slot}` replaced; numbers are formatted, unknown slots stay. */
