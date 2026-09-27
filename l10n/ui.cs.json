@@ -1182,5 +1182,10 @@
     "many": "{count} naplánovaných spuštění",
     "other": "{count} naplánovaných spuštění"
   },
-  "usageScheduledIncluded": "cena tokenů je zahrnuta výše"
+  "usageScheduledIncluded": "cena tokenů je zahrnuta výše",
+  "networkUntrustedCertificate": "Certifikátu serveru se nedůvěřuje. Pokud vaše síť kontroluje HTTPS, nainstalujte její kořenový certifikát do úložiště certifikátů operačního systému (VS Code ho čte, když je zapnuté http.systemCertificates), nebo vypněte http.systemCertificates a před spuštěním VS Code uveďte soubor kořenového certifikátu v NODE_EXTRA_CA_CERTS.",
+  "networkProxyCredentials": "Proxy server požádal o přihlašovací údaje a ty, které dostal, nepřijal. Zkontrolujte http.proxy a http.proxyAuthorization nebo údaje, o které vás požádal VS Code.",
+  "networkProxyRefused": "Proxy server odmítl připojení (HTTP {status}). Zkontrolujte, že povoluje api.meta.ai.",
+  "networkUnreachable": "Server Meta není dostupný. Zkontrolujte připojení k síti, a pokud používáte proxy server, také http.proxy a http.proxySupport.",
+  "approvalModeCeiling": "Konfigurace Muse Code (její výchozí profil oprávnění nebo zásada, kterou spravuje váš správce) tento režim oprávnění nepovoluje. Zvolte přísnější režim, například Ruční, a odešlete zprávu znovu."
 }

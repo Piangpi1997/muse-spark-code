@@ -16,7 +16,7 @@ import type { ToolIo } from '../../core/backends/modelapi/tools'
 import type { ContextIo } from '../../core/context/contextFiles'
 import type { McpTool } from '../../core/mcp'
 import type { MemoryStore } from '../../core/memory/memoryStore'
-import { MODEL_API_BASE_URL, UI_TEXT } from '../../shared/constants'
+import { MODEL_API_BASE_URL, type PromptCacheRetention, UI_TEXT } from '../../shared/constants'
 import type { Logger } from '../logger'
 
 export interface ModelApiBackendManagerDeps extends ModelApiPaidHooks {
@@ -39,6 +39,8 @@ export interface ModelApiBackendManagerDeps extends ModelApiPaidHooks {
   readonly scheduleStore?: ScheduleStore | undefined
   /** The git facts for the prompt's environment section (D15). */
   readonly describeEnvironment: () => Promise<EnvironmentFacts>
+  /** `museSpark.modelApiPromptCacheRetention`, read per request (M56, PLAN.md D43). */
+  readonly promptCacheRetention: () => PromptCacheRetention
   readonly hookSettingsPath?: string
   readonly isHooksEnabled?: () => boolean
   /** The MCP servers for a host in this workspace (M50), one set per host. */
@@ -117,6 +119,7 @@ export class ModelApiBackendManager {
       describeEnvironment: this.deps.describeEnvironment,
       isPaidFeatureOn: this.deps.isPaidFeatureOn,
       notePaidUse: this.deps.notePaidUse,
+      promptCacheRetention: this.deps.promptCacheRetention,
       mcpServers: await this.deps.createMcpServers?.(workspaceRoot),
       ideTools: this.deps.ideTools,
       confirmSubagentTask: this.deps.confirmSubagentTask,

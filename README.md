@@ -969,11 +969,13 @@ backend runs no workflows.
   from Muse's reminder agents (which run after every reply), from subagents,
   and from sessions active for 8+ hours. Approximate, this machine only.
 
-**Prompt caching.** The Model API backend sends a per-session cache key so
-repeated prefixes are billed at the cached rate; the CLI caches on its own.
-Meta does not publish the cache lifetime, so there is no "warm for N
-minutes" countdown; on the Model API the modal shows the cache-hit rate
-instead.
+**Prompt caching.** The Model API backend sends a stable key for requests
+that share a model, instructions and tools, so repeated prefixes can be
+billed at the cached rate; the CLI caches on its own. The retention setting
+asks Meta for its shorter in-memory default, or up to 24 hours when you
+choose that machine-scoped setting. Either is a hint rather than a guaranteed
+lifetime. The modal shows the cache-hit
+rate instead of a "warm for N minutes" countdown.
 
 **Diagnostics.** The agent can read the Problems panel through a
 `getDiagnostics` tool. On the CLI backend the extension serves it on a
@@ -1077,10 +1079,11 @@ subscription):
 | Subagents        | Selected model's published input, cached input and output token rates | Child tasks on the Model API backend; every task asks again and admits at most four response requests                                 |
 
 Scheduled prompts use ordinary Model API tokens, rather than an extra
-per-run service fee. The off-by-default paid gate names the standard model
-rates ($1.25 per million input tokens, $0.15 per million cached input tokens,
-$4.25 per million output tokens; contributor models cost less). Every due
-run asks again before any model call. Other paid tools you have enabled may
+per-run service fee. The off-by-default paid gate names both standard
+($1.25/$0.15/$4.25) and contributor ($0.10/$0.002/$0.20) rates per million
+input/cached/output tokens. Each due run names only its selected model's
+exact tier before any model call; an unpriced model cannot be approved.
+Other paid tools you have enabled may
 add their own charges during that confirmed turn.
 
 Turn one on from the palette (**Account & usage** group, where the backend
@@ -1201,34 +1204,34 @@ What stays in English:
 
 ## Commands and keybindings
 
-| Command                                             | Default keybinding                                                                   | What it does                                                                                                                                              |
-| --------------------------------------------------- | ------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Muse Spark: Open in Sidebar                         | —                                                                                    | Focus the chat view in the activity bar                                                                                                                   |
-| Muse Spark: New Conversation                        | `Ctrl+N` (`Cmd+N`) when `enableNewConversationShortcut` is on, Muse focused          | Clear the active panel to a new conversation, or open one where `preferredLocation` says                                                                  |
-| Muse Spark: Sign Out                                | —                                                                                    | Forget the stored Model API key and run `muse logout` when the CLI is signed in                                                                           |
-| Muse Spark: Open in Terminal                        | —                                                                                    | Run the Muse Code CLI's own interactive interface in a VS Code terminal at the workspace root                                                             |
-| Muse Spark: Create AGENTS.md                        | —                                                                                    | Write the rules file with `muse init` (or the same template without the CLI) and open it; an existing file is opened                                      |
-| Muse Spark: Open Walkthrough                        | —                                                                                    | Open the four-step Get Started walkthrough                                                                                                                |
-| Muse Spark: Open in New Tab                         | `Ctrl+Shift+Alt+Esc` on Windows, `Cmd+Shift+Esc` on macOS, `Ctrl+Shift+Esc` on Linux | Open an independent conversation as an editor tab (also the `+` in the view title); the panel header's own button starts a new conversation in place      |
-| Muse Spark: Toggle Focus                            | `Ctrl+Alt+Esc` on Windows, `Cmd+Esc` on macOS, `Ctrl+Esc` on Linux                   | Move keyboard focus between the editor and the composer                                                                                                   |
-| Muse Spark: Insert @-Mention for Selection          | `Alt+K`, editor focused                                                              | Insert `@path#start-end` for the active editor selection into the composer                                                                                |
-| Muse Spark: Toggle Focus View                       | `Ctrl+Alt+F`, Muse focused                                                           | Flip the `museSpark.focusView` setting (hides tool calls and reasoning)                                                                                   |
-| Muse Spark: Toggle Thinking                         | `Ctrl+Alt+T` (macOS `Option+T`, Linux `Ctrl+Alt+O`), composer only                   | Turn reasoning on or off for this conversation. Claude Code uses `Alt+T`; on Windows that opens the Terminal menu, on GNOME `Ctrl+Alt+T` opens a terminal |
-| Muse Spark: Set Up Shell Sandbox                    | —                                                                                    | Windows: run Muse Code's one-time `muse sandbox windows setup` through a UAC prompt and report the result; elsewhere reports that no setup is needed      |
-| Muse Spark: Show Logs                               | —                                                                                    | Open the "Muse Spark" log channel (keys redacted)                                                                                                         |
-| Muse Spark: Diagnostics                             | —                                                                                    | Write the versions, the backend and CLI facts, credential presence (as yes/no) and the dictation state to the log and open it: what a bug report needs    |
-| Muse Spark: Manage Skills                           | —                                                                                    | Turn Muse Code's skills on or off (`muse skills enable`/`disable`), then offer to restart it so the change takes effect                                   |
-| Muse Spark: Import Skills from Claude Code or Codex | —                                                                                    | Preview what `muse skills import` would copy, import it once you confirm, report what was imported, skipped or failed                                     |
-| Muse Spark: Export Conversation                     | —                                                                                    | Save the conversation in front of you as Markdown where you choose, and open it                                                                           |
-| Muse Spark: MCP Servers                             | —                                                                                    | Show the MCP servers Muse Code will load (on the Model API backend, how each is running), sign in to or out of a remote one, open the settings file       |
-| Muse Spark: Hooks                                   | —                                                                                    | Show where Muse Code's hooks come from (project, yours, managed) and open each file                                                                       |
-| Muse Spark: Memory                                  | —                                                                                    | List Muse Code's memory notes for this workspace, open one to edit, create one, or delete one to the trash, keeping each `MEMORY.md` index in step        |
-| Muse Spark: New Worktree…                           | —                                                                                    | Ask for a new branch and its base, create it in its own folder beside the repository, then offer to open it in a new window                               |
-| Muse Spark: Remove Worktree…                        | —                                                                                    | Delete another worktree's folder (its branch stays), asking again before discarding uncommitted changes                                                   |
-| Muse Spark: Move Running Command to Background      | `Ctrl+B` (also on macOS), while the conversation in view runs a shell command        | Let the running shell commands go on in the background while the agent carries on; VS Code keeps `Ctrl+B` otherwise                                       |
-| Muse Spark: Stop Background Tasks                   | —                                                                                    | Stop every background task of the conversation in view                                                                                                    |
-| (composer) Record voice                             | `Ctrl+D` (`Cmd+D`), composer only                                                    | Tap to start or stop voice dictation, hold to record while held                                                                                           |
-| (composer) Run a shell command                      | Start the message with `!`                                                           | Run it in the workspace as you, outside any turn; the agent sees it with your next message                                                                |
+| Command                                             | Default keybinding                                                                   | What it does                                                                                                                                                                                      |
+| --------------------------------------------------- | ------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Muse Spark: Open in Sidebar                         | —                                                                                    | Focus the chat view in the activity bar                                                                                                                                                           |
+| Muse Spark: New Conversation                        | `Ctrl+N` (`Cmd+N`) when `enableNewConversationShortcut` is on, Muse focused          | Clear the active panel to a new conversation, or open one where `preferredLocation` says                                                                                                          |
+| Muse Spark: Sign Out                                | —                                                                                    | Forget the stored Model API key and run `muse logout` when the CLI is signed in                                                                                                                   |
+| Muse Spark: Open in Terminal                        | —                                                                                    | Run the Muse Code CLI's own interactive interface in a VS Code terminal at the workspace root                                                                                                     |
+| Muse Spark: Create AGENTS.md                        | —                                                                                    | Write the rules file with `muse init` (or the same template without the CLI) and open it; an existing file is opened                                                                              |
+| Muse Spark: Open Walkthrough                        | —                                                                                    | Open the four-step Get Started walkthrough                                                                                                                                                        |
+| Muse Spark: Open in New Tab                         | `Ctrl+Shift+Alt+Esc` on Windows, `Cmd+Shift+Esc` on macOS, `Ctrl+Shift+Esc` on Linux | Open an independent conversation as an editor tab (also the `+` in the view title); the panel header's own button starts a new conversation in place                                              |
+| Muse Spark: Toggle Focus                            | `Ctrl+Alt+Esc` on Windows, `Cmd+Esc` on macOS, `Ctrl+Esc` on Linux                   | Move keyboard focus between the editor and the composer                                                                                                                                           |
+| Muse Spark: Insert @-Mention for Selection          | `Alt+K`, editor focused                                                              | Insert `@path#start-end` for the active editor selection into the composer                                                                                                                        |
+| Muse Spark: Toggle Focus View                       | `Ctrl+Alt+F`, Muse focused                                                           | Flip the `museSpark.focusView` setting (hides tool calls and reasoning)                                                                                                                           |
+| Muse Spark: Toggle Thinking                         | `Ctrl+Alt+T` (macOS `Option+T`, Linux `Ctrl+Alt+O`), composer only                   | Turn reasoning on or off for this conversation. Claude Code uses `Alt+T`; on Windows that opens the Terminal menu, on GNOME `Ctrl+Alt+T` opens a terminal                                         |
+| Muse Spark: Set Up Shell Sandbox                    | —                                                                                    | Windows: run Muse Code's one-time `muse sandbox windows setup` through a UAC prompt and report the result; elsewhere reports that no setup is needed                                              |
+| Muse Spark: Show Logs                               | —                                                                                    | Open the "Muse Spark" log channel (keys redacted)                                                                                                                                                 |
+| Muse Spark: Diagnostics                             | —                                                                                    | Write the versions, the backend and CLI facts, credential presence (as yes/no), the dictation state, the network posture and `muse config status` to the log and open it: what a bug report needs |
+| Muse Spark: Manage Skills                           | —                                                                                    | Turn Muse Code's skills on or off (`muse skills enable`/`disable`), then offer to restart it so the change takes effect                                                                           |
+| Muse Spark: Import Skills from Claude Code or Codex | —                                                                                    | Preview what `muse skills import` would copy, import it once you confirm, report what was imported, skipped or failed                                                                             |
+| Muse Spark: Export Conversation                     | —                                                                                    | Save the conversation in front of you as Markdown where you choose, and open it                                                                                                                   |
+| Muse Spark: MCP Servers                             | —                                                                                    | Show the MCP servers Muse Code will load (on the Model API backend, how each is running), sign in to or out of a remote one, open the settings file                                               |
+| Muse Spark: Hooks                                   | —                                                                                    | Show where Muse Code's hooks come from (project, yours, managed) and open each file                                                                                                               |
+| Muse Spark: Memory                                  | —                                                                                    | List Muse Code's memory notes for this workspace, open one to edit, create one, or delete one to the trash, keeping each `MEMORY.md` index in step                                                |
+| Muse Spark: New Worktree…                           | —                                                                                    | Ask for a new branch and its base, create it in its own folder beside the repository, then offer to open it in a new window                                                                       |
+| Muse Spark: Remove Worktree…                        | —                                                                                    | Delete another worktree's folder (its branch stays), asking again before discarding uncommitted changes                                                                                           |
+| Muse Spark: Move Running Command to Background      | `Ctrl+B` (also on macOS), while the conversation in view runs a shell command        | Let the running shell commands go on in the background while the agent carries on; VS Code keeps `Ctrl+B` otherwise                                                                               |
+| Muse Spark: Stop Background Tasks                   | —                                                                                    | Stop every background task of the conversation in view                                                                                                                                            |
+| (composer) Record voice                             | `Ctrl+D` (`Cmd+D`), composer only                                                    | Tap to start or stop voice dictation, hold to record while held                                                                                                                                   |
+| (composer) Run a shell command                      | Start the message with `!`                                                           | Run it in the workspace as you, outside any turn; the agent sees it with your next message                                                                                                        |
 
 Windows keeps `Ctrl+Esc` for Start and `Ctrl+Shift+Esc` for Task Manager,
 which is why its two shortcuts add `Alt`. Nine commands appear in the
@@ -1242,7 +1245,7 @@ the two worktree commands with a folder open.
 
 All settings live under `museSpark.*`; changes apply to open panels
 immediately. The settings that choose what runs and what is billed
-(`initialPermissionMode`, `backend`, `shellSandbox`,
+(`initialPermissionMode`, `backend`, `shellSandbox`, `sandboxNetwork`,
 `allowDangerouslySkipPermissions`, `museBinaryPath`, `environmentVariables`
 and the three paid features) are machine-scoped: they take effect from your user settings only, never from
 a repository's `.vscode/settings.json`. In a remote window (SSH, WSL, a dev
@@ -1252,38 +1255,70 @@ Bypass permissions and asks you once before entering it. Turning
 `allowDangerouslySkipPermissions` off moves every open conversation out of
 Bypass at once.
 
-| Setting                           | Default  | Purpose                                                                                                                                                                                                                                                                                                                                |
-| --------------------------------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `preferredLocation`               | `panel`  | Where new conversations open: `sidebar` or `panel` (editor tab)                                                                                                                                                                                                                                                                        |
-| `initialPermissionMode`           | `manual` | `manual`, `acceptEdits`, `plan`, `auto` or `bypassPermissions` for new conversations; `bypassPermissions` applies only while `allowDangerouslySkipPermissions` is on, otherwise the conversation starts in `manual`                                                                                                                    |
-| `autosave`                        | `true`   | Save all dirty editors before every turn                                                                                                                                                                                                                                                                                               |
-| `attachOpenFile`                  | `true`   | Show the open-file chip and send the active file / selection with each message                                                                                                                                                                                                                                                         |
-| `useCtrlEnterToSend`              | `false`  | Send with Ctrl/Cmd+Enter instead of Enter                                                                                                                                                                                                                                                                                              |
-| `enableNewConversationShortcut`   | `false`  | `Ctrl+N` / `Cmd+N` starts a new conversation while a Muse panel is focused                                                                                                                                                                                                                                                             |
-| `hideOnboarding`                  | `false`  | Hide the getting-started tips                                                                                                                                                                                                                                                                                                          |
-| `focusView`                       | `false`  | Show only prompts and responses                                                                                                                                                                                                                                                                                                        |
-| `respectGitIgnore`                | `true`   | Exclude `.gitignore` patterns from file searches and `@`-mentions                                                                                                                                                                                                                                                                      |
-| `confidentialWorkspace`           | `false`  | Block contributor-tier models (Meta may train on their traffic) in this workspace                                                                                                                                                                                                                                                      |
-| `allowDangerouslySkipPermissions` | `false`  | List Bypass permissions in the Modes menu and the Shift+Tab cycle (sandboxes only)                                                                                                                                                                                                                                                     |
-| `archiveInactiveSessions`         | `14`     | Hide sessions idle for this many days from the History dialog (`1`, `2`, `7`, `14`, or `0` for never); they stay on disk and **Show archived** lists them                                                                                                                                                                              |
-| `cleanupPeriodDays`               | `30`     | Delete Model API conversations idle for more than this many days when a window lists them (`0` keeps them); Muse Code's own sessions are the CLI's to keep                                                                                                                                                                             |
-| `backend`                         | `auto`   | `auto`: Muse Code when the CLI is signed in, else the Model API when a key is stored; `museCode` / `modelApi` force one. The pasted key never reaches the CLI. Changing it restarts the host                                                                                                                                           |
-| `shellSandbox`                    | `auto`   | `auto`: Muse Code's OS sandbox, except for Windows workspaces under your profile where it cannot run commands; `muse`: always the sandbox; `off`: commands run directly as you, gated by approvals (Claude Code style). Without the sandbox Muse Code's file tools may also write outside the workspace. Changing it restarts the host |
-| `museBinaryPath`                  | `""`     | Absolute path to the Muse Code executable (a relative one is refused); empty discovers it on `PATH` or the install dir. Changing it restarts the host                                                                                                                                                                                  |
-| `modelApiWebSearch`               | `false`  | [Paid](#paid-features): web search on the Model API backend, $2.50 per 1,000 searches; asks you to confirm the price when turned on                                                                                                                                                                                                    |
-| `modelApiImageGeneration`         | `false`  | [Paid](#paid-features): image files on the Model API backend, $0.01 per image; every image asks first, in every mode                                                                                                                                                                                                                   |
-| `modelApiVoice`                   | `false`  | [Paid](#paid-features): Muse Voice as the microphone's engine on the Model API backend, $0.18 per hour of audio                                                                                                                                                                                                                        |
-| `modelApiSubagents`               | `false`  | [Paid](#paid-features): Model API child tasks, with a model-rate confirmation and a fresh four-request approval for every task                                                                                                                                                                                                         |
-| `modelApiScheduledPrompts`        | `false`  | [Paid](#scheduled-prompts-model-api): a due prompt can run only after this machine-scoped gate and a separate confirmation of that occurrence's Model API token rates; never unattended                                                                                                                                                |
-| `environmentVariables`            | `[]`     | `{ name, value }` pairs for the Muse Code process (an `XDG_CONFIG_HOME` here is where the extension looks for the CLI's sign-in and settings too). Never put API keys here; use Sign in. Changing it restarts the host                                                                                                                 |
+| Setting                           | Default     | Purpose                                                                                                                                                                                                                                                                                                                                     |
+| --------------------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `preferredLocation`               | `panel`     | Where new conversations open: `sidebar` or `panel` (editor tab)                                                                                                                                                                                                                                                                             |
+| `initialPermissionMode`           | `manual`    | `manual`, `acceptEdits`, `plan`, `auto` or `bypassPermissions` for new conversations; `bypassPermissions` applies only while `allowDangerouslySkipPermissions` is on, otherwise the conversation starts in `manual`                                                                                                                         |
+| `autosave`                        | `true`      | Save all dirty editors before every turn                                                                                                                                                                                                                                                                                                    |
+| `attachOpenFile`                  | `true`      | Show the open-file chip and send the active file / selection with each message                                                                                                                                                                                                                                                              |
+| `useCtrlEnterToSend`              | `false`     | Send with Ctrl/Cmd+Enter instead of Enter                                                                                                                                                                                                                                                                                                   |
+| `enableNewConversationShortcut`   | `false`     | `Ctrl+N` / `Cmd+N` starts a new conversation while a Muse panel is focused                                                                                                                                                                                                                                                                  |
+| `hideOnboarding`                  | `false`     | Hide the getting-started tips                                                                                                                                                                                                                                                                                                               |
+| `focusView`                       | `false`     | Show only prompts and responses                                                                                                                                                                                                                                                                                                             |
+| `respectGitIgnore`                | `true`      | Exclude `.gitignore` patterns from file searches and `@`-mentions                                                                                                                                                                                                                                                                           |
+| `confidentialWorkspace`           | `false`     | Block contributor-tier models (Meta may train on their traffic) in this workspace                                                                                                                                                                                                                                                           |
+| `allowDangerouslySkipPermissions` | `false`     | List Bypass permissions in the Modes menu and the Shift+Tab cycle (sandboxes only)                                                                                                                                                                                                                                                          |
+| `archiveInactiveSessions`         | `14`        | Hide sessions idle for this many days from the History dialog (`1`, `2`, `7`, `14`, or `0` for never); they stay on disk and **Show archived** lists them                                                                                                                                                                                   |
+| `cleanupPeriodDays`               | `30`        | Delete Model API conversations idle for more than this many days when a window lists them (`0` keeps them); Muse Code's own sessions are the CLI's to keep                                                                                                                                                                                  |
+| `backend`                         | `auto`      | `auto`: Muse Code when the CLI is signed in, else the Model API when a key is stored; `museCode` / `modelApi` force one. The pasted key never reaches the CLI. Changing it restarts the host                                                                                                                                                |
+| `shellSandbox`                    | `auto`      | `auto`: Muse Code's OS sandbox, except for Windows workspaces under your profile where it cannot run commands; `muse`: always the sandbox; `off`: commands run directly as you, gated by approvals (Claude Code style). Without the sandbox Muse Code's file tools may also write outside the workspace. Changing it restarts the host      |
+| `sandboxNetwork`                  | `default`   | The network Muse Code's shell sandbox gives commands: `proxy-only` asks before each new destination, `restricted` allows none, `enabled` allows all; `default` passes nothing, leaving Muse Code's own default (`proxy-only`) or your administrator's managed configuration. Applies while the sandbox is on. Changing it restarts the host |
+| `museBinaryPath`                  | `""`        | Absolute path to the Muse Code executable (a relative one is refused); empty discovers it on `PATH` or the install dir. Changing it restarts the host                                                                                                                                                                                       |
+| `modelApiWebSearch`               | `false`     | [Paid](#paid-features): web search on the Model API backend, $2.50 per 1,000 searches; asks you to confirm the price when turned on                                                                                                                                                                                                         |
+| `modelApiImageGeneration`         | `false`     | [Paid](#paid-features): image files on the Model API backend, $0.01 per image; every image asks first, in every mode                                                                                                                                                                                                                        |
+| `modelApiVoice`                   | `false`     | [Paid](#paid-features): Muse Voice as the microphone's engine on the Model API backend, $0.18 per hour of audio                                                                                                                                                                                                                             |
+| `modelApiPromptCacheRetention`    | `in_memory` | How long Meta is asked to keep the cached start of Model API requests: `in_memory` by default, or up to `24h` when you choose it. Both have the same cached-input price; longer retention may improve cache hits after a pause. Meta may evict sooner. Machine-scoped, so a repository cannot extend it                                     |
+| `modelApiSubagents`               | `false`     | [Paid](#paid-features): Model API child tasks, with a model-rate confirmation and a fresh four-request approval for every task                                                                                                                                                                                                              |
+| `modelApiScheduledPrompts`        | `false`     | [Paid](#scheduled-prompts-model-api): a due prompt can run only after this machine-scoped gate and a separate confirmation of that occurrence's Model API token rates; never unattended                                                                                                                                                     |
+| `environmentVariables`            | `[]`        | `{ name, value }` pairs for the Muse Code process (an `XDG_CONFIG_HOME` here is where the extension looks for the CLI's sign-in and settings too). Never put API keys here; use Sign in. Changing it restarts the host                                                                                                                      |
 
-Muse Code also gets VS Code's `http.proxy` (and `http.noProxy`) as
-`HTTPS_PROXY` / `HTTP_PROXY` / `NO_PROXY` when neither its environment nor
-`environmentVariables` sets one, in either case. The Model API backend's
-shell tool applies `terminal.integrated.env.*` the way VS Code's terminal
-does. A restart of Muse Code, for a setting, trust granted, a sign-in or a
-crash, keeps the conversation: the running turn is stopped and the next
-message resumes the same session.
+The Model API backend's shell tool applies `terminal.integrated.env.*` the
+way VS Code's terminal does. A restart of Muse Code, for a setting, trust
+granted, a sign-in or a crash, keeps the conversation: the running turn is
+stopped and the next message resumes the same session.
+
+### Proxies and certificates
+
+- **The extension's own requests** (the Model API, the paid features, Muse
+  Voice's socket) go through VS Code's network support, as every
+  extension's `fetch` and WebSocket do from VS Code 1.125: `http.proxy`, or
+  the system's proxy settings or PAC file; proxy authentication as VS Code
+  handles it (Basic and Kerberos); `http.noProxy`; and the
+  operating system's certificate store while `http.systemCertificates` is
+  on. `http.proxySupport`, `http.fetchAdditionalSupport` and
+  `http.webSocketAdditionalSupport` must stay on (their defaults) for that.
+  A network that inspects HTTPS needs its root in the system store. Naming
+  the root's file in `NODE_EXTRA_CA_CERTS` before VS Code starts works only
+  with `http.systemCertificates` off: in the M56 drill the variable did not
+  help while that setting was on (its default).
+- **Muse Code** reads proxy variables from its environment (`HTTPS_PROXY`,
+  `HTTP_PROXY`, `ALL_PROXY`, `NO_PROXY`). The extension hands it VS Code's
+  `http.proxy` (and `http.noProxy`) when neither its environment nor
+  `environmentVariables` sets one, in either case; a proxy VS Code finds in
+  the system settings or a PAC file does not reach it, so set `http.proxy`
+  or `HTTPS_PROXY` in `environmentVariables`; keep proxy credentials out of
+  shared workspace settings. If `http.proxy` or `http.noProxy` has the wrong
+  type, the extension ignores that value for Muse Code instead of passing it
+  into the CLI's environment; correct the VS Code setting to restore it.
+  Loopback bypasses an environment proxy, so Muse Code reaches the extension's
+  `ide` tools. Muse Code also has its own `endpoint_transport.proxy` setting,
+  which this extension does not manage. Muse Code 1.3.0 trusts the operating system's certificate
+  store; `SSL_CERT_FILE` or `SSL_CERT_DIR` replace that store for it
+  entirely, so a file named there must hold every root it needs.
+- **Muse Spark: Diagnostics** reports which of these are set (never a
+  proxy's address) and known-safe source and generation fields from
+  Muse Code's managed configuration (`muse config status`). Unrecognized
+  lines and failed-command output stay out of the public-issue report.
 
 ## Requirements
 
@@ -1336,6 +1371,15 @@ message resumes the same session.
   output; keys are redacted.
 - The usage insights read the Muse Code CLI's trace logs on this machine and
   send nothing anywhere.
+- On the Model API backend Meta caches the start of each request to answer
+  the next one faster and cheaper; the extension asks for the shorter
+  `in_memory` retention by default. Only your machine-scoped
+  `museSpark.modelApiPromptCacheRetention` setting can request up to 24 hours;
+  a repository cannot extend your choice. The cache key is a digest
+  of the instructions and tools it starts with, not a session or user id.
+- Behind a corporate network the extension's requests use VS Code's proxy
+  and certificate settings, and Muse Code gets the proxy and certificate
+  variables described under [Proxies and certificates](#proxies-and-certificates).
 - Workspace rules, skill files and the memory snapshot are read only in a
   trusted workspace; on the Model API backend their text is part of what
   goes to Meta with each request, on the CLI backend Muse Code sends them
@@ -1373,6 +1417,27 @@ message resumes the same session.
   - **More detail:** set the channel's level to **Trace** (the gear in the
     Output view) to see how long each Muse Code command and Model API
     request took.
+- **A Model API request fails with "The server's certificate is not
+  trusted"** — the network inspects HTTPS and re-signs it with its own
+  root. Install that root in the operating system's certificate store and
+  keep `http.systemCertificates` on, or turn `http.systemCertificates` off
+  and name the root's file in `NODE_EXTRA_CA_CERTS` before starting VS
+  Code; the variable does not help while that setting is on. Muse Code
+  reads the system store too.
+- **"The proxy asked for credentials"** or **"The proxy refused the
+  connection (HTTP 403)"** — the proxy wants a sign-in VS Code did not give
+  it, or does not allow `api.meta.ai`. Check `http.proxy` and
+  `http.proxyAuthorization`, or ask for the host to be allowed.
+- **Muse Code cannot reach Meta behind a proxy the browser uses** — the
+  proxy comes from the system settings or a PAC file, which only VS Code
+  reads. Set `http.proxy`, or `HTTPS_PROXY` in
+  `museSpark.environmentVariables`, and the next message restarts Muse Code
+  with it. **Muse Spark: Diagnostics** says where Muse Code's proxy comes
+  from.
+- **A permission mode is refused with "Muse Code's configuration … does not
+  allow this permission mode"** — its default permission profile or a
+  policy your administrator manages caps the modes; choose a stricter one.
+  **Muse Spark: Diagnostics** prints `muse config status`.
 - **A Model API reply ends with "sent nothing for 300 s"** — the stream
   stalled, so the turn was ended rather than left running until **Stop**.
   Send the message again to retry.
@@ -1527,7 +1592,7 @@ src/shared/l10n/            the English table (en.ts), the fill, plural and Intl
 l10n/                       the translated tables (ui.<language>.json) and the gate's list of names left in English
 package.nls.json            the manifest's text: commands, settings, the walkthrough
 src/webview/                React app (own tsconfig, browser libs)
-native/windows/             dictate.ps1: the Windows dictation helper (System.Speech)
+native/windows/             dictate.ps1: the Windows dictation helper (System.Speech); MuseSparkJob.cs, MuseSparkMcpLauncher.cs, MuseSparkMcpJob.cs: the Windows job helpers' C#, compiled on first use
 native/darwin/              Dictation.swift, Info.plist, build.sh, check-disclaim.sh: the macOS helper (built and checked in CI)
 resources/walkthrough/      the Get Started walkthrough
 test/unit/                  vitest tests, vscode mock, fakes

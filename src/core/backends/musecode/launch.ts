@@ -16,6 +16,7 @@
 import path from 'node:path'
 import type { EnvironmentVariable } from '../../../shared/constants'
 import {
+  LOOPBACK_NO_PROXY_ENTRIES,
   MUSE_BIN_PREFIX,
   MUSE_CMD_FILE,
   MUSE_CREDENTIAL_FILE_SEGMENTS,
@@ -24,6 +25,10 @@ import {
   MUSE_VERSION_FILE,
   MUSE_WINDOWS_EXE_SUFFIX,
   MUSE_WINDOWS_INSTALL_SEGMENTS,
+  NO_PROXY_SEPARATOR,
+  NO_PROXY_SPELLINGS,
+  NO_PROXY_VARIABLE,
+  PROXY_VARIABLE_SPELLINGS,
   UI_TEXT,
   WINDOWS_PSMODULEPATH_SEGMENTS,
 } from '../../../shared/constants'
@@ -298,6 +303,48 @@ export function buildChildEnvironment(input: ChildEnvironmentInput): NodeJS.Proc
     setEnvironmentVariable(env, input.platform, variable.name, variable.value)
   }
   return env
+}
+
+/**
+ * Keeps loopback off the proxy (M56, PLAN.md D43). Muse Code sends every
+ * HTTP request through the proxy its environment names, including its
+ * connection to the extension's `ide` server on 127.0.0.1, which a corporate
+ * proxy cannot reach (captured 2026-09-25: `POST http://127.0.0.1:<port>/mcp`
+ * arrived at the proxy until NO_PROXY listed the address). So wherever a
+ * proxy is set, from VS Code or the user's own environment, the loopback
+ * names are added to each NO_PROXY spelling already there, or to a new
+ * NO_PROXY; entries already listed stay as they are.
+ */
+export function withLoopbackBypass(
+  env: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform,
+): NodeJS.ProcessEnv {
+  const isProxied = PROXY_VARIABLE_SPELLINGS.some(
+    (name) => (environmentValue(env, platform, name) ?? '') !== '',
+  )
+  if (!isProxied) {
+    return env
+  }
+  const bypassed: NodeJS.ProcessEnv = { ...env }
+  const present = NO_PROXY_SPELLINGS.filter(
+    (name) => environmentValue(bypassed, platform, name) !== undefined,
+  )
+  // On Windows the two spellings are one variable.
+  const targets = platform === 'win32' || present.length === 0 ? [NO_PROXY_VARIABLE] : present
+  for (const name of targets) {
+    const entries = (environmentValue(bypassed, platform, name) ?? '')
+      .split(NO_PROXY_SEPARATOR)
+      .map((entry) => entry.trim())
+      .filter((entry) => entry !== '')
+    const missing = LOOPBACK_NO_PROXY_ENTRIES.filter((entry) => !entries.includes(entry))
+    setEnvironmentVariable(
+      bypassed,
+      platform,
+      name,
+      [...entries, ...missing].join(NO_PROXY_SEPARATOR),
+    )
+  }
+  return bypassed
 }
 
 export interface CredentialPathInput {

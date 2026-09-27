@@ -4353,6 +4353,7 @@ function modelApiController(
     describeEnvironment: () => Promise.resolve({ git: undefined }),
     getAccountId: () => Promise.resolve(FAKE_MODEL_API_ACCOUNT_ID),
     ...disabledPaidFeatures,
+    promptCacheRetention: () => 'in_memory',
     memory: undefined,
   })
   const controller = new ConversationController({
@@ -6622,6 +6623,7 @@ describe('ConversationController: scheduled prompts (M52)', () => {
       personalSkillsRoot: undefined,
       isWorkspaceTrusted: () => true,
       describeEnvironment: () => Promise.resolve({ git: undefined }),
+      promptCacheRetention: () => 'in_memory',
       isPaidFeatureOn: () => isPaidOn,
       notePaidUse: () => undefined,
       confirmSubagentTask: () => Promise.resolve(false),

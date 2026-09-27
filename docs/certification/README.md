@@ -67,3 +67,4 @@ The PNGs beside the records are that day's harness renders.
 - [M55](m55.md): install and sign in to Muse Code from the panel (PLAN.md M55; certification pending)
 - [M42](m42.md): replay as Meta validates it: commentary, reasoning summaries, reasoning-only turns, stream retries (PLAN.md D35)
 - [M33–M35](m33-m35.md): the paid features: web search, image generation and Muse Voice, opt in and loud (PLAN.md D30, D34)
+- [M56](m56.md): enterprise network and posture: proxies and certificates, the sandbox network, `muse config status`, prompt caching (PLAN.md D43)

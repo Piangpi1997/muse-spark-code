@@ -166,7 +166,17 @@ The test-owned fixture PIDs must be gone after the suite.
 ## Reporting bugs and proposing features
 
 Use the issue templates. For a bug, run **Muse Spark: Diagnostics** from
-the Command Palette and paste the report (it contains no credentials).
+the Command Palette and paste the report (it contains no credentials; a
+proxy appears as set or not, never its address).
+
+## Networks
+
+The extension has no proxy client of its own: VS Code routes an
+extension's `fetch` and WebSocket through its proxy and certificate
+settings (PLAN.md D43). Code that makes a request uses the globals as they
+stand when it runs, never a copy taken at activation. Tests never need a
+proxy or a certificate: they use the failure shapes Node 24 was seen to
+throw (`docs/certification/m56.md`).
 
 ## Licence
 

@@ -1086,5 +1086,10 @@
   "usagePaidScheduled": {
     "other": "已排程執行 {count} 次"
   },
-  "usageScheduledIncluded": "權杖費用已包含在上方"
+  "usageScheduledIncluded": "權杖費用已包含在上方",
+  "networkUntrustedCertificate": "伺服器的憑證不受信任。如果您的網路會檢查 HTTPS 流量，請將其根憑證安裝到作業系統的憑證存放區中（http.systemCertificates 開啟時 VS Code 會讀取它），或者關閉 http.systemCertificates，並在啟動 VS Code 之前以 NODE_EXTRA_CA_CERTS 指定根憑證檔案。",
+  "networkProxyCredentials": "Proxy 要求提供認證，但不接受收到的認證。請檢查 http.proxy 和 http.proxyAuthorization，或 VS Code 向您詢問的認證。",
+  "networkProxyRefused": "Proxy 拒絕了連線（HTTP {status}）。請檢查它是否允許 api.meta.ai。",
+  "networkUnreachable": "無法連線到 Meta 的伺服器。請檢查網路連線；如果使用 Proxy，也請檢查 http.proxy 和 http.proxySupport。",
+  "approvalModeCeiling": "Muse Code 的設定（其預設權限設定檔，或由系統管理員管理的原則）不允許此權限模式。請選擇更嚴格的模式（例如「手動」），然後重新傳送。"
 }

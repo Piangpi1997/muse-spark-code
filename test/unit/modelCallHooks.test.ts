@@ -47,6 +47,7 @@ const body: CreateResponseBody = {
   include: ['reasoning.encrypted_content'],
   max_output_tokens: 100,
   prompt_cache_key: 'session-1',
+  prompt_cache_retention: 'in_memory',
 }
 
 describe('captured Model API hook summaries (M51)', () => {

@@ -8,6 +8,10 @@ import {
   BACKEND_MODES,
   type BackendMode,
   type EnvironmentVariable,
+  PROMPT_CACHE_RETENTIONS,
+  type PromptCacheRetention,
+  SANDBOX_NETWORK_MODES,
+  type SandboxNetworkMode,
   SETTING_DEFAULTS,
   SETTINGS_SECTION,
   SHELL_SANDBOX_MODES,
@@ -32,6 +36,10 @@ export interface ExtensionSettings extends SettingsSnapshot {
   readonly modelApiWebSearch: boolean
   readonly modelApiImageGeneration: boolean
   readonly modelApiVoice: boolean
+  /** The shell sandbox's network for `muse serve` (M56, PLAN.md D43). */
+  readonly sandboxNetwork: SandboxNetworkMode
+  /** How long Meta is asked to keep the Model API's cached prompt prefix (M56). */
+  readonly modelApiPromptCacheRetention: PromptCacheRetention
   readonly modelApiScheduledPrompts: boolean
   readonly modelApiSubagents: boolean
   /** Explicit machine opt-in for external hook commands (M51). */
@@ -62,6 +70,8 @@ const settingSchemas = {
   modelApiWebSearch: z.boolean(),
   modelApiImageGeneration: z.boolean(),
   modelApiVoice: z.boolean(),
+  sandboxNetwork: z.enum(SANDBOX_NETWORK_MODES),
+  modelApiPromptCacheRetention: z.enum(PROMPT_CACHE_RETENTIONS),
   modelApiScheduledPrompts: z.boolean(),
   modelApiSubagents: z.boolean(),
   modelApiHooks: z.boolean(),
@@ -127,6 +137,8 @@ export function readSettings(config: SettingsSource, log: Logger): ExtensionSett
     modelApiWebSearch: readSetting(config, 'modelApiWebSearch', log),
     modelApiImageGeneration: readSetting(config, 'modelApiImageGeneration', log),
     modelApiVoice: readSetting(config, 'modelApiVoice', log),
+    sandboxNetwork: readSetting(config, 'sandboxNetwork', log),
+    modelApiPromptCacheRetention: readSetting(config, 'modelApiPromptCacheRetention', log),
     modelApiScheduledPrompts: readSetting(config, 'modelApiScheduledPrompts', log),
     modelApiSubagents: readSetting(config, 'modelApiSubagents', log),
     modelApiHooks: readSetting(config, 'modelApiHooks', log),

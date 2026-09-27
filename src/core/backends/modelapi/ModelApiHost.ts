@@ -62,6 +62,7 @@ import {
   SCHEDULE_POLL_INTERVAL_MS,
   type PaidFeature,
   QUESTION_OUTCOME_CLARIFIED,
+  type PromptCacheRetention,
   STORED_SESSION_VERSION,
   SUBAGENT_CAPACITY,
   SUBAGENT_DEPTH,
@@ -165,6 +166,7 @@ import { postModelCallFields, preModelCallFields } from './modelCallHooks'
 import { nextScheduleFire } from './schedules'
 import { toolHookInput, toolHookOutput } from './toolHookPayload'
 import { type ImagePlan, prepareImageCall, runImageCall } from './imageGeneration'
+import { promptCacheKey } from './promptCache'
 import { MediaBudget } from './mediaBudget'
 import { mcpFunctionDefinition, mcpFunctionName } from './mcp/functions'
 import type { McpPoolSnapshot, McpToolRef, McpToolSource } from './mcp/pool'
@@ -271,6 +273,8 @@ export interface ModelApiHostDeps extends ModelApiPaidHooks {
   readonly isPaidFeatureOn: (feature: PaidFeature) => boolean
   /** Counts paid uses for the window's tally: searches made, images returned. */
   readonly notePaidUse: (feature: PaidFeature, units: number) => void
+  /** `museSpark.modelApiPromptCacheRetention`, read per request (M56, PLAN.md D43). */
+  readonly promptCacheRetention: () => PromptCacheRetention
   /** A smaller replay cap for focused media-budget verification. */
   readonly mediaBudgetMaxEncodedChars?: number
   /** Extension-owned, workspace-local schedules; absent without workspace storage. */
@@ -298,6 +302,9 @@ export interface ModelApiHostDeps extends ModelApiPaidHooks {
 }
 
 const NO_ENVIRONMENT: EnvironmentFacts = { git: undefined }
+
+/** A request before its prompt-cache fields are added (M56). */
+type UnkeyedBody = Omit<CreateResponseBody, 'prompt_cache_key' | 'prompt_cache_retention'>
 
 interface ReplayItem {
   readonly turnId: string
@@ -1426,6 +1433,19 @@ export class ModelApiSession implements AgentSession {
     }
   }
 
+  /**
+   * A request with its prompt-cache key and retention (M56, PLAN.md D43):
+   * the key is computed from the request's own prefix, so a compaction,
+   * which sends no tools, gets a key of its own.
+   */
+  private keyed(request: UnkeyedBody): CreateResponseBody {
+    return {
+      ...request,
+      prompt_cache_key: promptCacheKey(request),
+      prompt_cache_retention: this.deps.promptCacheRetention(),
+    }
+  }
+
   private drainChildResults(): void {
     for (const text of this.pendingChildResults.splice(0)) {
       this.replay.push({
@@ -1448,7 +1468,7 @@ export class ModelApiSession implements AgentSession {
       this.emit({ type: 'backendNotice', level: 'warning', text: UI_TEXT.olderMediaOmitted })
       this.mediaNoticeSent = true
     }
-    return {
+    return this.keyed({
       model: this.modelId,
       input,
       instructions: instructionsFor({
@@ -1474,8 +1494,7 @@ export class ModelApiSession implements AgentSession {
       store: false,
       include: this.includes(),
       max_output_tokens: MODEL_API_MAX_OUTPUT_TOKENS,
-      prompt_cache_key: this.sessionId,
-    }
+    })
   }
 
   /** Retain only what a completed request carried; History keeps its file chips separately. */
@@ -4503,20 +4522,21 @@ export class ModelApiSession implements AgentSession {
 
   /** The summary call of `compact`, and the replay it leaves behind. */
   private async runCompaction(signal: AbortSignal): Promise<CompactOutcome> {
-    const compactionBody = (): CreateResponseBody => ({
-      ...this.body(),
-      // Within Meta's image budget too (M54): a conversation past it can still be compacted.
-      input: this.budget.fit([
-        ...this.replay.map((entry) => entry.item),
-        {
-          type: 'message',
-          role: 'user',
-          content: [{ type: 'input_text', text: MODEL_TEXT.compactionPrompt }],
-        },
-      ]),
-      tools: [],
-      include: ['reasoning.encrypted_content'],
-    })
+    const compactionBody = (): CreateResponseBody =>
+      this.keyed({
+        ...this.body(),
+        // Within Meta's image budget too (M54): a conversation past it can still be compacted.
+        input: this.budget.fit([
+          ...this.replay.map((entry) => entry.item),
+          {
+            type: 'message',
+            role: 'user',
+            content: [{ type: 'input_text', text: MODEL_TEXT.compactionPrompt }],
+          },
+        ]),
+        tools: [],
+        include: ['reasoning.encrypted_content'],
+      })
     const turnId = this.turnIds.at(-1) ?? COMPACTION_TURN_ID
     const requestId = this.deps.newId()
     await this.beforeModelCall(turnId, compactionBody(), requestId, 1, 0, signal)

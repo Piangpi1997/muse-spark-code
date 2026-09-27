@@ -10,6 +10,7 @@ import {
   sandboxCheckInvocation,
   sandboxSetupInvocation,
   serveArguments,
+  isSandboxNetworkApplied,
 } from '../../src/core/backends/musecode/sandbox'
 
 // Verbatim `muse sandbox windows check` output, 2026-09-22 (Muse Code 1.3.0),
@@ -238,24 +239,52 @@ describe('resolveShellSandbox', () => {
   })
 
   it('maps the posture and the workspace trust onto the serve arguments', () => {
-    expect(serveArguments({ isSandboxed: true, reason: 'default' }, true)).toEqual([
+    expect(serveArguments({ isSandboxed: true, reason: 'default' }, true, 'default')).toEqual([
       'serve',
       '--trust-workspace',
     ])
-    expect(serveArguments({ isSandboxed: false, reason: 'setting' }, true)).toEqual([
+    expect(serveArguments({ isSandboxed: false, reason: 'setting' }, true, 'default')).toEqual([
       'serve',
       '--disable-sandbox',
       '--trust-workspace',
     ])
     // Restricted Mode: no rules, no skills, no workspace shell (PLAN.md D13).
-    expect(serveArguments({ isSandboxed: true, reason: 'default' }, false)).toEqual([
+    expect(serveArguments({ isSandboxed: true, reason: 'default' }, false, 'default')).toEqual([
       'serve',
       '--disable-shell',
     ])
-    expect(serveArguments({ isSandboxed: false, reason: 'profileWorkspace' }, false)).toEqual([
+    expect(
+      serveArguments({ isSandboxed: false, reason: 'profileWorkspace' }, false, 'default'),
+    ).toEqual(['serve', '--disable-sandbox', '--disable-shell'])
+  })
+
+  // M56 (PLAN.md D43): `muse serve --help` names restricted|enabled|proxy-only.
+  it('passes the sandbox network mode while the sandbox is on, and only then', () => {
+    const sandboxed = { isSandboxed: true, reason: 'default' } as const
+    for (const mode of ['proxy-only', 'restricted', 'enabled'] as const) {
+      expect(serveArguments(sandboxed, true, mode)).toEqual([
+        'serve',
+        '--sandbox-network',
+        mode,
+        '--trust-workspace',
+      ])
+      expect(isSandboxNetworkApplied(mode, sandboxed)).toBe(true)
+    }
+    expect(serveArguments(sandboxed, false, 'restricted')).toEqual([
+      'serve',
+      '--sandbox-network',
+      'restricted',
+      '--disable-shell',
+    ])
+    // Without the sandbox Muse Code ignores the flag (it says so on stderr).
+    const unsandboxed = { isSandboxed: false, reason: 'profileWorkspace' } as const
+    expect(serveArguments(unsandboxed, true, 'restricted')).toEqual([
       'serve',
       '--disable-sandbox',
-      '--disable-shell',
+      '--trust-workspace',
     ])
+    expect(isSandboxNetworkApplied('restricted', unsandboxed)).toBe(false)
+    // `default` leaves Muse Code's own default or a managed configuration's.
+    expect(isSandboxNetworkApplied('default', sandboxed)).toBe(false)
   })
 })

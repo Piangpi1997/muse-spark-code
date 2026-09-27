@@ -16,6 +16,7 @@ import {
   MODEL_TEXT,
   SCHEDULE_LIFETIME_MS,
   type PaidFeature,
+  type PromptCacheRetention,
   UI_TEXT,
 } from '../../src/shared/constants'
 import type { AgentSession, DocumentPart, TurnPart } from '../../src/core/agent/agentBackend'
@@ -61,6 +62,17 @@ import type { McpTool } from '../../src/core/mcp'
 import { memoryStoreOver, PERSONAL } from './helpers/fakeMemoryIo'
 
 const ROOT = '/ws'
+
+/** A child turn carries its task marker; prompt-cache keys now name shared prefixes. */
+function isChildRequest(body: unknown): boolean {
+  return (
+    typeof body === 'object' &&
+    body !== null &&
+    'input' in body &&
+    body.input !== undefined &&
+    JSON.stringify(body.input).includes(MODEL_TEXT.subagentObjective)
+  )
+}
 
 function hooksFor(event: string, command: string): readonly HookDefinition[] {
   return parseHookConfig(
@@ -164,6 +176,8 @@ function setup(
     apiKey?: () => Promise<string | undefined>
     /** The tools' files and shell, when a test needs its own (M46: a held shell). */
     io?: MemoryToolIo
+    /** `museSpark.modelApiPromptCacheRetention` (M56); in memory unless a test says so. */
+    retention?: PromptCacheRetention
     mediaBudgetMaxEncodedChars?: number
     scheduleStore?: ScheduleStore
     getAccountId?: () => Promise<string | undefined>
@@ -244,6 +258,7 @@ function setup(
     notePaidUse: (feature, units) => {
       paidUses.push({ feature, units })
     },
+    promptCacheRetention: () => options.retention ?? 'in_memory',
     ...(options.mediaBudgetMaxEncodedChars !== undefined && {
       mediaBudgetMaxEncodedChars: options.mediaBudgetMaxEncodedChars,
     }),
@@ -1730,7 +1745,9 @@ describe('ModelApiSession: turns', () => {
       reasoning: { effort: 'high', summary: 'auto' },
       store: false,
       include: ['reasoning.encrypted_content'],
-      prompt_cache_key: session.sessionId,
+      // One key per shared prefix, and Meta's in-memory default (M56).
+      prompt_cache_key: expect.stringMatching(/^muse-spark-code-[\da-f]{32}$/),
+      prompt_cache_retention: 'in_memory',
       tool_choice: 'auto',
     })
     expect((body?.['input'] as unknown[])[0]).toEqual({
@@ -2174,6 +2191,34 @@ describe('ModelApiSession: turns', () => {
     expect(replayed).toHaveLength(2)
     expect(JSON.stringify(replayed[0])).toContain('THE SUMMARY')
     expect(JSON.stringify(replayed[0])).not.toContain('first reply')
+  })
+
+  // M56 (PLAN.md D43; dev.meta.ai/docs/prompt-caching): "one stable key per
+  // shared prefix", not one per session.
+  it('keys the prompt cache by the prefix every request starts with, not by session', async () => {
+    const t = setup({ retention: '24h' })
+    const first = await startSession(t)
+    await answerFirst(t, first.session, first.turnDone)
+    const second = await startSession(t)
+    t.api.script({ text: 'second' })
+    await second.session.sendTurn([{ type: 'text', text: 'another conversation' }])
+    await second.turnDone()
+    const [one, two] = t.api.responseBodies()
+    expect(one?.['prompt_cache_key']).toBe(two?.['prompt_cache_key'])
+    expect(one?.['prompt_cache_retention']).toBe('24h')
+    // A compaction starts with no tools, so it names its own prefix.
+    t.api.script({ text: 'THE SUMMARY' })
+    await first.session.compact()
+    const compaction = t.api.responseBodies().at(-1)
+    expect(compaction?.['prompt_cache_key']).toMatch(/^muse-spark-code-[\da-f]{32}$/)
+    expect(compaction?.['prompt_cache_key']).not.toBe(one?.['prompt_cache_key'])
+    // Another tool list is another prefix: web search turned on (M33).
+    const searching = setup({ paid: ['webSearch'] })
+    const third = await startSession(searching)
+    await answerFirst(searching, third.session, third.turnDone)
+    expect(searching.api.responseBodies()[0]?.['prompt_cache_key']).not.toBe(
+      one?.['prompt_cache_key'],
+    )
   })
 
   it('exposes the rest of the session surface: effort, rename, skills, images, dispose', async () => {
@@ -5173,7 +5218,7 @@ describe('ModelApiSession subagents (M48)', () => {
     let didSeeSearchTool = false
     vi.spyOn(t.client, 'streamResponse').mockImplementation(
       (body, signal, retry, budget, guard) => {
-        if (body.prompt_cache_key.includes(':subagent-')) {
+        if (isChildRequest(body)) {
           didSeeSearchTool = body.tools.some((tool) => tool.type === 'web_search')
           paid.splice(paid.indexOf('webSearch'), 1)
         }
@@ -6207,11 +6252,11 @@ describe('ModelApiSession: child hook boundaries (M51 with M48)', () => {
       },
     ])
     const bodies = t.api.responseBodies()
-    const childBody = bodies.find((body) => String(body['prompt_cache_key']).includes(':subagent-'))
+    const childBody = bodies.find((body) => isChildRequest(body))
     expect(JSON.stringify(childBody?.['input'])).toContain('Child-only start context')
     expect(
       bodies
-        .filter((body) => !String(body['prompt_cache_key']).includes(':subagent-'))
+        .filter((body) => !isChildRequest(body))
         .some((body) => JSON.stringify(body['input']).includes('Child-only start context')),
     ).toBe(false)
     t.api.script({ text: 'Follow-up done.' })
@@ -6337,11 +6382,7 @@ describe('ModelApiSession: child hook boundaries (M51 with M48)', () => {
         last_assistant_message: 'Child final answer.',
       },
     ])
-    expect(
-      t.api
-        .responseBodies()
-        .filter((body) => String(body['prompt_cache_key']).includes(':subagent-')),
-    ).toHaveLength(2)
+    expect(t.api.responseBodies().filter((body) => isChildRequest(body))).toHaveLength(2)
     expect(t.paidUses.filter((use) => use.feature === 'subagents')).toHaveLength(2)
     expect(
       events.filter(
@@ -6386,11 +6427,7 @@ describe('ModelApiSession: child hook boundaries (M51 with M48)', () => {
     expect(session.history().items.find((item) => item.kind === 'subagent')).toMatchObject({
       result: { errorKind: 'subagent_requestLimit' },
     })
-    expect(
-      t.api
-        .responseBodies()
-        .filter((body) => String(body['prompt_cache_key']).includes(':subagent-')),
-    ).toHaveLength(4)
+    expect(t.api.responseBodies().filter((body) => isChildRequest(body))).toHaveLength(4)
     expect(t.paidUses.filter((use) => use.feature === 'subagents')).toHaveLength(4)
     expect(runHook).toHaveBeenCalledTimes(4)
   })
@@ -6425,11 +6462,7 @@ describe('ModelApiSession: child hook boundaries (M51 with M48)', () => {
     try {
       await session.sendTurn([{ type: 'text', text: 'delegate' }])
       await vi.waitFor(() => {
-        expect(
-          t.api
-            .responseBodies()
-            .filter((body) => String(body['prompt_cache_key']).includes(':subagent-')),
-        ).toHaveLength(1)
+        expect(t.api.responseBodies().filter((body) => isChildRequest(body))).toHaveLength(1)
       })
       await session.controlSubagent('subagent-1', 'stop')
       expect(runHook).not.toHaveBeenCalled()

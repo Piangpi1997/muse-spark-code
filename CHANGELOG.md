@@ -250,6 +250,9 @@ while they are (PLAN.md D30, D34).
   Conversation rewind waits for the selected turn to finish so pending steered
   images cannot be mistaken for saved replay.
   Its locked Plan mode leaves `Shift+Tab` available for keyboard navigation.
+  Rewind now checks the exact completed user card before restoring images;
+  compaction cuts use a stored boundary even when later replay has gaps.
+  A side panel can resume only its own fork.
   Muse Code's Windows 1.3.0 fork limitation still hides these actions.
 
 - **PDF input on the Model API backend** (M54, PLAN.md D47). Pick, paste or
@@ -478,8 +481,43 @@ while they are (PLAN.md D30, D34).
   - Updates to an existing note replace it atomically but do not take Muse
     Code's native memory lock; simultaneous writers can still lose an update.
 
+- **Enterprise networks** (M56, PLAN.md D43).
+  - `museSpark.sandboxNetwork` (machine-scoped) passes Muse Code's
+    `--sandbox-network`: `proxy-only` (each new destination asks),
+    `restricted` (no network for commands) or `enabled`; `default` leaves
+    Muse Code's own default or an administrator's managed configuration.
+    It applies while the shell sandbox is on, and changing it restarts the
+    host.
+  - **Muse Spark: Diagnostics** states the network posture (whether a proxy
+    is set, never its address; VS Code's proxy and certificate settings;
+    where Muse Code's proxy comes from; `NODE_EXTRA_CA_CERTS`,
+    `SSL_CERT_FILE`) and prints `muse config status`, Muse Code's managed
+    configuration's recognized source and generation fields. Unrecognized
+    lines and failed-command output are withheld.
+  - A Model API request that never reached Meta says why and what to check:
+    an untrusted certificate (a network that inspects HTTPS), a proxy that
+    wants credentials or refused the tunnel, or no route, with Node's own
+    detail beside it; it read "fetch failed". Quoted credential fields in
+    that detail are redacted in full, including spaces.
+  - A permission mode above Muse Code's ceiling (its default permission
+    profile, or a managed policy) is refused with a sentence saying so and
+    what to choose instead.
+- **Prompt caching as Meta documents it** (M56). The Model API backend's
+  `prompt_cache_key` names the prefix every request starts with (model,
+  instructions, tools) instead of the session, so conversations in a
+  workspace share their cached start, and `prompt_cache_retention` asks for
+  Meta's shorter `in_memory` default. The machine-scoped
+  `museSpark.modelApiPromptCacheRetention` setting lets the user choose 24
+  hours at the same cached-input price; a repository cannot extend it.
+
 ### Changed
 
+- **The Windows job helpers' C# ships beside the host bundle** (M55, M56;
+  PLAN.md D6). The shell job type, the MCP launcher and the Win32 half they
+  share are `.cs` files under `native/windows/`, read and compiled when a
+  helper is first needed, instead of strings in `dist/extension.js`, which
+  stays under its 600 KiB budget. A helper built from the earlier source is
+  rebuilt once.
 - **One hosted CI run per reviewed tree.** Pull requests still run the seven
   cross-platform jobs. Protected `main` merges no longer launch the same jobs
   again on an identical tree; manual branch dispatch remains available for
@@ -627,6 +665,14 @@ while they are (PLAN.md D30, D34).
   once Account & usage had been opened in that panel (M47). Opening the map
   now reads the setting itself. A map with background tasks also no longer
   says it is empty merely because it has no subagent row.
+- **Muse Code behind a proxy lost the IDE tools** (M56). With `http.proxy`
+  set and `http.noProxy` empty, Muse Code sent its requests to the
+  extension's loopback `ide` server (diagnostics, images) to the proxy,
+  which cannot reach them. Loopback is now always in Muse Code's `NO_PROXY`
+  whenever it has a proxy, VS Code's or its own.
+- **Malformed VS Code proxy settings** (M56). A wrong-typed `http.proxy` or
+  `http.noProxy` value is ignored before Muse Code's child environment is
+  built; Diagnostics reports the same validated setting state.
 - **A command Muse Code moved to the background read "Interrupted"** when
   its turn ended (M43). It now shows what it printed, says it is still
   running, and is listed among the background tasks.

@@ -21,6 +21,8 @@ const BEARER_TOKEN = /(\bBearer\s+)[\w+./=~-]+/gi
 const BASIC_CREDENTIALS = /(\bBasic\s+)[\w+/=]{8,}/gi
 const JSON_WEB_TOKEN = /\beyJ[\w-]+\.eyJ[\w-]+\.[\w-]+/g
 const KEY_ENV_ASSIGNMENT = /((?:META|MODEL)_API_KEY\s*=\s*)\S+/g
+const QUOTED_SECRET_FIELD =
+  /((?:access_token|refresh_token|id_token|client_secret|api_?key|password)["']?\s*[:=]\s*)(["'])(?:\\.|[^\r\n\\])*?\2/gi
 const SECRET_FIELD =
   /((?:access_token|refresh_token|id_token|client_secret|api_?key|password)["']?\s*[:=]\s*["']?)[^\s"'&,;}]+/gi
 const URL_USER_INFO = /(\b[a-z][\w+.-]*:\/\/)[^\s/@:]+:[^\s/@]+@/gi
@@ -32,6 +34,7 @@ export function redactSecrets(text: string): string {
     .replaceAll(BASIC_CREDENTIALS, '$1[redacted]')
     .replaceAll(JSON_WEB_TOKEN, '[redacted]')
     .replaceAll(KEY_ENV_ASSIGNMENT, '$1[redacted]')
+    .replaceAll(QUOTED_SECRET_FIELD, '$1$2[redacted]$2')
     .replaceAll(SECRET_FIELD, '$1[redacted]')
     .replaceAll(URL_USER_INFO, '$1[redacted]@')
 }

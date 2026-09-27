@@ -6,6 +6,7 @@
 // (the API evolves additively).
 
 import * as z from 'zod/mini'
+import type { PromptCacheRetention } from '../../../shared/constants'
 import { webResultSchema } from '../../../shared/webResults'
 
 /** A source the reply cites (`url_citation`, search-grounding); offsets are not used. */
@@ -349,7 +350,10 @@ export interface CreateResponseBody {
   readonly store: false
   readonly include: readonly IncludeField[]
   readonly max_output_tokens: number
+  /** One key per shared prefix, not per session (promptCache.ts, M56). */
   readonly prompt_cache_key: string
+  /** How long Meta is asked to keep the cached prefix; a hint (M56). */
+  readonly prompt_cache_retention: PromptCacheRetention
 }
 
 // --- images (M34, dev.meta.ai/docs/api-reference/images, read 2026-09-25) ---

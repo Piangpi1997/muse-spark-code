@@ -122,6 +122,16 @@ describe('package.json manifest', () => {
     expect(manifest.capabilities.untrustedWorkspaces).not.toHaveProperty('restrictedConfigurations')
   })
 
+  it('keeps prompt-cache retention under the user’s control, not repository settings (M56)', () => {
+    // VS Code ignores a workspace value for a machine-scoped setting. This
+    // keeps a cloned .vscode/settings.json from changing in_memory to 24h.
+    const retention =
+      manifest.contributes.configuration.properties['museSpark.modelApiPromptCacheRetention']
+    expect(retention.scope).toBe('machine')
+    expect(retention.default).toBe('in_memory')
+    expect(retention.enum).toEqual(['in_memory', '24h'])
+  })
+
   it('gates the chords that would otherwise fire anywhere (D15)', () => {
     const bindings = new Map(
       manifest.contributes.keybindings.map((binding) => [binding.command, binding]),

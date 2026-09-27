@@ -1302,6 +1302,20 @@ export const EN = {
     'Muse Voice needs WebSocket support in VS Code’s extension host, which this version does not have.',
   museVoiceNoRecorder:
     'Muse Voice on Linux records with arecord (ALSA) or parec (PulseAudio); neither was found on PATH.',
+  // M56 (PLAN.md D43): why a Model API request never reached Meta; the
+  // technical detail follows in parentheses.
+  networkUntrustedCertificate:
+    'The server’s certificate is not trusted. If your network inspects HTTPS, install its root certificate in the operating system’s certificate store (VS Code reads it while http.systemCertificates is on), or turn http.systemCertificates off and name the root’s file in NODE_EXTRA_CA_CERTS before VS Code starts.',
+  networkProxyCredentials:
+    'The proxy asked for credentials and did not accept the ones it got. Check http.proxy and http.proxyAuthorization, or the credentials VS Code asked you for.',
+  // {status}: the HTTP status the proxy answered with.
+  networkProxyRefused:
+    'The proxy refused the connection (HTTP {status}). Check that it allows api.meta.ai.',
+  networkUnreachable:
+    'Meta’s server could not be reached. Check the network connection, and http.proxy and http.proxySupport if you use a proxy.',
+  // Muse Code refused a permission mode above the ceiling its configuration sets.
+  approvalModeCeiling:
+    'Muse Code’s configuration (its default permission profile, or a policy your administrator manages) does not allow this permission mode. Choose a stricter one, such as Manual, and send again.',
 }
 
 /** The shape every table has: English's keys, with any language's plural forms. */

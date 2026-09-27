@@ -1150,5 +1150,10 @@
     "many": "{count} exécutions planifiées",
     "other": "{count} exécutions planifiées"
   },
-  "usageScheduledIncluded": "coût des jetons inclus ci-dessus"
+  "usageScheduledIncluded": "coût des jetons inclus ci-dessus",
+  "networkUntrustedCertificate": "Le certificat du serveur n’est pas approuvé. Si votre réseau inspecte le trafic HTTPS, installez son certificat racine dans le magasin de certificats du système d’exploitation (VS Code le lit lorsque http.systemCertificates est activé), ou désactivez http.systemCertificates et désignez le fichier du certificat racine dans NODE_EXTRA_CA_CERTS avant de démarrer VS Code.",
+  "networkProxyCredentials": "Le proxy a demandé des identifiants et n’a pas accepté ceux qu’il a reçus. Vérifiez http.proxy et http.proxyAuthorization, ou les identifiants que VS Code vous a demandés.",
+  "networkProxyRefused": "Le proxy a refusé la connexion (HTTP {status}). Vérifiez qu’il autorise api.meta.ai.",
+  "networkUnreachable": "Le serveur de Meta est injoignable. Vérifiez la connexion réseau, ainsi que http.proxy et http.proxySupport si vous utilisez un proxy.",
+  "approvalModeCeiling": "La configuration de Muse Code (son profil d’autorisations par défaut, ou une stratégie gérée par votre administrateur) n’autorise pas ce mode d’autorisation. Choisissez-en un plus strict, par exemple Manuel, puis renvoyez le message."
 }

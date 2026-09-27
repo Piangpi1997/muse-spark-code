@@ -46,6 +46,7 @@ function managerOn(
       store,
       describeEnvironment: () => Promise.resolve({ git: undefined }),
       ...disabledPaidFeatures,
+      promptCacheRetention: () => '24h',
       hookSettingsPath: '/cfg/muse/settings.json',
       isHooksEnabled: () => hooks?.enabled ?? false,
       memory: undefined,

@@ -12,10 +12,12 @@ import {
   MUSE_DISABLE_SANDBOX_ARG,
   MUSE_DISABLE_SHELL_ARG,
   MUSE_SANDBOX_CHECK_ARGS,
+  MUSE_SANDBOX_NETWORK_ARG,
   MUSE_SANDBOX_SETUP_ARGS,
   MUSE_SERVE_ARGS,
   MUSE_TRUST_WORKSPACE_ARG,
   SANDBOX_PROFILE_LIMITED_MAX_VERSION,
+  type SandboxNetworkMode,
   SANDBOX_STATUS_READY,
   SANDBOX_STATUS_SETUP_REQUIRED,
   type ShellSandboxMode,
@@ -225,18 +227,35 @@ export function resolveShellSandbox(probe: ShellSandboxProbe): ShellSandboxPostu
 }
 
 /**
- * The `serve` arguments that install `posture` and the workspace's trust on
- * the host. A trusted workspace loads its rules and skills (Muse Code's
- * `--trust-workspace`); an untrusted one gets no rules, no skills and no
- * workspace shell, VS Code's Restricted Mode contract (PLAN.md D13).
+ * Whether `museSpark.sandboxNetwork` reaches the host (M56, PLAN.md D43):
+ * a mode other than `default`, while the shell sandbox is on. Without the
+ * sandbox Muse Code ignores the flag ("--disable-sandbox turns the sandbox
+ * off entirely, so no sandbox network policy applies", captured 2026-09-25)
+ * and commands have the network the user has.
+ */
+export function isSandboxNetworkApplied(
+  mode: SandboxNetworkMode,
+  posture: ShellSandboxPosture,
+): boolean {
+  return mode !== 'default' && posture.isSandboxed
+}
+
+/**
+ * The `serve` arguments that install `posture`, the sandbox's network and
+ * the workspace's trust on the host. A trusted workspace loads its rules and
+ * skills (Muse Code's `--trust-workspace`); an untrusted one gets no rules,
+ * no skills and no workspace shell, VS Code's Restricted Mode contract
+ * (PLAN.md D13).
  */
 export function serveArguments(
   posture: ShellSandboxPosture,
   isWorkspaceTrusted: boolean,
+  network: SandboxNetworkMode,
 ): readonly string[] {
   return [
     ...MUSE_SERVE_ARGS,
     ...(posture.isSandboxed ? [] : [MUSE_DISABLE_SANDBOX_ARG]),
+    ...(isSandboxNetworkApplied(network, posture) ? [MUSE_SANDBOX_NETWORK_ARG, network] : []),
     isWorkspaceTrusted ? MUSE_TRUST_WORKSPACE_ARG : MUSE_DISABLE_SHELL_ARG,
   ]
 }

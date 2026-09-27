@@ -89,11 +89,11 @@ src/extension.ts      activation: the view, the panel, the commands, the openers
 src/host/**           VS Code adapters (views, conversation, backend managers and
                       the search worker, commands, auth, settings, mentions,
                       editor tracking, usage trace logs, voice, the diagnostics
-                      MCP server, the MCP servers' spawner)
+                      MCP server, the MCP servers' spawner, the network posture)
 src/core/**           backend-agnostic logic; must not import `vscode`
                       (MSP host, Model API client and tools, the MCP client,
                       context, Muse Code's memory, export, worktrees, usage,
-                      dictation, Muse Voice, the paid gate)
+                      dictation, Muse Voice, the paid gate, network failures)
 src/shared/**         constants + zod protocol shared by host and webview
 src/shared/l10n/**    the English table (en.ts), fill/plural/Intl helpers, the
                       table checks and the list of translated languages
@@ -102,7 +102,9 @@ l10n/                 translated tables (ui.<language>.json) and the names the
 package.nls.json      the manifest's text (commands, settings, walkthrough)
 src/webview/**        React 19 app (browser project, own tsconfig)
 native/windows/**     dictate.ps1, the Windows dictation helper; capture.ps1,
-                      Muse Voice's recorder
+                      Muse Voice's recorder; the job helpers' C#
+                      (MuseSparkJob.cs, MuseSparkMcpLauncher.cs and the
+                      shared MuseSparkMcpJob.cs), compiled on first use
 native/darwin/**      Dictation.swift, Info.plist, build.sh, check-disclaim.sh:
                       the macOS helper (built and checked in CI), with
                       Muse Voice's `--capture` mode

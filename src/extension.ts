@@ -17,7 +17,7 @@ import { MemoryStore } from './core/memory/memoryStore'
 import { isSamePath } from './core/paths'
 import { terminalArgument } from './core/shellQuote'
 import { renderSupportReport } from './core/support/report'
-import type { CliInvocation } from './core/backends/musecode/sandbox'
+import { type CliInvocation, isSandboxNetworkApplied } from './core/backends/musecode/sandbox'
 import { type DiagnosticEntry, type DiagnosticSeverity, diagnosticsTool } from './core/diagnostics'
 import type { EditorContext } from './core/editorContext'
 import type { MentionSource } from './core/mention'
@@ -40,7 +40,7 @@ import { fileContextIo } from './host/backend/contextIo'
 import { describeEnvironment } from './host/backend/environment'
 import { createFileSessionStore } from './host/backend/fileSessionStore'
 import { createModelApiMcpServers } from './host/backend/mcpServers'
-import { jobSourceReader } from './host/backend/jobSource'
+import { type JobHelper, jobSourceReader } from './host/backend/jobSource'
 import { mcpJobExecutable } from './host/backend/mcpJobExecutable'
 import { createMemoryIo, systemPath } from './host/backend/memoryIo'
 import {
@@ -80,6 +80,12 @@ import { createWorktreeFeatures } from './host/worktreeFeatures'
 import { createMemoryFeatures } from './host/memoryFeatures'
 import { processGitRunner } from './host/git'
 import { createLogger, errorDetail, type Logger, logRejection } from './host/logger'
+import {
+  liveFetch,
+  managedConfiguration,
+  readNetworkFacts,
+  readProxySettings,
+} from './host/networkPosture'
 import { OutputDocumentStore } from './host/outputDocuments'
 import { pickMentionFile } from './host/mention/mentionQuickPick'
 import { createWorkspaceFileLister, findRootFiles } from './host/mention/workspaceFiles'
@@ -101,8 +107,6 @@ import {
   BACKEND_SETTING,
   BYPASS_SETTING,
   CLI_PROCESS_SETTINGS,
-  HTTP_NO_PROXY_SETTING,
-  HTTP_PROXY_SETTING,
   HTTP_SETTINGS_SECTION,
   POSIX_TERMINAL_SHELL,
   TERMINAL_ENV_KEYS,
@@ -125,12 +129,15 @@ import {
   GLOBAL_STATE_KEYS,
   MENTION_INDEX_LIMIT,
   MENTION_INDEX_TTL_MS,
+  MUSE_CONFIG_STATUS_ARGS,
+  MUSE_CONFIG_STATUS_TIMEOUT_MS,
   MUSE_EDIT_SCHEME,
   MUSE_INIT_ARGS,
   MUSE_INIT_TIMEOUT_MS,
   MUSE_INSTALL_COMMANDS,
   OUTPUT_DOCUMENT_SCHEME,
   PRODUCT_NAME,
+  SANDBOX_NETWORK_SETTING,
   SEARCH_WORKER_FILE,
   SETTINGS_SECTION,
   SHELL_SANDBOX_SETTING,
@@ -388,7 +395,7 @@ function runProcess(
 function windowsJobHelper(
   build: (deps: ShellJobDeps) => () => Promise<string | undefined>,
   storageDir: string,
-  readJobSource: () => Promise<string>,
+  readJobSource: (helper: JobHelper) => Promise<string>,
   log: Logger,
 ): (() => Promise<string | undefined>) | undefined {
   const systemRoot = process.env['SystemRoot']
@@ -552,15 +559,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     getEnvironmentVariables: () => currentSettings().environmentVariables,
     workspaceRoot,
     getShellSandbox: () => currentSettings().shellSandbox,
+    getSandboxNetwork: () => currentSettings().sandboxNetwork,
     userProfileDir: process.env['USERPROFILE'],
     isWorkspaceTrusted: () => vscode.workspace.isTrusted,
-    getProxySettings: () => {
-      const http = vscode.workspace.getConfiguration(HTTP_SETTINGS_SECTION)
-      return {
-        proxy: http.get<string>(HTTP_PROXY_SETTING) ?? '',
-        noProxy: http.get<readonly string[]>(HTTP_NO_PROXY_SETTING) ?? [],
-      }
-    },
+    getProxySettings: () =>
+      readProxySettings(vscode.workspace.getConfiguration(HTTP_SETTINGS_SECTION)),
   })
   // Muse Code's own settings and trace logs (M14): read, never written; the
   // config root as the CLI sees it, `museSpark.environmentVariables` included.
@@ -743,7 +746,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     findFiles: findWorkspaceFiles,
     log,
   })
-  // The shared C# of both Windows job helpers, shipped beside the bundle (PLAN.md D6).
+  // The C# of both Windows job helpers, shipped beside the bundle (PLAN.md D6).
   const readJobSource = jobSourceReader(context.extensionPath)
   const storageDir = context.globalStorageUri.fsPath
   const windowsJobAssembly = windowsJobHelper(shellJobAssembly, storageDir, readJobSource, log)
@@ -790,7 +793,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // Images for Muse Code (M44, PLAN.md D37): made here with the stored key,
   // never by `muse serve`, each one confirmed with its price.
   const keyClient = new ModelApiClient({
-    fetch: globalThis.fetch.bind(globalThis),
+    fetch: liveFetch,
     baseUrl: MODEL_API_BASE_URL,
     apiKey: () => credentials.getApiKey(),
     sleep: (ms) =>
@@ -943,7 +946,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     workspaceRoot,
     io: toolIo,
     contextIo: fileContextIo,
-    fetch: globalThis.fetch.bind(globalThis),
+    // VS Code's proxy-aware fetch, as it stands at each request (M56, D43).
+    fetch: liveFetch,
     newId: () => crypto.randomUUID(),
     now: () => Date.now(),
     sleep: (ms) =>
@@ -990,6 +994,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     notePaidUse: (feature, units) => {
       paid.usage.add(feature, units)
     },
+    promptCacheRetention: () => currentSettings().modelApiPromptCacheRetention,
     // Muse Code's MCP servers, run by this window for the Model API backend
     // (M50, PLAN.md D42): started in a trusted workspace only, stopped with
     // the host.
@@ -1503,7 +1508,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       if (isCliSetting) {
         backend.invalidateLaunch()
       }
-      const isHostSetting = isCliSetting || event.affectsConfiguration(SHELL_SANDBOX_SETTING)
+      const isHostSetting =
+        isCliSetting ||
+        event.affectsConfiguration(SHELL_SANDBOX_SETTING) ||
+        event.affectsConfiguration(SANDBOX_NETWORK_SETTING)
       if (!isHostSetting || !backend.isRunning) {
         return
       }
@@ -1602,6 +1610,19 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       const settings = currentSettings()
       const resolution = backend.resolveLaunch()
       const posture = backend.shellSandboxPosture()
+      // The managed configuration as the CLI reads it (M56, PLAN.md D43): a
+      // local read, no model call, in the environment `muse serve` gets.
+      const managed = await managedConfiguration(
+        resolution.ok
+          ? () =>
+              runProcess(
+                { command: resolution.launch.command, args: MUSE_CONFIG_STATUS_ARGS },
+                MUSE_CONFIG_STATUS_TIMEOUT_MS,
+                workspaceRoot,
+                backend.childEnvironment(),
+              )
+          : undefined,
+      )
       log.info(
         renderSupportReport({
           extensionVersion: version,
@@ -1615,6 +1636,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           backendSetting: settings.backend,
           shellSandboxSetting: settings.shellSandbox,
           shellSandboxPosture: `${posture.isSandboxed ? 'sandboxed' : 'disabled'} (${posture.reason})`,
+          sandboxNetworkSetting: settings.sandboxNetwork,
+          isSandboxNetworkApplied: isSandboxNetworkApplied(settings.sandboxNetwork, posture),
           isBinaryPathConfigured: settings.museBinaryPath !== '',
           environmentVariableCount: settings.environmentVariables.length,
           cli: resolution.ok
@@ -1632,6 +1655,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           dictation: dictation.isAvailable
             ? { isAvailable: true }
             : { isAvailable: false, reason: dictation.reason },
+          network: readNetworkFacts(
+            vscode.workspace.getConfiguration(HTTP_SETTINGS_SECTION),
+            process.env,
+            process.platform,
+            backend,
+          ),
+          managedConfiguration: managed,
           homeDir: homedir(),
         }),
       )

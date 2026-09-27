@@ -22,7 +22,7 @@ import {
   WINDOWS_POWERSHELL_UTF8_PREAMBLE,
 } from '../../src/shared/constants'
 import { removeFolder } from './helpers/temporaryFolders'
-import { JOB_SOURCE, readJobSource } from './helpers/jobSource'
+import { readJobSource } from './helpers/jobSource'
 
 const paths = { root: '' }
 
@@ -72,13 +72,11 @@ describe('shellJobAssembly (M27)', () => {
       run: powershell.run,
     })
     const assembly = await ready()
-    expect(assembly).toBe(path.join(folder, shellJobAssemblyName(JOB_SOURCE)))
+    const name = shellJobAssemblyName(await readJobSource('shellJob'))
+    expect(assembly).toBe(path.join(folder, name))
     expect(await ready()).toBe(assembly)
     const left = await readdir(folder)
-    expect(left.toSorted((a, b) => a.localeCompare(b))).toEqual([
-      shellJobAssemblyName(JOB_SOURCE),
-      'notes.txt',
-    ])
+    expect(left.toSorted((a, b) => a.localeCompare(b))).toEqual([name, 'notes.txt'])
     // One compile, one self-test, however often it is asked.
     expect(powershell.scripts).toHaveLength(2)
     expect(powershell.scripts[0]).toContain('-OutputType Library')

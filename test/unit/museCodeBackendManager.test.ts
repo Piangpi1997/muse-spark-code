@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -7,6 +7,7 @@ import {
   MuseCodeBackendManager,
   type BackendManagerDeps,
 } from '../../src/host/backend/museCodeBackendManager'
+import { readProxySettings } from '../../src/host/networkPosture'
 import { FakeLogOutputChannel } from './helpers/fakes'
 
 const VS_CODE_PROXY = 'https://proxy.example:8443'
@@ -16,6 +17,8 @@ const PROXY_NAMES = [
   'HTTP_PROXY',
   'https_proxy',
   'http_proxy',
+  'ALL_PROXY',
+  'all_proxy',
   'NO_PROXY',
   'no_proxy',
 ]
@@ -25,6 +28,7 @@ function managerWith(
   configured: readonly EnvironmentVariable[],
   proxy = VS_CODE_PROXY,
   log = new FakeLogOutputChannel(),
+  overrides: Partial<BackendManagerDeps> = {},
 ): MuseCodeBackendManager {
   const deps: BackendManagerDeps = {
     log,
@@ -33,9 +37,11 @@ function managerWith(
     getEnvironmentVariables: () => configured,
     workspaceRoot: undefined,
     getShellSandbox: () => 'off',
+    getSandboxNetwork: () => 'default',
     userProfileDir: undefined,
     isWorkspaceTrusted: () => true,
     getProxySettings: () => ({ proxy, noProxy: VS_CODE_NO_PROXY }),
+    ...overrides,
   }
   return new MuseCodeBackendManager(deps)
 }
@@ -62,7 +68,26 @@ describe('MuseCodeBackendManager: VS Code’s proxy for the CLI (D25)', () => {
     const env = managerWith([]).childEnvironment()
     expect(valuesOf(env, 'HTTPS_PROXY')).toEqual([VS_CODE_PROXY])
     expect(valuesOf(env, 'HTTP_PROXY')).toEqual([VS_CODE_PROXY])
-    expect(valuesOf(env, 'NO_PROXY')).toEqual(['localhost,127.0.0.1'])
+    // Loopback always bypasses the proxy, for the `ide` server (M56).
+    expect(valuesOf(env, 'NO_PROXY')).toEqual(['localhost,127.0.0.1,::1'])
+  })
+
+  it('does not hand malformed VS Code proxy values to Muse Code', () => {
+    const malformed = managerWith([], VS_CODE_PROXY, new FakeLogOutputChannel(), {
+      getProxySettings: () =>
+        readProxySettings({ get: (key) => (key === 'proxy' ? 42 : ['.corp', 42]) }),
+    }).childEnvironment()
+    expect(valuesOf(malformed, 'HTTPS_PROXY')).toEqual([])
+    expect(valuesOf(malformed, 'NO_PROXY')).toEqual([])
+
+    const partial = managerWith([], VS_CODE_PROXY, new FakeLogOutputChannel(), {
+      getProxySettings: () =>
+        readProxySettings({
+          get: (key) => (key === 'proxy' ? VS_CODE_PROXY : ['.corp', 42]),
+        }),
+    }).childEnvironment()
+    expect(valuesOf(partial, 'HTTPS_PROXY')).toEqual([VS_CODE_PROXY])
+    expect(valuesOf(partial, 'NO_PROXY')).toEqual(['127.0.0.1,localhost,::1'])
   })
 
   it('never contradicts a proxy set in museSpark.environmentVariables, in either case', () => {
@@ -72,21 +97,73 @@ describe('MuseCodeBackendManager: VS Code’s proxy for the CLI (D25)', () => {
     ]).childEnvironment()
     expect(valuesOf(env, 'HTTPS_PROXY')).toEqual(['http://mine:3128'])
     expect(Object.values(env)).not.toContain(VS_CODE_PROXY)
-    expect(valuesOf(env, 'NO_PROXY')).toEqual(['.corp'])
+    expect(valuesOf(env, 'NO_PROXY')).toEqual(['.corp,127.0.0.1,localhost,::1'])
   })
 
-  it('keeps an inherited proxy, and its own NO_PROXY, as they are', () => {
+  it('keeps an inherited proxy and its own NO_PROXY, adding only loopback', () => {
     vi.stubEnv('http_proxy', 'http://inherited:3128')
     vi.stubEnv('no_proxy', 'internal')
     const env = managerWith([]).childEnvironment()
     expect(Object.values(env)).not.toContain(VS_CODE_PROXY)
-    expect(valuesOf(env, 'NO_PROXY')).toEqual(['internal'])
+    expect(valuesOf(env, 'NO_PROXY')).toEqual(['internal,127.0.0.1,localhost,::1'])
   })
 
   it('adds nothing when VS Code has no proxy', () => {
     const env = managerWith([], '').childEnvironment()
     expect(valuesOf(env, 'HTTPS_PROXY')).toEqual([])
     expect(valuesOf(env, 'NO_PROXY')).toEqual([])
+  })
+
+  // M56 (PLAN.md D43): what the Diagnostics report says about the CLI's network.
+  it('says where the CLI’s proxy comes from, and whether its certificate store is replaced', () => {
+    expect(managerWith([]).proxySource()).toBe('vscode')
+    expect(managerWith([], '').proxySource()).toBe('none')
+    expect(managerWith([{ name: 'HTTPS_PROXY', value: 'http://mine:3128' }]).proxySource()).toBe(
+      'environment',
+    )
+    vi.stubEnv('SSL_CERT_FILE', undefined)
+    vi.stubEnv('SSL_CERT_DIR', undefined)
+    expect(managerWith([]).hasCertificateOverride()).toBe(false)
+    expect(
+      managerWith([{ name: 'SSL_CERT_FILE', value: '/etc/corp.pem' }]).hasCertificateOverride(),
+    ).toBe(true)
+    vi.stubEnv('SSL_CERT_DIR', '/etc/ssl/corp')
+    expect(managerWith([]).hasCertificateOverride()).toBe(true)
+  })
+})
+
+// M56 (PLAN.md D43): `museSpark.sandboxNetwork` reaches `muse serve`'s arguments.
+describe('MuseCodeBackendManager: the sandbox network (M56)', () => {
+  it('passes the mode while the sandbox is on, and not when it is off', () => {
+    const installDir = mkdtempSync(path.join(tmpdir(), 'muse-network-'))
+    try {
+      const binary = path.join(
+        installDir,
+        process.platform === 'win32' ? 'muse-bin-1.3.0.exe' : 'muse',
+      )
+      writeFileSync(binary, '')
+      const launchWith = (shell: 'muse' | 'off') =>
+        managerWith([], VS_CODE_PROXY, new FakeLogOutputChannel(), {
+          getConfiguredBinaryPath: () => binary,
+          getShellSandbox: () => shell,
+          getSandboxNetwork: () => 'restricted',
+        }).resolveLaunch()
+      const sandboxed = launchWith('muse')
+      expect(sandboxed.ok && sandboxed.launch.serveArgs).toEqual([
+        'serve',
+        '--sandbox-network',
+        'restricted',
+        '--trust-workspace',
+      ])
+      const unsandboxed = launchWith('off')
+      expect(unsandboxed.ok && unsandboxed.launch.serveArgs).toEqual([
+        'serve',
+        '--disable-sandbox',
+        '--trust-workspace',
+      ])
+    } finally {
+      rmSync(installDir, { recursive: true, force: true })
+    }
   })
 })
 

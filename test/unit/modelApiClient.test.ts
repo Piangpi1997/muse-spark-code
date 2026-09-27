@@ -8,7 +8,7 @@ import {
   retryAfterMs,
 } from '../../src/core/backends/modelapi/client'
 import type { CreateResponseBody, StreamEvent } from '../../src/core/backends/modelapi/schemas'
-import { UI_TEXT } from '../../src/shared/constants'
+import { MODEL_API_MAX_RETRIES, UI_TEXT } from '../../src/shared/constants'
 import { FakeLogOutputChannel } from './helpers/fakes'
 import { fakeModelApi } from './helpers/fakeModelApi'
 
@@ -24,6 +24,7 @@ const body: CreateResponseBody = {
   include: ['reasoning.encrypted_content'],
   max_output_tokens: 100,
   prompt_cache_key: 's1',
+  prompt_cache_retention: '24h',
 }
 
 const NOW = Date.parse('2026-09-23T12:00:00Z')
@@ -68,6 +69,17 @@ function bodyOf(text: string, cancel: () => void): ReadableStream<Uint8Array> {
 
 function collect(stream: AsyncIterable<StreamEvent>): Promise<StreamEvent[]> {
   return Array.fromAsync(stream)
+}
+
+/** A fetch behind a network that inspects HTTPS: Node's "fetch failed" and its cause (M56). */
+function untrusted(): Promise<Response> {
+  return Promise.reject(
+    new TypeError('fetch failed', {
+      cause: Object.assign(new Error('self-signed certificate in certificate chain'), {
+        code: 'SELF_SIGNED_CERT_IN_CHAIN',
+      }),
+    }),
+  )
 }
 
 describe('ModelApiClient', () => {
@@ -543,6 +555,49 @@ describe('ModelApiClient', () => {
     await expect(collect(client.streamResponse(body, controller.signal))).rejects.toMatchObject({
       status: 0,
     })
+  })
+
+  // M56 (PLAN.md D43): the causes under "fetch failed", as Node 24 throws them.
+  it('says which certificate store to check when the request never reached Meta', async () => {
+    const { client, sleeps, log } = setup('LLM|1|secret', untrusted)
+    const notices: RetryNotice[] = []
+    const failure = collect(
+      client.streamResponse(body, new AbortController().signal, (notice) => {
+        notices.push(notice)
+      }),
+    )
+    await expect(failure).rejects.toMatchObject({
+      status: 0,
+      message: expect.stringContaining(UI_TEXT.networkUntrustedCertificate),
+    })
+    await expect(failure).rejects.toMatchObject({
+      message: expect.stringContaining('(SELF_SIGNED_CERT_IN_CHAIN)'),
+    })
+    expect(sleeps).toHaveLength(MODEL_API_MAX_RETRIES)
+    expect(notices[0]?.reason).toContain(UI_TEXT.networkUntrustedCertificate)
+    expect(log.warn).toHaveBeenCalledWith(
+      expect.stringContaining(
+        'failed to send (fetch failed: self-signed certificate in certificate chain (SELF_SIGNED_CERT_IN_CHAIN))',
+      ),
+    )
+    // A billed request is not sent again, and says the same (M34).
+    const once = setup('LLM|1|secret', untrusted)
+    await expect(
+      once.client.createImage(
+        {
+          model: 'muse-image-1.0',
+          prompt: 'a cat',
+          n: 1,
+          size: '1024x1024',
+          response_format: 'b64_json',
+          output_format: 'png',
+        },
+        new AbortController().signal,
+      ),
+    ).rejects.toMatchObject({
+      message: expect.stringContaining(UI_TEXT.networkUntrustedCertificate),
+    })
+    expect(once.sleeps).toEqual([])
   })
 
   it('refuses without a key and fails on frames it cannot trust', async () => {
