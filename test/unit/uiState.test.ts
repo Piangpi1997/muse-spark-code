@@ -2291,7 +2291,11 @@ describe('uiReducer: the session goal (M45)', () => {
       nextFireAtMs: 1_000_000,
       fireCount: 0,
     }
-    const scheduled = uiReducer(withGoal, agent({ type: 'schedulesChanged', jobs: [job] }))
+    const modelApi = uiReducer(
+      withGoal,
+      host({ type: 'authState', status: 'signedIn', backend: 'modelApi' }),
+    )
+    const scheduled = uiReducer(modelApi, agent({ type: 'schedulesChanged', jobs: [job] }))
     const editing = uiReducer(scheduled, { type: 'goalEditStarted', objective: goal.objective })
     const pending = uiReducer(editing, { type: 'goalSubmitted', requestId: 'goal-a' })
     const same = uiReducer(
@@ -2307,6 +2311,21 @@ describe('uiReducer: the session goal (M45)', () => {
     expect(same.schedules).toEqual([job])
     expect(same.goalEdit?.draft).toBe('Recovered objective')
     expect(same.pendingGoalCommand?.requestId).toBe('goal-a')
+    const signingIn = uiReducer(
+      same,
+      host({ type: 'authState', status: 'signingIn', backend: 'modelApi' }),
+    )
+    expect(signingIn.schedules).toEqual([job])
+    const signedOut = uiReducer(
+      same,
+      host({ type: 'authState', status: 'signedOut', backend: 'modelApi' }),
+    )
+    expect(signedOut.schedules).toEqual([])
+    const switchedBackend = uiReducer(
+      same,
+      host({ type: 'authState', status: 'signedIn', backend: 'museCode' }),
+    )
+    expect(switchedBackend.schedules).toEqual([])
     const switched = uiReducer(
       same,
       host({

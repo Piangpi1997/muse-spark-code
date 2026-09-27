@@ -5,6 +5,7 @@ import path from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import {
   MODEL_TEXT,
+  HOOK_STDIN_MAX_BYTES,
   TOOL_FILE_MAX_BYTES,
   WINDOWS_POWERSHELL_UTF8_PREAMBLE,
 } from '../../src/shared/constants'
@@ -21,6 +22,7 @@ import {
 } from '../../src/host/backend/toolIo'
 import { shellJobAssembly } from '../../src/host/backend/shellJob'
 import { ShellTimeLimit } from '../../src/core/backends/modelapi/tools'
+import { posixQuoted } from '../../src/core/shellQuote'
 import type { RunProgram } from '../../src/host/processTree'
 import { removeFolder } from './helpers/temporaryFolders'
 
@@ -482,11 +484,43 @@ describe('createToolIo (real file system and shell)', () => {
     if (runHook === undefined) {
       throw new Error('hook runner missing')
     }
-    const command = process.platform === 'win32' ? 'more' : 'cat'
-    const result = await runHook(command, '{"session_id":"fixture"}\n', root, 10_000)
+    const echo = 'process.stdin.pipe(process.stdout)'
+    const command =
+      process.platform === 'win32'
+        ? `"${process.execPath}" -e "${echo}"`
+        : `${posixQuoted(process.execPath)} -e ${posixQuoted(echo)}`
+    const payload = '{"session_id":"fixture","text":"héllo ✓"}\n'
+    const startedAt = Date.now()
+    const result = await runHook(command, payload, root, 10_000)
+    if (result.exitCode !== 0) {
+      // Fixed fixture: paths and the harmless echo expression are the only
+      // command text; no model key, user input or workspace file is involved.
+      throw new Error(
+        JSON.stringify({
+          exitCode: result.exitCode,
+          isTimedOut: result.isTimedOut,
+          isCancelled: result.isCancelled,
+          isOutputTooLarge: result.isOutputTooLarge ?? false,
+          elapsedMs: Date.now() - startedAt,
+          stdout: result.stdout,
+          stderr: result.stderr,
+        }),
+      )
+    }
     expect(result.exitCode).toBe(0)
     expect(result.stdout).toContain('"session_id":"fixture"')
+    expect(result.stdout).toContain('héllo ✓')
     expect(result.isTimedOut).toBe(false)
+  }, 30_000)
+
+  it('refuses hook stdin over its cap before launching an interpreter', async () => {
+    const runHook = io().runHook
+    if (runHook === undefined) {
+      throw new Error('hook runner missing')
+    }
+    await expect(
+      runHook('unused', 'x'.repeat(HOOK_STDIN_MAX_BYTES + 1), root, 10_000),
+    ).rejects.toThrow('Hook stdin exceeds the input cap')
   })
 
   it('kills a hook that exceeds its per-stream output limit', async () => {
