@@ -160,6 +160,23 @@ jobs:
       - name: install the locked tools without install scripts
         if: env.HAS_OVSX_PAT == 'true'
         run: npm ci --ignore-scripts --no-audit
+      # Open VSX refuses a publish into a namespace that does not exist, and
+      # the package's publisher had none when this was checked (2026-09-27,
+      # `GET /api/RandyNorthrup` 404). The first run creates it with the same
+      # token; later runs find it (200) and skip. Any other answer stops here.
+      - name: create the Open VSX namespace if it is missing
+        if: env.HAS_OVSX_PAT == 'true'
+        env:
+          OVSX_PAT: ${{ secrets.OVSX_PAT }}
+        run: |
+          namespace=$(node -p "require('./package.json').publisher")
+          status=$(curl -s -o /dev/null -w '%{http_code}' "https://open-vsx.org/api/${namespace}")
+          if [ "$status" = "404" ]; then
+            ./node_modules/.bin/ovsx create-namespace "$namespace"
+          elif [ "$status" != "200" ]; then
+            echo "Open VSX answered HTTP $status for namespace $namespace" >&2
+            exit 1
+          fi
       - name: publish to Open VSX
         if: env.HAS_OVSX_PAT == 'true'
         env:
