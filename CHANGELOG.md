@@ -12,12 +12,12 @@ while they are (PLAN.md D30, D34).
 
 ### Added
 
-- **Pre-PR branch CI.** The existing cross-platform CI can be run
-  manually on a pushed branch before a pull request. It runs the same shared
-  build as pull requests; the PR template records the exact tested tree,
-  independent review, staged-change secret scan, branch run and seven job
-  conclusions. See the sequence in `CONTRIBUTING.md`. Manual dispatch is
-  available now that the trigger is on `main`.
+- **Optional branch CI.** The cross-platform CI can be run manually on a
+  pushed branch when a pull request is not being opened. It uses the same
+  shared build as pull requests. The normal path uses local and VM gates as
+  the filter, then records the exact tested tree, independent review,
+  staged-change secret scan and the pull request's seven job conclusions.
+  See `CONTRIBUTING.md`.
 - **Subagents on the Model API backend** (M48, PLAN.md D45). Child sessions
   run in parallel with bounded capacity, their own transcript, the existing
   tool approvals and workspace rules, and usage counted with the parent.
@@ -62,8 +62,10 @@ while they are (PLAN.md D30, D34).
   cannot be hidden by a post-tool hook stop.
   Model-call hook text previews also remove pasted media data URLs before
   shortening user text, instructions, tool descriptions or assistant output.
-  Windows hook commands now receive their bounded UTF-8 JSON stdin through
-  PowerShell's explicit pipe to cmd; the payload stays off command lines.
+  Hook stdin is bounded again at the host adapter before process launch;
+  the payload stays off command lines. A `PreToolUse` hook's request for
+  approval now reaches memory tools in Bypass and Edit automatically; its
+  card requires a human, while Plan still refuses writes.
 
 - **Model API scheduled prompts** (M52). `/loop` stores an interval or local
   five-field cron prompt in the current conversation; the panel lists due
@@ -232,6 +234,10 @@ while they are (PLAN.md D30, D34).
 
 ### Changed
 
+- **One hosted CI run per reviewed tree.** Pull requests still run the seven
+  cross-platform jobs. Protected `main` merges no longer launch the same jobs
+  again on an identical tree; manual branch dispatch remains available for
+  diagnostics without an open pull request.
 - **Windows unit test scheduling (M50).** Vitest runs test files one at a time
   on Windows so concurrent MCP job-helper launches cannot starve the hosted
   runner past the MCP startup deadline. Test selection, coverage, and deadlines

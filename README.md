@@ -461,7 +461,9 @@ unsupported events and handlers are reported and skipped. Hook commands run as y
 the agent's sandbox, with a narrow environment that excludes the Model API key.
 They get JSON on stdin, have a timeout and output cap, and may approve an
 ordinary tool call that would otherwise ask. Paid calls and protected writes
-still need your confirmation. Review each source with
+still need your confirmation. A `PreToolUse` hook that asks forces a human
+card for memory reads or writes, including in Bypass and Edit automatically;
+Plan still refuses memory writes. Review each source with
 **Muse Spark: Hooks** in the Command Palette before enabling the setting.
 On the Model API backend, that picker shows the machine setting's on/off state
 and opens it. Turning the setting off stops hook dispatch in an open session;
@@ -1380,8 +1382,8 @@ media/                      icons, banner, social preview, README screenshots
 .github/                    workflows (ci, build, release), audit exceptions, pinned semgrep, CODEOWNERS, Dependabot
 ```
 
-**Releases.** CI (`ci.yml`, every push to `main`, every pull request and manual
-branch dispatches) calls
+**Releases.** CI (`ci.yml`, every pull request and optional manual branch
+dispatch) calls
 `build.yml`:
 
 - `quality:gates` on Ubuntu, Windows and macOS;

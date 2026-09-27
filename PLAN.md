@@ -3817,6 +3817,25 @@ translations. The order is D36's table:
 
 ### M51 — Hooks on the Model API backend (D36)
 
+PR #39 review found a `PreToolUse` permission gap at the M49 join: the
+memory-tool branch returned before forwarding the hook's `ask` decision,
+so `add_memory` or `edit_memory` could write in Bypass without a card.
+The forced-approval bit now reaches the memory permission judgment after
+path placement and before execution. A forced card requires a human
+decision even when `PermissionRequest` hooks allow or Edit automatically
+would ordinarily answer a file write; Plan and Restricted Mode refusals
+still take precedence. The Bypass/Edit memory-write red tests found no
+card before this correction and now pass. Positive allow-once and
+hook-forced read paths also pass locally. Exact staged tree `0fbe2c47`
+passed full WIN-11-VM quality: 2,041 tests (3 skipped), 304 accessibility
+pages with zero violations or missing results, zero audit/secret/SAST
+findings, and zero checkout-owned processes. The next documented tree
+`58bcb9c5` passed local Windows `npm run quality` with the same 2,041/3
+unit result and 304-page accessibility result; all static, build, audit,
+secret and SAST gates passed. Redacted staged-patch gitleaks and independent
+process audit also found zero. This latest receipt changes the documented
+tree again, so its exact local gate and hosted review remain before merge.
+
 Independent final review found an unchecked cast in the Model API host test's
 fake response-body helper. The review cleanup replaces it with a runtime
 array/record check. A malformed fake input failed before the change and
@@ -3857,10 +3876,10 @@ Run `36282344418` then reported `isTimedOut: true`, `elapsedMs: 11027`,
 empty stdout/stderr and no cancellation. Microsoft documents that
 [stdin is not connected to PowerShell's pipeline for input](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_redirection?view=powershell-5.1),
 while [`Console.In` reads standard input](https://learn.microsoft.com/en-us/dotnet/api/system.console.in?view=netframework-4.8.1).
-On Windows, the hook wrapper now explicitly reads its UTF-8 stdin and pipes
-it to cmd, with the existing 256 KiB hook-input cap enforced before spawn;
-the job-object join, allowlisted environment, 10 second test operation cap
-and child command line stay intact. A local Unicode JSON echo drill passed;
+A diagnostic Windows wrapper explicitly read UTF-8 stdin and piped it to
+cmd, with the existing 256 KiB hook-input cap enforced before spawn; the
+job-object join, allowlisted environment and child command line stayed
+intact. A local Unicode JSON echo drill passed;
 removing the adapter cap made its oversized-input guard test fail before
 restoration. Exact staged tree `c977c836` passed a real Unicode+EOF hook
 drill and full WIN-11-VM `npm run quality`: 2,036 tests passed (3 skipped),
@@ -3869,6 +3888,30 @@ audit, gitleaks and SAST found zero. The remote tree matched before/after
 and process audit found zero checkout-owned processes. This receipt changes
 documentation, so final exact local Windows and hosted branch proof remain
 before a PR.
+Hosted run `36284566101` on `bf559d4` still timed out the controlled
+Windows echo case at 12,232 ms with empty output, despite explicit stdin
+forwarding. That does not prove stdin was the cause. The next diagnostic
+uses a 30 second budget only for this real-process fixture (still far below
+the product's 600 second default) and a 60 second Vitest envelope, while
+keeping the exit/Unicode echo/no-timeout assertions and all separate
+timeout gates. A late success would point to hosted startup pressure; a
+30 second hang would call for deeper I/O work. If late success occurs,
+compare the original wrapper under the same hosted budget before
+retaining extra runtime forwarding code. Run `36285882702` then passed
+all seven hosted jobs on `cadb565`; its Windows Unicode/EOF hook test took
+28,779 ms, near the 30 second fixture cap. An isolated pre-forwarding
+wrapper tree `9ebcdf21` passed that Unicode/EOF test locally and on
+WIN-11-VM with no owned process left. The extra PowerShell read/pipe has
+no demonstrated benefit, so revert only that line while keeping the
+256 KiB adapter guard. Raise this fixture's bounded operation budget to
+60 seconds and its Vitest envelope to 90 seconds, still below the 600
+second product default; all separate timeout behavior tests remain. Exact
+staged tree `b9667382` then passed a focused Unicode/EOF test and full
+WIN-11-VM quality: 2,036 tests passed (3 skipped), all 304 a11y pages
+returned with zero violations/undecided/missing, and audit, gitleaks and
+SAST found zero. Remote tree and process audit were clean. This receipt
+changes documentation; exact host-local and hosted proof on the simpler
+wrapper remain required before a PR.
 An M54 integration review found a separate hook-stdin privacy boundary:
 `input_text`, developer instructions, tool descriptions and assistant output
 can themselves contain pasted `data:` media URLs. The common model-call
@@ -4635,19 +4678,32 @@ The CLI itself is not bundled: it is Meta's closed-source binary.
 
 ## 7. Gates
 
-**Pre-PR delivery (2026-09-26: trigger merged at `10522223`; first manual
+**Pre-PR delivery, historical (2026-09-26: trigger merged at `10522223`; first manual
 branch dispatch run `36276240077` succeeded on head `ac9df5a` in all seven
 jobs).** The owner
 wants platform failures found and fixed before a pull request is opened.
-`ci.yml` gains `workflow_dispatch`, calling the same `build.yml` as pushes and
+`ci.yml` gained `workflow_dispatch`, calling the same `build.yml` as pushes and
 pull requests. `CONTRIBUTING.md` gives the order: integrate milestones, run
 local quality on the exact tree, collect platform evidence, get an independent
 review, push, dispatch hosted CI and inspect its SHA and every job before
-opening a pull request. No build job or threshold changes. GitHub requires a
+opening a pull request. No build job or threshold changed. GitHub requires a
 manually dispatched workflow on the default branch, so the first pre-PR branch
 run could happen only after this trigger landed on `main`. Its recorded
-run and job evidence prove the process; each feature branch still needs its
-own exact-SHA run before a PR. Pull-request CI and review still gate merge.
+run and job evidence proved that process. The manual pre-PR dispatch policy
+was superseded by the M52 cleanup below; pull-request CI and review still
+gate merge.
+
+**M52 CI trigger cleanup (2026-09-26).** The owner now uses exact-tree local
+and VM gates as the pre-PR filter, then opens one pull request whose event runs
+the seven hosted jobs. A separate routine manual branch dispatch duplicates
+that run. A protected merge of a reviewed PR already has the same code tree,
+so the automatic `push` to `main` also duplicates the seven jobs. Remove only
+the `ci.yml` main-push trigger; retain `pull_request` and optional
+`workflow_dispatch` for a deliberate branch check without a PR. The release
+workflow remains tag-triggered and still calls the shared `build.yml`; no
+build jobs or thresholds change. Update contributor instructions, PR proof
+fields, the README and workflow comments to match. Verify the trigger locally
+with a red drill, then certify the final M52 tree and PR run before merge.
 
 | Gate                  | Command                                                                                                                                                                                                         | Status                                                                                                                                                                                                     |
 | --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

@@ -463,7 +463,7 @@ export function createToolIo(deps: ToolIoDeps): ToolIo {
     },
     async runHook(command, payload, cwd, timeoutMs, signal, extraEnvNames) {
       // dispatchHooks enforces this too. Keep the adapter bounded when it is
-      // called directly, before PowerShell reads stdin into one string.
+      // called directly, before any hook subprocess starts.
       if (Buffer.byteLength(payload) > HOOK_STDIN_MAX_BYTES) {
         throw new RangeError('Hook stdin exceeds the input cap')
       }
@@ -479,15 +479,13 @@ export function createToolIo(deps: ToolIoDeps): ToolIo {
       }
       const assembly = deps.platform === 'win32' ? await deps.shellJobAssembly?.() : undefined
       const job = assembly === undefined ? undefined : newShellJob(assembly)
-      // On Windows PowerShell joins the job first. Native stdin is not
-      // automatically forwarded through its pipeline: read the bounded UTF-8
-      // JSON stream explicitly, then pipe it to cmd without putting it on the
-      // command line. The command itself uses cmd, as Muse Code does.
+      // On Windows PowerShell joins the job first, then starts cmd.exe with
+      // the configured command. The command itself uses cmd, as Muse Code does.
       const args =
         deps.platform === 'win32'
           ? shellArguments(
               deps.platform,
-              `[Console]::InputEncoding = New-Object System.Text.UTF8Encoding $false; $hookStdinText = [Console]::In.ReadToEnd(); $hookStdinText | & ${powerShellQuoted(hookProgram)} /D /S /C ${powerShellQuoted(command)}`,
+              `& ${powerShellQuoted(hookProgram)} /D /S /C ${powerShellQuoted(command)}`,
               job,
             )
           : ['-c', command]

@@ -1,11 +1,9 @@
-# Every push to main, pull request and manual branch dispatch runs the shared build
+# Pull requests and optional manual branch dispatches run the shared build
 # (build.yml): the quality gates on three platforms, the integration tests,
 # the macOS helper, the .vsix, secret scanning and semgrep.
 name: CI
 
 on:
-  push:
-    branches: [main]
   pull_request:
   workflow_dispatch:
 

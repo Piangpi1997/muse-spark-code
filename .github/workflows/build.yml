@@ -1,7 +1,7 @@
 # The shared build: every quality gate on three platforms, the integration
 # tests, the macOS dictation helper, and the .vsix with both helpers as the
-# `muse-spark-code-vsix` artifact. Called by ci.yml (pushes, pull
-# requests and manual branch runs) and release.yml (version tags), so a release
+# `muse-spark-code-vsix` artifact. Called by ci.yml (pull requests and
+# optional manual branch runs) and release.yml (version tags), so a release
 # is built exactly the way CI builds every commit.
 #
 # Every job has a timeout (about three times its usual run; GitHub's default
