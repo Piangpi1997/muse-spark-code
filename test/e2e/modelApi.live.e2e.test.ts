@@ -9,9 +9,9 @@
 //
 // The host comes from the built dist/modelApi.js, as in the extension (M57,
 // PLAN.md D6), so run `npm run build:dev` first (the search worker needs it
-// too). The budget stop's `ModelApiError` is this file's class, not the
-// bundle's, so the bundled client takes it for a failed send and retries
-// against the stop; nothing reaches Meta either way.
+// too). The budget stop answers as Meta refuses a request, an HTTP 400
+// with an error body, so the bundled client reports it and does not retry;
+// an error thrown from here would be this file's class, not the bundle's.
 //
 // Opt-in only, never in CI: it bills the owner's Model API key. It runs
 // when MUSE_LIVE_MODEL_API=1 with the key in MUSE_LIVE_MODEL_API_KEY, which
@@ -44,7 +44,6 @@ import { crc32, deflateSync } from 'node:zlib'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import * as z from 'zod/mini'
 import type { AgentSession, TurnPart } from '../../src/core/agent/agentBackend'
-import { ModelApiError } from '../../src/core/backends/modelapi/client'
 import { APPROVAL_CHOICE_IDS } from '../../src/core/backends/modelapi/permissions'
 import { parseLoopPrompt } from '../../src/core/backends/modelapi/schedules'
 import { type Usage, usageSchema } from '../../src/core/backends/modelapi/schemas'
@@ -318,12 +317,12 @@ async function meteredFetch(input: string | URL | Request, init?: RequestInit): 
     return await realFetch(input, init)
   }
   if (spentUsd() > BUDGET_USD) {
-    throw new ModelApiError(
-      `the live sweep's budget of $${BUDGET_USD.toFixed(2)} is spent`,
-      0,
-      undefined,
-      'live_budget',
-    )
+    const error = {
+      message: `the live sweep's budget of $${BUDGET_USD.toFixed(2)} is spent`,
+      type: 'live_budget',
+      code: 'live_budget',
+    }
+    return Response.json({ error }, { status: HTTP_CLIENT_ERROR_MIN })
   }
   const call: WireCall = {
     caseName: running.caseName,
