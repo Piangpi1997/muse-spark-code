@@ -91,7 +91,7 @@ describe('ModelApiClient', () => {
     })
     await expect(
       collect(
-        client.streamResponse(body, new AbortController().signal, undefined, undefined, {
+        client.streamResponse(body, new AbortController().signal, undefined, undefined, undefined, {
           modelId: body.model,
           keyDigest: createHash('sha256').update(key).digest('hex'),
           isStillAllowed: () => isOn,
@@ -103,6 +103,80 @@ describe('ModelApiClient', () => {
     expect(onRequestStarted).toHaveBeenCalledOnce()
   })
 
+  it('rechecks the scheduled key before a paid attempt guard on HTTP retry', async () => {
+    const api = fakeModelApi()
+    api.script({ httpError: { status: 429 } }, { text: 'must not run' })
+    const originalKey = 'LLM|1|secret'
+    let currentKey = originalKey
+    const admitted = vi.fn()
+    const onRequestStarted = vi.fn()
+    const client = new ModelApiClient({
+      fetch: api.fetch,
+      baseUrl: 'https://api.example.test/v1',
+      apiKey: () => Promise.resolve(currentKey),
+      sleep: () => {
+        currentKey = 'LLM|1|changed'
+        return Promise.resolve()
+      },
+      now: () => NOW,
+      random: () => 0,
+      log: new FakeLogOutputChannel(),
+    })
+    const originalDigest = createHash('sha256').update(originalKey).digest('hex')
+    await expect(
+      collect(
+        client.streamResponse(body, new AbortController().signal, undefined, undefined, admitted, {
+          modelId: body.model,
+          keyDigest: originalDigest,
+          isStillAllowed: () => true,
+          onRequestStarted,
+        }),
+      ),
+    ).rejects.toThrow(UI_TEXT.scheduleConfirmationExpired)
+    expect(api.responseBodies()).toHaveLength(1)
+    expect(admitted).toHaveBeenCalledExactlyOnceWith(originalDigest)
+    expect(onRequestStarted).toHaveBeenCalledOnce()
+  })
+
+  it('refuses a scheduled paid row when final admission aborts synchronously', async () => {
+    const api = fakeModelApi()
+    api.script({ text: 'must not run' })
+    const fetch = vi.fn(api.fetch)
+    const key = 'LLM|1|secret'
+    const stop = new AbortController()
+    const onRequestStarted = vi.fn()
+    const client = new ModelApiClient({
+      fetch,
+      baseUrl: 'https://api.example.test/v1',
+      apiKey: () => Promise.resolve(key),
+      sleep: () => Promise.resolve(),
+      now: () => NOW,
+      random: () => 0,
+      log: new FakeLogOutputChannel(),
+    })
+    await expect(
+      collect(
+        client.streamResponse(
+          body,
+          stop.signal,
+          undefined,
+          undefined,
+          () => {
+            stop.abort()
+          },
+          {
+            modelId: body.model,
+            keyDigest: createHash('sha256').update(key).digest('hex'),
+            isStillAllowed: () => true,
+            onRequestStarted,
+          },
+        ),
+      ),
+    ).rejects.toMatchObject({ status: 0 })
+    expect(onRequestStarted).not.toHaveBeenCalled()
+    expect(fetch).not.toHaveBeenCalled()
+  })
+
   it('keeps a stopped scheduled run free while its SecretStorage key read settles', async () => {
     const api = fakeModelApi()
     const fetch = vi.fn(api.fetch)
@@ -110,6 +184,7 @@ describe('ModelApiClient', () => {
     const keyStarted = Promise.withResolvers<undefined>()
     const keyResult = Promise.withResolvers<string>()
     const onRequestStarted = vi.fn()
+    const admitted = vi.fn()
     const client = new ModelApiClient({
       fetch,
       baseUrl: 'https://api.example.test/v1',
@@ -124,7 +199,7 @@ describe('ModelApiClient', () => {
     })
     const stop = new AbortController()
     const result = collect(
-      client.streamResponse(body, stop.signal, undefined, undefined, {
+      client.streamResponse(body, stop.signal, undefined, undefined, admitted, {
         modelId: body.model,
         keyDigest: createHash('sha256').update(key).digest('hex'),
         isStillAllowed: () => true,
@@ -136,6 +211,7 @@ describe('ModelApiClient', () => {
     keyResult.resolve(key)
     await expect(result).rejects.toMatchObject({ status: 0 })
     expect(onRequestStarted).not.toHaveBeenCalled()
+    expect(admitted).not.toHaveBeenCalled()
     expect(fetch).not.toHaveBeenCalled()
   })
 
@@ -314,6 +390,70 @@ describe('ModelApiClient', () => {
       status: 503,
     })
     expect(api.requests.filter((request) => request.path === '/responses')).toHaveLength(4 + 5)
+  })
+
+  it('checks a child grant after a fresh key read before every HTTP retry', async () => {
+    const api = fakeModelApi()
+    const log = new FakeLogOutputChannel()
+    let key = 'LLM|1|secret'
+    const client = new ModelApiClient({
+      fetch: api.fetch,
+      baseUrl: 'https://api.example.test/v1',
+      apiKey: () => Promise.resolve(key),
+      sleep: () => {
+        key = 'LLM|1|changed'
+        return Promise.resolve()
+      },
+      now: () => NOW,
+      random: () => 0,
+      log,
+    })
+    api.script({ httpError: { status: 429 } }, { text: 'must not run' })
+    const keyDigests: (string | undefined)[] = []
+    await expect(
+      collect(
+        client.streamResponse(
+          body,
+          new AbortController().signal,
+          undefined,
+          undefined,
+          (digest) => {
+            keyDigests.push(digest)
+            if (keyDigests.length > 1) {
+              throw new Error('child consent expired')
+            }
+          },
+        ),
+      ),
+    ).rejects.toThrow('child consent expired')
+    expect(keyDigests).toHaveLength(2)
+    expect(keyDigests[0]).not.toBe(keyDigests[1])
+    expect(api.responseBodies()).toHaveLength(1)
+    expect(JSON.stringify(log)).not.toContain(key)
+  })
+
+  it('does not admit or send a stopped child after its key read completes', async () => {
+    const keyRead = Promise.withResolvers<string>()
+    const fetch = vi.fn<typeof globalThis.fetch>()
+    const admitted = vi.fn()
+    const client = new ModelApiClient({
+      fetch,
+      baseUrl: 'https://api.example.test/v1',
+      apiKey: () => keyRead.promise,
+      sleep: () => Promise.resolve(),
+      now: () => NOW,
+      random: () => 0,
+      log: new FakeLogOutputChannel(),
+    })
+    const stop = new AbortController()
+    const pending = collect(
+      client.streamResponse(body, stop.signal, undefined, undefined, admitted),
+    )
+    stop.abort()
+    keyRead.resolve('LLM|1|secret')
+    await expect(pending).rejects.toThrow()
+    expect(admitted).not.toHaveBeenCalled()
+    expect(fetch).not.toHaveBeenCalled()
   })
 
   it('announces each retry and stops waiting when the turn is stopped (D25)', async () => {

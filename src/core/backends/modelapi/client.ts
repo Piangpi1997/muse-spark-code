@@ -8,6 +8,7 @@
 // `ModelApiError`. `fetch`, the clock and the key are injected.
 
 import { createHash } from 'node:crypto'
+
 import {
   MODEL_API_MAX_RETRIES,
   HTTP_TOO_MANY_REQUESTS,
@@ -157,6 +158,9 @@ export interface ConfirmedModelRequest {
   readonly onRequestStarted: () => void
 }
 
+/** A child task's synchronous final admission, after reading the actual key. */
+export type ResponseAttemptGuard = (keyDigest: string | undefined) => void
+
 function isAborted(signal: AbortSignal | undefined): boolean {
   return signal?.aborted === true
 }
@@ -203,18 +207,18 @@ export class ModelApiClient {
     }
   }
 
-  private async headers(confirmed?: ConfirmedModelRequest): Promise<Record<string, string>> {
+  private async headers(): Promise<{
+    readonly values: Record<string, string>
+    readonly keyDigest: string
+  }> {
     const key = await this.deps.apiKey()
     if (key === undefined) {
       throw new MissingApiKeyError()
     }
-    if (
-      confirmed !== undefined &&
-      createHash('sha256').update(key).digest('hex') !== confirmed.keyDigest
-    ) {
-      throw new Error(UI_TEXT.scheduleConfirmationExpired)
+    return {
+      values: { Authorization: `Bearer ${key}`, 'Content-Type': JSON_MEDIA_TYPE },
+      keyDigest: createHash('sha256').update(key).digest('hex'),
     }
-    return { Authorization: `Bearer ${key}`, 'Content-Type': JSON_MEDIA_TYPE }
   }
 
   private backoffMs(attempt: number, suggestedMs: number | undefined): number {
@@ -244,10 +248,12 @@ export class ModelApiClient {
     signal: AbortSignal | undefined,
     onRetry?: (notice: RetryNotice) => void,
     budget?: RetryBudget,
+    admitAttempt?: ResponseAttemptGuard,
     confirmed?: ConfirmedModelRequest,
   ): Promise<Response> {
     const isRateLimitOnly = init.retries === 'rateLimitOnly'
-    const headers = { ...(await this.headers(confirmed)), Accept: init.accept }
+    const fixedHeaders =
+      admitAttempt === undefined && confirmed === undefined ? await this.headers() : undefined
     const url = `${this.deps.baseUrl}${path}`
     const retry = async (attempt: number, delay: number, reason: string) => {
       if (budget !== undefined) {
@@ -264,8 +270,30 @@ export class ModelApiClient {
     // How long the answer took, retries included, at trace level (M39).
     const startedAt = this.deps.now()
     for (let attempt = budget?.retriesUsed ?? 0; ; attempt += 1) {
-      // Stop may have won while SecretStorage was reading the key. No paid
-      // receipt, row or fetch belongs to a cancelled attempt.
+      let credentials: Awaited<ReturnType<ModelApiClient['headers']>>
+      try {
+        credentials = fixedHeaders ?? (await this.headers())
+      } catch (error: unknown) {
+        if (isAborted(signal)) {
+          throw new ModelApiError('cancelled', NETWORK_FAILURE_STATUS, undefined, undefined)
+        }
+        if (error instanceof MissingApiKeyError) {
+          admitAttempt?.(undefined)
+        }
+        throw error
+      }
+      if (isAborted(signal)) {
+        throw new ModelApiError('cancelled', NETWORK_FAILURE_STATUS, undefined, undefined)
+      }
+      if (
+        confirmed !== undefined &&
+        (credentials.keyDigest !== confirmed.keyDigest || !confirmed.isStillAllowed())
+      ) {
+        throw new Error(UI_TEXT.scheduleConfirmationExpired)
+      }
+      // Local consent refusal is outside the transport retry catch: it never
+      // becomes another billable attempt.
+      admitAttempt?.(credentials.keyDigest)
       if (isAborted(signal)) {
         throw new ModelApiError('cancelled', NETWORK_FAILURE_STATUS, undefined, undefined)
       }
@@ -273,6 +301,7 @@ export class ModelApiClient {
         throw new Error(UI_TEXT.scheduleConfirmationExpired)
       }
       confirmed?.onRequestStarted()
+      const headers = { ...credentials.values, Accept: init.accept }
       let response: Response
       try {
         response = await this.deps.fetch(url, {
@@ -336,6 +365,12 @@ export class ModelApiClient {
     return imagesResponseSchema.parse(await response.json())
   }
 
+  /** Bind a one-use child consent to the stored key without retaining it. */
+  public async currentKeyDigest(): Promise<string> {
+    const credentials = await this.headers()
+    return credentials.keyDigest
+  }
+
   /** The wait before retry number `attempt` (0-based): the same backoff and jitter as a request's. */
   public retryDelayMs(attempt: number): number {
     return this.backoffMs(attempt, undefined)
@@ -392,6 +427,7 @@ export class ModelApiClient {
     signal: AbortSignal,
     onRetry?: (notice: RetryNotice) => void,
     budget?: RetryBudget,
+    admitAttempt?: ResponseAttemptGuard,
     confirmed?: ConfirmedModelRequest,
   ): AsyncGenerator<StreamEvent> {
     if (
@@ -425,6 +461,7 @@ export class ModelApiClient {
         AbortSignal.any([signal, stall.signal]),
         onRetry,
         budget,
+        admitAttempt,
         confirmed,
       ),
     )

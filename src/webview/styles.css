@@ -366,6 +366,18 @@ body {
     max-width: 44px;
     padding-inline: 4px;
   }
+
+  .composer-toolbar {
+    flex-wrap: wrap;
+  }
+
+  .composer-toolbar-group:first-child {
+    flex-basis: 100%;
+  }
+
+  .composer-toolbar-group:last-child {
+    margin-inline-start: auto;
+  }
 }
 
 /* --- controls (base) --- */
@@ -389,13 +401,13 @@ body {
   cursor: pointer;
 }
 
-/* The pill hugs its text (Claude Code sizing) instead of the control
-   height. Block layout, not flex: `text-overflow` only clips inline
-   content, and a centred flex row would clip both ends when squeezed. */
+/* Block layout lets the model label ellipsize when squeezed. The minimum
+   height preserves its touch target beside a paid badge in narrow panels. */
 .pill {
   display: inline-block;
   flex: 0 1 auto;
   min-width: 3em;
+  min-height: var(--ms-control-size);
   height: auto;
   overflow: hidden;
   padding: 1px 8px;
@@ -1902,6 +1914,13 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.usage-facts .usage-paid-child {
+  overflow: visible;
+  overflow-wrap: anywhere;
+  text-overflow: clip;
+  white-space: normal;
 }
 
 .usage-heading {

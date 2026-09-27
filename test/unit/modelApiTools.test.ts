@@ -14,6 +14,8 @@ import { revertHunks } from '../../src/core/patchApply'
 import {
   MODEL_TEXT,
   SEARCH_MAX_CANDIDATES,
+  SEARCH_MAX_FILE_BYTES,
+  SEARCH_MAX_HITS,
   TOOL_OUTPUT_ELIDED_MARKER,
   TOOL_OUTPUT_MAX_CHARS,
 } from '../../src/shared/constants'
@@ -170,6 +172,47 @@ describe('toolDefinitions / classifyTool', () => {
       expect(tool.parameters).toMatchObject({ type: 'object', additionalProperties: false })
       expect(tool.strict).toBe(false)
     }
+  })
+
+  it('offers Muse Code’s memory tools last, only with memory on (M49)', () => {
+    const options = { hasShell: true, hasSkills: false, hasMemory: true }
+    const withMemory = toolDefinitions('linux', options)
+    const memoryTools = withMemory.slice(-3)
+    expect(memoryTools.map((tool) => tool.name)).toEqual([
+      'read_memory',
+      'add_memory',
+      'edit_memory',
+    ])
+    for (const tool of memoryTools) {
+      expect(tool.parameters).toMatchObject({ type: 'object', additionalProperties: false })
+      expect(tool.strict).toBe(false)
+    }
+    expect(
+      toolDefinitions('linux', { hasShell: true, hasSkills: false }).map((tool) => tool.name),
+    ).not.toContain('read_memory')
+    expect(classifyTool('read_memory')).toBe('read')
+    expect(classifyTool('add_memory')).toBe('edit')
+    expect(classifyTool('edit_memory')).toBe('edit')
+  })
+
+  it('offers subagent controls to the parent and omits panel tools from a child (M48)', () => {
+    const parent = toolDefinitions('linux', {
+      hasShell: true,
+      hasSkills: false,
+      hasSubagents: true,
+    }).map((tool) => tool.name)
+    expect(parent).toContain('subagent_spawn')
+    expect(parent).toContain('subagent_read_result')
+    expect(classifyTool('subagent_spawn')).toBe('spawn')
+    const child = toolDefinitions('linux', {
+      hasShell: true,
+      hasSkills: false,
+      isSubagent: true,
+    }).map((tool) => tool.name)
+    expect(child).not.toContain('subagent_spawn')
+    expect(child).not.toContain('ask_user')
+    expect(child).not.toContain('todo_write')
+    expect(child).toContain('read_file')
   })
 })
 
@@ -548,6 +591,8 @@ describe('executeTool: search limits (D27)', () => {
     let searched = 0
     io.searchFiles = (job) => {
       searched = job.files.length
+      expect(job.maxFileBytes).toBe(SEARCH_MAX_FILE_BYTES)
+      expect(job.maxHits).toBe(SEARCH_MAX_HITS)
       return Promise.resolve({ ok: true, hits: [] })
     }
     const capped = await executeTool('search', JSON.stringify({ pattern: 'x' }), ctx)

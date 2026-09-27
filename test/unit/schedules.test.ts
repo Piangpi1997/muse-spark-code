@@ -84,6 +84,36 @@ describe('next local cron fire (M52)', () => {
     ).toBeUndefined()
   })
 
+  it('requires both date fields when a star-step is present, without dropping the step', () => {
+    const tuesday = new Date(2026, 8, 22, 8, 59).getTime()
+    expect(
+      nextScheduleFire(
+        { kind: 'cron', expression: '0 9 */1 * 1' },
+        tuesday,
+        tuesday + MILLISECONDS_PER_DAY,
+      ),
+    ).toBeUndefined()
+    const evenMonday = new Date(2026, 8, 28, 8, 59).getTime()
+    expect(
+      nextScheduleFire(
+        { kind: 'cron', expression: '0 9 */2 * 1' },
+        evenMonday,
+        evenMonday + MILLISECONDS_PER_DAY,
+      ),
+    ).toBeUndefined()
+  })
+
+  it('keeps an explicit full day-of-month range restricted for OR semantics', () => {
+    const tuesday = new Date(2026, 8, 22, 8, 59).getTime()
+    expect(
+      nextScheduleFire(
+        { kind: 'cron', expression: '0 9 1-31 * 1' },
+        tuesday,
+        tuesday + MILLISECONDS_PER_DAY,
+      ),
+    ).toBe(new Date(2026, 8, 22, 9, 0).getTime())
+  })
+
   it('advances an interval from the admitted time, so missed fires do not queue', () => {
     const cadence = { kind: 'interval', everyMs: 60 * 1000 } as const
     expect(nextScheduleFire(cadence, 10 * 60 * 1000, 12 * 60 * 1000)).toBe(11 * 60 * 1000)

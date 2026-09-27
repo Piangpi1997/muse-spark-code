@@ -95,7 +95,7 @@ function cronField(
       values.add(isWeekday && value === CRON_MAX_WEEKDAY ? 0 : value)
     }
   }
-  return values.size === 0 ? undefined : { values, isWildcard: source === '*' }
+  return values.size === 0 ? undefined : { values, isWildcard: source.includes('*') }
 }
 
 function parsedCron(expression: string): ParsedCron | undefined {
@@ -120,8 +120,10 @@ function parsedCron(expression: string): ParsedCron | undefined {
 function isCronMatch(cron: ParsedCron, date: Date): boolean {
   const isDay = cron.day.values.has(date.getDate())
   const isWeekday = cron.weekday.values.has(date.getDay())
-  const isDayOrWeekday = cron.day.isWildcard ? isWeekday : isDay || isWeekday
-  const isDayMatch = cron.weekday.isWildcard ? isDay : isDayOrWeekday
+  // Cron ORs these fields only when neither contains '*'. A step such as
+  // '*/2' still has to match its own values when the fields are ANDed.
+  const isDayMatch =
+    cron.day.isWildcard || cron.weekday.isWildcard ? isDay && isWeekday : isDay || isWeekday
   return (
     cron.minute.values.has(date.getMinutes()) &&
     cron.hour.values.has(date.getHours()) &&

@@ -10,19 +10,21 @@
 // read and both faults reported.
 //
 // Nothing secret is shown: `env` and `headers` are reduced to their names
-// and a URL to its scheme and host.
+// and a URL to its scheme and host. The Model API backend (M50, PLAN.md D42)
+// starts the same servers from the same reading: `readMcpServerEntries`
+// hands it each entry whole beside its view, and the view stays secret-free.
 //
 // Pure: the host reads the file and shows the view.
 
 import path from 'node:path'
-import { UI_TEXT } from '../../../shared/constants'
+import { MCP_TRANSPORTS, UI_TEXT } from '../../../shared/constants'
 
 const CAMEL_KEY = 'mcpServers'
 const LEGACY_KEY = 'mcp_servers'
 const HOOKS_KEY = 'hooks'
 const MANAGED_HOOKS_KEY = 'managed_hooks_path'
-const STDIO = 'stdio'
-const STREAMABLE_HTTP = 'streamable-http'
+const STDIO = MCP_TRANSPORTS.stdio
+const STREAMABLE_HTTP = MCP_TRANSPORTS.streamableHttp
 const HTTP_TRANSPORTS: ReadonlySet<string> = new Set(['streamable-http', 'streamable_http', 'http'])
 const OPTIONAL_MODE = 'optional'
 const REQUIRED_MODE = 'required'
@@ -52,6 +54,23 @@ export type McpSettingsView =
       /** Both `mcpServers` and `mcp_servers`: Muse loads neither. */
       readonly hasKeyConflict: boolean
       /** Every server comes from the legacy `mcp_servers` key. */
+      readonly isLegacy: boolean
+    }
+
+/** One server as the file holds it: its view, and the entry itself, secrets included. */
+export interface McpServerEntry {
+  readonly view: McpServerView
+  readonly entry: Readonly<Record<string, unknown>>
+}
+
+/** `McpSettingsView` with each server's whole entry (M50); never shown. */
+export type McpSettingsEntries =
+  | { readonly status: 'missing' }
+  | { readonly status: 'unreadable'; readonly reason: string }
+  | {
+      readonly status: 'read'
+      readonly entries: readonly McpServerEntry[]
+      readonly hasKeyConflict: boolean
       readonly isLegacy: boolean
     }
 
@@ -130,8 +149,8 @@ function parsed(text: string): JsonObject | string {
   return isObject(value) ? value : 'the file does not hold a JSON object'
 }
 
-/** The MCP servers the settings file declares; `text` undefined when there is no file. */
-export function readMcpServers(text: string | undefined): McpSettingsView {
+/** Each server the settings file declares, whole; `text` undefined when there is no file. */
+export function readMcpServerEntries(text: string | undefined): McpSettingsEntries {
   if (text === undefined) {
     return { status: 'missing' }
   }
@@ -141,19 +160,29 @@ export function readMcpServers(text: string | undefined): McpSettingsView {
   }
   const camel = settings[CAMEL_KEY]
   const legacy = settings[LEGACY_KEY]
-  const servers = [camel, legacy].flatMap((block) =>
+  const entries = [camel, legacy].flatMap((block) =>
     isObject(block)
       ? Object.entries(block).flatMap(([name, entry]) =>
-          isObject(entry) ? [serverView(name, entry)] : [],
+          isObject(entry) ? [{ view: serverView(name, entry), entry }] : [],
         )
       : [],
   )
   return {
     status: 'read',
-    servers,
+    entries,
     hasKeyConflict: camel !== undefined && legacy !== undefined,
     isLegacy: camel === undefined && legacy !== undefined,
   }
+}
+
+/** The MCP servers the settings file declares; `text` undefined when there is no file. */
+export function readMcpServers(text: string | undefined): McpSettingsView {
+  const read = readMcpServerEntries(text)
+  if (read.status !== 'read') {
+    return read
+  }
+  const { entries, hasKeyConflict, isLegacy } = read
+  return { status: 'read', servers: entries.map(({ view }) => view), hasKeyConflict, isLegacy }
 }
 
 function hookCount(block: unknown): number | undefined {

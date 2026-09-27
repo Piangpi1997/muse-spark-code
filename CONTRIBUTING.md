@@ -21,6 +21,36 @@ sign-in gate explains what is missing.
 
 ## Before you open a pull request
 
+Use this order for a candidate branch:
+
+1. Integrate the planned milestones onto the current `main` in order. Resolve
+   conflicts and stage the candidate with no unstaged changes. Record its
+   `git write-tree` hash.
+2. Run `npm ci` and `npm run quality` on that exact staged tree. For Windows
+   behavior, exercise the same tree on the Windows 11 host and VM in parallel
+   and record both results; collect other platform evidence where needed.
+3. Have an independent agent review the staged diff and acceptance evidence.
+   Scan the staged changes for secrets too: local `security:secrets` scans
+   committed history, so it cannot see the index before commit. Fix findings,
+   restage, and repeat the full local gate, staged secret scan and affected
+   platform checks. Commit only after the final tree passes; verify the
+   commit's tree matches the tested `git write-tree` hash.
+4. Push the reviewed commit to its feature branch. Once `workflow_dispatch`
+   has reached the default branch, run `gh workflow run ci.yml --ref YOUR_BRANCH`.
+   Find the new run with
+   `gh run list --workflow ci.yml --branch YOUR_BRANCH --event workflow_dispatch`.
+5. Use `gh run watch RUN_ID --exit-status`, then
+   `gh run view RUN_ID --json headSha,jobs`. Match `headSha` to the pushed
+   commit and check every job: Ubuntu, Windows and macOS quality; Linux and
+   Windows accessibility and VS Code integration; macOS dictation; packaging;
+   gitleaks; and semgrep. Fix failures and repeat from the exact-tree gate.
+6. Open the pull request after that run is green. Pull-request CI and review
+   still gate the merge; later changes to the branch need a fresh run. Fill
+   the PR template with the tested tree, commit tree, branch run ID and
+   `headSha`, all seven conclusions, independent review, and any unproved
+   platform or live gate. A printed success line without the process exit
+   status is not a gate result.
+
 - Run `npm run quality` and make it green. It runs every gate: formatting,
   ESLint (zero warnings), stylelint, type checks, dead-code and cycle
   detection, duplication, unit tests with coverage thresholds, the
@@ -116,6 +146,22 @@ the Model API, the Images endpoint and the Muse Voice WebSocket are all
 fakes (`test/unit/helpers/fakeModelApi.ts` and `fakeVoiceServer.ts`, a
 small RFC 6455 server over Node's own `http`). A live check bills the
 owner's key: say what it will cost first and ask.
+
+## MCP servers on the Model API backend
+
+The MCP client (`src/core/backends/modelapi/mcp/`, PLAN.md D42) is tested
+against two fakes, never a real server: `test/unit/helpers/fakeMcpServer.mjs`,
+a stdio server the tests start as a child process through the extension's
+own spawner (its behaviour is chosen by `FAKE_MCP_*` variables in the
+entry's `env`), and `fakeMcpHttpServer.ts`, a streamable-HTTP server on
+loopback. A new MCP behaviour gets a case in one of them first.
+On Windows the real-process tests also compile the M27 job assembly in an
+isolated temporary folder. `fakeMcpBinary.mjs` checks raw stdio bytes,
+`fakeMcpOrphan.mjs` checks a finite detached child, and
+`fakeMcpLauncherParent.mjs` checks cleanup when the extension-side Node
+process exits, and `fakeMcpPrebindParent.mjs` checks death before the job
+helper binds that process. The withheld-GO test's marker must never start.
+The test-owned fixture PIDs must be gone after the suite.
 
 ## Reporting bugs and proposing features
 

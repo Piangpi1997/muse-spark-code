@@ -33,6 +33,9 @@ export interface ExtensionSettings extends SettingsSnapshot {
   readonly modelApiImageGeneration: boolean
   readonly modelApiVoice: boolean
   readonly modelApiScheduledPrompts: boolean
+  readonly modelApiSubagents: boolean
+  /** Explicit machine opt-in for external hook commands (M51). */
+  readonly modelApiHooks: boolean
 }
 
 /**
@@ -60,6 +63,8 @@ const settingSchemas = {
   modelApiImageGeneration: z.boolean(),
   modelApiVoice: z.boolean(),
   modelApiScheduledPrompts: z.boolean(),
+  modelApiSubagents: z.boolean(),
+  modelApiHooks: z.boolean(),
 } as const
 
 type SettingKey = keyof typeof settingSchemas
@@ -123,6 +128,8 @@ export function readSettings(config: SettingsSource, log: Logger): ExtensionSett
     modelApiImageGeneration: readSetting(config, 'modelApiImageGeneration', log),
     modelApiVoice: readSetting(config, 'modelApiVoice', log),
     modelApiScheduledPrompts: readSetting(config, 'modelApiScheduledPrompts', log),
+    modelApiSubagents: readSetting(config, 'modelApiSubagents', log),
+    modelApiHooks: readSetting(config, 'modelApiHooks', log),
   }
 }
 

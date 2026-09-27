@@ -24,6 +24,7 @@ import {
 } from '../../shared/constants'
 import { powerShellQuoted } from '../../core/shellQuote'
 import { type RunProgram, runProgram, type ShellJob, windowsPowerShell } from '../processTree'
+import { MCP_JOB_SOURCE } from './mcpJobSource'
 
 // C# 5, which Windows PowerShell 5.1's `Add-Type` compiles. The shell keeps
 // its handle for its whole life: a job's name lasts as long as a handle to
@@ -31,6 +32,12 @@ import { type RunProgram, runProgram, type ShellJob, windowsPowerShell } from '.
 const SOURCE = `using System;
 using System.ComponentModel;
 using System.Runtime.InteropServices;
+using System.Text;
+using System.Collections.Generic;
+using System.IO;
+using System.IO.Pipes;
+
+${MCP_JOB_SOURCE}
 
 public static class ${SHELL_JOB_TYPE_NAME} {
   [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]

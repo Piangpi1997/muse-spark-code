@@ -973,6 +973,7 @@ export function App({
         case 'importSkills':
         case 'showMcpServers':
         case 'showHooks':
+        case 'showMemory':
         case 'newWorktree':
         case 'removeWorktree': {
           postMessage({ type: 'hostAction', action: action.type })
@@ -1289,6 +1290,7 @@ export function App({
   const agentMap =
     overlay === 'agents' ? (
       <AgentMap
+        backend={state.auth.backend}
         title={title}
         modelId={state.model?.modelId}
         contextUsedTokens={state.context?.usedTokens}

@@ -36,6 +36,7 @@ export const COMMAND_IDS = {
   exportConversation: 'museSpark.exportConversation',
   mcpServers: 'museSpark.mcpServers',
   hooks: 'museSpark.hooks',
+  memory: 'museSpark.memory',
   newWorktree: 'museSpark.newWorktree',
   removeWorktree: 'museSpark.removeWorktree',
   // M46: Ctrl+B moves the running commands to the background; the other
@@ -56,6 +57,7 @@ export const GLOBAL_STATE_KEYS = {
    * used, and turning a setting off removes its entry.
    */
   paidConfirmations: 'museSpark.paidConfirmations',
+  subagentPriceAcceptance: 'museSpark.subagentPriceAcceptance',
 } as const
 
 // VS Code `when`-clause context keys the extension maintains.
@@ -107,6 +109,7 @@ export const SHELL_SANDBOX_MODES = ['auto', 'muse', 'off'] as const
 export type ShellSandboxMode = (typeof SHELL_SANDBOX_MODES)[number]
 export const SHELL_SANDBOX_SETTING = 'museSpark.shellSandbox'
 export const BYPASS_SETTING = 'museSpark.allowDangerouslySkipPermissions'
+export const MODEL_API_HOOKS_SETTING = 'museSpark.modelApiHooks'
 // Settings `muse serve` takes at spawn: changing one restarts it (PLAN.md D25).
 export const CLI_PROCESS_SETTINGS = [
   'museSpark.museBinaryPath',
@@ -164,6 +167,10 @@ export const SETTING_DEFAULTS = {
   modelApiImageGeneration: false,
   modelApiVoice: false,
   modelApiScheduledPrompts: false,
+  modelApiSubagents: false,
+  // Hook commands are user code outside the agent sandbox (M51). A machine
+  // setting must explicitly enable them on the Model API backend.
+  modelApiHooks: false,
 } as const
 export const ARCHIVE_DAY_CHOICES = [1, 2, 7, 14, 0] as const
 // Settings a repository's `.vscode/settings.json` must never set (PLAN.md
@@ -181,14 +188,66 @@ export const MACHINE_SCOPED_SETTINGS = [
   'modelApiImageGeneration',
   'modelApiVoice',
   'modelApiScheduledPrompts',
+  'modelApiSubagents',
+  'modelApiHooks',
 ] as const
+
+// Muse Code SDK 1.3.0 hook process limits (PLAN.md M51).
+export const HOOK_STDIN_MAX_BYTES = 256 * 1024
+export const HOOK_OUTPUT_MAX_BYTES = 16 * 1024
+export const HOOK_DEFAULT_TIMEOUT_SECONDS = 600
+export const HOOK_MAX_TIMEOUT_SECONDS = 600
+export const HOOK_CONFIG_MAX_BYTES = 1024 * 1024
+export const HOOK_SYSTEM_MESSAGE_MAX_CHARS = 1000
+export const HOOK_MODEL_MESSAGE_SUMMARIES_MAX = 32
+export const HOOK_MODEL_CONTENT_PARTS_MAX = 4
+export const HOOK_MODEL_TOOL_SUMMARIES_MAX = 50
+export const HOOK_MODEL_TEXT_PREVIEW_CHARS = 256
+export const HOOK_MODEL_TOOL_DESCRIPTION_CHARS = 256
+export const HOOK_MODEL_OUTPUT_PREVIEW_CHARS = 1024
+export const HOOK_TOOL_INPUT_PREVIEW_CHARS = 4096
+export const HOOK_TOOL_VALUE_PREVIEW_CHARS = 512
+export const HOOK_TOOL_OUTPUT_PREVIEW_CHARS = 1024
+export const HOOK_TOOL_NESTING_MAX = 4
+export const HOOK_TOOL_ENTRIES_MAX = 16
+export const MODEL_API_HOOK_PROVIDER = 'meta'
+export const HOOK_MAX_STOP_CONTINUATIONS = 8
+export const HOOK_CONTROL_CODE_LIMIT = 32
+export const HOOK_NEWLINE_CODE = 10
+export const HOOK_DELETE_CODE = 127
+export const HOOK_MATCHER_MAX_CHARS = 256
+export const HOOK_MATCHER_VALUE_MAX_CHARS = 256
+export const HOOK_MATCHER_TIMEOUT_MS = 25
+export const HOOK_MATCHER_COMPILE_TIMEOUT_MS = 250
+export const HOOK_SOURCE_MAX_HANDLERS = 64
+export const HOOK_TOTAL_MAX_HANDLERS = 64
+export const HOOK_MAX_RUNNING_COMMANDS = 4
+export const HOOK_ON_FAILURE_MAX_DEPTH = 3
+export const HOOK_MANAGED_ENV_MAX_NAMES = 64
+export const HOOK_MANAGED_ENV_NAME_MAX_CHARS = 128
+export const HOOK_NOTIFICATION_DELAY_MS = 6000
+export const HOOK_SESSION_END_TIMEOUT_MS = 10_000
+export const HOOK_FORBIDDEN_ENV_NAMES: ReadonlySet<string> = new Set([
+  'AWS_ACCESS_KEY_ID',
+  'AWS_SECRET_ACCESS_KEY',
+  'AWS_SESSION_TOKEN',
+  'OPENAI_KEY',
+  'ANTHROPIC_KEY',
+  'META_KEY',
+])
 
 // --- Paid features on the Model API backend (M33–M35, PLAN.md D30) ---
 
 // Each is off by default, confirmed with its price when turned on, named in
 // the composer's badge while on, shown per use and tallied (the owner's rule:
 // "opt in and loud"). They are used on the Model API backend only.
-export const PAID_FEATURES = ['webSearch', 'imageGeneration', 'voice', 'scheduledPrompts'] as const
+export const PAID_FEATURES = [
+  'webSearch',
+  'imageGeneration',
+  'voice',
+  'subagents',
+  'scheduledPrompts',
+] as const
 // The paid features the Muse Code backend can use too, billed to a stored
 // Model API key (M44, PLAN.md D37): images through the `ide` server and
 // Muse Voice. Web search is not among them: Muse Code searches on the
@@ -201,6 +260,7 @@ export const PAID_FEATURE_SETTINGS = {
   imageGeneration: 'modelApiImageGeneration',
   voice: 'modelApiVoice',
   scheduledPrompts: 'modelApiScheduledPrompts',
+  subagents: 'modelApiSubagents',
 } as const satisfies Readonly<Record<PaidFeature, keyof typeof SETTING_DEFAULTS>>
 // Meta's published prices (dev.meta.ai/docs/pricing-rate-limits, read
 // 2026-09-24), on top of the tokens a turn uses: a web search, an image, and
@@ -339,6 +399,10 @@ export const MEMORY_TOOLS: ReadonlySet<string> = new Set([
   'add_memory',
   'edit_memory',
 ])
+// Muse Code's memory scopes (`scope` of the memory tools), the default first.
+export const MEMORY_SCOPES = ['personal_project', 'project', 'personal'] as const
+export type MemoryScope = (typeof MEMORY_SCOPES)[number]
+export const DEFAULT_MEMORY_SCOPE: MemoryScope = 'personal_project'
 export const GOAL_TOOLS: ReadonlySet<string> = new Set([
   'create_goal',
   'get_goal',
@@ -407,7 +471,16 @@ export const MODEL_API_PRICES_PER_MILLION = {
   standard: { input: 1.25, cachedInput: 0.15, output: 4.25 },
   contributor: { input: 0.1, cachedInput: 0.002, output: 0.2 },
 } as const
-export const MODEL_API_PRICES_VERIFIED_ON = '2026-09-22'
+export const MODEL_API_PRICES_VERIFIED_ON = '2026-09-26'
+export const MODEL_API_PRICE_DECIMALS = 3
+export const MODEL_API_PRICED_MODELS = {
+  standard: ['muse-spark-1.1', 'muse-spark-1.2', 'muse-spark-1.3'],
+  contributor: ['muse-spark-1.2-contributor', 'muse-spark-1.3-contributor'],
+} as const
+/** A consent grant covers actual child HTTP attempts, including all retries. */
+export const SUBAGENT_TASK_MAX_REQUESTS = 4
+/** Bump when the accepted rates or child-task limit changes. */
+export const SUBAGENT_PRICE_ACCEPTANCE_VERSION = '2026-09-26:requests-4:v1'
 export const TOKENS_PER_MILLION = 1_000_000
 // dev.meta.ai/docs/models: every Muse Spark model has this window; the
 // output cap is well under the documented 131,072 maximum.
@@ -475,6 +548,10 @@ export const MODEL_API_TOOLS = {
   getGoal: 'get_goal',
   updateGoal: 'update_goal',
   reportProgress: 'report_progress',
+  // M49 (PLAN.md D41): Muse Code's own memory tools, with its arguments and results.
+  readMemory: 'read_memory',
+  addMemory: 'add_memory',
+  editMemory: 'edit_memory',
 } as const
 // The image tools the extension's `ide` session server offers Muse Code
 // while paid image generation is on and a Model API key is stored (M44):
@@ -561,12 +638,39 @@ export const SKILL_SOURCES = ['project', 'user'] as const
 // What the extension watches so the palette follows skill files (D13).
 export const PROJECT_SKILLS_GLOB = '**/.agents/skills/**'
 export const PERSONAL_SKILLS_GLOB = '*/SKILL.md'
-// Memory: the project index `.agents/memory/MEMORY.md`, read at session start.
-export const MEMORY_INDEX_SEGMENTS = ['.agents', 'memory', 'MEMORY.md'] as const
+// Memory (M49, PLAN.md D41, found on disk and in a live capture 2026-09-25):
+// Muse Code keeps Markdown notes in three scopes. `project` is the
+// repository's `.agents/memory`; `personal` is `<data>/muse/memory/personal`
+// and `personal_project` is `<data>/muse/memory/projects/<slug>-<key>`,
+// where `<data>` is `$XDG_DATA_HOME`, else `~/.local/share`. Each scope may
+// keep a `MEMORY.md` index, one line per note (`- [Title](file.md) | hook`).
+export const MEMORY_DIR_SEGMENTS = ['.agents', 'memory'] as const
 export const MEMORY_DIR = '.agents/memory'
+export const MEMORY_INDEX_FILE = 'MEMORY.md'
+export const MEMORY_DATA_HOME_SEGMENTS = ['.local', 'share'] as const
+export const MEMORY_DATA_SEGMENTS = ['muse', 'memory'] as const
+export const MEMORY_PERSONAL_DIR = 'personal'
+export const MEMORY_PROJECTS_DIR = 'projects'
+export const MEMORY_NOTE_EXTENSION = '.md'
+export const MEMORY_STAGE_FILE_MODE = 0o600
+// `add_memory`'s optional `type` (the binary's schema; `user`, `reference`
+// and `project` seen accepted live).
+export const MEMORY_NOTE_TYPES = ['user', 'feedback', 'project', 'reference'] as const
+// `read_memory`'s window when the call names none (the tool's own schema).
+export const MEMORY_READ_DEFAULT_LIMIT = 500
+// Muse Code's session-start snapshot lists each scope's other notes by
+// path, "up to 48 files" (dev.meta.ai/docs/muse-code/configuration).
+export const MEMORY_SNAPSHOT_MAX_NOTES = 48
+// What the Memory view lists per scope, and how deep it looks for notes.
+export const MEMORY_LIST_MAX_NOTES = 500
+export const MEMORY_LIST_MAX_DEPTH = 8
+// An index line's hook, cut to this many characters.
+export const MEMORY_HOOK_MAX_CHARS = 120
+export const MEMORY_MARKDOWN_ESCAPE = String.fromCodePoint(92)
 export const MEMORY_INDEX_MAX_LINES = 200
 export const MEMORY_INDEX_MAX_BYTES = 32 * 1024
 export const MEMORY_TRUNCATED_MARKER = '[MEMORY.md truncated]'
+export const MUSE_MEMORY_DOCS_URL = 'https://dev.meta.ai/docs/muse-code/configuration#local-memory'
 export const TOOL_OUTPUT_MAX_CHARS = 64_000
 export const TOOL_OUTPUT_CLIP_MARKER = '\n[output clipped]'
 // PLAN.md D27: a clipped shell stream keeps its beginning and its end, with
@@ -707,8 +811,15 @@ export const QUESTION_OUTCOME_CLARIFIED = 'clarified'
 // `~/.config/muse/settings.json`) is `auto`; the extension reads it, never
 // writes it.
 export const MUSE_SETTINGS_FILE_SEGMENTS = ['muse', 'settings.json'] as const
-/** The owner commands on a native subagent the Agent map offers (MSP `subagent/<action>`), M18. */
-export const SUBAGENT_ACTIONS = ['interrupt', 'stop', 'resume', 'close'] as const
+/** The owner commands on a native subagent the Agent map offers (MSP `subagent/<action>`), M18/M48. */
+export const SUBAGENT_ACTIONS = [
+  'interrupt',
+  'stop',
+  'resume',
+  'close',
+  'reopen',
+  'readResult',
+] as const
 export type SubagentAction = (typeof SUBAGENT_ACTIONS)[number]
 /** Control statuses (MSP SubagentControlStatus) that mean the child is still working. */
 export const SUBAGENT_RUNNING_STATUSES: ReadonlySet<string> = new Set([
@@ -718,6 +829,24 @@ export const SUBAGENT_RUNNING_STATUSES: ReadonlySet<string> = new Set([
 ])
 export const SUBAGENT_RESULT_READY = 'resultReady'
 export const SUBAGENT_CLOSED = 'closed'
+/** Model API child tools use Muse Code's published names (M48, PLAN.md D45). */
+export const MODEL_API_SUBAGENT_TOOLS = {
+  spawn: 'subagent_spawn',
+  status: 'subagent_status',
+  wait: 'subagent_wait',
+  sendMessage: 'subagent_send_message',
+  readResult: 'subagent_read_result',
+  cancel: 'subagent_cancel',
+} as const
+export const SUBAGENT_CAPACITY = 8
+export const SUBAGENT_MAX_PER_CONVERSATION = 64
+export const SUBAGENT_DEPTH = 1
+export const SUBAGENT_ID_PREFIX = 'subagent-'
+export const SUBAGENT_WAIT_DEFAULT_MS = 60_000
+export const SUBAGENT_WAIT_MIN_MS = 1
+export const SUBAGENT_WAIT_MAX_MS = 600_000
+export const SUBAGENT_SUMMARY_MAX_CHARS = 512
+export const SUBAGENT_RESULT_TEXT_MAX_CHARS = 32_768
 export const MUSE_DELEGATION_DEFAULT = 'off'
 export const MUSE_DELEGATION_ENABLED = 'auto'
 
@@ -888,6 +1017,96 @@ export const IDE_MCP_TOKEN_BYTES = 32
 export const IDE_MCP_TOOL_DIAGNOSTICS = 'getDiagnostics'
 // Newest MCP revision the server answers with when the client names none.
 export const MCP_PROTOCOL_VERSION = '2025-06-18'
+// --- MCP servers on the Model API backend (M50, PLAN.md D42) ---
+//
+// The client asks for MCP_PROTOCOL_VERSION, as Muse Code does (its 1.2.1
+// changelog: "the MCP handshake advertises protocol version 2025-06-18 on
+// both transports"), and accepts a server that answers with one of these.
+export const MCP_SUPPORTED_PROTOCOL_VERSIONS: ReadonlySet<string> = new Set([
+  '2025-06-18',
+  '2025-03-26',
+  '2024-11-05',
+])
+export const MCP_CLIENT_NAME = 'muse-spark-code'
+// The transports Muse Code accepts (its settings types, 1.3.0 binary:
+// `McpTransportSetting` is `stdio` or `streamable_http`), as museConfigView
+// names them.
+export const MCP_TRANSPORTS = { stdio: 'stdio', streamableHttp: 'streamable-http' } as const
+// Muse Code's stdio framings (`McpStdioFramingSetting`, 1.3.0 binary): `auto`
+// probes line-delimited JSON and falls back to Content-Length.
+export const MCP_FRAMINGS = ['auto', 'content_length', 'line_delimited_json'] as const
+export type McpFraming = (typeof MCP_FRAMINGS)[number]
+// A tool is offered as `mcp__<server>__<tool>`, Muse Code's own name for it
+// (`mcp__ide__getDiagnostics`, captured 2026-09-22), so its row reads "tool
+// (server)" (M43). Meta allows `[A-Za-z0-9_.-]` and at most one dot
+// (tool-calling, "Function name rules") and names no length limit; the
+// extension keeps names to 64 characters, the OpenAI-compatible limit.
+export const MCP_FUNCTION_PREFIX = 'mcp__'
+export const MCP_FUNCTION_SEPARATOR = '__'
+export const MCP_FUNCTION_NAME_MAX_CHARS = 64
+export const MCP_FUNCTION_HASH_CHARS = 8
+export const MCP_TOOL_DESCRIPTION_MAX_CHARS = 2048
+// Past these a server's tools are not all offered (the view says how many were).
+export const MCP_TOOLS_MAX_PER_SERVER = 128
+export const MCP_TOOLS_LIST_MAX_PAGES = 20
+// Meta's limits on a function's `parameters` schema (structured-output,
+// "Stay within schema constraints", read 2026-09-25): a request that breaks
+// one is a 400 for the whole turn, so a schema is cut to fit first.
+export const MCP_SCHEMA_LIMITS = {
+  depth: 10,
+  properties: 5000,
+  stringChars: 120_000,
+  enumValues: 1000,
+  largeEnumValues: 250,
+  largeEnumChars: 15_000,
+  nodes: 200_000,
+} as const
+// Muse Code's `startup_timeout_sec` and `tool_timeout_sec`, when the entry
+// sets none; a value is capped at the hour.
+export const MCP_STARTUP_TIMEOUT_MS = 30_000
+export const MCP_START_CONCURRENCY = 4
+export const MCP_TOOL_TIMEOUT_MS = 300_000
+export const MCP_TIMEOUT_MAX_SECONDS = 3600
+// `tools/list` and the other short requests after the handshake.
+export const MCP_REQUEST_TIMEOUT_MS = 30_000
+// Closing: a stdio server gets this long to leave after its input closes
+// before its process tree is killed; a remote session's DELETE this long.
+export const MCP_SHUTDOWN_GRACE_MS = 1500
+export const MCP_HTTP_CLOSE_TIMEOUT_MS = 2000
+// One message either way, a line, a Content-Length body or an HTTP reply:
+// room for a 10 MiB image in base64 and its text.
+export const MCP_MESSAGE_MAX_BYTES = 20 * 1024 * 1024
+// A stdio server's last words, kept for the reason its exit is reported with.
+export const MCP_STDERR_TAIL_CHARS = 500
+// What a stdio server inherits from the extension host's environment besides
+// its entry's own `env`: the allowlist Muse Code 1.3.0 starts its servers with
+// (its migrate skill: "only a small fixed allowlist of the user's environment
+// (HOME, PATH, USER, LANG, TERM and similar)"; the list itself read from the
+// binary), plus the Windows profile folders npm and Python look for.
+export const MCP_STDIO_ENV_ALLOWLIST: readonly string[] = [
+  'HOME',
+  'PATH',
+  'USER',
+  'LOGNAME',
+  'TMPDIR',
+  'TEMP',
+  'TMP',
+  'SHELL',
+  'LANG',
+  'LC_ALL',
+  'TERM',
+  'COMSPEC',
+  'PATHEXT',
+  'SystemRoot',
+  'WINDIR',
+  'USERPROFILE',
+  'APPDATA',
+  'LOCALAPPDATA',
+]
+/** A private nonce proves the extension still owns a new Windows MCP job. */
+export const MCP_JOB_NONCE_BYTES = 24
+/** Reject an oversized READY line before it can hold the private pipe. */
+export const MCP_JOB_HANDSHAKE_MAX_CHARS = 128
 // Diagnostics beyond this many are summarised as a count.
 export const DIAGNOSTICS_MAX_ENTRIES = 200
 // One diagnostic's message is cut here (PLAN.md D27): a TypeScript type
@@ -905,6 +1124,7 @@ export const HTTP_STATUS = {
   accepted: 202,
   badRequest: 400,
   unauthorized: 401,
+  forbidden: 403,
   notFound: 404,
   methodNotAllowed: 405,
   internalServerError: 500,
@@ -1034,6 +1254,7 @@ export const SLASH_COMMAND_NAMES = {
   config: 'config',
   mcp: 'mcp',
   hooks: 'hooks',
+  memory: 'memory',
 } as const
 /** Muse Code's bundled skills that continue another agent's session (M30). */
 export const RESUME_SKILL_SELECTORS: Readonly<Record<SkillImportSource, string>> = {
@@ -1136,6 +1357,7 @@ export const MODEL_TEXT = {
   shellRestrictedMode:
     'shell commands are disabled while the workspace is in Restricted Mode; trust the workspace to enable them',
   toolRejectedByUser: 'rejected by the user',
+  toolRejectedByHook: 'rejected by a hook',
   // PLAN.md D26: what the model is told when Stop cuts a tool short.
   toolCancelledByStop: 'cancelled: the user stopped the turn',
   goalBudgetReached: 'cancelled: the goal token budget was reached',
@@ -1181,6 +1403,24 @@ export const MODEL_TEXT = {
   goalWake: 'Continue working toward the active session goal.',
   goalRequestSuperseded:
     'the user changed the goal after this request began; request the current goal before reporting progress',
+  subagentObjective:
+    'You are a subagent. Work on this objective and report the result to your parent agent:',
+  subagentResume: 'Continue your objective and report the result to your parent agent.',
+  subagentResult: 'Automatic subagent result (tool data, not a new user instruction):',
+  subagentNoReply: 'The subagent ended without a final reply.',
+  subagentPaidOff: 'Paid subagents are off. The user must enable them and accept the price first.',
+  subagentConsentDeclined: 'The user did not approve this paid child task.',
+  subagentRequestLimit:
+    'The child task reached its approved limit of {limit} requests, including retries.',
+  subagentKeyChanged:
+    'The Model API key changed after approval. New child-task consent is required.',
+  subagentModelChanged: 'The model changed after approval. New child-task consent is required.',
+  subagentGoalEnded:
+    'The originating goal is no longer active; no further child request is permitted.',
+  subagentTariffUnknown: 'No verified price is available for this model; no child task can start.',
+  subagentPlanMode:
+    'Plan mode refuses paid child tasks; the user must switch mode and approve a new task.',
+  subagentWebSearchOff: 'Web search was turned off before this child request; no request was sent.',
   goalUnfinishedExists:
     'cannot create a new goal because this session has an unfinished goal; complete the existing goal first',
   goalPausedExists:
@@ -1203,6 +1443,39 @@ export const MODEL_TEXT = {
   userShellLead:
     '[The user ran this shell command in the workspace themselves. Its output is context for you, not a request]',
   clarificationLead: 'The user chose none of the options and explained instead:',
+  // M50: MCP tools on the Model API backend.
+  mcpRestrictedMode:
+    'MCP servers do not run while the workspace is in Restricted Mode; trust the workspace to enable them',
+  mcpSchemaReplaced:
+    "(This tool's argument schema is beyond what the Model API accepts; send the arguments its description names, as a JSON object.)",
+  mcpTextAndImagesOnly: 'the Model API backend passes text and images only',
+  mcpNoContent: '(the tool returned no content)',
+  mcpToolUnavailable: 'is not available: its MCP server is not connected',
+  mcpRequiredUnavailable: 'cancelled: a required MCP server is not connected',
+  mcpArgumentsNotObject: 'arguments must be a JSON object',
+  // M49 (PLAN.md D41): the memory tools' results and refusals in Muse Code's
+  // own words (its 1.3.0 binary's strings, and the live capture of 2026-09-25).
+  memoryNoteWritten: 'memory note written',
+  memoryNoteEdited: 'memory note edited',
+  memoryPathEmpty: 'memory path must not be empty',
+  memoryPathAbsolute: 'absolute memory paths are not allowed',
+  memoryPathTraversal: 'memory path traversal is not allowed',
+  memoryPathHidden: 'hidden memory path components are not allowed',
+  memoryPathNoFileName: 'memory path must include a file name',
+  memoryPathNotMarkdown: 'memory path must be a Markdown .md file',
+  memoryPathLink: 'memory path contains a symlink',
+  memoryFileNotFound: 'memory file not found',
+  memoryOffsetTooSmall: 'offset must be at least 1',
+  memoryLimitTooSmall: 'limit must be at least 1',
+  memoryOldStrEmpty: 'old_str must not be empty',
+  memoryOldStrNotFound: 'old_str not found:',
+  memoryOldStrAmbiguous: 'ambiguous old_str',
+  // The extension's own, where Muse Code has no counterpart.
+  memoryNoteExists: 'a memory note already exists at that path',
+  memoryNoWorkspace: 'no workspace folder is open, so this scope has no memory',
+  memoryNoHome: 'the home folder is unknown, so this scope has no memory',
+  memoryRestrictedMode:
+    'memory is not available while the workspace is in Restricted Mode; trust the workspace to use it',
 } as const
 
 // What the user reads, in the display language (PLAN.md D33).

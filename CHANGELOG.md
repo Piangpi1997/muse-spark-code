@@ -12,6 +12,55 @@ while they are (PLAN.md D30, D34).
 
 ### Added
 
+- **Pre-PR branch CI.** The existing cross-platform CI can be run
+  manually on a pushed branch before a pull request. It runs the same shared
+  build as pull requests; the PR template records the exact tested tree,
+  independent review, staged-change secret scan, branch run and seven job
+  conclusions. See the sequence in `CONTRIBUTING.md`. Manual dispatch is
+  available now that the trigger is on `main`.
+- **Subagents on the Model API backend** (M48, PLAN.md D45). Child sessions
+  run in parallel with bounded capacity, their own transcript, the existing
+  tool approvals and workspace rules, and usage counted with the parent.
+  The Agent map can steer, stop, read and reopen them. Stopping a queued child
+  now discards notes it never saw, so a later reopen cannot run canceled work.
+  A panel joining while a child's tool approval waits sees that pending card.
+  Child tokens charge the goal active when their turn began, without charging
+  a later replacement goal.
+  Model API subagents now require a machine-scoped paid setting and accepted
+  model rates. Every new child task asks for one-use consent in all modes,
+  including Bypass; Plan refuses it. Each consent allows at most four actual
+  response requests, counting retries and tool rounds. The child row and
+  Account & usage show paid attempts and reported token usage; attempts
+  without usage retain unknown cost, and child cost is a subset of the
+  conversation total.
+  Muse Code's `subagent/readResult` and `subagent/reopen` controls remain
+  deferred until an accepted-command capture establishes their behavior.
+  Muse Code's two uncaptured owner verbs remain a later follow-up. M48's
+  local and hosted quality gates passed before its PR #35 merge.
+
+- **Model API hooks, initial M51 increment (certification pending).** The
+  machine-scoped `modelApiHooks` setting enables all 17 documented hook event
+  names at the Model API backend's supported boundaries, from managed, user
+  and trusted-project hook files. Commands get
+  JSON on stdin, a cleared environment without the Model API key, time and
+  output caps, and process-tree cancellation. Unsupported events and handlers
+  are reported and skipped; complete Muse event-specific output parity remains
+  open. Windows
+  managed PATH grants retain only absolute entries even when the variable
+  uses mixed case. Captured PreLLMCall hooks can veto a Model API request
+  before HTTPS. Successful PostLLMCall hooks see bounded summaries; a
+  post-call veto stops tools and follow-up requests without claiming Muse's
+  full hook parity; an isolated Muse echo capture ended its run as failed
+  without another request. The M45 Stop and goal-budget checks still fence
+  buffered replies and keep accepted steering when hooks run.
+  Untrusted regular-expression matchers now compile under the same V8
+  deadline as matching, so pattern compilation cannot stall the host thread.
+  The Model API Hooks picker now shows the machine opt-in state and opens its
+  setting. MCP and IDE tools reach tool hooks through bounded argument/result
+  previews; media and credential fields stay out of hook stdin while the
+  original MCP result still reaches the model. A required MCP server loss
+  cannot be hidden by a post-tool hook stop.
+
 - **Model API scheduled prompts** (M52). `/loop` stores an interval or local
   five-field cron prompt in the current conversation; the panel lists due
   jobs and cancels them. Every due run waits for a machine-scoped paid gate
@@ -100,6 +149,34 @@ while they are (PLAN.md D30, D34).
   the Model API backend made, shows in its row. Every other tool in Muse
   Code's list has a name, an MCP tool reads "tool (server)", and any other
   result is indented JSON. All built from a live capture of Muse Code 1.3.0.
+- **MCP servers on the Model API backend** (M50, PLAN.md D42). The window
+  runs the MCP servers of Muse Code's settings file itself, local (stdio)
+  and remote (streamable HTTP), with a client of its own: their tools are
+  offered as `mcp__<server>__<tool>`, their schemas fitted to Meta's limits,
+  and their text and pictures passed to the model. A call asks like a
+  command in Manual and Auto (a tool its server marks read-only runs in
+  Auto, as in Muse Code) and Plan refuses all but read-only tools, which
+  ask; "always allow in this session" works per tool. None runs in
+  Restricted Mode; a local server sees only a short list of VS Code's
+  environment variables plus its own; `${VAR}`, timeouts and tool filters
+  from the entry are honoured. **MCP servers…** in the palette now shows,
+  on this backend, whether each server is connected and with how many
+  tools, or why it is not running; a server that fails is a warning, and a
+  required one stops the message with the fix. The extension's own
+  diagnostics tool (`getDiagnostics`) is offered on this backend too.
+  Remote error bodies and authentication challenge parameters stay out of
+  tool errors and logs; status and authentication scheme remain visible.
+  Server startup runs at most four connections at once to avoid a process burst.
+  On Windows, a hidden helper starts each stdio server suspended, assigns
+  it to a job after a private owner handshake, then runs it with binary
+  stdin, stdout and stderr passed through unchanged. Stop, server exit and
+  extension-process exit close the
+  job and end its descendants; without the helper, stdio fails closed.
+  Finite detached-child and withheld-handshake drills failed when their
+  guards were removed and passed when restored. On macOS and Linux, close also signals the
+  original process group when its MCP parent has exited. A server's final
+  response is now read before its drained stdio closes the connection, even
+  when the process itself exited first.
 - **Web search** (M33). With `museSpark.modelApiWebSearch` on, the model can
   search the web on the Model API backend ($2.50 per 1,000 searches). Each
   search is a row marked paid with its query and results, and a reply lists
@@ -124,9 +201,53 @@ while they are (PLAN.md D30, D34).
   and Account & usage tallies this window's searches, images and seconds of
   audio with their estimated cost.
 - **A languages badge** in the README.
+- **Memory, on both backends** (M49, PLAN.md D41). Muse Code keeps Markdown
+  notes in three scopes: yours for this project (the default, outside the
+  repository), the project's (`.agents/memory`, shared with the
+  repository) and yours for every project. Both backends now read and write
+  the same notes, found on disk and in a live capture of Muse Code 1.3.0.
+  - **Memory…** in the palette (`/memory`, **Muse Spark: Memory**) lists
+    up to 500 notes per scope with their scopes and summaries; open one to read or
+    edit it, create one, or delete one to the trash after a confirmation.
+    The scope's `MEMORY.md` index gains a created note's line and loses a
+    deleted note's lines.
+  - **The Model API backend** has Muse Code's `read_memory`, `add_memory`
+    and `edit_memory`, with its arguments, refusals and JSON results, so
+    their rows read the same on both backends; at the start of a
+    conversation the model gets each scope's `MEMORY.md` and its notes'
+    names, as Muse Code gives them. A new note gets its index line. Writes
+    ask in Manual, run in Auto and Edit automatically, and are refused in
+    Plan; a refused path asks nothing. Not offered in Restricted Mode.
+     Linked scope folders below the workspace or data home are refused, so
+     they cannot expose notes outside their intended roots.
+  - Updates to an existing note replace it atomically but do not take Muse
+    Code's native memory lock; simultaneous writers can still lose an update.
+
+### Changed
+
+- **Windows unit test scheduling (M50).** Vitest runs test files one at a time
+  on Windows so concurrent MCP job-helper launches cannot starve the hosted
+  runner past the MCP startup deadline. Test selection, coverage, and deadlines
+  are unchanged.
+- **The Model API backend saves memory with the memory tools** (M49). It
+  used to be told to write `.agents/memory` with the file tools, which as
+  protected writes asked every time. The personal scopes, left out before
+  (PLAN.md D13), are now read and written too, and a memory note must be
+  UTF-8, as Muse Code requires.
 
 ### Fixed
 
+- **Windows MCP stdio startup (M50).** A compiled C# job executable now starts
+  each configured server directly. PowerShell only compiles it once, avoiding
+  per-server startup delay while retaining binary pipes, job containment and
+  owner confirmation. Preparation checks cached executables before use and
+  fails closed if one is corrupt.
+- **M50 MCP server lifecycle and names.** Closing the Model API host now
+  waits for servers still starting and launches no later startup batch. A
+  required server that stops during a reply or tool call fails the active
+  turn before more work runs. Configured server names that normalize to the
+  extension's reserved `ide` name are refused, avoiding duplicate function
+  names and unreachable tools.
 - **M46 session cleanup and resumed shell shortcut.** Releasing the last
   surface of a Muse Code session now asks the CLI to stop its background
   tasks; another surface holding that session leaves them running. Restored
@@ -203,6 +324,16 @@ while they are (PLAN.md D30, D34).
   goal command on a fresh panel does not create an empty conversation.
 - **Pre-commit resource pressure.** Staged lint and format tasks now run
   serially, keeping every check while limiting concurrent child processes.
+- **A new memory note cannot overwrite a racing writer** (M49). The Model
+  API memory tool and Memory view now create a missing note exclusively;
+  a name taken after the initial read is refused and its bytes remain.
+- **New memory notes are published whole** (M49). A hidden, synced stage is
+  hard-linked into a free note name, then removed. Readers never see partial
+  new bytes; a filesystem without hard links refuses the create. Existing
+  note and index updates still lack Muse Code's native cross-process lock.
+- **Memory index links for unusual filenames** (M49). Paths with spaces,
+  parentheses, brackets or percent signs are encoded in `MEMORY.md` and
+  decoded when a line is found or removed, so one note keeps one index line.
 - **A resumed Muse Code conversation shows its task list** (M45). A resume
   asked for inline history, which carries no task list; it now asks for the
   folded snapshot, which carries the task list and the goal.

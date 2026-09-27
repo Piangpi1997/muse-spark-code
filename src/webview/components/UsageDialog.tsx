@@ -17,7 +17,7 @@ import {
   type PaidFeature,
   UI_TEXT,
 } from '../../shared/constants'
-import { fill, formatPercent, plural, templateParts } from '../../shared/l10n/text'
+import { fill, formatNumber, formatPercent, plural, templateParts } from '../../shared/l10n/text'
 import {
   paidCostUsd,
   paidFeatureName,
@@ -213,6 +213,9 @@ function paidUseText(feature: PaidFeature, tally: PaidTally): string {
     case 'scheduledPrompts': {
       return plural(UI_TEXT.usagePaidScheduled, tally.scheduledRuns)
     }
+    case 'subagents': {
+      return plural(UI_TEXT.usagePaidSubagentRequests, tally.subagentRequests ?? 0)
+    }
   }
 }
 
@@ -234,25 +237,49 @@ function PaidSection({
         {features.map((feature) => (
           <PaidRow key={feature} feature={feature} paid={paid} />
         ))}
-        <dt>{UI_TEXT.usagePaidTotal}</dt>
+        <dt>
+          {features.includes('subagents') ? UI_TEXT.usagePaidExtraTotal : UI_TEXT.usagePaidTotal}
+        </dt>
         <dd>{formatUsd(paidTotalUsd(paid.tally))}</dd>
       </dl>
       <p className="usage-row-meta">
         {fill(UI_TEXT.usagePaidNote, { date: PAID_PRICES_VERIFIED_ON })}
       </p>
+      {features.includes('subagents') ? (
+        <p className="usage-row-meta">{UI_TEXT.usagePaidSubagentSubset}</p>
+      ) : null}
     </>
   )
 }
 
 function PaidRow({ feature, paid }: { readonly feature: PaidFeature; readonly paid: PaidState }) {
   const state = paid.features.includes(feature) ? UI_TEXT.usagePaidOn : UI_TEXT.usagePaidOff
+  const requests = paid.tally.subagentRequests ?? 0
+  const unknown = paid.tally.subagentUnknownRequests ?? 0
+  const isEntirelyUnknown = feature === 'subagents' && requests > 0 && requests === unknown
+  const cost = formatUsd(paidCostUsd(feature, paid.tally))
+  let costDetail = cost
+  if (feature === 'scheduledPrompts') {
+    costDetail = UI_TEXT.usageScheduledIncluded
+  } else if (feature === 'subagents') {
+    costDetail = fill(UI_TEXT.usagePaidSubagentReported, { cost })
+  }
   return (
     <>
       <dt>{`${paidFeatureName(feature)} (${state})`}</dt>
-      <dd>
-        {feature === 'scheduledPrompts'
-          ? `${paidUseText(feature, paid.tally)} · ${UI_TEXT.usageScheduledIncluded}`
-          : `${paidUseText(feature, paid.tally)} · ${formatUsd(paidCostUsd(feature, paid.tally))}`}
+      <dd className={feature === 'subagents' ? 'usage-paid-child' : undefined}>
+        {paidUseText(feature, paid.tally)}
+        {isEntirelyUnknown ? null : ` · ${costDetail}`}
+        {feature === 'subagents' ? (
+          <>
+            {isEntirelyUnknown
+              ? null
+              : ` · ${fill(UI_TEXT.agentTokens, { tokens: formatNumber(paid.tally.subagentTokens ?? 0) })}`}
+            {unknown > 0 ? (
+              <p className="usage-row-meta">{plural(UI_TEXT.usagePaidSubagentUnknown, unknown)}</p>
+            ) : null}
+          </>
+        ) : null}
       </dd>
     </>
   )
