@@ -435,6 +435,8 @@ export class ConversationController {
   private readonly attachments: AttachmentStore
   /** A clear or session replacement invalidates pending browser file admission. */
   private attachmentGeneration = 0
+  /** External session drops invalidate in-flight sends; owned not-loaded recovery does not. */
+  private sendInvalidationEpoch = 0
   /** The latest composer generation seen on this surface's file messages. */
   private webviewAttachmentEpoch = 0
   /** User cards whose file bytes rewind cannot restore across every backend/history path. */
@@ -681,8 +683,11 @@ export class ConversationController {
    * the caller says the host is already gone or has been told (PLAN.md D25):
    * a dropped turn would otherwise run on, unwatched and billed.
    */
-  private dropSession(isTurnCancelled = true): void {
+  private dropSession(isTurnCancelled = true, isOwnedRecovery = false): void {
     this.attachmentGeneration += 1
+    if (!isOwnedRecovery) {
+      this.sendInvalidationEpoch += 1
+    }
     const { session } = this
     if (isTurnCancelled && session !== undefined && this.activeTurnId !== undefined) {
       void this.cancelQuietly(session)
@@ -2169,13 +2174,23 @@ export class ConversationController {
     parts: readonly TurnPart[],
     displayText: string | undefined,
     shouldQueueForDisplayText: boolean,
+    isCurrent: () => boolean,
   ): Promise<TurnSubmission> {
+    if (!isCurrent()) {
+      throw new Error(UI_TEXT.turnStoppedByRestart)
+    }
     if (!shouldQueueForDisplayText && this.activeTurnId !== undefined) {
       try {
         return await session.steer(this.activeTurnId, parts)
       } catch (error: unknown) {
+        if (!isCurrent()) {
+          throw new Error(UI_TEXT.turnStoppedByRestart, { cause: error })
+        }
         this.deps.log.warn(`turn/steer failed (${describe(error)}); submitting as a new turn`)
       }
+    }
+    if (!isCurrent()) {
+      throw new Error(UI_TEXT.turnStoppedByRestart)
     }
     return await session.sendTurn(parts, displayText)
   }
@@ -2246,7 +2261,22 @@ export class ConversationController {
       if (session === undefined) {
         return
       }
+      const sendEpoch = this.sendInvalidationEpoch
+      let expectedGeneration = this.attachmentGeneration
+      let submittedSession = session
+      const requireCurrent = (current: AgentSession): void => {
+        if (
+          this.isDisposed ||
+          this.sendInvalidationEpoch !== sendEpoch ||
+          this.session !== current ||
+          this.attachmentGeneration !== expectedGeneration
+        ) {
+          throw new Error(UI_TEXT.turnStoppedByRestart)
+        }
+      }
+      requireCurrent(session)
       await this.autosave()
+      requireCurrent(session)
       const typed = this.buildParts(text, attachmentIds)
       if (typed.length === 0) {
         this.post({
@@ -2264,9 +2294,14 @@ export class ConversationController {
       const context = await this.contextPart(
         isEditorContextIncluded ? this.deps.editorContext() : undefined,
       )
+      requireCurrent(session)
       // The CLI backend also gets the choice-steering note (M14); the Model
       // API backend carries it in its system prompt.
       const host = await this.deps.ensureHost()
+      requireCurrent(session)
+      if (this.sessionKind !== host.info.kind) {
+        throw new Error(UI_TEXT.turnStoppedByRestart)
+      }
       const note: readonly TurnPart[] =
         host.info.kind === 'museCode' ? [{ type: 'text', text: CHOICE_STEERING_NOTE }] : []
       const parts = [...typed, ...referenced, ...(context === undefined ? [] : [context]), ...note]
@@ -2281,14 +2316,27 @@ export class ConversationController {
             ? textFileDisplay(text, textFileNames)
             : [text, ...textFileNames].filter((line) => line !== '').join('\n')
       }
-      const submission = await this.runResuming(host, session, (current) =>
-        this.submit(
+      const submission = await this.runResuming(host, session, (current) => {
+        // runResuming may replace a not-loaded session itself; that recovery
+        // owns the new generation. An unrelated restart still fails admission.
+        if (current !== session) {
+          expectedGeneration = this.attachmentGeneration
+        }
+        requireCurrent(current)
+        submittedSession = current
+        return this.submit(
           current,
           parts,
           displayText,
           host.info.kind === 'museCode' && textFileNames.length > 0,
-        ),
-      )
+          () =>
+            !this.isDisposed &&
+            this.sendInvalidationEpoch === sendEpoch &&
+            this.session === current &&
+            this.attachmentGeneration === expectedGeneration,
+        )
+      })
+      requireCurrent(submittedSession)
       // The images go only once the host has the message (D26).
       this.attachments.release(attachmentIds)
       if (this.isDisposed) {
@@ -2342,12 +2390,12 @@ export class ConversationController {
       }
       // A late refusal from an old session must not replace the session
       // the user opened while that command was in flight.
-      if (this.session?.sessionId !== session.sessionId) {
+      if (this.session !== session) {
         throw error
       }
       this.deps.log.info(`Session ${error.sessionId} was not loaded; resuming it`)
       this.resumeTarget = { sessionId: error.sessionId, kind: host.info.kind }
-      this.dropSession(false)
+      this.dropSession(false, true)
       const resumed = await this.ensureSession(this.deps.workspaceRoot)
       return await run(resumed)
     }
@@ -3627,6 +3675,8 @@ export class ConversationController {
    * out, shutdown), the session is resumed by the next message.
    */
   public async backendStopping(isConversationEnding: boolean): Promise<void> {
+    // Invalidate a pending send before a running turn's cancel can await.
+    this.sendInvalidationEpoch += 1
     const { session } = this
     if (session !== undefined && this.activeTurnId !== undefined) {
       try {

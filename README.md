@@ -582,7 +582,9 @@ panel cannot present an authoritative native job list or direct cancel.
   attached to Muse Code share its 10 MiB message limit; the composer counts
   their serialized content, including escaping, and refuses combinations
   that leave too little room for the prompt. Remove an attachment or shorten
-  the message if that happens. Model API text attachments share a separate
+  the message if that happens. Switching backends keeps visible chips; Muse
+  Code checks them again before a send or steer and may require removal of an
+  image attached under Model API. Model API text attachments share a separate
   768 KiB allowance for their UTF-8 content and file-name wrappers. A large
   single file can be refused despite the 1 MiB per-file read cap; attach a
   shorter excerpt or remove another text attachment. A long conversation may

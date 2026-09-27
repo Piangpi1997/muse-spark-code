@@ -16,6 +16,7 @@ import {
   GOAL_RECOVERY_PAGE_LIMIT,
   JSON_RPC_ERRORS,
   MILLISECONDS_PER_SECOND,
+  MSP_ATTACHMENT_FRAME_BUDGET_BYTES,
   MSP_COMMAND_ATTEMPTS,
   MSP_COMMAND_TIMEOUT_MS,
   MSP_FRAME_LIMIT_BYTES,
@@ -306,11 +307,24 @@ function pause(ms: number): Promise<void> {
  */
 function mspInput(parts: readonly TurnPart[]): readonly TurnPart[] {
   const input: TurnPart[] = []
+  let attachmentBytes = 0
   for (const part of parts) {
     if (part.type === 'file') {
       throw new Error(UI_TEXT.pdfNeedsModelApi)
     }
-    input.push(part.type === 'textFile' ? { type: 'text', text: textFileInput(part) } : part)
+    const inputPart: TurnPart =
+      part.type === 'textFile' ? { type: 'text', text: textFileInput(part) } : part
+    if (part.type === 'image' || part.type === 'textFile') {
+      attachmentBytes +=
+        part.type === 'image'
+          ? Buffer.byteLength(part.base64Data) +
+            Buffer.byteLength(JSON.stringify({ ...part, base64Data: '' }))
+          : Buffer.byteLength(JSON.stringify(inputPart))
+      if (attachmentBytes > MSP_ATTACHMENT_FRAME_BUDGET_BYTES) {
+        throw new Error(UI_TEXT.textFilesOverBudget)
+      }
+    }
+    input.push(inputPart)
   }
   return input
 }

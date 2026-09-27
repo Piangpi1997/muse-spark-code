@@ -11,6 +11,9 @@ Muse Code now refuses a combination of text attachments whose serialized
 message would exceed its frame limit, before retaining the last file chip.
 Escaped text and existing images count; removing a file frees room. Model API
 uses the separate context allowance below.
+Muse Code also rechecks retained attachment size before send or steer after a
+backend switch, so a Model API image too large for its frame gets an immediate
+remove-attachment reason.
 
 Model API text attachments now have a 768 KiB combined UTF-8 content and
 file-name wrapper allowance. A large single file may be refused before it
@@ -24,6 +27,12 @@ History card's image count even if the webview reports zero. Model API sends
 and steers reject aggregate named text over its allowance before retaining a
 turn or issuing HTTP, including chips admitted under Muse Code before a
 backend switch.
+
+A send waiting for autosave, editor context or a backend lookup now stops if
+its session is replaced. A late turn acknowledgement cannot clear attachment
+chips or mark the new conversation as accepted. Owned recovery from a
+not-loaded session still retries normally. Disposed Model API sessions reject
+new sends and steering before a paid request can start.
 
 Three paid extras of Meta's Model API, off until you turn them on, and loud
 while they are (PLAN.md D30, D34).

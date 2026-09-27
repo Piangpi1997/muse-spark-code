@@ -1535,6 +1535,20 @@ describe('ModelApiHost: usage (M8)', () => {
 })
 
 describe('ModelApiSession: turns', () => {
+  it('refuses a send or steer on a disposed session before any Model API request', async () => {
+    const t = setup()
+    const { session } = await startSession(t)
+    session.dispose()
+    await expect(session.sendTurn([{ type: 'text', text: 'Stale paid turn' }])).rejects.toThrow(
+      UI_TEXT.turnStoppedByRestart,
+    )
+    await expect(
+      session.steer('old-turn', [{ type: 'text', text: 'Stale steer' }]),
+    ).rejects.toThrow(UI_TEXT.turnStoppedByRestart)
+    expect(t.api.responseBodies()).toEqual([])
+    expect(session.history().items).toEqual([])
+  })
+
   it('streams a reply with reasoning into the transcript and replays it with usage', async () => {
     const t = setup()
     const { session, events, turnDone } = await startSession(t)

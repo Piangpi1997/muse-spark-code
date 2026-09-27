@@ -4710,6 +4710,9 @@ export class ModelApiSession implements AgentSession {
     displayText?: string,
     requestFor?: (turnId: string) => ConfirmedModelRequest,
   ): Promise<TurnSubmission> {
+    if (this.isDisposed) {
+      return Promise.reject(new Error(UI_TEXT.turnStoppedByRestart))
+    }
     const textBudgetError = textAttachmentBudgetError(parts)
     if (textBudgetError !== undefined) {
       return Promise.reject(textBudgetError)
@@ -4735,6 +4738,9 @@ export class ModelApiSession implements AgentSession {
   }
 
   public steer(expectedTurnId: string, parts: readonly TurnPart[]): Promise<TurnSubmission> {
+    if (this.isDisposed) {
+      return Promise.reject(new Error(UI_TEXT.turnStoppedByRestart))
+    }
     if (this.active?.turnId !== expectedTurnId || this.active.abort.signal.aborted) {
       return Promise.reject(new Error(TURN_NOT_RUNNING))
     }

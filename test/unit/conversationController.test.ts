@@ -5,7 +5,7 @@ import { writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterAll, describe, expect, it, vi } from 'vitest'
-import type { SessionMcpHttpServer } from '../../src/core/agent/agentBackend'
+import type { AgentHost, SessionMcpHttpServer } from '../../src/core/agent/agentBackend'
 import { ModelApiHost, type ModelApiHostDeps } from '../../src/core/backends/modelapi/ModelApiHost'
 import { MuseCodeHost } from '../../src/core/backends/musecode/MuseCodeHost'
 import type { ShellSandboxPosture } from '../../src/core/backends/musecode/sandbox'
@@ -4002,6 +4002,94 @@ describe('ConversationController: permission hardening (D24)', () => {
 })
 
 describe('ConversationController: lifecycle (D25)', () => {
+  it('ignores a turn ack from a dropped session and keeps its image chip', async () => {
+    const t = setup()
+    await attachPng(t)
+    t.server.silence('turn/start')
+    const pending = t.send('late-ack', 'Look here', ['att-1'])
+    await vi.waitFor(() => {
+      expect(t.server.requestsFor('turn/start')).toHaveLength(1)
+    })
+    const request = t.server.requestsFor('turn/start')[0]
+    await t.controller.backendStopping(false)
+    t.server.incoming.push(
+      `${JSON.stringify({
+        jsonrpc: '2.0',
+        id: request?.id,
+        result: {
+          turnId: 't1',
+          status: 'accepted',
+          commandId: request?.params?.['commandId'],
+        },
+      })}\n`,
+    )
+    await pending
+    expect(t.surface.posted).not.toContainEqual(
+      expect.objectContaining({ type: 'turnAccepted', localId: 'late-ack' }),
+    )
+    expect(t.surface.posted).toContainEqual(
+      expect.objectContaining({ type: 'sendFailed', localId: 'late-ack', attachmentsKept: true }),
+    )
+    const before = t.surface.posted.filter((message) => message.type === 'attachmentAdded').length
+    t.controller.surfaceReady()
+    expect(t.surface.posted.filter((message) => message.type === 'attachmentAdded')).toHaveLength(
+      before + 1,
+    )
+  })
+
+  it('does not submit an old Model API send after autosave spans a backend switch', async () => {
+    const t = setup({ isAutosaveEnabled: true })
+    const { api, host: modelHost } = modelApiController(t)
+    let selectedHost: AgentHost = modelHost
+    const controller = new ConversationController({
+      ...t.deps,
+      ensureHost: () => Promise.resolve(selectedHost),
+    })
+    await attachPng({ controller })
+    const added = t.surface.posted.findLast((message) => message.type === 'attachmentAdded')
+    if (added?.type !== 'attachmentAdded') {
+      throw new Error('expected image chip')
+    }
+    const saving = Promise.withResolvers<undefined>()
+    t.saveAll.mockImplementationOnce(() => saving.promise)
+    api.script({ text: 'stale paid answer' })
+    const pending = controller.handle({
+      type: 'sendMessage',
+      localId: 'old-paid-send',
+      text: 'Look at this image',
+      attachmentIds: [added.attachment.id],
+    })
+    await vi.waitFor(() => {
+      expect(t.saveAll).toHaveBeenCalledOnce()
+    })
+    await controller.backendStopping(false)
+    selectedHost = t.host
+    saving.resolve(undefined)
+    await pending
+    await settle()
+    expect(api.responseBodies()).toEqual([])
+    expect(t.surface.posted).not.toContainEqual(
+      expect.objectContaining({ type: 'turnAccepted', localId: 'old-paid-send' }),
+    )
+    expect(t.surface.posted).toContainEqual(
+      expect.objectContaining({
+        type: 'sendFailed',
+        localId: 'old-paid-send',
+        attachmentsKept: true,
+      }),
+    )
+    await controller.handle({
+      type: 'sendMessage',
+      localId: 'fresh-muse-send',
+      text: 'Look at this image',
+      attachmentIds: [added.attachment.id],
+    })
+    expect(t.server.requestsFor('turn/start')).toHaveLength(1)
+    expect(t.surface.posted).toContainEqual(
+      expect.objectContaining({ type: 'turnAccepted', localId: 'fresh-muse-send' }),
+    )
+  })
+
   it('cancels the running turn before a restart and resumes the session on the next message', async () => {
     const t = setup()
     await t.send('l1', 'hi')
@@ -4077,6 +4165,50 @@ describe('ConversationController: lifecycle (D25)', () => {
     await t.send('l2', 'again')
     expect(t.server.requestsFor('session/resume')[0]?.params).toMatchObject({ sessionId: 's1' })
     expect(t.surface.posted).toContainEqual({ type: 'turnAccepted', localId: 'l2', turnId: 't2' })
+  })
+
+  it('does not retry a stale send when backend stopping crosses recovery lookup', async () => {
+    const recovery = Promise.withResolvers<undefined>()
+    let isRecoveryHeld = false
+    const t = setup({
+      beforeEnsureHost: () => (isRecoveryHeld ? recovery.promise : Promise.resolve()),
+    })
+    await t.send('first', 'First turn')
+    t.finishTurn()
+    await settle()
+    await attachPng(t)
+    let starts = 0
+    t.server.handle('turn/start', (params) => {
+      starts += 1
+      if (starts === 1) {
+        isRecoveryHeld = true
+        throw Object.assign(new Error('not loaded'), { kind: 'sessionNotLoaded' })
+      }
+      return {
+        turnId: 'retried',
+        status: 'accepted',
+        commandId: params['commandId'],
+      }
+    })
+    t.server.handle('session/resume', () => envelope({ ...storedSession, sessionId: 's1' }))
+    const pending = t.send('stale-recovery', 'Look here', ['att-1'])
+    await vi.waitFor(() => {
+      expect(isRecoveryHeld).toBe(true)
+    })
+    await t.controller.backendStopping(false)
+    recovery.resolve(undefined)
+    await pending
+    expect(starts).toBe(1)
+    expect(t.surface.posted).not.toContainEqual(
+      expect.objectContaining({ type: 'turnAccepted', localId: 'stale-recovery' }),
+    )
+    expect(t.surface.posted).toContainEqual(
+      expect.objectContaining({
+        type: 'sendFailed',
+        localId: 'stale-recovery',
+        attachmentsKept: true,
+      }),
+    )
   })
 
   it('hears the host close this session and resumes it on the next message', async () => {

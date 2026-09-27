@@ -1945,6 +1945,10 @@ leaving 2 MiB of its 10 MiB MSP frame for the prompt, context and envelope;
 an impossible file combination is refused before it becomes a chip. The
 exact outbound frame check remains the final guard for unusually large
 prompts or selections.
+Muse Code also recomputes this attachment budget at both `turn/start` and
+`turn/steer`: an image accepted under Model API can survive a backend switch,
+so the active backend must refuse its now-incompatible chip before submitting
+a command, with a remove-attachment reason.
 Model API text attachments have a separate 768 KiB aggregate UTF-8 content
 and named-wrapper allowance. This conservative byte bound stays below the
 1,048,576-token context even for dense text and reserves roughly 256K tokens
@@ -2015,6 +2019,17 @@ limit.
   UI shows PDF names as file chips and restores them from Model API session
   history. This does not claim the older bytes remain visible to the model
   after either budget clips them.
+  A send that awaits autosave, editor context or backend selection binds the
+  session and conversation generation it started with. If the backend stops
+  or the session changes during those waits, the send fails before submitting
+  to its old backend and keeps attachment chips for a fresh attempt. A
+  disposed Model API session independently rejects new sends and steering,
+  so a stale caller cannot initiate a paid HTTP request after release.
+  A late submit acknowledgement is checked again before chips are released
+  or `turnAccepted` is shown. The controller distinguishes its own
+  `sessionNotLoaded` recovery from an external backend stop: only the owned
+  recovery may adopt a new attachment generation, while an external stop
+  always invalidates the original send, even during recovery lookup.
   Conversation rewind keeps its image-only behavior. PDF and named text file
   cards hide that choice in the panel, and a forged request is refused before
   fork or clear: exact file bytes cannot be restored from every backend and
