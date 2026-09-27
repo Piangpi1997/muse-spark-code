@@ -116,8 +116,12 @@ function post(message: SearchWorkerMessage): void {
   parentPort?.postMessage(message)
 }
 
-void Promise.resolve()
-  .then(() => run(SEARCH_JOB.parse(workerData)))
+/** A malformed job rejects here, so it is reported like any other failure. */
+async function parsedRun(): Promise<SearchOutcome> {
+  return await run(SEARCH_JOB.parse(workerData))
+}
+
+void parsedRun()
   .then((outcome) => {
     post({ type: 'done', outcome })
   })
