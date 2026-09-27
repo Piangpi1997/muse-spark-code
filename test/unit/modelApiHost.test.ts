@@ -17,7 +17,7 @@ import {
   type PaidFeature,
   UI_TEXT,
 } from '../../src/shared/constants'
-import type { AgentSession, DocumentPart } from '../../src/core/agent/agentBackend'
+import type { AgentSession, DocumentPart, TurnPart } from '../../src/core/agent/agentBackend'
 import { AttachmentStore } from '../../src/core/attachments'
 import { ModelApiClient } from '../../src/core/backends/modelapi/client'
 import type { SubagentTaskConfirmation } from '../../src/shared/paid'
@@ -536,6 +536,20 @@ function pdfTurnPart(pages: number): DocumentPart {
     sizeBytes: bytes.length,
     pageCount: pages,
   }
+}
+
+function namedTextPart(name: string, text: string): TurnPart {
+  return {
+    type: 'textFile',
+    name,
+    mediaType: 'text/plain',
+    text,
+    sizeBytes: Buffer.byteLength(text),
+  }
+}
+
+function halfBudgetTextPart(name: string): TurnPart {
+  return namedTextPart(name, 'x'.repeat(Math.ceil(MAX_MODEL_API_TEXT_ATTACHMENT_BYTES / 2)))
 }
 
 /** Earlier bytes stay, while a later undelivered file becomes path-only context. */
@@ -2410,6 +2424,70 @@ describe('ModelApiSession: turns', () => {
     expect(t.api.responseBodies()).toHaveLength(1)
   })
 
+  it('refuses a steer when earlier accepted steering already uses the text allowance', async () => {
+    const t = setup()
+    const { session, turnDone } = await startSession(t)
+    const held = Promise.withResolvers<undefined>()
+    t.api.script({ text: 'first', hold: held.promise }, { text: 'after first steer' })
+    const turn = await session.sendTurn([{ type: 'text', text: 'Read the next file' }])
+    await session.steer(turn.turnId, [halfBudgetTextPart('first.txt')])
+    await expect(session.steer(turn.turnId, [halfBudgetTextPart('second.txt')])).rejects.toThrow(
+      UI_TEXT.textFilesOverModelApiBudget,
+    )
+    held.resolve(undefined)
+    await turnDone()
+    expect(t.api.responseBodies().length).toBeGreaterThan(0)
+    expect(JSON.stringify(t.api.responseBodies())).toContain('first.txt')
+    expect(JSON.stringify(t.api.responseBodies())).not.toContain('second.txt')
+    expect(session.history().items.some((item) => item.text?.includes('second.txt'))).toBe(false)
+  })
+
+  it('counts the active turn text file before accepting a steer', async () => {
+    const t = setup()
+    const { session, turnDone } = await startSession(t)
+    const held = Promise.withResolvers<undefined>()
+    t.api.script({ text: 'first', hold: held.promise })
+    const turn = await session.sendTurn([
+      { type: 'text', text: 'Read this' },
+      halfBudgetTextPart('initial.txt'),
+    ])
+    await expect(session.steer(turn.turnId, [halfBudgetTextPart('later.txt')])).rejects.toThrow(
+      UI_TEXT.textFilesOverModelApiBudget,
+    )
+    held.resolve(undefined)
+    await turnDone()
+    expect(t.api.responseBodies()).toHaveLength(1)
+    expect(modelInputAt(t, 0)).toContain('initial.txt')
+    expect(session.history().items.some((item) => item.text?.includes('later.txt'))).toBe(false)
+  })
+
+  it('keeps the named-text allowance after a steer drains into a model request', async () => {
+    const t = setup()
+    const { session, turnDone } = await startSession(t)
+    const firstHeld = Promise.withResolvers<undefined>()
+    const secondHeld = Promise.withResolvers<undefined>()
+    t.api.script(
+      { text: 'first', hold: firstHeld.promise },
+      { text: 'after steering', hold: secondHeld.promise },
+    )
+    const turn = await session.sendTurn([{ type: 'text', text: 'Start' }])
+    await vi.waitFor(() => {
+      expect(t.api.responseBodies()).toHaveLength(1)
+    })
+    await session.steer(turn.turnId, [halfBudgetTextPart('first.txt')])
+    firstHeld.resolve(undefined)
+    await vi.waitFor(() => {
+      expect(t.api.responseBodies()).toHaveLength(2)
+    })
+    await expect(session.steer(turn.turnId, [halfBudgetTextPart('later.txt')])).rejects.toThrow(
+      UI_TEXT.textFilesOverModelApiBudget,
+    )
+    secondHeld.resolve(undefined)
+    await turnDone()
+    expect(modelInputAt(t, 1)).toContain('first.txt')
+    expect(modelInputAt(t, 1)).not.toContain('later.txt')
+  })
+
   it('rejects Muse-admitted text chips after a switch to Model API', async () => {
     const t = setup()
     const { session } = await startSession(t)
@@ -2715,6 +2793,82 @@ describe('ModelApiSession: turns', () => {
     held.resolve(undefined)
     await turnDone()
     expect(JSON.stringify(t.api.responseBodies()[1]?.['input']).includes(imageUrl)).toBe(true)
+  })
+
+  it('reserves a read-file PDF while its PostToolBatch hook holds first delivery', async () => {
+    const entered = Promise.withResolvers<undefined>()
+    const release = Promise.withResolvers<undefined>()
+    const t = setup({
+      hooks: hooksFor('PostToolBatch', 'hold-read-pdf'),
+      runHook: async () => {
+        entered.resolve(undefined)
+        await release.promise
+        return await hookReply()
+      },
+    })
+    const bytes = pdfFixture(50)
+    const pdfData = `data:application/pdf;base64,${Buffer.from(bytes).toString('base64')}`
+    t.io.binaries.set('/ws/docs/report.pdf', bytes)
+    const { session, events, turnDone } = await startSession(t, 'allowAll')
+    t.api.script(
+      {
+        calls: [{ name: 'read_file', arguments: '{"path":"docs/report.pdf"}', callId: 'read_pdf' }],
+      },
+      { text: 'Read received' },
+    )
+    const submitted = await session.sendTurn([{ type: 'text', text: 'Read the PDF' }])
+    await entered.promise
+    let refused: unknown
+    try {
+      await session.steer(submitted.turnId, [pdfTurnPart(1)])
+    } catch (error: unknown) {
+      refused = error
+    }
+    release.resolve(undefined)
+    await turnDone()
+    expect(refused).toMatchObject({ message: UI_TEXT.mediaTotalTooLarge })
+    expect(
+      events.find((event) => event.type === 'itemCompleted' && event.item.tool === 'read_file'),
+    ).toMatchObject({ item: { status: 'completed' } })
+    expect(modelInputAt(t, 1)).toContain(pdfData)
+  })
+
+  it('releases a read-file reservation after its first completed request', async () => {
+    const entered = Promise.withResolvers<undefined>()
+    const release = Promise.withResolvers<undefined>()
+    let postCalls = 0
+    const t = setup({
+      hooks: hooksFor('PostLLMCall', 'hold-after-read-delivery'),
+      runHook: async () => {
+        postCalls += 1
+        if (postCalls === 2) {
+          entered.resolve(undefined)
+          await release.promise
+        }
+        return await hookReply()
+      },
+    })
+    const bytes = pdfFixture(50)
+    const pdfData = `data:application/pdf;base64,${Buffer.from(bytes).toString('base64')}`
+    t.io.binaries.set('/ws/docs/report.pdf', bytes)
+    const { session, turnDone } = await startSession(t, 'allowAll')
+    t.api.script(
+      {
+        calls: [{ name: 'read_file', arguments: '{"path":"docs/report.pdf"}', callId: 'read_pdf' }],
+      },
+      { text: 'PDF arrived' },
+      { text: 'Steer arrived' },
+    )
+    const submitted = await session.sendTurn([{ type: 'text', text: 'Read the PDF' }])
+    await entered.promise
+    const steer = pdfTurnPart(1)
+    await expect(session.steer(submitted.turnId, [steer])).resolves.toMatchObject({
+      disposition: 'steered',
+    })
+    release.resolve(undefined)
+    await turnDone()
+    expect(modelInputAt(t, 1)).toContain(pdfData)
+    expect(modelInputAt(t, 2)).toContain(steer.base64Data)
   })
 
   it('places a workspace PDF read after the function output so the next model call sees it', async () => {

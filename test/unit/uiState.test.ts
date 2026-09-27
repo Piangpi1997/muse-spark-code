@@ -2096,6 +2096,31 @@ describe('clears, restores and refusals (M25)', () => {
     ).toBe('t9')
   })
 
+  it('raises a stale restored upload epoch from surface state without losing draft or chips', () => {
+    const stale: UiState = {
+      ...initialUiState,
+      draft: 'keep typing',
+      attachments: [attachment],
+      pendingRestore: { sessionId: 's1', isTranscriptOmitted: false },
+    }
+    const synced = uiReducer(
+      stale,
+      host({ type: 'surfaceState', sessionId: 's1', attachmentEpoch: 3 }),
+    )
+    expect(synced.attachmentEpoch).toBe(3)
+    expect(synced.draft).toBe('keep typing')
+    expect(synced.attachments).toEqual([attachment])
+    expect(
+      uiReducer(synced, host({ type: 'surfaceState', sessionId: 's1', attachmentEpoch: 1 }))
+        .attachmentEpoch,
+    ).toBe(3)
+    const mismatched = uiReducer(
+      stale,
+      host({ type: 'surfaceState', sessionId: 's2', attachmentEpoch: 3 }),
+    )
+    expect(mismatched.attachmentEpoch).toBe(4)
+  })
+
   it('brings the chips of a refused message back when the host still holds them', () => {
     const sent: readonly UiAction[] = [
       host({ type: 'attachmentAdded', attachment }),

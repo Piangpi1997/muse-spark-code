@@ -282,6 +282,8 @@ export type UiAction =
   | { readonly type: 'referenceSet'; readonly reference: ChatReference }
   | { readonly type: 'referenceCleared' }
   | { readonly type: 'attachmentRemoved'; readonly id: string }
+  /** Invalidate unfinished browser encodes before a session replacement waits on the host. */
+  | { readonly type: 'sessionChangeRequested' }
   /** The panel's own New Conversation; the host echoes it back (M25). */
   | { readonly type: 'conversationCleared' }
   /** The × on the composer banner (M14). */
@@ -1636,7 +1638,12 @@ function reconcile(
   at: number,
 ): UiState {
   const restore = state.pendingRestore
-  const live: UiState = { ...state, pendingRestore: undefined, activeTurnId: message.activeTurnId }
+  const live: UiState = {
+    ...state,
+    attachmentEpoch: Math.max(state.attachmentEpoch, message.attachmentEpoch ?? 0),
+    pendingRestore: undefined,
+    activeTurnId: message.activeTurnId,
+  }
   if (restore === undefined) {
     return live
   }
@@ -2195,6 +2202,9 @@ export function uiReducer(state: UiState, action: UiAction): UiState {
     }
     case 'attachmentRefused': {
       return withBanner(state, action.name, action.reason)
+    }
+    case 'sessionChangeRequested': {
+      return { ...state, attachmentEpoch: state.attachmentEpoch + 1, attachmentSettlements: [] }
     }
     case 'attachmentsReleased': {
       return {

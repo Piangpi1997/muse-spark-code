@@ -37,7 +37,7 @@ export interface WebviewHostContext {
   readonly getSettings: () => SettingsSnapshot
   readonly onInputFocusChanged: (surface: ChatSurface, isFocused: boolean) => void
   /** The webview mounted and received `init`; push the conversation state. */
-  readonly onSurfaceReady: (surface: ChatSurface) => void
+  readonly onSurfaceReady: (surface: ChatSurface, attachmentEpoch?: number) => void
   readonly onConversationMessage: (surface: ChatSurface, message: ConversationMessage) => void
 }
 
@@ -160,7 +160,7 @@ export function configureWebview(
     switch (message.type) {
       case 'ready': {
         surface.post(buildInitMessage(context, surface.isSideChat === true))
-        context.onSurfaceReady(surface)
+        context.onSurfaceReady(surface, message.attachmentEpoch)
         break
       }
       case 'inputFocusChanged': {

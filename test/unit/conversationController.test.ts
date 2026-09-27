@@ -538,7 +538,7 @@ describe('ConversationController.surfaceReady', () => {
     t.controller.surfaceReady()
     expect(t.surface.posted).toEqual([
       // M25: first, the live session and turn a reloaded webview checks its saved state against.
-      { type: 'surfaceState' },
+      { type: 'surfaceState', attachmentEpoch: 0 },
       { type: 'authState', status: 'signedIn' },
       composerState,
       {
@@ -554,7 +554,7 @@ describe('ConversationController.surfaceReady', () => {
     t.surface.posted.length = 0
     t.controller.surfaceReady()
     expect(t.surface.posted).toEqual([
-      { type: 'surfaceState', sessionId: 's1', activeTurnId: 't1' },
+      { type: 'surfaceState', attachmentEpoch: 0, sessionId: 's1', activeTurnId: 't1' },
       { type: 'authState', status: 'signedIn' },
       composerState,
       {
@@ -1375,6 +1375,237 @@ describe('ConversationController: context', () => {
     })
     expect(t.surface.posted).not.toContainEqual(
       expect.objectContaining({ type: 'attachmentAdded', requestId: 'late-paste' }),
+    )
+  })
+
+  it.each(['resumeSession', 'forkSession'] as const)(
+    'rejects an old browser upload while %s waits for the backend',
+    async (action) => {
+      const gate = Promise.withResolvers<undefined>()
+      let shouldHoldNextLookup = false
+      const t = withHistory({
+        beforeEnsureHost: () => {
+          if (shouldHoldNextLookup) {
+            shouldHoldNextLookup = false
+            return gate.promise
+          }
+          return Promise.resolve()
+        },
+      })
+      await completeFirstTurn(t)
+      shouldHoldNextLookup = true
+      const changing = t.controller.handle(
+        action === 'resumeSession'
+          ? { type: action, sessionId: 'old', attachmentEpoch: 1 }
+          : { type: action, lastTurnId: 't1', attachmentEpoch: 1 },
+      )
+      await Promise.resolve()
+      await t.controller.handle({
+        type: 'attachImageData',
+        name: 'stale.png',
+        mediaType: 'image/png',
+        base64: Buffer.from(PNG).toString('base64'),
+        requestId: 'stale-upload',
+        attachmentEpoch: 0,
+      })
+      gate.resolve(undefined)
+      await changing
+      expect(t.surface.posted).not.toContainEqual(
+        expect.objectContaining({ type: 'attachmentAdded', requestId: 'stale-upload' }),
+      )
+    },
+  )
+
+  it('rejects a late browser upload after fork drops the source but before History loads', async () => {
+    const t = withHistory()
+    await completeFirstTurn(t)
+    const held = holdNextModelList(t)
+    const changing = t.controller.handle({
+      type: 'forkSession',
+      lastTurnId: 't1',
+      attachmentEpoch: 1,
+    })
+    await held.waitBeforeHistory()
+    await t.controller.handle({
+      type: 'attachImageData',
+      name: 'late.png',
+      mediaType: 'image/png',
+      base64: Buffer.from(PNG).toString('base64'),
+      requestId: 'late-upload',
+      attachmentEpoch: 0,
+    })
+    held.release()
+    await changing
+    expect(t.surface.posted).not.toContainEqual(
+      expect.objectContaining({ type: 'attachmentAdded', requestId: 'late-upload' }),
+    )
+    await t.controller.handle({
+      type: 'attachImageData',
+      name: 'fresh.png',
+      mediaType: 'image/png',
+      base64: Buffer.from(PNG).toString('base64'),
+      requestId: 'fresh-upload',
+      attachmentEpoch: 1,
+    })
+    expect(t.surface.posted).toContainEqual(
+      expect.objectContaining({ type: 'attachmentAdded', requestId: 'fresh-upload' }),
+    )
+  })
+
+  it('uses a restored panel epoch before accepting browser uploads', async () => {
+    const t = setup()
+    t.controller.surfaceReady(4)
+    await t.controller.handle({
+      type: 'attachImageData',
+      name: 'previous.png',
+      mediaType: 'image/png',
+      base64: Buffer.from(PNG).toString('base64'),
+      requestId: 'previous-upload',
+      attachmentEpoch: 3,
+    })
+    expect(t.surface.posted).not.toContainEqual(
+      expect.objectContaining({ type: 'attachmentAdded', requestId: 'previous-upload' }),
+    )
+    await t.controller.handle({
+      type: 'attachImageData',
+      name: 'current.png',
+      mediaType: 'image/png',
+      base64: Buffer.from(PNG).toString('base64'),
+      requestId: 'current-upload',
+      attachmentEpoch: 4,
+    })
+    expect(t.surface.posted).toContainEqual(
+      expect.objectContaining({ type: 'attachmentAdded', requestId: 'current-upload' }),
+    )
+  })
+
+  it.each(['resumeSession', 'forkSession'] as const)(
+    'does not lower the upload guard for stale ready during %s',
+    async (action) => {
+      const uploadGate = Promise.withResolvers<undefined>()
+      const actionGate = Promise.withResolvers<undefined>()
+      let shouldHoldLookups = false
+      let heldLookups = 0
+      const t = withHistory({
+        beforeEnsureHost: () => {
+          if (!shouldHoldLookups) {
+            return Promise.resolve()
+          }
+          heldLookups += 1
+          return heldLookups === 1 ? uploadGate.promise : actionGate.promise
+        },
+      })
+      await completeFirstTurn(t)
+      shouldHoldLookups = true
+      const uploading = t.controller.handle({
+        type: 'attachImageData',
+        name: 'held-old.png',
+        mediaType: 'image/png',
+        base64: Buffer.from(PNG).toString('base64'),
+        requestId: 'held-old-upload',
+        attachmentEpoch: 0,
+      })
+      await vi.waitFor(() => {
+        expect(heldLookups).toBe(1)
+      })
+      const changing = t.controller.handle(
+        action === 'resumeSession'
+          ? { type: action, sessionId: 'old', attachmentEpoch: 1 }
+          : { type: action, lastTurnId: 't1', attachmentEpoch: 1 },
+      )
+      await vi.waitFor(() => {
+        expect(heldLookups).toBe(2)
+      })
+      t.controller.surfaceReady(0)
+      uploadGate.resolve(undefined)
+      await uploading
+      actionGate.resolve(undefined)
+      await changing
+      expect(t.surface.posted).not.toContainEqual(
+        expect.objectContaining({ type: 'attachmentAdded', requestId: 'held-old-upload' }),
+      )
+      expect(t.surface.posted).toContainEqual(
+        expect.objectContaining({ type: 'surfaceState', attachmentEpoch: 1 }),
+      )
+      shouldHoldLookups = false
+      await t.controller.handle({
+        type: 'attachImageData',
+        name: 'fresh-after-ready.png',
+        mediaType: 'image/png',
+        base64: Buffer.from(PNG).toString('base64'),
+        requestId: 'fresh-after-ready',
+        attachmentEpoch: 1,
+      })
+      expect(t.surface.posted).toContainEqual(
+        expect.objectContaining({ type: 'attachmentAdded', requestId: 'fresh-after-ready' }),
+      )
+    },
+  )
+
+  it.each(['restoreSession', 'restoreRecentSession'] as const)(
+    'rejects an old browser upload after host-driven %s drops the session',
+    async (action) => {
+      const t = withHistory({ isRestorable: true, lastSession: { sessionId: 'old', at: NOW } })
+      t.controller.surfaceReady(0)
+      await settle()
+      const held = holdNextModelList(t)
+      const restoring =
+        action === 'restoreSession'
+          ? t.controller.restoreSession('old')
+          : t.controller.restoreRecentSession()
+      await held.waitBeforeHistory()
+      await t.controller.handle({
+        type: 'attachImageData',
+        name: 'pre-restore.png',
+        mediaType: 'image/png',
+        base64: Buffer.from(PNG).toString('base64'),
+        requestId: 'pre-restore',
+        attachmentEpoch: 0,
+      })
+      held.release()
+      await restoring
+      expect(t.surface.posted).not.toContainEqual(
+        expect.objectContaining({ type: 'attachmentAdded', requestId: 'pre-restore' }),
+      )
+      expect(t.surface.posted).toContainEqual(
+        expect.objectContaining({ type: 'surfaceState', attachmentEpoch: 1 }),
+      )
+      await t.controller.handle({
+        type: 'attachImageData',
+        name: 'post-restore.png',
+        mediaType: 'image/png',
+        base64: Buffer.from(PNG).toString('base64'),
+        requestId: 'post-restore',
+        attachmentEpoch: 1,
+      })
+      expect(t.surface.posted).toContainEqual(
+        expect.objectContaining({ type: 'attachmentAdded', requestId: 'post-restore' }),
+      )
+    },
+  )
+
+  it('syncs the upload epoch when host-driven restore fails before History', async () => {
+    const t = withHistory()
+    t.controller.surfaceReady(0)
+    await settle()
+    t.server.handle('session/resume', () => {
+      throw new Error('offline')
+    })
+    await t.controller.restoreSession('old')
+    expect(t.surface.posted).toContainEqual(
+      expect.objectContaining({ type: 'surfaceState', attachmentEpoch: 1 }),
+    )
+    expect(t.surface.posted.some((message) => message.type === 'historyLoaded')).toBe(false)
+    await t.controller.handle({
+      type: 'attachImageData',
+      name: 'after-failed-restore.png',
+      mediaType: 'image/png',
+      base64: Buffer.from(PNG).toString('base64'),
+      requestId: 'after-failed-restore',
+      attachmentEpoch: 1,
+    })
+    expect(t.surface.posted).toContainEqual(
+      expect.objectContaining({ type: 'attachmentAdded', requestId: 'after-failed-restore' }),
     )
   })
 
@@ -2292,6 +2523,26 @@ async function completeFirstTurn(t: ReturnType<typeof withHistory>): Promise<voi
   await t.send('l1', 'first')
   t.finishTurn()
   await settle()
+}
+
+function holdNextModelList(t: ReturnType<typeof withHistory>) {
+  const gate = Promise.withResolvers<undefined>()
+  const listModels = t.host.listModels.bind(t.host)
+  const listing = vi.spyOn(t.host, 'listModels').mockImplementationOnce(async (sessionId) => {
+    await gate.promise
+    return await listModels(sessionId)
+  })
+  return {
+    waitBeforeHistory: async () => {
+      await vi.waitFor(() => {
+        expect(listing).toHaveBeenCalled()
+      })
+      expect(t.surface.posted.some((message) => message.type === 'historyLoaded')).toBe(false)
+    },
+    release: () => {
+      gate.resolve(undefined)
+    },
+  }
 }
 
 const historyLoaded = {
@@ -4802,6 +5053,7 @@ describe('ConversationController: protocol semantics (D26)', () => {
     t.controller.surfaceReady()
     expect(t.surface.posted[0]).toEqual({
       type: 'surfaceState',
+      attachmentEpoch: 1,
       sessionId: 'old',
       activeTurnId: 'tr',
     })

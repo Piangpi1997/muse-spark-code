@@ -84,6 +84,20 @@ function addTestImage() {
   })
 }
 
+function holdPastedPdf() {
+  const pdf = new File([Uint8Array.from([1])], 'stale.pdf', { type: 'application/pdf' })
+  const heldRead = Promise.withResolvers<ArrayBuffer>()
+  vi.spyOn(pdf, 'arrayBuffer').mockImplementation(() => heldRead.promise)
+  fireEvent.paste(textarea(), { clipboardData: { files: [pdf] } })
+  return async () => {
+    heldRead.resolve(Uint8Array.from([1]).buffer)
+    await act(async () => {
+      await heldRead.promise
+      await Promise.resolve()
+    })
+  }
+}
+
 function chooseConversationRewind(cardIndex: number) {
   fireEvent.click(screen.getAllByLabelText('Fork or rewind')[cardIndex]!)
   fireEvent.click(screen.getByRole('menuitem', { name: 'Rewind conversation to here' }))
@@ -99,6 +113,7 @@ function expectRewindRequest(
   expect(postMessage).toHaveBeenLastCalledWith({
     type: 'rewindConversation',
     sourceSessionId: 'old',
+    attachmentEpoch: 2,
     ...expected,
   })
 }
@@ -145,7 +160,7 @@ describe('App shell', () => {
   it('announces ready to the host on mount', () => {
     const postMessage = vi.fn()
     render(<App postMessage={postMessage} />)
-    expect(postMessage).toHaveBeenCalledWith({ type: 'ready' })
+    expect(postMessage).toHaveBeenCalledWith({ type: 'ready', attachmentEpoch: 0 })
   })
 
   it('shows a connecting status until init arrives', () => {
@@ -179,20 +194,53 @@ describe('App shell', () => {
 
   it('does not attach a deferred pasted PDF after New Conversation clears its source', async () => {
     const postMessage = renderReady()
-    const pdf = new File([Uint8Array.from([1])], 'stale.pdf', { type: 'application/pdf' })
-    const heldRead = Promise.withResolvers<ArrayBuffer>()
-    vi.spyOn(pdf, 'arrayBuffer').mockImplementation(() => heldRead.promise)
-    fireEvent.paste(textarea(), { clipboardData: { files: [pdf] } })
+    const releasePdf = holdPastedPdf()
     fireEvent.click(screen.getByLabelText('New conversation'))
-    heldRead.resolve(Uint8Array.from([1]).buffer)
-    await act(async () => {
-      await heldRead.promise
-      await Promise.resolve()
-    })
+    await releasePdf()
     expect(postMessage).not.toHaveBeenCalledWith(
       expect.objectContaining({ type: 'attachImageData', name: 'stale.pdf' }),
     )
   })
+
+  it.each(['resume', 'fork'] as const)(
+    'drops a deferred PDF when %s begins, preserving the draft and accepted chip',
+    async (action) => {
+      const postMessage = renderReady()
+      loadHistory([historyUser('u1', 't1', 'first'), historyUser('u2', 't2', 'second')])
+      addTestImage()
+      fireEvent.change(textarea(), { target: { value: 'keep draft' } })
+      const releasePdf = holdPastedPdf()
+      if (action === 'resume') {
+        fireEvent.click(screen.getByLabelText('Session history'))
+        deliver({
+          type: 'sessionList',
+          sessions: [
+            {
+              sessionId: 'other',
+              title: 'Other session',
+              isNamed: false,
+              createdAt: '2026-09-22T10:00:00Z',
+              updatedAt: new Date().toISOString(),
+              status: 'notLoaded',
+              turnCount: 1,
+              isFork: false,
+            },
+          ],
+          archivedIds: [],
+        })
+        fireEvent.keyDown(screen.getByRole('combobox'), { key: 'Enter' })
+      } else {
+        fireEvent.click(screen.getAllByLabelText('Fork or rewind')[1]!)
+        fireEvent.click(screen.getByRole('menuitem', { name: 'Fork conversation from here' }))
+      }
+      expect(textarea()).toHaveValue('keep draft')
+      expect(screen.getByLabelText('Remove shot.png')).toBeInTheDocument()
+      await releasePdf()
+      expect(postMessage).not.toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'attachImageData', name: 'stale.pdf' }),
+      )
+    },
+  )
 
   it('inserts host-provided text at the caret', () => {
     renderReady()
@@ -987,7 +1035,11 @@ describe('App session history (M6)', () => {
       isArchived: true,
     })
     fireEvent.keyDown(screen.getByRole('combobox'), { key: 'Enter' })
-    expect(postMessage).toHaveBeenCalledWith({ type: 'resumeSession', sessionId: 'old' })
+    expect(postMessage).toHaveBeenCalledWith({
+      type: 'resumeSession',
+      sessionId: 'old',
+      attachmentEpoch: 1,
+    })
     expect(screen.queryByRole('dialog')).toBeNull()
     expect(document.activeElement).toBe(textarea())
   })
@@ -1036,7 +1088,11 @@ describe('App session history (M6)', () => {
     expect(menus).toHaveLength(2)
     fireEvent.click(menus[1]!)
     fireEvent.click(screen.getByRole('menuitem', { name: 'Fork conversation from here' }))
-    expect(postMessage).toHaveBeenLastCalledWith({ type: 'forkSession', lastTurnId: 't1' })
+    expect(postMessage).toHaveBeenLastCalledWith({
+      type: 'forkSession',
+      lastTurnId: 't1',
+      attachmentEpoch: 2,
+    })
     expect(screen.queryByRole('menu')).toBeNull()
     // Before the first message there is nothing to keep: a new conversation.
     fireEvent.click(menus[0]!)
@@ -1248,7 +1304,7 @@ describe('App session history (M6)', () => {
     fireEvent.click(screen.getByRole('menuitem', { name: 'Fork conversation and rewind code' }))
     expect(postMessage.mock.calls.slice(-2).map(([message]) => message)).toEqual([
       { type: 'rewindCode', edits: [{ itemId: 'e2', outputRef: 'p2' }] },
-      { type: 'forkSession', lastTurnId: 't1' },
+      { type: 'forkSession', lastTurnId: 't1', attachmentEpoch: 2 },
     ])
     fireEvent.click(menus[0]!)
     expect(screen.getByRole('menu')).toBeInTheDocument()

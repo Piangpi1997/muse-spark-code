@@ -7,6 +7,22 @@ happened, not what was planned; superseded entries are kept.
 
 ## [Unreleased]
 
+Model API steering now counts named text files from the active turn and all
+accepted steers against the same 768 KiB allowance, including steers already
+drained into replay. An over-budget steer is refused before its card or file
+bytes join the next request.
+
+Successful Model API `read_file` PDFs and images keep their media reservation
+after moving into replay. Steering during a post-tool hook cannot displace an
+unread file before its first completed model request.
+Browser PDF/image encodes started before History resume, fork or conversation
+rewind are discarded when that session change begins. The host also refuses
+late upload messages during backend lookup and before replacement history
+arrives. Accepted file chips and draft text remain available; a reloaded panel
+retains its upload epoch. A stale saved epoch cannot lower the host guard;
+host-driven session restore raises the guard and syncs the panel before new
+uploads.
+
 Pasted and dropped PDFs now receive the PDF byte limit after a 1 KiB header
 check, even when named `.png` or `.txt`. Real images above 10 MiB still stop
 before full-file encoding; pending checks cannot attach to a cleared

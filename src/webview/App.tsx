@@ -278,7 +278,7 @@ export function App({
       postMessage(webviewErrorReport(source, error))
     }
     const stop = isOwnStore ? listenToHost(store, window, now, report) : undefined
-    postMessage({ type: 'ready' })
+    postMessage({ type: 'ready', attachmentEpoch: store.getState().attachmentEpoch })
     return () => {
       stop?.()
     }
@@ -783,10 +783,15 @@ export function App({
   )
   const onResumeSession = useCallback(
     (sessionId: string) => {
-      postMessage({ type: 'resumeSession', sessionId })
+      dispatch({ type: 'sessionChangeRequested' })
+      postMessage({
+        type: 'resumeSession',
+        sessionId,
+        attachmentEpoch: store.getState().attachmentEpoch,
+      })
       closeOverlay()
     },
-    [postMessage, closeOverlay],
+    [dispatch, postMessage, closeOverlay, store],
   )
   const onSetSessionArchived = useCallback(
     (sessionId: string, isArchived: boolean) => {
@@ -812,9 +817,14 @@ export function App({
         onNewConversation()
         return
       }
-      postMessage({ type: 'forkSession', lastTurnId: cut.lastTurnId })
+      dispatch({ type: 'sessionChangeRequested' })
+      postMessage({
+        type: 'forkSession',
+        lastTurnId: cut.lastTurnId,
+        attachmentEpoch: store.getState().attachmentEpoch,
+      })
     },
-    [store, onNewConversation, postMessage],
+    [store, onNewConversation, dispatch, postMessage],
   )
   // "Rewind code to here": the host reverts the edits after that message,
   // newest first, and says so (or that there was nothing to revert).
@@ -839,6 +849,7 @@ export function App({
       ) {
         return
       }
+      dispatch({ type: 'sessionChangeRequested' })
       postMessage({
         type: 'rewindConversation',
         sourceSessionId: current.sessionId,
@@ -847,9 +858,10 @@ export function App({
         ...(cut.type === 'afterTurn' && { lastTurnId: cut.lastTurnId }),
         text: entry.text,
         imageCount: entry.attachments.length,
+        attachmentEpoch: store.getState().attachmentEpoch,
       })
     },
-    [store, postMessage],
+    [store, dispatch, postMessage],
   )
   const onRemoveAttachment = useCallback(
     (id: string) => {

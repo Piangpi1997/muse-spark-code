@@ -443,6 +443,7 @@ export class ConversationController {
   private sendInvalidationEpoch = 0
   /** The latest composer generation seen on this surface's file messages. */
   private webviewAttachmentEpoch = 0
+
   /** User cards whose file bytes rewind cannot restore across every backend/history path. */
   private readonly fileMessageIds = new Set<string>()
   /** Fresh cards use local IDs until Muse Code serves their durable user item IDs. */
@@ -2685,6 +2686,11 @@ export class ConversationController {
     this.postComposerState()
   }
 
+  /** A pending browser encode belongs to the session before this replacement request. */
+  private beginBrowserSessionChange(attachmentEpoch?: number): void {
+    this.webviewAttachmentEpoch = Math.max(this.webviewAttachmentEpoch + 1, attachmentEpoch ?? 0)
+  }
+
   private clear(): void {
     this.webviewAttachmentEpoch += 1
     const wasSideChat = this.isSideChat
@@ -3402,6 +3408,7 @@ export class ConversationController {
         break
       }
       case 'rewindConversation': {
+        this.beginBrowserSessionChange(message.attachmentEpoch)
         await this.rewindConversation(message)
         break
       }
@@ -3524,6 +3531,7 @@ export class ConversationController {
         break
       }
       case 'resumeSession': {
+        this.beginBrowserSessionChange(message.attachmentEpoch)
         await this.resumeSession(message.sessionId)
         break
       }
@@ -3532,6 +3540,7 @@ export class ConversationController {
         break
       }
       case 'forkSession': {
+        this.beginBrowserSessionChange(message.attachmentEpoch)
         await this.forkSession(message.lastTurnId)
         break
       }
@@ -3554,14 +3563,23 @@ export class ConversationController {
     }
   }
 
-  public surfaceReady(): void {
-    // First, so a reloaded webview keeps the conversation it saved only when
-    // that session is still the live one here, with its running turn (M25, D28).
+  private postSurfaceState(): void {
     this.post({
       type: 'surfaceState',
+      attachmentEpoch: this.webviewAttachmentEpoch,
       ...(this.session !== undefined && { sessionId: this.session.sessionId }),
       ...(this.activeTurnId !== undefined && { activeTurnId: this.activeTurnId }),
     })
+  }
+
+  public surfaceReady(attachmentEpoch?: number): void {
+    if (attachmentEpoch !== undefined) {
+      // Saved webview state may lag an in-flight session change.
+      this.webviewAttachmentEpoch = Math.max(this.webviewAttachmentEpoch, attachmentEpoch)
+    }
+    // First, so a reloaded webview keeps the conversation it saved only when
+    // that session is still the live one here, with its running turn (M25, D28).
+    this.postSurfaceState()
     this.post(this.deps.auth.toMessage())
     this.postComposerState()
     this.postDictationState()
@@ -3613,6 +3631,8 @@ export class ConversationController {
       await this.deps.sessions.setLastSession(undefined)
       return
     }
+    this.beginBrowserSessionChange()
+    this.postSurfaceState()
     await this.resumeSession(last.sessionId)
   }
 
@@ -3628,6 +3648,8 @@ export class ConversationController {
     ) {
       return
     }
+    this.beginBrowserSessionChange()
+    this.postSurfaceState()
     await this.resumeSession(sessionId)
   }
 

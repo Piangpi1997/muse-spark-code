@@ -196,7 +196,7 @@ const composerStateSchema = z.object({
 
 const webviewToHostMessageSchema = z.discriminatedUnion('type', [
   // Sent once when the React app has mounted and is listening for messages.
-  z.object({ type: z.literal('ready') }),
+  z.object({ type: z.literal('ready'), attachmentEpoch: z.optional(z.number()) }),
   // The composer gained or lost keyboard focus; drives the
   // `museSpark.inputFocused` context key behind Ctrl+Esc.
   z.object({ type: z.literal('inputFocusChanged'), focused: z.boolean() }),
@@ -360,6 +360,7 @@ const webviewToHostMessageSchema = z.discriminatedUnion('type', [
     lastTurnId: z.optional(z.string()),
     text: z.string(),
     imageCount: z.number(),
+    attachmentEpoch: z.optional(z.number()),
   }),
   // Session history (M6).
   z.object({ type: z.literal('listSessions') }),
@@ -378,14 +379,22 @@ const webviewToHostMessageSchema = z.discriminatedUnion('type', [
     body: z.string(),
     isFollowup: z.boolean(),
   }),
-  z.object({ type: z.literal('resumeSession'), sessionId: z.string() }),
+  z.object({
+    type: z.literal('resumeSession'),
+    sessionId: z.string(),
+    attachmentEpoch: z.optional(z.number()),
+  }),
   z.object({
     type: z.literal('setSessionArchived'),
     sessionId: z.string(),
     isArchived: z.boolean(),
   }),
   /** Fork the current session through `lastTurnId` (all turns when absent). */
-  z.object({ type: z.literal('forkSession'), lastTurnId: z.optional(z.string()) }),
+  z.object({
+    type: z.literal('forkSession'),
+    lastTurnId: z.optional(z.string()),
+    attachmentEpoch: z.optional(z.number()),
+  }),
   z.object({
     type: z.literal('openSideChat'),
     sourceSessionId: z.string().check(z.minLength(1)),
@@ -430,6 +439,8 @@ const hostToWebviewMessageSchema = z.discriminatedUnion('type', [
     type: z.literal('surfaceState'),
     sessionId: z.optional(z.string()),
     activeTurnId: z.optional(z.string()),
+    /** The host's monotonic browser-file guard; older saved webviews raise their epoch. */
+    attachmentEpoch: z.optional(z.number()),
   }),
   // Insert text at the composer caret (Alt+K mention reference).
   z.object({ type: z.literal('insertText'), text: z.string() }),

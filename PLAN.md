@@ -1960,6 +1960,11 @@ for prompt, replay and output (32,768 maximum); a large single file can be
 refused despite its 1 MiB per-file read cap. It does not account for an
 already long replay, which the Model API may still refuse at its context
 limit.
+During an active turn, its initial named text files and every accepted steer
+share that same 768 KiB allowance. A steer that would cross it is refused
+before entering the next replay request. Draining steering into replay does
+not reset the turn's admission count; a separately queued turn validates its
+own parts before it starts.
 
 - **Model API:** PDF bytes, checked by header, may be attached from the file
   picker, clipboard or drop, up to 32 MB each; the inline base64 stays below
@@ -2034,6 +2039,11 @@ limit.
   a later tool result cannot displace it silently, and a steer that arrives
   after pending tool media is refused before it enters this turn. The panel
   can submit that prompt as a later turn after the pending media is delivered.
+  A successful `read_file` stays reserved after its media moves from the
+  current batch into replay, including while `PostToolBatch` runs. The
+  reservation ends only after the first completed request carries or durably
+  omits that media, or Stop/failure scrubs it. A steer arriving during that
+  hook cannot displace the unread PDF or image.
   Red/green tests bind the fitted request, snapshot, resume and unchanged
   history chips to that boundary. The
   `read_file` tool also stops collecting media in one tool round at the same
@@ -5130,6 +5140,24 @@ old dialog or file read cannot add an attachment or mention after New
 Conversation. Its final add remains bound to the captured generation across
 the backend lookup. The separate mention QuickPick likewise ignores a choice
 that returns after the conversation cleared.
+Browser paste/drop encoding also belongs to the conversation in which it
+started. Resume, fork and conversation rewind advance the browser attachment
+epoch before asynchronous session replacement; the host binds that epoch
+before awaiting the backend and refuses older upload messages. Accepted chips
+and the draft remain available, while only unfinished encodes are invalidated.
+Restored panels report their current epoch on readiness so a host-driven
+session replacement can advance the same boundary before History loads.
+A delayed or debounced webview snapshot may restore an epoch older than the
+host's current session-change guard. `ready` must never lower that host epoch;
+the host returns its current epoch in `surfaceState`, and the panel raises its
+epoch before admitting fresh files. A held old upload followed by resume or
+fork, stale `ready`, and release must be refused; a new upload after sync must
+still be accepted.
+Host-driven panel and recent-session restore follows the same browser epoch
+boundary before its asynchronous resume. A file delivered after session drop
+but before the restored History must be refused, while the panel receives the
+new epoch in time to accept fresh uploads. Same-session host restart keeps
+accepted chips and draft and does not advance this browser boundary.
 An edit or paid image approval binds the canonical target it classified;
 the executing tool must use that target and refuse if a workspace alias
 resolves elsewhere after the card. Paid image sources use the bytes and
@@ -5198,9 +5226,21 @@ was superseded by the browser paste/drop review finding. Final browser and
 native picker source tree `2fbb593cd99b54fc786587e6847ee87b2dffd496`
 passed exact-tree Mac/Kubuntu `npm run quality:gates`; the Windows VM passed
 349 focused Composer, PDF, picker, ToolIo and attachment tests (two skips).
-The final documentation receipt needs local `npm run quality`; the updated PR
-head needs hosted CI and review. Live paid PDF delivery remains unverified;
-no paid request ran.
+That documentation receipt was superseded by two further PR review fixes:
+aggregate named-text steering plus undelivered `read_file` reservations, and
+browser upload epochs across session replacement and reload. Corrected staged
+source tree `91d0e2751ba0dd4d2dcd510919692a8a0fbebfc5` passed exact-tree
+Mac and Kubuntu `npm run quality:gates` (2,344 tests on each); WIN-11-VM
+passed 817 focused tests on the same tree. The root checkout passed 817
+combined focused tests, all five TypeScript projects, lint, localization,
+formatting and duplication. The exact receipts are in `docs/certification/m54.md`.
+The documentation receipt tree
+`b1d05e85830875a2a6cb5355a42f15cf1c3c7015` then passed full Windows
+host `npm run quality`: 2,353 unit tests, 312 accessibility pages with zero
+findings, dependency audit, Gitleaks and Semgrep all clean. Its exact log,
+tree and process audit are in `docs/certification/m54.md`. The final gate note
+is documentation-only; the updated PR head needs hosted CI and review. Live
+paid PDF delivery remains unverified; no paid request ran.
 
 - **Goal:** a user can send a PDF to the Model API backend from the picker,
   paste or drop, then see it in the sent card and restored history; the agent

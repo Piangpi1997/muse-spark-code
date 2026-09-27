@@ -1326,9 +1326,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         isFocused,
       )
     },
-    onSurfaceReady: (surface) => {
+    onSurfaceReady: (surface, attachmentEpoch) => {
       const controller = controllerFor(surface)
-      controller.surfaceReady()
+      controller.surfaceReady(attachmentEpoch)
       surface.post({ type: 'editorContext', context: editorContext.summary })
       surface.post({ type: 'paidState', state: paid.state() })
       // A rebuilt panel resumes the session it held (D15); the sidebar

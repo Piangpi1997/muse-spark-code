@@ -312,6 +312,8 @@ interface PendingReadFile {
   readonly path: string
   readonly lead: InputContentPart
   readonly media: InputContentPart
+  readonly encodedChars: number
+  readonly slots: number
 }
 
 type FunctionImagePart = Extract<FunctionOutputPart, { readonly type: 'input_image' }>
@@ -405,6 +407,8 @@ interface ActiveTurn {
   readonly confirmedRequest?: ConfirmedModelRequest
   /** Steered input, appended before the next model call. */
   readonly steered: { readonly parts: readonly TurnPart[]; readonly userMessageId: string }[]
+  /** Named text accepted for this turn, including steers already drained into replay. */
+  acceptedTextAttachmentBytes: number
   modelFailure?: unknown
   /** A goal accepted after the current model request began needs another round. */
   goalWakePending: boolean
@@ -901,19 +905,23 @@ function contentPartsFor(
   })
 }
 
-/** Reject an aggregate named-text payload before it can enter replay or an HTTP request. */
-function textAttachmentBudgetError(parts: readonly TurnPart[]): Error | undefined {
+/** Model-facing named text, including its file-name wrapper. */
+function textAttachmentBytes(parts: readonly TurnPart[]): number {
   let bytes = 0
   for (const part of parts) {
     if (part.type !== 'textFile') {
       continue
     }
     bytes += Buffer.byteLength(textFileInput(part))
-    if (bytes > MAX_MODEL_API_TEXT_ATTACHMENT_BYTES) {
-      return new Error(UI_TEXT.textFilesOverModelApiBudget)
-    }
   }
-  return undefined
+  return bytes
+}
+
+/** Reject an aggregate named-text payload before it can enter replay or an HTTP request. */
+function textAttachmentBudgetError(bytes: number): Error | undefined {
+  return bytes > MAX_MODEL_API_TEXT_ATTACHMENT_BYTES
+    ? new Error(UI_TEXT.textFilesOverModelApiBudget)
+    : undefined
 }
 
 function typedText(parts: readonly TurnPart[]): string {
@@ -2435,7 +2443,13 @@ export class ModelApiSession implements AgentSession {
         type: 'input_text',
         text: fill(MODEL_TEXT.toolFileFollows, { path: file.path }),
       }
-      pending.push({ path: file.path, lead, media: sent })
+      pending.push({
+        path: file.path,
+        lead,
+        media: sent,
+        encodedChars: turnMediaEncodedChars(file.part),
+        slots: turnMediaSlots(file.part),
+      })
       return [lead, sent]
     })
     const replay: ReplayItem = { turnId, item: { type: 'message', role: 'user', content } }
@@ -2552,6 +2566,13 @@ export class ModelApiSession implements AgentSession {
     for (const file of this.readFiles) {
       chars += turnMediaEncodedChars(file.part)
       slots += turnMediaSlots(file.part)
+    }
+    for (const replay of this.replay) {
+      const pending = this.readFileMessages.get(replay) ?? []
+      for (const file of pending) {
+        chars += file.encodedChars
+        slots += file.slots
+      }
     }
     for (const images of this.pendingOutputMedia.values()) {
       for (const image of images) {
@@ -4247,6 +4268,7 @@ export class ModelApiSession implements AgentSession {
       turnId: queued.turnId,
       abort: new AbortController(),
       steered: [],
+      acceptedTextAttachmentBytes: textAttachmentBytes(queued.parts),
       modelFailure: undefined,
       goalWakePending: false,
       ...(queued.confirmedRequest !== undefined && {
@@ -4828,7 +4850,7 @@ export class ModelApiSession implements AgentSession {
     if (this.isDisposed) {
       return Promise.reject(new Error(UI_TEXT.turnStoppedByRestart))
     }
-    const textBudgetError = textAttachmentBudgetError(parts)
+    const textBudgetError = textAttachmentBudgetError(textAttachmentBytes(parts))
     if (textBudgetError !== undefined) {
       return Promise.reject(textBudgetError)
     }
@@ -4859,7 +4881,10 @@ export class ModelApiSession implements AgentSession {
     if (this.active?.turnId !== expectedTurnId || this.active.abort.signal.aborted) {
       return Promise.reject(new Error(TURN_NOT_RUNNING))
     }
-    const textBudgetError = textAttachmentBudgetError(parts)
+    const addedTextBytes = textAttachmentBytes(parts)
+    const textBudgetError = textAttachmentBudgetError(
+      this.active.acceptedTextAttachmentBytes + addedTextBytes,
+    )
     if (textBudgetError !== undefined) {
       return Promise.reject(textBudgetError)
     }
@@ -4867,6 +4892,7 @@ export class ModelApiSession implements AgentSession {
       return Promise.reject(new Error(UI_TEXT.mediaTotalTooLarge))
     }
     const userMessageId = this.deps.newId()
+    this.active.acceptedTextAttachmentBytes += addedTextBytes
     this.active.steered.push({ parts, userMessageId })
     return Promise.resolve({ turnId: expectedTurnId, disposition: 'steered', userMessageId })
   }
