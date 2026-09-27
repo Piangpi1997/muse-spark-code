@@ -472,11 +472,26 @@ describe('createRuntimeBackend', () => {
   })
 
   it('says where it looked when the Muse Code CLI is missing, and builds a Model API host per folder', async () => {
-    const missing = backend({ museBinary: path.join(folder(), 'no-such-muse') }, memorySecrets(), {
-      PATH: '',
-    })
-    const readiness = await missing.backend.readiness()
-    expect(readiness.state).toBe('unavailable')
+    // The CLI search reads this process's PATH, LOCALAPPDATA and home, so a
+    // machine with Muse Code installed must not be the one searched.
+    const home = folder()
+    vi.stubEnv('PATH', '')
+    vi.stubEnv('LOCALAPPDATA', home)
+    vi.stubEnv('USERPROFILE', home)
+    vi.stubEnv('HOME', home)
+    try {
+      const missing = backend(
+        { museBinary: path.join(folder(), 'no-such-muse') },
+        memorySecrets(),
+        {
+          PATH: '',
+        },
+      )
+      const readiness = await missing.backend.readiness()
+      expect(readiness.state).toBe('unavailable')
+    } finally {
+      vi.unstubAllEnvs()
+    }
     const secrets = memorySecrets()
     secrets.values.set(SECRET_KEYS.modelApiKey, KEY)
     const runtime = backend({ backend: 'modelApi' }, secrets)

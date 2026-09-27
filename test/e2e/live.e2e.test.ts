@@ -82,6 +82,7 @@ async function runDrill(): Promise<{ sessionId: string; text: string }> {
     getEnvironmentVariables: () => [],
     workspaceRoot,
     getShellSandbox: () => 'off',
+    getSandboxNetwork: () => 'default',
     userProfileDir: process.env['USERPROFILE'],
     isWorkspaceTrusted: () => true,
     getProxySettings: () => ({ proxy: '', noProxy: [] }),

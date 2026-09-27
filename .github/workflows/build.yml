@@ -1,8 +1,8 @@
 # The shared build: every quality gate on three platforms, the integration
 # tests, the macOS dictation helper, and the .vsix with both helpers as the
-# `muse-spark-code-vsix` artifact. Called by ci.yml (pushes and pull
-# requests) and release.yml (version tags), so a release is built exactly
-# the way CI builds every commit.
+# `muse-spark-code-vsix` artifact. Called by ci.yml (pull requests and
+# optional manual branch runs) and release.yml (version tags), so a release
+# is built exactly the way CI builds every commit.
 #
 # Every job has a timeout (about three times its usual run; GitHub's default
 # is six hours) and every checkout leaves no token in the git config
@@ -36,24 +36,52 @@ jobs:
       # lint:ps (PSScriptAnalyzer over native/windows) is real on this runner
       # and a reported skip elsewhere. The version is the one lint-ps.mjs
       # pins, so the gate does not change under an unchanged tree. The
-      # PowerShell Gallery now and then answers a lookup with "No match was
-      # found" (the 0.6.0 release PR's first run); three tries, ten seconds
-      # apart, each failure named, the third one failing the job.
+      # PowerShell Gallery's search now and then answers "No match was found"
+      # (the 0.6.0 release PR's first run; PR #42's, three tries in a row), so
+      # a version already on the runner is used as is, then Install-Module is
+      # tried twice, and last the package itself is downloaded from the
+      # Gallery's package endpoint, checked against the SHA-512 lint-ps.mjs
+      # pins, and unpacked into the user's module path. Each failure is named.
       - name: PSScriptAnalyzer (windows, pinned)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           $version = node scripts/lint-ps.mjs --print-version
-          for ($attempt = 1; ; $attempt++) {
+          $sha512 = node scripts/lint-ps.mjs --print-sha512
+          if (Get-Module -ListAvailable PSScriptAnalyzer | Where-Object { $_.Version -eq [version]$version }) {
+            Write-Host "PSScriptAnalyzer $version is already installed"
+            exit 0
+          }
+          for ($attempt = 1; $attempt -le 2; $attempt++) {
             try {
               Install-Module PSScriptAnalyzer -RequiredVersion $version -Force -Scope CurrentUser -AcceptLicense -ErrorAction Stop
-              break
+              exit 0
             } catch {
-              if ($attempt -ge 3) { throw }
-              Write-Warning "PSScriptAnalyzer install attempt $attempt failed: $_"
+              Write-Warning "Install-Module attempt $attempt failed: $_"
               Start-Sleep -Seconds 10
             }
           }
+          $package = Join-Path $env:RUNNER_TEMP "PSScriptAnalyzer.$version.nupkg"
+          for ($attempt = 1; ; $attempt++) {
+            try {
+              Invoke-WebRequest "https://www.powershellgallery.com/api/v2/package/PSScriptAnalyzer/$version" -OutFile $package -ErrorAction Stop
+              break
+            } catch {
+              if ($attempt -ge 3) { throw }
+              Write-Warning "Package download attempt $attempt failed: $_"
+              Start-Sleep -Seconds 10
+            }
+          }
+          $hash = [Convert]::ToBase64String([Security.Cryptography.SHA512]::HashData([IO.File]::ReadAllBytes($package)))
+          if ($hash -ne $sha512) { throw "PSScriptAnalyzer $version package hash $hash is not the pinned $sha512" }
+          $modules = Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'PowerShell\Modules\PSScriptAnalyzer'
+          $target = Join-Path $modules $version
+          Expand-Archive $package -DestinationPath $target -Force
+          Remove-Item -Recurse -Force (Join-Path $target '_rels'), (Join-Path $target 'package') -ErrorAction SilentlyContinue
+          Remove-Item -Force -LiteralPath (Join-Path $target '[Content_Types].xml') -ErrorAction SilentlyContinue
+          Remove-Item -Force -Path (Join-Path $target '*.nuspec') -ErrorAction SilentlyContinue
+          Import-Module PSScriptAnalyzer -RequiredVersion $version -ErrorAction Stop
+          Write-Host "PSScriptAnalyzer $version installed from the checked package"
       # All gates except secrets (separate job) and integration tests (below):
       # format, lint, typecheck, dead code, cycles, duplication, unit tests with
       # coverage thresholds, production build with bundle budget, host-global

@@ -3,9 +3,53 @@
 // facts. Nothing secret is ever in it: credentials appear as booleans,
 // environment variables as a count, the home directory as `~` (PLAN.md
 // D24: the report is meant to be pasted into a public issue), and the
-// logger redacts on top.
+// logger redacts on top. The network posture (M56, PLAN.md D43) is stated
+// the same way: whether a proxy is set, never its address, which can hold
+// a password; and `muse config status` contributes only known-safe fields.
 
-import { PRODUCT_NAME } from '../../shared/constants'
+import {
+  MUSE_CONFIG_STATUS_MAX_CHARS,
+  PRODUCT_NAME,
+  VSCODE_WEBSOCKET_ROUTED_SINCE,
+} from '../../shared/constants'
+
+/**
+ * Whether the editor's extension host installed its proxy-aware version of a
+ * global (M62): `absent` when the host has no such global at all, as Node 20
+ * (VS Code 1.99 and 1.100) has no WebSocket.
+ */
+export type HostRouting = 'routed' | 'notRouted' | 'absent'
+
+/**
+ * The network the extension's own requests and Muse Code's run under (M56).
+ * The extension's `fetch` and WebSocket go through VS Code's proxy support
+ * and system certificates where the editor routes them and VS Code's
+ * settings allow it.
+ */
+export interface NetworkFacts {
+  /** `http.proxy` is set; its value is not shown. */
+  readonly isProxySet: boolean
+  /** `http.proxySupport`: `off`, `on`, `fallback` or `override`. */
+  readonly proxySupport: string
+  readonly isProxyStrictSsl: boolean
+  readonly isProxyAuthorizationSet: boolean
+  readonly noProxyCount: number
+  readonly isSystemCertificatesOn: boolean
+  /** `http.fetchAdditionalSupport` and `http.webSocketAdditionalSupport`. */
+  readonly isFetchSupportOn: boolean
+  readonly isWebSocketSupportOn: boolean
+  /** Whether this editor routes each global at all; the settings above matter only then (M62). */
+  readonly fetchRouting: HostRouting
+  readonly webSocketRouting: HostRouting
+  /** HTTPS_PROXY / HTTP_PROXY in the extension host's environment, in either case. */
+  readonly hasEnvironmentProxy: boolean
+  /** NODE_EXTRA_CA_CERTS names extra roots for the extension host. */
+  readonly hasExtraCaCertificates: boolean
+  /** Where `muse serve` gets its proxy. */
+  readonly museProxySource: 'environment' | 'vscode' | 'none'
+  /** SSL_CERT_FILE or SSL_CERT_DIR replaces the system store for `muse serve`. */
+  readonly hasMuseCertificateOverride: boolean
+}
 
 export interface SupportFacts {
   readonly extensionVersion: string
@@ -20,6 +64,9 @@ export interface SupportFacts {
   readonly backendSetting: string
   readonly shellSandboxSetting: string
   readonly shellSandboxPosture: string
+  /** `museSpark.sandboxNetwork`, and whether the next host gets it (M56). */
+  readonly sandboxNetworkSetting: string
+  readonly isSandboxNetworkApplied: boolean
   readonly isBinaryPathConfigured: boolean
   readonly environmentVariableCount: number
   /** The CLI's install directory and version, or why it was not found. */
@@ -35,6 +82,10 @@ export interface SupportFacts {
   readonly hasEnvironmentApiKey: boolean
   readonly dictation:
     { readonly isAvailable: true } | { readonly isAvailable: false; readonly reason: string }
+  readonly network: NetworkFacts
+  /** `muse config status` as printed, or why it could not run (M56). */
+  readonly managedConfiguration:
+    { readonly ok: true; readonly text: string } | { readonly ok: false; readonly reason: string }
   /** The user's home directory, shown as `~` wherever a path contains it. */
   readonly homeDir: string
 }
@@ -44,9 +95,98 @@ const NO = 'no'
 const NONE = 'none'
 const UNKNOWN = 'unknown'
 const HOME_ABBREVIATION = '~'
+const INDENT = '  '
+const TRUNCATED = '…'
+const LINE_BREAK = /\r?\n/
+// Diagnostics is pasted into public issues. Only captured status fields with
+// fixed vocabularies are safe to copy from CLI output: a future CLI version
+// may print a credential under a new key that a redaction pattern misses.
+const CONFIG_GENERATION = /^Generation: sha256:[\da-f]{4,64}$/i
+const CONFIG_SOURCE =
+  /^plane=(defaults|policy) source_class=(system_file|windows_machine_policy) state=(absent|present|loaded|active|invalid|error)$/
+const CONFIG_LINE_OMITTED = '[unrecognized status line omitted]'
+const CONFIG_FAILURE = 'could not read status'
+const CONFIG_EXIT_CODE = /^exit code -?\d+$/
+
+function safeConfigLine(line: string): string {
+  const trimmed = line.trim()
+  if (trimmed === 'Enterprise configuration status' || trimmed === 'Sources:') {
+    return `${INDENT}${trimmed}`
+  }
+  if (CONFIG_GENERATION.test(trimmed)) {
+    return `${INDENT}${trimmed}`
+  }
+  return CONFIG_SOURCE.test(trimmed)
+    ? `${INDENT}${INDENT}${trimmed}`
+    : `${INDENT}${CONFIG_LINE_OMITTED}`
+}
+const MUSE_PROXY_SOURCES: Readonly<Record<NetworkFacts['museProxySource'], string>> = {
+  environment: 'its environment',
+  vscode: 'VS Code’s http.proxy',
+  none: NONE,
+}
 
 function yesNo(isTrue: boolean): string {
   return isTrue ? YES : NO
+}
+
+/**
+ * A global's route: its setting where the editor routes it, and otherwise
+ * why not, so the report never claims a proxy the request does not use (M62).
+ */
+function routeState(isSettingOn: boolean, routing: HostRouting, notRouted: string): string {
+  switch (routing) {
+    case 'routed': {
+      return yesNo(isSettingOn)
+    }
+    case 'notRouted': {
+      return notRouted
+    }
+    case 'absent': {
+      return 'none in this extension host'
+    }
+  }
+}
+
+function networkLines(network: NetworkFacts): readonly string[] {
+  const fetchRoute = routeState(
+    network.isFetchSupportOn,
+    network.fetchRouting,
+    'no (this editor does not route it)',
+  )
+  const webSocketRoute = routeState(
+    network.isWebSocketSupportOn,
+    network.webSocketRouting,
+    `no (this editor does not route it; VS Code does from ${VSCODE_WEBSOCKET_ROUTED_SINCE})`,
+  )
+  return [
+    `network: http.proxy set: ${yesNo(network.isProxySet)}; proxySupport: ${network.proxySupport}; proxyStrictSSL: ${yesNo(network.isProxyStrictSsl)}; proxyAuthorization set: ${yesNo(network.isProxyAuthorizationSet)}; noProxy entries: ${String(network.noProxyCount)}; proxy in environment: ${yesNo(network.hasEnvironmentProxy)}`,
+    `certificates: system certificates: ${yesNo(network.isSystemCertificatesOn)}; NODE_EXTRA_CA_CERTS: ${yesNo(network.hasExtraCaCertificates)}`,
+    `extension requests through VS Code's network support: fetch ${fetchRoute}, WebSocket ${webSocketRoute}`,
+    `muse serve: proxy from ${MUSE_PROXY_SOURCES[network.museProxySource]}; SSL_CERT_FILE or SSL_CERT_DIR: ${yesNo(network.hasMuseCertificateOverride)}`,
+  ]
+}
+
+/** `muse config status` under its heading, only known-safe fields, capped. */
+function managedConfigurationLines(facts: SupportFacts['managedConfiguration']): readonly string[] {
+  if (!facts.ok) {
+    const reason =
+      facts.reason === 'not run: the Muse Code CLI was not found' ||
+      CONFIG_EXIT_CODE.test(facts.reason)
+        ? facts.reason
+        : CONFIG_FAILURE
+    return [`muse config status: ${reason}`]
+  }
+  const text = facts.text
+    .trim()
+    .split(LINE_BREAK)
+    .map((line) => safeConfigLine(line))
+    .join('\n')
+  const capped =
+    text.length > MUSE_CONFIG_STATUS_MAX_CHARS
+      ? `${text.slice(0, MUSE_CONFIG_STATUS_MAX_CHARS)}${TRUNCATED}`
+      : text
+  return ['muse config status:', capped]
 }
 
 export function renderSupportReport(facts: SupportFacts): string {
@@ -56,6 +196,9 @@ export function renderSupportReport(facts: SupportFacts): string {
   const dictation = facts.dictation.isAvailable
     ? 'available'
     : `unavailable: ${facts.dictation.reason}`
+  const sandboxNetwork = facts.isSandboxNetworkApplied
+    ? 'passed to muse serve'
+    : 'not passed (Muse Code’s own default, or the shell sandbox is off)'
   const text = [
     `${PRODUCT_NAME} diagnostics`,
     `extension: ${facts.extensionVersion}`,
@@ -64,11 +207,14 @@ export function renderSupportReport(facts: SupportFacts): string {
     `workspace: ${facts.hasWorkspace ? 'open' : NONE}, trusted: ${yesNo(facts.isWorkspaceTrusted)}`,
     `backend setting: ${facts.backendSetting}`,
     `shell sandbox: setting ${facts.shellSandboxSetting}, posture ${facts.shellSandboxPosture}`,
+    `sandbox network: setting ${facts.sandboxNetworkSetting}, ${sandboxNetwork}`,
     `muse binary path configured: ${yesNo(facts.isBinaryPathConfigured)}; environment variables: ${String(facts.environmentVariableCount)}`,
     `muse cli: ${cli}`,
     `muse subagent delegation: ${facts.delegationMode}; workflow trigger mode: ${facts.workflowTriggerMode}`,
     `cli credential file: ${yesNo(facts.hasCliCredentialFile)}; stored model api key: ${yesNo(facts.hasStoredApiKey)}; META_API_KEY in environment: ${yesNo(facts.hasEnvironmentApiKey)}`,
     `voice dictation: ${dictation}`,
+    ...networkLines(facts.network),
+    ...managedConfigurationLines(facts.managedConfiguration),
   ].join('\n')
   return facts.homeDir === '' ? text : text.split(facts.homeDir).join(HOME_ABBREVIATION)
 }

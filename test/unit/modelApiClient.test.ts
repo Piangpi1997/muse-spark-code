@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import { createHash } from 'node:crypto'
 import {
   MissingApiKeyError,
   ModelApiClient,
@@ -7,6 +8,7 @@ import {
   retryAfterMs,
 } from '../../src/core/backends/modelapi/client'
 import type { CreateResponseBody, StreamEvent } from '../../src/core/backends/modelapi/schemas'
+import { MODEL_API_MAX_RETRIES, UI_TEXT } from '../../src/shared/constants'
 import { FakeLogOutputChannel } from './helpers/fakes'
 import { fakeModelApi } from './helpers/fakeModelApi'
 
@@ -22,6 +24,7 @@ const body: CreateResponseBody = {
   include: ['reasoning.encrypted_content'],
   max_output_tokens: 100,
   prompt_cache_key: 's1',
+  prompt_cache_retention: '24h',
 }
 
 const NOW = Date.parse('2026-09-23T12:00:00Z')
@@ -68,7 +71,162 @@ function collect(stream: AsyncIterable<StreamEvent>): Promise<StreamEvent[]> {
   return Array.fromAsync(stream)
 }
 
+/** A fetch behind a network that inspects HTTPS: Node's "fetch failed" and its cause (M56). */
+function untrusted(): Promise<Response> {
+  return Promise.reject(
+    new TypeError('fetch failed', {
+      cause: Object.assign(new Error('self-signed certificate in certificate chain'), {
+        code: 'SELF_SIGNED_CERT_IN_CHAIN',
+      }),
+    }),
+  )
+}
+
 describe('ModelApiClient', () => {
+  it('rechecks a scheduled paid gate before retrying a request', async () => {
+    const api = fakeModelApi()
+    api.script({ httpError: { status: 429 } }, { text: 'should not run' })
+    const key = 'LLM|1|secret'
+    let isOn = true
+    const onRequestStarted = vi.fn()
+    const client = new ModelApiClient({
+      fetch: api.fetch,
+      baseUrl: 'https://api.example.test/v1',
+      apiKey: () => Promise.resolve(key),
+      sleep: () => {
+        isOn = false
+        return Promise.resolve()
+      },
+      now: () => NOW,
+      random: () => 0,
+      log: new FakeLogOutputChannel(),
+    })
+    await expect(
+      collect(
+        client.streamResponse(body, new AbortController().signal, undefined, undefined, undefined, {
+          modelId: body.model,
+          keyDigest: createHash('sha256').update(key).digest('hex'),
+          isStillAllowed: () => isOn,
+          onRequestStarted,
+        }),
+      ),
+    ).rejects.toThrow(UI_TEXT.scheduleConfirmationExpired)
+    expect(api.responseBodies()).toHaveLength(1)
+    expect(onRequestStarted).toHaveBeenCalledOnce()
+  })
+
+  it('rechecks the scheduled key before a paid attempt guard on HTTP retry', async () => {
+    const api = fakeModelApi()
+    api.script({ httpError: { status: 429 } }, { text: 'must not run' })
+    const originalKey = 'LLM|1|secret'
+    let currentKey = originalKey
+    const admitted = vi.fn()
+    const onRequestStarted = vi.fn()
+    const client = new ModelApiClient({
+      fetch: api.fetch,
+      baseUrl: 'https://api.example.test/v1',
+      apiKey: () => Promise.resolve(currentKey),
+      sleep: () => {
+        currentKey = 'LLM|1|changed'
+        return Promise.resolve()
+      },
+      now: () => NOW,
+      random: () => 0,
+      log: new FakeLogOutputChannel(),
+    })
+    const originalDigest = createHash('sha256').update(originalKey).digest('hex')
+    await expect(
+      collect(
+        client.streamResponse(body, new AbortController().signal, undefined, undefined, admitted, {
+          modelId: body.model,
+          keyDigest: originalDigest,
+          isStillAllowed: () => true,
+          onRequestStarted,
+        }),
+      ),
+    ).rejects.toThrow(UI_TEXT.scheduleConfirmationExpired)
+    expect(api.responseBodies()).toHaveLength(1)
+    expect(admitted).toHaveBeenCalledExactlyOnceWith(originalDigest)
+    expect(onRequestStarted).toHaveBeenCalledOnce()
+  })
+
+  it('refuses a scheduled paid row when final admission aborts synchronously', async () => {
+    const api = fakeModelApi()
+    api.script({ text: 'must not run' })
+    const fetch = vi.fn(api.fetch)
+    const key = 'LLM|1|secret'
+    const stop = new AbortController()
+    const onRequestStarted = vi.fn()
+    const client = new ModelApiClient({
+      fetch,
+      baseUrl: 'https://api.example.test/v1',
+      apiKey: () => Promise.resolve(key),
+      sleep: () => Promise.resolve(),
+      now: () => NOW,
+      random: () => 0,
+      log: new FakeLogOutputChannel(),
+    })
+    await expect(
+      collect(
+        client.streamResponse(
+          body,
+          stop.signal,
+          undefined,
+          undefined,
+          () => {
+            stop.abort()
+          },
+          {
+            modelId: body.model,
+            keyDigest: createHash('sha256').update(key).digest('hex'),
+            isStillAllowed: () => true,
+            onRequestStarted,
+          },
+        ),
+      ),
+    ).rejects.toMatchObject({ status: 0 })
+    expect(onRequestStarted).not.toHaveBeenCalled()
+    expect(fetch).not.toHaveBeenCalled()
+  })
+
+  it('keeps a stopped scheduled run free while its SecretStorage key read settles', async () => {
+    const api = fakeModelApi()
+    const fetch = vi.fn(api.fetch)
+    const key = 'LLM|1|secret'
+    const keyStarted = Promise.withResolvers<undefined>()
+    const keyResult = Promise.withResolvers<string>()
+    const onRequestStarted = vi.fn()
+    const admitted = vi.fn()
+    const client = new ModelApiClient({
+      fetch,
+      baseUrl: 'https://api.example.test/v1',
+      apiKey: () => {
+        keyStarted.resolve(undefined)
+        return keyResult.promise
+      },
+      sleep: () => Promise.resolve(),
+      now: () => NOW,
+      random: () => 0,
+      log: new FakeLogOutputChannel(),
+    })
+    const stop = new AbortController()
+    const result = collect(
+      client.streamResponse(body, stop.signal, undefined, undefined, admitted, {
+        modelId: body.model,
+        keyDigest: createHash('sha256').update(key).digest('hex'),
+        isStillAllowed: () => true,
+        onRequestStarted,
+      }),
+    )
+    await keyStarted.promise
+    stop.abort()
+    keyResult.resolve(key)
+    await expect(result).rejects.toMatchObject({ status: 0 })
+    expect(onRequestStarted).not.toHaveBeenCalled()
+    expect(admitted).not.toHaveBeenCalled()
+    expect(fetch).not.toHaveBeenCalled()
+  })
+
   it('sends the bearer key and lists the catalogue ids', async () => {
     const { api, client } = setup()
     await expect(client.listModels()).resolves.toEqual([
@@ -246,6 +404,70 @@ describe('ModelApiClient', () => {
     expect(api.requests.filter((request) => request.path === '/responses')).toHaveLength(4 + 5)
   })
 
+  it('checks a child grant after a fresh key read before every HTTP retry', async () => {
+    const api = fakeModelApi()
+    const log = new FakeLogOutputChannel()
+    let key = 'LLM|1|secret'
+    const client = new ModelApiClient({
+      fetch: api.fetch,
+      baseUrl: 'https://api.example.test/v1',
+      apiKey: () => Promise.resolve(key),
+      sleep: () => {
+        key = 'LLM|1|changed'
+        return Promise.resolve()
+      },
+      now: () => NOW,
+      random: () => 0,
+      log,
+    })
+    api.script({ httpError: { status: 429 } }, { text: 'must not run' })
+    const keyDigests: (string | undefined)[] = []
+    await expect(
+      collect(
+        client.streamResponse(
+          body,
+          new AbortController().signal,
+          undefined,
+          undefined,
+          (digest) => {
+            keyDigests.push(digest)
+            if (keyDigests.length > 1) {
+              throw new Error('child consent expired')
+            }
+          },
+        ),
+      ),
+    ).rejects.toThrow('child consent expired')
+    expect(keyDigests).toHaveLength(2)
+    expect(keyDigests[0]).not.toBe(keyDigests[1])
+    expect(api.responseBodies()).toHaveLength(1)
+    expect(JSON.stringify(log)).not.toContain(key)
+  })
+
+  it('does not admit or send a stopped child after its key read completes', async () => {
+    const keyRead = Promise.withResolvers<string>()
+    const fetch = vi.fn<typeof globalThis.fetch>()
+    const admitted = vi.fn()
+    const client = new ModelApiClient({
+      fetch,
+      baseUrl: 'https://api.example.test/v1',
+      apiKey: () => keyRead.promise,
+      sleep: () => Promise.resolve(),
+      now: () => NOW,
+      random: () => 0,
+      log: new FakeLogOutputChannel(),
+    })
+    const stop = new AbortController()
+    const pending = collect(
+      client.streamResponse(body, stop.signal, undefined, undefined, admitted),
+    )
+    stop.abort()
+    keyRead.resolve('LLM|1|secret')
+    await expect(pending).rejects.toThrow()
+    expect(admitted).not.toHaveBeenCalled()
+    expect(fetch).not.toHaveBeenCalled()
+  })
+
   it('announces each retry and stops waiting when the turn is stopped (D25)', async () => {
     const { api, client } = setup()
     api.script({ httpError: { status: 503 } }, { text: 'finally' })
@@ -333,6 +555,49 @@ describe('ModelApiClient', () => {
     await expect(collect(client.streamResponse(body, controller.signal))).rejects.toMatchObject({
       status: 0,
     })
+  })
+
+  // M56 (PLAN.md D43): the causes under "fetch failed", as Node 24 throws them.
+  it('says which certificate store to check when the request never reached Meta', async () => {
+    const { client, sleeps, log } = setup('LLM|1|secret', untrusted)
+    const notices: RetryNotice[] = []
+    const failure = collect(
+      client.streamResponse(body, new AbortController().signal, (notice) => {
+        notices.push(notice)
+      }),
+    )
+    await expect(failure).rejects.toMatchObject({
+      status: 0,
+      message: expect.stringContaining(UI_TEXT.networkUntrustedCertificate),
+    })
+    await expect(failure).rejects.toMatchObject({
+      message: expect.stringContaining('(SELF_SIGNED_CERT_IN_CHAIN)'),
+    })
+    expect(sleeps).toHaveLength(MODEL_API_MAX_RETRIES)
+    expect(notices[0]?.reason).toContain(UI_TEXT.networkUntrustedCertificate)
+    expect(log.warn).toHaveBeenCalledWith(
+      expect.stringContaining(
+        'failed to send (fetch failed: self-signed certificate in certificate chain (SELF_SIGNED_CERT_IN_CHAIN))',
+      ),
+    )
+    // A billed request is not sent again, and says the same (M34).
+    const once = setup('LLM|1|secret', untrusted)
+    await expect(
+      once.client.createImage(
+        {
+          model: 'muse-image-1.0',
+          prompt: 'a cat',
+          n: 1,
+          size: '1024x1024',
+          response_format: 'b64_json',
+          output_format: 'png',
+        },
+        new AbortController().signal,
+      ),
+    ).rejects.toMatchObject({
+      message: expect.stringContaining(UI_TEXT.networkUntrustedCertificate),
+    })
+    expect(once.sleeps).toEqual([])
   })
 
   it('refuses without a key and fails on frames it cannot trust', async () => {

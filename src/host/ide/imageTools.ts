@@ -28,6 +28,8 @@ import type { Logger } from '../logger'
 export interface IdeImageToolsDeps {
   /** Whether the tools are offered now: image generation on and a key stored. */
   readonly isOffered: () => boolean
+  /** Changes before SecretStorage replaces a secondary key. */
+  readonly keyGeneration: () => number
   /** The workspace the images go into; undefined with no folder open. */
   readonly workspace: ImageWorkspace | undefined
   /** A Model API client that reads the stored key (never the subscription). */
@@ -71,13 +73,21 @@ async function callImageTool(
   workspace: ImageWorkspace,
   deps: IdeImageToolsDeps,
 ): Promise<string> {
+  const keyGeneration = deps.keyGeneration()
   const prepared = await prepareImageCall(shape.kind, args, workspace)
   if (!prepared.ok) {
     throw new Error(prepared.reason)
   }
+  const keyDigest = await deps.client.currentKeyDigest()
+  if (deps.keyGeneration() !== keyGeneration) {
+    throw new Error(MODEL_TEXT.imageAccountChanged)
+  }
   if (!(await deps.confirm(prepared.plan))) {
     deps.log.info(`Image ${prepared.plan.target.relative} declined in the price confirmation`)
     throw new Error(MODEL_TEXT.imageDeclined)
+  }
+  if (deps.keyGeneration() !== keyGeneration) {
+    throw new Error(MODEL_TEXT.imageAccountChanged)
   }
   const outcome = await runImageCall(prepared.plan, {
     client: deps.client,
@@ -85,6 +95,14 @@ async function callImageTool(
     // No turn to stop it from here: the request's own deadline ends the wait.
     signal: AbortSignal.timeout(IMAGE_REQUEST_TIMEOUT_MS),
     isStillOn: deps.isOffered,
+    admitAttempt: (currentDigest) => {
+      if (currentDigest !== keyDigest || deps.keyGeneration() !== keyGeneration) {
+        throw new Error(MODEL_TEXT.imageAccountChanged)
+      }
+      if (!deps.isOffered()) {
+        throw new Error(MODEL_TEXT.imageGenerationOff)
+      }
+    },
     onBilled: deps.onBilled,
   })
   if (outcome.failureReason !== undefined) {

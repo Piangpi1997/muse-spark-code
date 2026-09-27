@@ -12,6 +12,7 @@ import type {
   SessionEventListener,
   SessionPage,
   SkillSummary,
+  TurnSubmission,
 } from '../../../src/core/agent/agentBackend'
 import type { AgentEvent, ItemSnapshot, TodoItem } from '../../../src/shared/agentEvents'
 
@@ -23,8 +24,8 @@ function unsubscribe(): undefined {
   return undefined
 }
 
-function sameTurn(expectedTurnId: string): Promise<string> {
-  return Promise.resolve(expectedTurnId)
+function sameTurn(expectedTurnId: string): Promise<TurnSubmission> {
+  return Promise.resolve({ turnId: expectedTurnId, disposition: 'steered' })
 }
 
 function noOutput(request: { readonly itemId: string }): Promise<never> {

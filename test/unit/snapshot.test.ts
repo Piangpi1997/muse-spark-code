@@ -131,6 +131,17 @@ describe('the saved conversation (M25)', () => {
       sessionId: 'old',
     })
     expect(webviewStateOf(initialUiState, false)).toEqual({})
+    const side = throughJson(webviewStateOf({ ...shown, isSideChat: true }, false))
+    expect(parsePersistedState(side)).toEqual({ sessionId: 's1', sideChat: true })
+    expect(restoredUiState(side).isSideChat).toBe(true)
+  })
+
+  it('restores the browser upload epoch with or without a saved transcript', () => {
+    const updated = { ...shown, attachmentEpoch: 4 }
+    expect(restoredUiState(throughJson(webviewStateOf(updated, true))).attachmentEpoch).toBe(4)
+    const omitted = throughJson(webviewStateOf(updated, true, 100))
+    expect(omitted).toEqual({ sessionId: 's1', attachmentEpoch: 4, omittedSessionId: 's1' })
+    expect(restoredUiState(omitted).attachmentEpoch).toBe(4)
   })
 
   it('keeps only the session id past the size cap, and says so once the host confirms it', () => {

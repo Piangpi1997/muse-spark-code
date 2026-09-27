@@ -49,6 +49,7 @@ function writeCall(file: string, content: string, callId: string) {
 function setup(
   answer: (request: acp.RequestPermissionRequest) => acp.RequestPermissionResponse,
   paidFeatures: readonly AcpPaidFeature[] = [],
+  isTrusted = false,
 ) {
   const api = fakeModelApi()
   const secrets = memorySecrets()
@@ -59,7 +60,7 @@ function setup(
   const runtime = createRuntimeBackend({
     options: {
       backend: 'modelApi',
-      trustWorkspace: false,
+      trustWorkspace: isTrusted,
       museBinary: '',
       shellSandbox: 'auto',
       canBypass: false,
@@ -230,6 +231,18 @@ describe('the ACP agent on the Model API backend (M63)', () => {
     ])
     expect(JSON.stringify(t.api.responseBodies()[0]?.['tools'])).toContain('web_search')
     expect(t.log.info).toHaveBeenCalledWith('Paid use of webSearch: 1, 1 since the agent started')
+    await t.runtime.close()
+  })
+
+  it('offers Muse Code’s memory tools in a trusted folder, and never paid subagents (M48, M49)', async () => {
+    const t = setup(allowOnce, [], true)
+    t.api.script({ text: 'Noted.' })
+    await t.run((client) => promptOnce(client, t.workspace))
+    const offered = JSON.stringify(t.api.responseBodies()[0]?.['tools'])
+    for (const memory of ['read_memory', 'add_memory', 'edit_memory']) {
+      expect(offered).toContain(memory)
+    }
+    expect(offered).not.toContain('subagent_spawn')
     await t.runtime.close()
   })
 

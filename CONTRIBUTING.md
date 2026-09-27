@@ -21,6 +21,36 @@ sign-in gate explains what is missing.
 
 ## Before you open a pull request
 
+Use this order for a candidate branch:
+
+1. Integrate the planned milestones onto the current `main` in order. Resolve
+   conflicts and stage the candidate with no unstaged changes. Record its
+   `git write-tree` hash.
+2. Run `npm ci` and `npm run quality` on that exact staged tree. For Windows
+   behavior, exercise the same tree on the Windows 11 host and VM in parallel
+   and record both results; collect other platform evidence where needed.
+3. Have an independent agent review the staged diff and acceptance evidence.
+   Scan the staged changes for secrets too: local `security:secrets` scans
+   committed history, so it cannot see the index before commit. Fix findings,
+   restage, and repeat the full local gate, staged secret scan and affected
+   platform checks. Commit only after the final tree passes; verify the
+   commit's tree matches the tested `git write-tree` hash.
+4. Push the reviewed commit to its feature branch and open one pull request.
+   Its `pull_request` event starts the seven hosted jobs. Do not also dispatch
+   `ci.yml` manually for the same commit; `workflow_dispatch` remains available
+   when an explicit branch check is needed without a pull request.
+5. Use `gh run watch RUN_ID --exit-status`, then
+   `gh run view RUN_ID --json headSha,jobs`. Match `headSha` to the pushed
+   commit and check every job: Ubuntu, Windows and macOS quality; Linux and
+   Windows accessibility and VS Code integration; macOS dictation; packaging;
+   gitleaks; and semgrep. Fix failures and repeat from the exact-tree gate.
+   Later branch changes need a fresh pull-request run. The protected merge
+   does not repeat identical CI on a `main` push; release tags still build.
+6. Add the pull-request run ID, `headSha`, seven conclusions, independent
+   review, and any unproved platform or live gate to the PR proof once checks
+   finish. A printed success line without the process exit status is not a
+   gate result.
+
 - Run `npm run quality` and make it green. It runs every gate: formatting,
   ESLint (zero warnings), stylelint, type checks, dead-code and cycle
   detection, duplication, unit tests with coverage thresholds, the
@@ -117,10 +147,36 @@ fakes (`test/unit/helpers/fakeModelApi.ts` and `fakeVoiceServer.ts`, a
 small RFC 6455 server over Node's own `http`). A live check bills the
 owner's key: say what it will cost first and ask.
 
+## MCP servers on the Model API backend
+
+The MCP client (`src/core/backends/modelapi/mcp/`, PLAN.md D42) is tested
+against two fakes, never a real server: `test/unit/helpers/fakeMcpServer.mjs`,
+a stdio server the tests start as a child process through the extension's
+own spawner (its behaviour is chosen by `FAKE_MCP_*` variables in the
+entry's `env`), and `fakeMcpHttpServer.ts`, a streamable-HTTP server on
+loopback. A new MCP behaviour gets a case in one of them first.
+On Windows the real-process tests also compile the M27 job assembly in an
+isolated temporary folder. `fakeMcpBinary.mjs` checks raw stdio bytes,
+`fakeMcpOrphan.mjs` checks a finite detached child, and
+`fakeMcpLauncherParent.mjs` checks cleanup when the extension-side Node
+process exits, and `fakeMcpPrebindParent.mjs` checks death before the job
+helper binds that process. The withheld-GO test's marker must never start.
+The test-owned fixture PIDs must be gone after the suite.
+
 ## Reporting bugs and proposing features
 
 Use the issue templates. For a bug, run **Muse Spark: Diagnostics** from
-the Command Palette and paste the report (it contains no credentials).
+the Command Palette and paste the report (it contains no credentials; a
+proxy appears as set or not, never its address).
+
+## Networks
+
+The extension has no proxy client of its own: VS Code routes an
+extension's `fetch` and WebSocket through its proxy and certificate
+settings (PLAN.md D43). Code that makes a request uses the globals as they
+stand when it runs, never a copy taken at activation. Tests never need a
+proxy or a certificate: they use the failure shapes Node 24 was seen to
+throw (`docs/certification/m56.md`).
 
 ## Licence
 

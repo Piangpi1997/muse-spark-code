@@ -105,6 +105,7 @@ export class FakeMspServer implements DuplexTransport {
         typeof error.reason === 'string'
           ? { reason: error.reason }
           : {}
+      // And the rest of `data` (a rejection's `reason`, M56).
       const data =
         typeof error === 'object' &&
         error !== null &&
@@ -255,6 +256,20 @@ const COMMAND_REJECTED_CODE = -32_030
 /** A goal refusal with a reason Muse Code sent. */
 export function goalRefusal(reason: 'missing_goal' | 'invalid_goal_state'): () => never {
   return refusalOf('commandRejected', COMMAND_REJECTED_CODE, reason)
+}
+
+/**
+ * A request handler that rejects the command as Muse Code 1.3.0 does:
+ * `commandRejected`, not retryable, with this `reason` (M56).
+ */
+export function rejectionFor(reason: string): () => never {
+  return () => {
+    throw Object.assign(new Error(`command rejected: ${reason}`), {
+      kind: 'commandRejected',
+      code: COMMAND_REJECTED_CODE,
+      data: { retryable: false, reason },
+    })
+  }
 }
 
 /** Yields to the event loop enough times for a notification to be dispatched. */

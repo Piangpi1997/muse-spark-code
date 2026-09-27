@@ -14,13 +14,16 @@
 
 import { randomUUID } from 'node:crypto'
 import { constants } from 'node:fs'
-import { access, chmod, mkdir, realpath, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { access, mkdir, open, realpath, rename, rm, stat } from 'node:fs/promises'
 import path from 'node:path'
+import { isSamePath } from '../core/paths'
 import {
   ATOMIC_RENAME_ATTEMPTS,
   ATOMIC_RENAME_DELAY_MS,
   ATOMIC_TEMPORARY_SUFFIX,
+  MODEL_TEXT,
 } from '../shared/constants'
+import { canonicalPath } from './canonicalPath'
 
 export interface AtomicWriteOptions {
   /** Waits between rename attempts; injectable so tests do not sleep. */
@@ -29,6 +32,9 @@ export interface AtomicWriteOptions {
   readonly rename?: (from: string, to: string) => Promise<void>
   /** `fs.realpath`; tests stand in a symbolic link where the OS makes none without privilege. */
   readonly realPath?: (target: string) => Promise<string>
+  /** Model API tools require the operation to keep its approved canonical target. */
+  readonly expectedCanonicalPath?: string
+  readonly platform?: NodeJS.Platform
 }
 
 // The bits `chmod` sets: setuid, setgid, sticky and the three rwx triads.
@@ -54,10 +60,12 @@ export async function renameReplacing(
   from: string,
   to: string,
   options: AtomicWriteOptions,
+  beforeAttempt?: () => Promise<void>,
 ): Promise<void> {
   const renameFile = options.rename ?? rename
   for (let attempt = 1; ; attempt += 1) {
     try {
+      await beforeAttempt?.()
       await renameFile(from, to)
       return
     } catch (error: unknown) {
@@ -71,6 +79,21 @@ export async function renameReplacing(
       }
       await options.sleep(ATOMIC_RENAME_DELAY_MS * 2 ** (attempt - 1))
     }
+  }
+}
+
+/** Refuse a checked target whose parent was replaced by a link or junction. */
+async function assertBoundPath(
+  actualPath: string,
+  expectedPath: string,
+  options: AtomicWriteOptions,
+): Promise<void> {
+  if (options.expectedCanonicalPath === undefined) {
+    return
+  }
+  const canonical = await canonicalPath(actualPath)
+  if (!isSamePath(canonical, expectedPath, options.platform ?? process.platform)) {
+    throw new Error(MODEL_TEXT.pathChangedAfterApproval)
   }
 }
 
@@ -104,17 +127,56 @@ export async function writeFileAtomically(
   content: string,
   options: AtomicWriteOptions,
 ): Promise<void> {
+  await assertBoundPath(target, options.expectedCanonicalPath ?? target, options)
   await mkdir(path.dirname(target), { recursive: true })
+  await assertBoundPath(target, options.expectedCanonicalPath ?? target, options)
   const destination = await destinationOf(target, options)
+  await assertBoundPath(destination.path, options.expectedCanonicalPath ?? target, options)
   const temporary = `${destination.path}.${randomUUID()}${ATOMIC_TEMPORARY_SUFFIX}`
+  let temporaryIdentity: { readonly dev: number; readonly ino: number } | undefined
   try {
-    await writeFile(temporary, content, 'utf8')
-    if (destination.mode !== undefined) {
-      await chmod(temporary, destination.mode)
+    await assertBoundPath(temporary, temporary, options)
+    const handle = await open(temporary, 'wx')
+    try {
+      const held = await handle.stat()
+      // The content is written through this handle only after path and inode
+      // agree twice. Node cannot make a path-based rename handle-relative.
+      for (let sample = 0; sample < 2; sample += 1) {
+        await assertBoundPath(temporary, temporary, options)
+        const current = await stat(temporary)
+        if (held.dev !== current.dev || held.ino !== current.ino) {
+          throw new Error(MODEL_TEXT.pathChangedAfterApproval)
+        }
+      }
+      temporaryIdentity = { dev: held.dev, ino: held.ino }
+      await handle.writeFile(content, 'utf8')
+      if (destination.mode !== undefined) {
+        await handle.chmod(destination.mode)
+      }
+    } finally {
+      await handle.close()
     }
-    await renameReplacing(temporary, destination.path, options)
+    await renameReplacing(temporary, destination.path, options, async () => {
+      await assertBoundPath(temporary, temporary, options)
+      await assertBoundPath(destination.path, options.expectedCanonicalPath ?? target, options)
+      const current = await stat(temporary)
+      if (current.dev !== temporaryIdentity?.dev || current.ino !== temporaryIdentity.ino) {
+        throw new Error(MODEL_TEXT.pathChangedAfterApproval)
+      }
+      await assertBoundPath(temporary, temporary, options)
+      await assertBoundPath(destination.path, options.expectedCanonicalPath ?? target, options)
+    })
   } catch (error: unknown) {
-    await rm(temporary, { force: true })
+    // A retargeted directory must not make cleanup delete a different file.
+    try {
+      await assertBoundPath(temporary, temporary, options)
+      const current = await stat(temporary)
+      if (current.dev === temporaryIdentity?.dev && current.ino === temporaryIdentity.ino) {
+        await rm(temporary, { force: true })
+      }
+    } catch {
+      // Preserve the original write failure; a moved temp may be left behind.
+    }
     throw error
   }
 }

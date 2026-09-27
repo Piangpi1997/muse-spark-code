@@ -39,13 +39,38 @@ export const EN = {
   stopTitle: 'Stop',
   signInTitle: 'Sign in to Muse Spark',
   signInBrowser: 'Sign in with your Meta account',
-  signInBrowserDetail: 'Opens a terminal running `muse login`; approve the code in your browser.',
+  signInBrowserDetail: 'Shows an approval code here; open the sign-in page to approve it.',
   signInApiKey: 'Use a Model API key',
   signInApiKeyDetail: 'Paste a key from dev.meta.ai; it is stored in VS Code secret storage.',
   installTitle: 'Muse Code is not installed',
   installDetail:
-    'The Muse Code CLI hosts conversations for this extension. Install it, then reload.',
+    'The Muse Code CLI hosts conversations for this extension. Install it here, then sign in.',
   installAction: 'Open install instructions',
+  installStartAction: 'Install Muse Code',
+  installConfirmDetail:
+    'Meta publishes this command. It downloads and runs an installer on this machine:',
+  installConfirmAction: 'Run installer',
+  installCancelAction: 'Cancel',
+  installWaiting: 'Installing Muse Code in the terminal…',
+  installTimedOut: 'Muse Code was not found. Check the terminal output, then check again.',
+  installStartFailed:
+    'The installer terminal could not open. Try again or use the install instructions.',
+  deviceCodePrompt: 'Enter this code in your browser:',
+  deviceCodeOpenAction: 'Open sign-in page',
+  deviceCodeCancelAction: 'Cancel sign-in',
+  deviceCodeWaiting: 'Waiting for browser approval…',
+  signInCancelled: 'Sign-in cancelled.',
+  signInFailed: 'Could not start in-panel sign-in. Check Muse Code and try again.',
+  signOutPending:
+    'Sign-out is in progress or credentials remain. Finish Muse Code logout or remove META_API_KEY, then check again.',
+  signOutTerminalFailed:
+    'Extension session ended, but its logout terminal could not open. Run muse logout or remove META_API_KEY, then check again.',
+  signOutHoldFailed:
+    'Could not save sign-out protection. Extension session ended; remove META_API_KEY and finish muse logout before reopening VS Code.',
+  signOutKeyClearFailed:
+    'Could not clear the stored Model API key. The extension host stopped; check VS Code secret storage and sign out again.',
+  signOutStopFailed:
+    'Backend shutdown failed. This window is gated; close VS Code and check credentials before reopening.',
   retryAction: 'Check again',
   apiKeyPrompt: 'Meta Model API key',
   apiKeyPlaceholder: 'LLM|1234567890|…',
@@ -100,6 +125,8 @@ export const EN = {
   editAutomaticallyResolver: 'Edit automatically',
   focusViewBadge: 'Focus view',
   historyTitle: 'Session history',
+  sideChatTitle: 'Side chat',
+  openSideChat: 'Side chat',
   newConversationTitle: 'New conversation',
   sendTitle: 'Send',
   // Command palette ("/" menu).
@@ -209,8 +236,46 @@ export const EN = {
   mcpStdioPlaceholder: 'A local server needs no sign-in; edit its entry in the settings file',
   mcpCliMissing: 'Signing in to an MCP server needs the Muse Code CLI, which is not installed.',
   mcpTerminalName: 'Muse Code MCP sign-in',
+  // MCP servers on the Model API backend (M50, D42).
+  mcpItemDetailModelApi: 'The servers in Muse Code’s settings, run by this window',
+  mcpTitleModelApi: 'MCP servers on the Model API backend',
+  mcpRequiredModelApi: 'required (a message stops if it is not running)',
+  mcpStateNotStarted: 'Starts with your next message',
+  mcpStateStarting: 'Starting…',
+  mcpStateConnected: forms({ one: 'Connected: {count} tool', other: 'Connected: {count} tools' }),
+  mcpStateUnoffered: forms({
+    one: '{count} more not offered',
+    other: '{count} more not offered',
+  }),
+  mcpStateFailed: 'Not running: {reason}',
+  mcpStateRestricted: 'Not started: this workspace is in Restricted Mode',
+  mcpStateNotLoaded: 'Not loaded: see the warning',
+  mcpBuiltIn: 'built in',
+  mcpBuiltInDetail:
+    'The extension’s own getDiagnostics: the errors and warnings in VS Code’s Problems panel',
+  mcpRestartModelApi: 'Restart the MCP servers',
+  mcpRestartModelApiDetail:
+    'A reply that is running stops; the servers start again with your next message, from the settings as they are then',
+  mcpRestartedModelApi:
+    'The MCP servers stopped; your next message starts them from the settings as they are now.',
+  mcpShowLog: 'Show the log',
+  mcpShowLogDetail: 'What the server wrote to stderr, and why it stopped',
+  mcpModelApiPlaceholder:
+    'This window runs the server itself; a sign-in with muse mcp login is for Muse Code only',
+  mcpServerUnavailable: 'MCP server {name} is not available: {reason}',
+  mcpRequiredFailed:
+    'MCP server {name} is required and is not running: {reason}. Fix its entry in Muse Code’s settings, or set "mode": "optional", then restart the MCP servers (MCP servers… in the palette).',
+  mcpNoServersKeys:
+    'No MCP server is loaded: Muse Code’s settings hold both “mcpServers” and “mcp_servers”. Keep one key.',
+  mcpNoServersMode:
+    'No MCP server is loaded: {servers} set both “required” and “mode”. Keep only “mode”.',
+  mcpNoServersUnreadable:
+    'No MCP server is loaded: Muse Code’s settings file could not be read ({reason}).',
   hooksTitle: 'Muse Code hooks',
+  hooksTitleModelApi: 'Model API hooks',
   hooksWarning: 'Hooks run through your shell, outside Muse Code’s sandbox and approvals',
+  hooksModelApiWarning:
+    'Hooks run through your shell outside tool approvals. Turn on museSpark.modelApiHooks only after reviewing these sources.',
   hooksProject: 'Project hooks',
   hooksProjectFile: '.muse/hooks.json',
   hooksProjectNone: 'This workspace has no .muse/hooks.json.',
@@ -229,6 +294,34 @@ export const EN = {
   hooksManagedSet: 'Set by your settings; whoever controls this file controls what runs',
   hooksManagedMissing: 'Your settings name this file, but it does not exist.',
   hooksDocs: 'Hooks in Muse Code (documentation)',
+  // Memory (M49, D41): the notes Muse Code keeps, on both backends.
+  memoryItem: 'Memory…',
+  memoryItemDetail: 'The notes Muse keeps for later sessions',
+  memoryTitle: 'Muse memory',
+  memoryNone: 'No memory notes yet for this workspace',
+  memoryCount: forms({ one: '{count} memory note', other: '{count} memory notes' }),
+  memoryIndexDetail: 'The index Muse reads at the start of every session',
+  memoryNewNote: 'New note…',
+  memoryNewNoteDetail: 'A Markdown note Muse reads in later sessions, listed in MEMORY.md',
+  memoryDocs: 'Memory in Muse Code (documentation)',
+  memoryOpen: 'Open',
+  memoryDelete: 'Delete…',
+  memoryDeleteDetail: 'Moves the note to the trash and takes its line out of MEMORY.md',
+  memoryDeleteIndexDetail: 'Moves the index to the trash; the notes stay',
+  memoryDeleteConfirm: 'Delete the memory note {path}?',
+  memoryDeleteConfirmDetail:
+    'It moves to the trash. Muse no longer sees it from its next session on.',
+  memoryDeleteAction: 'Delete',
+  memoryDeleted: 'Deleted {path}',
+  memoryNewTitle: 'New memory note',
+  memoryScopePlaceholder: 'Where the note lives',
+  memoryNamePrompt: 'Name the note',
+  memoryNamePlaceholder: 'deploy-steps.md',
+  memoryNameInvalid: 'Muse Code does not accept that name',
+  memoryNameTaken: 'A note with that name already exists.',
+  memoryDescriptionPrompt: 'What is the note about? One line for MEMORY.md (optional)',
+  memoryDescriptionPlaceholder: 'How we deploy to staging',
+  memoryFailed: 'The memory could not be changed',
   // Worktrees (M32, D30).
   newWorktreeItem: 'New worktree…',
   newWorktreeDetail: 'A new branch in its own folder and window; this checkout is untouched',
@@ -285,8 +378,35 @@ export const EN = {
   removeAttachment: 'Remove',
   attachmentTooLarge: 'Images must be 10 MB or smaller.',
   attachmentUnsupported: 'Only PNG, JPEG, GIF and WebP images can be attached.',
-  attachmentLimit: 'At most 20 images per message.',
-  attachmentUnreadable: 'The image could not be read.',
+  attachmentLimit: 'At most 20 files per message.',
+  attachmentUnreadable: 'The file could not be read.',
+  documentTooLarge: 'PDFs must be 32 MB or smaller.',
+  documentsOverBudget: 'Files must total at most 50 images and PDF pages per message.',
+  mediaTotalTooLarge: 'Attached images and PDFs exceed the combined media size limit.',
+  olderMediaOmitted:
+    'Older images or PDFs were left out of this request to stay within media limits. They remain in local history.',
+  pdfNeedsModelApi: 'PDF attachments require the Model API backend.',
+  invalidPdf: 'This file is named as a PDF but is not a valid PDF.',
+  pdfLabel: 'PDF',
+  // Model API read_file rows. The separate MODEL_TEXT result stays English.
+  toolReadPdf: 'Read PDF `{path}` ({pages}, {bytes} bytes)',
+  toolReadPdfPages: forms({ one: '{count} page', other: '{count} pages' }),
+  toolReadPdfPagesUnknown: 'page count unknown',
+  toolReadImage: 'Read image `{path}` ({mediaType}, {width}×{height}, {bytes} bytes)',
+  toolReadPdfInvalid: 'The file `{path}` has a PDF name but no PDF header.',
+  toolReadImageInvalid: 'The file `{path}` is not a supported image.',
+  toolVisualFileMissing: 'The file `{path}` was not found.',
+  toolVisualReadFailed: 'The file `{path}` could not be read.',
+  textFileTooLarge: 'Text files must be 1 MB or smaller.',
+  textFilesOverBudget:
+    'Attachments fill Muse Code’s message limit. Remove an attachment or shorten the message.',
+  textFilesOverModelApiBudget:
+    'Text attachments exceed the Model API context allowance. Remove a file or attach a smaller excerpt.',
+  textFileInvalid: 'This file is not valid UTF-8 text.',
+  textFilePrivate: 'This private file cannot be attached.',
+  textFileLabel: 'Text',
+  binaryFileUnsupported:
+    'This binary file type cannot be attached. Use a PDF, image or UTF-8 text file.',
   // Transcript rows.
   thoughtFor: 'Thought for {duration}',
   thinkingNow: 'Thinking',
@@ -423,6 +543,7 @@ export const EN = {
   // The user card's menu (Claude Code's rewind button): fork, rewind, both.
   rewindMenuLabel: 'Fork or rewind',
   forkFromHere: 'Fork conversation from here',
+  rewindConversationToHere: 'Rewind conversation to here',
   rewindCodeToHere: 'Rewind code to here',
   forkAndRewind: 'Fork conversation and rewind code',
   rewindNothing: 'No edits after this message to rewind.',
@@ -431,6 +552,8 @@ export const EN = {
     other: 'Code rewound to this message ({count} edits)',
   }),
   forkedNotice: 'Forked into a new conversation.',
+  rewindImagesUnavailable: 'Some images from this message could not be restored.',
+  rewindBeforeCompaction: 'Cannot rewind before the latest compaction.',
   resumedNotice: 'Resumed',
   historyUnavailable: 'The conversation history could not be loaded',
   historyNotServed: 'The earlier messages of this conversation could not be shown',
@@ -455,6 +578,7 @@ export const EN = {
   usagePercentUsed: '{percent} used',
   usageResetsIn: 'resets in {duration}',
   usageAsOf: 'as of {time}',
+  usageAwaitingFreshReport: 'Waiting for a fresh Muse Code usage report.',
   usageNoSubscription:
     'No subscription usage reported yet. Muse Code reports it after the first turn of a conversation.',
   usageModelApiNote:
@@ -541,6 +665,10 @@ export const EN = {
   compactionDone: 'Context compacted',
   resumeFailed: 'Could not resume the conversation',
   forkFailed: 'Could not fork the conversation',
+  rewindConversationFailed: 'Could not rewind the conversation',
+  sideChatFailed: 'Could not open a side chat',
+  sideChatPlanOnly: 'Side chats stay in Plan mode.',
+  sideChatSessionOnly: 'This side chat can open only side-chat conversations.',
   renameFailed: 'Could not rename the conversation',
   sandboxOffProfileNotice:
     "This workspace is under your user profile, where Muse Code's Windows sandbox cannot run commands, so this window runs shell commands without the sandbox, directly as you. Approval prompts still apply. Setting: museSpark.shellSandbox.",
@@ -566,6 +694,8 @@ export const EN = {
     cancelled: 'cancelled',
     interrupted: 'interrupted',
     resultReady: 'result ready',
+    queued: 'queued',
+    closed: 'closed',
   },
   agentTokens: '{tokens} tokens',
   agentContextTokens: '{tokens} tokens in context',
@@ -579,13 +709,14 @@ export const EN = {
   agentStop: 'Stop',
   agentResume: 'Resume',
   agentClose: 'Close agent',
+  agentReopen: 'Reopen agent',
+  agentReadResult: 'Mark result read',
   agentSendMessage: 'Send message',
   agentFollowup: 'Follow-up task',
   agentMessagePlaceholder: 'A note for this agent, or its next task…',
   agentControlsLabel: 'Agent controls',
   agentControlFailed: 'The agent command was refused',
   agentResultText: 'Result',
-  subagentsUnsupported: 'The Model API backend runs no subagents',
   agentNoTranscript: 'No transcript for this agent.',
   agentTranscriptLabel: 'Agent transcript',
   agentDelegationOff:
@@ -636,6 +767,8 @@ export const EN = {
   backgroundBadge: 'background',
   subagentRowLabel: 'Agent',
   usageAccount: 'Account',
+  usageAddModelApiKey: 'Add Model API key',
+  usageReplaceModelApiKey: 'Replace Model API key',
   usageAuthMethod: 'Auth method',
   usageAuthCli: 'Meta account (Muse Code CLI)',
   usageAuthKey: 'Model API key',
@@ -749,6 +882,7 @@ export const EN = {
     cron_create: 'Schedule prompt',
     cron_list: 'Scheduled prompts',
     cron_delete: 'Cancel scheduled prompt',
+    scheduled_prompt: 'Run scheduled prompt',
     web_fetch: 'Fetch page',
     work_stop: 'Stop work',
     work_status: 'Work status',
@@ -840,6 +974,49 @@ export const EN = {
   scheduleNextRun: 'Next run {date}',
   scheduleFired: forms({ one: 'Ran {count} time', other: 'Ran {count} times' }),
   scheduleNone: 'No scheduled prompts',
+  // M52: extension-owned schedules on the Model API backend. Muse Code's cron
+  // jobs stay model-mediated until its MSP exposes scheduler verbs.
+  loopItem: '/loop',
+  loopItemDetail: 'Schedule a prompt in this Model API conversation',
+  loopSyntax:
+    'Use /loop 10m <prompt>, /loop "0 9 * * 1-5" <prompt>, /loop list, or /loop cancel <id>.',
+  schedulePanelLabel: 'Scheduled prompts for this conversation',
+  schedulePanelTitle: 'Scheduled prompts',
+  schedulePanelScope: 'Model API · this workspace, conversation and key',
+  scheduleEvery: 'Every {duration}',
+  schedulePending: 'Due · waiting for you to run it',
+  scheduleRun: 'Run now (paid)',
+  scheduleCancel: 'Cancel schedule',
+  scheduleEnablePaid: 'Enable paid runs',
+  scheduleRunJob: 'Run scheduled prompt {id}',
+  scheduleEnableJob: 'Enable paid runs for scheduled prompt {id}',
+  scheduleCancelJob: 'Cancel scheduled prompt {id}',
+  scheduleCreated: 'Scheduled prompt {id} created. It will wait for you when due.',
+  scheduleCancelled: 'Scheduled prompt {id} cancelled.',
+  scheduleUnknown: 'Scheduled prompt {id} was not found in this conversation and key.',
+  scheduleCommandFailed: 'The schedule command failed',
+  scheduleModelApiOnly:
+    'These schedules belong to the Model API backend. Ask Muse Code to manage its own cron jobs in chat.',
+  scheduleAccountMissing: 'Store a Model API key to use schedules.',
+  scheduleStorageMissing: 'Workspace storage is unavailable; this schedule cannot be saved.',
+  scheduleInvalid: 'The scheduled prompt or cadence is invalid.',
+  scheduleTooMany: 'This conversation has reached its scheduled prompt limit.',
+  scheduleNoFire: 'This cadence has no run within the seven-day schedule lifetime.',
+  schedulePaidOff:
+    'Turn on Scheduled prompts (paid) and accept its price before running a due prompt.',
+  scheduleBusy: 'Wait for the current turn to finish before running this prompt.',
+  scheduleNotDue: 'This scheduled prompt is not due or is no longer available.',
+  scheduleAlreadyRun: 'This occurrence was already admitted in another window or before a restart.',
+  scheduleRunStarted:
+    'Started after your price confirmation. Model API tokens are billed to your key.',
+  scheduleRunConfirmTitle: 'Run this scheduled prompt with {model}?',
+  scheduleRunConfirmPrompt: 'Prompt: {prompt}',
+  scheduleRunConfirmPrice: 'Billed to your Model API key: {price}. Total varies with tokens used.',
+  scheduleRunConfirmExtras:
+    'Other enabled paid tools may add their own charges. Bypass does not skip this confirmation.',
+  scheduleRunConfirmAccept: 'Run this time',
+  scheduleConfirmationExpired:
+    'The model, conversation or prompt changed during confirmation. Review the schedule and choose Run again.',
   webNoResults: 'No results',
   backgroundRunning: 'Running in the background',
   // M46 (PLAN.md D39): moving a running command to the background, stopping
@@ -1094,9 +1271,18 @@ export const EN = {
   paidWebSearchName: 'Web search',
   paidImageGenerationName: 'Images',
   paidVoiceName: 'Muse Voice',
+  paidScheduledName: 'Scheduled prompts',
+  paidSubagentsName: 'Subagents',
+  paidSubagentRates:
+    '{model}: {input} input, {cached} cached input, {output} output per million tokens; up to {limit} requests per task, including retries.',
+  paidSubagentTaskTitle: 'Approve paid task for {role}?',
+  paidSubagentTaskDetail:
+    '{objective}\n\n{price}\n\nBilled to your Model API key. Actual cost depends on tokens used. Other enabled paid tools are charged separately. This approval covers this task only.',
+  approvalRunSubagent: 'Run paid subagent task {action}?',
   paidWebSearchPrice: '{price} per 1,000 searches',
   paidImagePrice: '{price} per image',
   paidVoicePrice: '{price} per hour of audio',
+  paidScheduledPrice: '{input}/1M input, {cached}/1M cached input, {output}/1M output tokens',
   // The confirmation shown when a paid feature is turned on; {feature} is its name.
   paidConfirmTitle: 'Turn on {feature}?',
   paidConfirmWebSearch:
@@ -1105,6 +1291,10 @@ export const EN = {
     'The model may create image files in the workspace, or edit workspace images into new ones. Each image is billed to your Model API key at {price}, and you are asked before every one, in every permission mode. Used on the Model API backend, and on the Muse Code backend while a key is stored (never billed to the subscription).',
   paidConfirmVoice:
     'The microphone will send what you record to Meta’s Muse Voice Transcribe instead of your computer’s own recogniser, billed to your Model API key at {price}. Used on the Model API backend, and on the Muse Code backend while a key is stored.',
+  paidConfirmScheduled:
+    'A due scheduled prompt waits for you to run it. Each run asks again before any Model API call. {price}. Billed to your Model API key; total varies with tokens used.',
+  paidConfirmSubagents:
+    'Child agents make additional requests billed to your Model API key. {price} Each new task asks for approval in every permission mode, including Bypass. Actual cost depends on tokens used; other paid tools cost extra. Model API backend only.',
   paidConfirmAccept: 'Turn on',
   // The composer's badge while a paid feature is on; {features} lists their names.
   paidBadge: 'Paid: {features}',
@@ -1122,9 +1312,37 @@ export const EN = {
   usagePaidSearches: forms({ one: '{count} search', other: '{count} searches' }),
   usagePaidImages: forms({ one: '{count} image', other: '{count} images' }),
   usagePaidAudio: '{duration} of audio',
+  usagePaidSubagentRequests: forms({
+    one: '{count} child request',
+    other: '{count} child requests',
+  }),
+  usagePaidSubagentUnknown: forms({
+    one: '{count} request has no reported cost yet',
+    other: '{count} requests have no reported cost yet',
+  }),
+  usagePaidSubagentSubset:
+    'Reported child costs are included in their parent conversations’ token estimates. They are not added to the extra-feature total. Requests without reported usage may still be billed.',
+  usagePaidExtraTotal: 'Estimated extra-feature total',
+  usagePaidSubagentReported: 'Reported token estimate: {cost}',
   usagePaidTotal: 'Estimated paid total',
+  usagePaidScheduled: forms({ one: '{count} scheduled run', other: '{count} scheduled runs' }),
+  usageScheduledIncluded: 'token cost included above',
   usagePaidNote:
     'Estimated at Meta’s published prices, read on {date}, for this window since it opened; the dev.meta.ai dashboard is the bill.',
+  subagentPaidOff:
+    'Paid subagents are off. Enable them and accept the price before starting a child task.',
+  subagentConsentDeclined: 'The paid child task was not approved.',
+  subagentRequestLimit:
+    'The child task reached its approved limit of {limit} requests, including retries.',
+  subagentKeyChanged:
+    'The Model API key changed after approval. Approve a new child task to continue.',
+  subagentModelChanged: 'The model changed after approval. Approve a new child task to continue.',
+  subagentGoalEnded:
+    'The originating goal is no longer active. The child task cannot make another request.',
+  subagentTariffUnknown:
+    'No verified price is available for this model. The child task cannot start.',
+  subagentPlanMode: 'Plan mode refuses paid child tasks; switch mode and approve a new task.',
+  subagentWebSearchOff: 'Web search was turned off before this child request; no request was sent.',
   webSearchFailed: 'The search failed',
   // Under a reply that cites web pages (M33).
   citationsHeading: 'Sources',
@@ -1145,6 +1363,20 @@ export const EN = {
     'Muse Voice needs WebSocket support in VS Code’s extension host, which this version does not have.',
   museVoiceNoRecorder:
     'Muse Voice on Linux records with arecord (ALSA) or parec (PulseAudio); neither was found on PATH.',
+  // M56 (PLAN.md D43): why a Model API request never reached Meta; the
+  // technical detail follows in parentheses.
+  networkUntrustedCertificate:
+    'The server’s certificate is not trusted. If your network inspects HTTPS, install its root certificate in the operating system’s certificate store (VS Code reads it while http.systemCertificates is on), or turn http.systemCertificates off and name the root’s file in NODE_EXTRA_CA_CERTS before VS Code starts.',
+  networkProxyCredentials:
+    'The proxy asked for credentials and did not accept the ones it got. Check http.proxy and http.proxyAuthorization, or the credentials VS Code asked you for.',
+  // {status}: the HTTP status the proxy answered with.
+  networkProxyRefused:
+    'The proxy refused the connection (HTTP {status}). Check that it allows api.meta.ai.',
+  networkUnreachable:
+    'Meta’s server could not be reached. Check the network connection, and http.proxy and http.proxySupport if you use a proxy.',
+  // Muse Code refused a permission mode above the ceiling its configuration sets.
+  approvalModeCeiling:
+    'Muse Code’s configuration (its default permission profile, or a policy your administrator manages) does not allow this permission mode. Choose a stricter one, such as Manual, and send again.',
 }
 
 /** The shape every table has: English's keys, with any language's plural forms. */

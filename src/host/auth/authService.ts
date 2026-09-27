@@ -10,15 +10,14 @@ import { selectBackend } from '../../core/backendSelection'
 import type { BackendKind } from '../../core/agent/agentBackend'
 import {
   type BackendMode,
-  CREDENTIAL_POLL_INTERVAL_MS,
-  CREDENTIAL_POLL_TIMEOUT_MS,
-  MUSE_LOGIN_ARGS,
+  MUSE_INSTALL_POLL_INTERVAL_MS,
+  MUSE_INSTALL_TIMEOUT_MS,
   MUSE_LOGOUT_ARGS,
   UI_TEXT,
 } from '../../shared/constants'
 import type { AuthStatus, HostToWebviewMessage, SignInMethod } from '../../shared/protocol'
 import type { Logger } from '../logger'
-import { signInWithBrowser } from './browserSignIn'
+import type { DeviceSignInOutcome } from './deviceSignIn'
 import type { CredentialStore } from './credentialStore'
 
 export interface AuthBackendFacts {
@@ -42,7 +41,18 @@ export interface AuthBackendFacts {
 export interface AuthServiceDeps {
   readonly backend: AuthBackendFacts
   readonly credentials: CredentialStore
+  /** Extension-private, credential-free state retained across activation. */
+  readonly logoutHold: {
+    readonly get: () => boolean
+    readonly set: (isHeld: boolean) => PromiseLike<void>
+  }
   readonly runInTerminal: (cliPath: string, args: readonly string[]) => void
+  readonly installCommand: string
+  readonly runInstallerInTerminal: () => void
+  readonly runDeviceSignIn: (
+    signal: AbortSignal,
+    onCode: (url: string, code: string) => void,
+  ) => Promise<DeviceSignInOutcome>
   /** Returns the pasted key, or undefined when the user dismissed the box. */
   readonly promptForApiKey: () => Promise<string | undefined>
   readonly broadcast: (message: HostToWebviewMessage) => void
@@ -58,6 +68,11 @@ export interface AuthSnapshot {
   readonly backend?: BackendKind | undefined
   /** The sign-in paths the gate offers. */
   readonly methods?: readonly SignInMethod[] | undefined
+  readonly verificationUrl?: string | undefined
+  readonly userCode?: string | undefined
+  readonly hasCli?: boolean | undefined
+  readonly hasCliSession?: boolean | undefined
+  readonly installState?: 'running' | 'failed' | undefined
 }
 
 /**
@@ -67,8 +82,11 @@ export interface AuthSnapshot {
 export type AuthPort = Pick<
   AuthService,
   | 'current'
+  | 'backend'
   | 'toMessage'
   | 'signIn'
+  | 'installMuseCode'
+  | 'cancelSignIn'
   | 'signOut'
   | 'refresh'
   | 'markAuthRequired'
@@ -89,9 +107,51 @@ function signInLine(snapshot: AuthSnapshot): string {
 export class AuthService {
   private snapshot: AuthSnapshot = { status: 'checking', detail: undefined }
   /** The browser sign-in in flight: a second click joins it (PLAN.md D25). */
-  private browserSignIn: Promise<AuthSnapshot> | undefined
+  private deviceSignIn: Promise<AuthSnapshot> | undefined
+  private installPromise: Promise<AuthSnapshot> | undefined
+  /** Every panel joins one sign-out; the hold cannot be released by an earlier caller. */
+  private signOutPromise: Promise<AuthSnapshot> | undefined
+  private deviceAbort: AbortController | undefined
+  /** A sign-out invalidates key prompts already open in any surface. */
+  private signOutEpoch = 0
+  /** Invalidates selectors across a same-kind sign-out/sign-in or key replacement. */
+  private admissionGenerationValue = 0
+  /** Sign-out waits for accepted key writes and backend restarts before ending sessions. */
+  private readonly keyActivations = new Set<Promise<AuthSnapshot>>()
+  private isLogoutHeld: boolean
+  private isSigningOut = false
+  private isLogoutPersistenceFailed = false
 
-  public constructor(private readonly deps: AuthServiceDeps) {}
+  public constructor(private readonly deps: AuthServiceDeps) {
+    this.isLogoutHeld = deps.logoutHold.get()
+  }
+
+  private async setLogoutHold(isHeld: boolean): Promise<boolean> {
+    this.isLogoutHeld = isHeld
+    try {
+      await this.deps.logoutHold.set(isHeld)
+      this.isLogoutPersistenceFailed = false
+      return true
+    } catch {
+      this.isLogoutPersistenceFailed = true
+      this.deps.log.warn('Muse Code sign-out state could not be saved')
+      return false
+    }
+  }
+
+  private logoutDetail(): string {
+    return this.isLogoutPersistenceFailed ? UI_TEXT.signOutHoldFailed : UI_TEXT.signOutPending
+  }
+
+  private async stopBackendForSignOut(): Promise<boolean> {
+    try {
+      await this.deps.backend.restartBackend(true)
+      return true
+    } catch {
+      this.deps.log.warn('Muse Code backend could not stop during sign-out')
+      return false
+    }
+  }
 
   private set(snapshot: AuthSnapshot): AuthSnapshot {
     const previous = this.snapshot
@@ -106,52 +166,385 @@ export class AuthService {
   /** The backend selection from the current facts. */
   private async choose() {
     const cli = this.deps.backend.resolveCli()
+    const hasCliSession =
+      this.deps.backend.credentialFileExists() || this.deps.backend.hasEnvironmentKey()
     return {
       cli,
+      hasCliSession,
       choice: selectBackend({
         setting: this.deps.backend.getBackendMode(),
         hasCli: cli.ok,
-        hasCliSession:
-          this.deps.backend.credentialFileExists() || this.deps.backend.hasEnvironmentKey(),
+        hasCliSession,
         hasStoredKey: (await this.deps.credentials.getApiKey()) !== undefined,
       }),
     }
   }
 
-  /** One login terminal and one watch, however often the button is pressed (D25). */
-  private async joinBrowserSignIn(): Promise<AuthSnapshot> {
-    if (this.browserSignIn !== undefined) {
-      return await this.browserSignIn
+  /** One device-code sign-in process, however often the button is pressed (D25). */
+  private async joinDeviceSignIn(): Promise<AuthSnapshot> {
+    if (this.deviceSignIn !== undefined) {
+      return await this.deviceSignIn
     }
-    this.browserSignIn = this.signInWithCli()
+    this.deviceSignIn = this.signInWithCli()
     try {
-      return await this.browserSignIn
+      return await this.deviceSignIn
     } finally {
-      this.browserSignIn = undefined
+      this.deviceSignIn = undefined
     }
   }
 
   private async signInWithCli(): Promise<AuthSnapshot> {
+    const initial = this.snapshot
+    const epoch = this.signOutEpoch
+    const wasLogoutHeld = this.isLogoutHeld
+    const beforeCredential = wasLogoutHeld
+      ? this.deps.backend.credentialFileModifiedAt()
+      : undefined
     const cli = this.deps.backend.resolveCli()
     if (!cli.ok) {
-      return this.set({ ...this.snapshot, status: 'noCli', detail: cli.reason })
+      return await this.finishFailedCliSignIn(initial, 'noCli', cli.reason, 'warning')
     }
+    const abort = new AbortController()
+    this.deviceAbort = abort
     this.set({ ...this.snapshot, status: 'signingIn', detail: UI_TEXT.signInWaiting })
-    const outcome = await signInWithBrowser({
-      runLogin: () => {
-        this.deps.runInTerminal(cli.cliPath, MUSE_LOGIN_ARGS)
-      },
-      credentialFileModifiedAt: () => this.deps.backend.credentialFileModifiedAt(),
-      sleep: this.deps.sleep,
-      now: this.deps.now,
-      pollIntervalMs: CREDENTIAL_POLL_INTERVAL_MS,
-      timeoutMs: CREDENTIAL_POLL_TIMEOUT_MS,
-    })
-    if (outcome === 'timedOut') {
-      return this.set({ ...this.snapshot, status: 'signedOut', detail: UI_TEXT.signInTimedOut })
+    try {
+      const outcome = await this.deps.runDeviceSignIn(abort.signal, (url, code) => {
+        if (abort.signal.aborted) {
+          return
+        }
+        this.set({ ...this.snapshot, verificationUrl: url, userCode: code })
+      })
+      if (outcome === 'cancelled') {
+        return await this.finishFailedCliSignIn(
+          initial,
+          'signedOut',
+          UI_TEXT.signInCancelled,
+          'info',
+        )
+      }
+      if (outcome === 'timedOut') {
+        return await this.finishFailedCliSignIn(
+          initial,
+          'signedOut',
+          UI_TEXT.signInTimedOut,
+          'warning',
+        )
+      }
+      if (this.isSigningOut) {
+        return this.snapshot
+      }
+      if (wasLogoutHeld) {
+        const afterCredential = this.deps.backend.credentialFileModifiedAt()
+        if (
+          beforeCredential === undefined ||
+          afterCredential === undefined ||
+          afterCredential === beforeCredential ||
+          this.deps.backend.hasEnvironmentKey() ||
+          (await this.deps.credentials.getApiKey()) !== undefined
+        ) {
+          return await this.refresh()
+        }
+      }
+      this.admissionGenerationValue += 1
+      await this.deps.backend.restartBackend(initial.status === 'signedIn')
+      if (wasLogoutHeld) {
+        if (this.signOutEpoch !== epoch || this.deps.backend.hasEnvironmentKey()) {
+          return await this.refresh()
+        }
+        const isHoldSaved = await this.setLogoutHold(false)
+        if (!isHoldSaved) {
+          return this.set({ ...this.snapshot, status: 'error', detail: UI_TEXT.signOutHoldFailed })
+        }
+      }
+      return await this.refresh()
+    } catch (error: unknown) {
+      this.deps.log.warn(
+        `In-panel sign-in failed: ${error instanceof Error ? error.name : 'unknown error'}`,
+      )
+      return await this.finishFailedCliSignIn(initial, 'error', UI_TEXT.signInFailed, 'warning')
+    } finally {
+      this.deviceAbort = undefined
     }
-    await this.deps.backend.restartBackend(false)
+  }
+
+  private async finishFailedCliSignIn(
+    initial: AuthSnapshot,
+    status: 'noCli' | 'signedOut' | 'error',
+    detail: string,
+    noticeLevel: 'info' | 'warning',
+  ): Promise<AuthSnapshot> {
+    if (this.isLogoutHeld) {
+      const refreshed = await this.refresh()
+      this.deps.broadcast({ type: 'notice', level: noticeLevel, text: detail })
+      return refreshed
+    }
+    if (initial.status === 'signedIn' && initial.backend === 'modelApi') {
+      const refreshed = await this.refresh()
+      this.deps.broadcast({ type: 'notice', level: noticeLevel, text: detail })
+      return refreshed
+    }
+    return this.set({
+      ...this.snapshot,
+      status,
+      detail,
+      verificationUrl: undefined,
+      userCode: undefined,
+    })
+  }
+
+  private async refreshAfterCliDiscovery(epoch: number): Promise<AuthSnapshot> {
+    const selected = await this.selectedSnapshot()
+    if (epoch !== this.signOutEpoch) {
+      return this.snapshot
+    }
+    if (
+      this.snapshot.status === 'signedIn' &&
+      this.snapshot.backend === 'modelApi' &&
+      selected.status === 'signedIn' &&
+      selected.backend === 'museCode'
+    ) {
+      // Auto selection crossed backends. Gate new hosts and retire the Model
+      // API conversation before reporting a signed-in CLI host.
+      this.admissionGenerationValue += 1
+      this.set({ ...this.snapshot, status: 'checking', detail: undefined })
+      try {
+        await this.deps.backend.restartBackend(true)
+      } catch {
+        this.deps.log.warn('The Model API host could not stop after Muse Code installation')
+        return this.set({
+          ...this.snapshot,
+          status: 'error',
+          detail: UI_TEXT.signOutStopFailed,
+          installState: 'failed',
+        })
+      }
+      if (epoch !== this.signOutEpoch) {
+        return this.snapshot
+      }
+    }
     return await this.refresh()
+  }
+
+  private async installWithCli(): Promise<AuthSnapshot> {
+    const epoch = this.signOutEpoch
+    if (this.deps.backend.resolveCli().ok) {
+      return await this.refreshAfterCliDiscovery(epoch)
+    }
+    const shouldKeepModelApi =
+      this.snapshot.status === 'signedIn' && this.snapshot.backend === 'modelApi'
+    let status: AuthStatus = 'installing'
+    let detail: string | undefined = UI_TEXT.installWaiting
+    if (this.isLogoutHeld) {
+      status = this.snapshot.status
+      detail = this.snapshot.detail
+    } else if (shouldKeepModelApi) {
+      status = 'signedIn'
+      detail = undefined
+    }
+    this.set({
+      ...this.snapshot,
+      status,
+      detail,
+      installState: 'running',
+      hasCli: false,
+    })
+    try {
+      this.deps.runInstallerInTerminal()
+      const deadline = this.deps.now() + MUSE_INSTALL_TIMEOUT_MS
+      while (this.deps.now() < deadline) {
+        if (epoch !== this.signOutEpoch || this.isSigningOut) {
+          return this.snapshot
+        }
+        if (this.deps.backend.resolveCli().ok) {
+          return await this.refreshAfterCliDiscovery(epoch)
+        }
+        await this.deps.sleep(MUSE_INSTALL_POLL_INTERVAL_MS)
+      }
+      return await this.installFailed(UI_TEXT.installTimedOut, epoch)
+    } catch (error: unknown) {
+      this.deps.log.warn(
+        `Muse Code installer terminal failed: ${error instanceof Error ? error.name : 'unknown error'}`,
+      )
+      return await this.installFailed(UI_TEXT.installStartFailed, epoch)
+    }
+  }
+
+  private async installFailed(detail: string, epoch: number): Promise<AuthSnapshot> {
+    const selected = await this.selectedSnapshot()
+    if (epoch !== this.signOutEpoch || this.isSigningOut) {
+      return this.snapshot
+    }
+    if (this.isLogoutHeld) {
+      this.deps.broadcast({ type: 'notice', level: 'warning', text: detail })
+      return this.set({
+        ...this.snapshot,
+        status: 'error',
+        detail: this.logoutDetail(),
+        installState: 'failed',
+      })
+    }
+    if (selected.hasCli === true) {
+      return this.set(selected)
+    }
+    const failed = this.set({
+      ...selected,
+      detail,
+      installState: 'failed',
+    })
+    if (failed.status === 'signedIn' && failed.backend === 'modelApi') {
+      this.deps.broadcast({ type: 'notice', level: 'warning', text: detail })
+    }
+    return failed
+  }
+
+  /** Derive from current CLI, setting and SecretStorage facts. */
+  private async selectedSnapshot(): Promise<AuthSnapshot> {
+    const { cli, hasCliSession, choice } = await this.choose()
+    if (choice.kind === undefined) {
+      return {
+        status: 'noCli',
+        detail: cli.ok ? undefined : cli.reason,
+        backend: undefined,
+        methods: choice.methods,
+        hasCli: cli.ok,
+        hasCliSession,
+      }
+    }
+    return {
+      status: choice.status,
+      detail: undefined,
+      backend: choice.kind,
+      methods: choice.methods,
+      hasCli: cli.ok,
+      hasCliSession,
+    }
+  }
+
+  private async activateApiKey(key: string, epoch: number): Promise<AuthSnapshot> {
+    this.admissionGenerationValue += 1
+    const previousKey = await this.deps.credentials.getApiKey()
+    if (epoch !== this.signOutEpoch || this.isSigningOut) {
+      return this.snapshot
+    }
+    const isReplacingActiveAccount =
+      this.snapshot.status === 'signedIn' &&
+      this.snapshot.backend === 'modelApi' &&
+      previousKey !== key.trim()
+    // Stop old turns while they still read the old key. A tool round must not
+    // resume after SecretStorage begins returning the replacement key.
+    if (isReplacingActiveAccount) {
+      await this.deps.backend.restartBackend(true)
+    }
+    if (epoch !== this.signOutEpoch) {
+      return this.snapshot
+    }
+    await this.deps.credentials.setApiKey(key)
+    if (epoch !== this.signOutEpoch) {
+      return this.snapshot
+    }
+    if (
+      !isReplacingActiveAccount &&
+      (this.snapshot.status !== 'signedIn' || this.snapshot.backend !== 'museCode')
+    ) {
+      await this.deps.backend.restartBackend(false)
+    }
+    const selected = await this.selectedSnapshot()
+    return epoch === this.signOutEpoch ? this.set(selected) : this.snapshot
+  }
+
+  private async performSignOut(): Promise<AuthSnapshot> {
+    this.signOutEpoch += 1
+    this.admissionGenerationValue += 1
+    this.isSigningOut = true
+    this.set({
+      ...this.snapshot,
+      status: 'error',
+      detail: UI_TEXT.signOutPending,
+      verificationUrl: undefined,
+      userCode: undefined,
+    })
+    this.cancelSignIn()
+    const hasPendingSignIn = this.deviceSignIn !== undefined || this.keyActivations.size > 0
+    const stopping = this.stopBackendForSignOut()
+    try {
+      const isHoldSaved = await this.setLogoutHold(true)
+      if (this.deviceSignIn !== undefined) {
+        await this.deviceSignIn
+      }
+      await Promise.allSettled(this.keyActivations)
+      let isHostStopped = await stopping
+      if (hasPendingSignIn || !isHostStopped) {
+        isHostStopped = await this.stopBackendForSignOut()
+      }
+      let isKeyClearFailed = false
+      try {
+        await this.deps.credentials.clearApiKey()
+      } catch {
+        isKeyClearFailed = true
+        this.deps.log.warn('Stored Model API key could not be cleared during sign-out')
+      }
+      const cli = this.deps.backend.resolveCli()
+      let isTerminalUnavailable = false
+      if (cli.ok && this.deps.backend.credentialFileExists()) {
+        try {
+          this.deps.runInTerminal(cli.cliPath, MUSE_LOGOUT_ARGS)
+        } catch {
+          isTerminalUnavailable = true
+          this.deps.log.warn('Muse Code logout terminal could not open')
+        }
+      }
+      const hasCliCredential =
+        this.deps.backend.credentialFileExists() || this.deps.backend.hasEnvironmentKey()
+      const hasStoredKey =
+        isKeyClearFailed || (await this.deps.credentials.getApiKey()) !== undefined
+      const shouldKeepHold = hasCliCredential || hasStoredKey || !isHostStopped
+      const isReleaseSaved = shouldKeepHold || (await this.setLogoutHold(false))
+      let detail: string | undefined
+      if (!isHostStopped) {
+        detail = UI_TEXT.signOutStopFailed
+      } else if (isKeyClearFailed) {
+        detail = UI_TEXT.signOutKeyClearFailed
+      } else if (!isHoldSaved || !isReleaseSaved) {
+        detail = UI_TEXT.signOutHoldFailed
+      } else if (isTerminalUnavailable) {
+        detail = UI_TEXT.signOutTerminalFailed
+      } else if (shouldKeepHold) {
+        detail = UI_TEXT.signOutPending
+      }
+      return this.set({
+        ...this.snapshot,
+        status:
+          !isHostStopped || isKeyClearFailed || !isHoldSaved || !isReleaseSaved
+            ? 'error'
+            : 'signedOut',
+        detail,
+        verificationUrl: undefined,
+        userCode: undefined,
+        installState: undefined,
+      })
+    } finally {
+      this.isSigningOut = false
+    }
+  }
+
+  public cancelSignIn(): void {
+    this.deviceAbort?.abort()
+  }
+
+  /** One visible installer terminal and one location watch per window. */
+  public async installMuseCode(): Promise<AuthSnapshot> {
+    if (this.isSigningOut) {
+      return this.snapshot
+    }
+    if (this.installPromise !== undefined) {
+      return await this.installPromise
+    }
+    this.installPromise = this.installWithCli()
+    try {
+      return await this.installPromise
+    } finally {
+      this.installPromise = undefined
+    }
   }
 
   public get current(): AuthSnapshot {
@@ -160,7 +553,17 @@ export class AuthService {
 
   /** The backend the next conversation runs on; undefined without any credential. */
   public get backend(): BackendKind | undefined {
-    return this.snapshot.backend
+    return this.snapshot.status === 'signedIn' &&
+      !this.isLogoutHeld &&
+      !this.isSigningOut &&
+      this.keyActivations.size === 0 &&
+      !this.isLogoutPersistenceFailed
+      ? this.snapshot.backend
+      : undefined
+  }
+
+  public get admissionGeneration(): number {
+    return this.admissionGenerationValue
   }
 
   public toMessage(): HostToWebviewMessage {
@@ -170,29 +573,78 @@ export class AuthService {
       ...(this.snapshot.detail !== undefined && { detail: this.snapshot.detail }),
       ...(this.snapshot.backend !== undefined && { backend: this.snapshot.backend }),
       ...(this.snapshot.methods !== undefined && { methods: [...this.snapshot.methods] }),
+      ...(this.snapshot.verificationUrl !== undefined && {
+        verificationUrl: this.snapshot.verificationUrl,
+      }),
+      ...(this.snapshot.userCode !== undefined && { userCode: this.snapshot.userCode }),
+      installCommand: this.deps.installCommand,
+      ...(this.snapshot.hasCli !== undefined && { hasCli: this.snapshot.hasCli }),
+      ...(this.snapshot.hasCliSession !== undefined && {
+        hasCliSession: this.snapshot.hasCliSession,
+      }),
+      ...(this.snapshot.installState !== undefined && { installState: this.snapshot.installState }),
     }
   }
 
   /** Re-derive the status from the CLI, credential and setting facts, then broadcast. */
   public async refresh(): Promise<AuthSnapshot> {
-    const { cli, choice } = await this.choose()
-    if (choice.kind === undefined) {
-      return this.set({
-        status: 'noCli',
-        detail: cli.ok ? undefined : cli.reason,
-        backend: undefined,
-        methods: choice.methods,
-      })
+    const epoch = this.signOutEpoch
+    const selected = await this.selectedSnapshot()
+    if (this.isSigningOut || this.signOutEpoch !== epoch) {
+      return this.set({ ...selected, status: 'error', detail: this.logoutDetail() })
     }
-    return this.set({
-      status: choice.status,
-      detail: undefined,
-      backend: choice.kind,
-      methods: choice.methods,
-    })
+    if (!this.isLogoutHeld) {
+      return this.set(selected)
+    }
+    const hasCliCredential =
+      this.deps.backend.credentialFileExists() || this.deps.backend.hasEnvironmentKey()
+    const hasStoredKey = (await this.deps.credentials.getApiKey()) !== undefined
+    if (this.signOutEpoch !== epoch) {
+      return this.set({ ...selected, status: 'error', detail: this.logoutDetail() })
+    }
+    if (hasCliCredential || hasStoredKey) {
+      return this.set({ ...selected, status: 'error', detail: this.logoutDetail() })
+    }
+    const isHoldSaved = await this.setLogoutHold(false)
+    if (!isHoldSaved) {
+      return this.set({ ...selected, status: 'error', detail: UI_TEXT.signOutHoldFailed })
+    }
+    const current = await this.selectedSnapshot()
+    const hasCurrentCredential =
+      this.deps.backend.credentialFileExists() ||
+      this.deps.backend.hasEnvironmentKey() ||
+      (await this.deps.credentials.getApiKey()) !== undefined
+    if (hasCurrentCredential || this.signOutEpoch !== epoch || current.status === 'signedIn') {
+      await this.setLogoutHold(true)
+      return this.set({ ...current, status: 'error', detail: this.logoutDetail() })
+    }
+    return this.set(current)
   }
 
   public async signIn(method: SignInMethod): Promise<AuthSnapshot> {
+    if (this.isSigningOut) {
+      return this.snapshot
+    }
+    const epoch = this.signOutEpoch
+    if (this.isLogoutHeld) {
+      const canRecoverCliFile =
+        method === 'browser' &&
+        !this.deps.backend.hasEnvironmentKey() &&
+        this.deps.backend.credentialFileExists() &&
+        (await this.deps.credentials.getApiKey()) === undefined
+      if (epoch !== this.signOutEpoch) {
+        return this.snapshot
+      }
+      if (!canRecoverCliFile) {
+        const refreshed = await this.refresh()
+        if (epoch !== this.signOutEpoch) {
+          return this.snapshot
+        }
+        if (refreshed.status === 'error') {
+          return refreshed
+        }
+      }
+    }
     this.deps.log.info(`Sign-in started: ${method}`)
     if (method === 'apiKey') {
       const key = await this.deps.promptForApiKey()
@@ -200,21 +652,30 @@ export class AuthService {
         this.deps.log.info('Sign-in with an API key cancelled')
         return this.snapshot
       }
-      await this.deps.credentials.setApiKey(key)
-      await this.deps.backend.restartBackend(false)
-      return await this.refresh()
+      if (epoch !== this.signOutEpoch) {
+        return this.snapshot
+      }
+      const activation = this.activateApiKey(key, epoch)
+      this.keyActivations.add(activation)
+      try {
+        return await activation
+      } finally {
+        this.keyActivations.delete(activation)
+      }
     }
-    return await this.joinBrowserSignIn()
+    return await this.joinDeviceSignIn()
   }
 
   public async signOut(): Promise<AuthSnapshot> {
-    await this.deps.credentials.clearApiKey()
-    const cli = this.deps.backend.resolveCli()
-    if (cli.ok && this.deps.backend.credentialFileExists()) {
-      this.deps.runInTerminal(cli.cliPath, MUSE_LOGOUT_ARGS)
+    const running = this.signOutPromise ?? this.performSignOut()
+    this.signOutPromise = running
+    try {
+      return await running
+    } finally {
+      if (this.signOutPromise === running) {
+        this.signOutPromise = undefined
+      }
     }
-    await this.deps.backend.restartBackend(true)
-    return this.set({ ...this.snapshot, status: 'signedOut', detail: undefined })
   }
 
   /** The backend answered a turn with `authRequired`: the estimate was wrong. */

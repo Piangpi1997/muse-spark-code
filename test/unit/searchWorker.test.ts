@@ -8,6 +8,7 @@ import path from 'node:path'
 import { buildSync } from 'esbuild'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { searchOnWorker } from '../../src/host/backend/toolIo'
+import { SEARCH_MAX_FILE_BYTES, SEARCH_MAX_HITS } from '../../src/shared/constants'
 import { removeFolder } from './helpers/temporaryFolders'
 
 const paths = { root: '', worker: '' }
@@ -35,6 +36,8 @@ function job(pattern: string, names: readonly string[] = ['a.txt', 'b.bin', 'mis
   return {
     pattern,
     root: paths.root,
+    maxFileBytes: SEARCH_MAX_FILE_BYTES,
+    maxHits: SEARCH_MAX_HITS,
     files: names.map((name) => ({ relative: name, absolute: path.join(paths.root, name) })),
   }
 }

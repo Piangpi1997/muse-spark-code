@@ -1,6 +1,7 @@
 import { Buffer } from 'node:buffer'
 import { describe, expect, it, vi } from 'vitest'
 import { GoalRefusedError, SessionNotLoadedError } from '../../src/core/agent/agentBackend'
+import { AttachmentStore } from '../../src/core/attachments'
 import {
   type CommandTimeouts,
   describeExit,
@@ -14,6 +15,7 @@ import {
   fakeMspHost,
   goalRefusal,
   refusalOf,
+  rejectionFor,
   settle,
 } from './helpers/fakeMsp'
 import {
@@ -202,7 +204,10 @@ describe('MuseCodeHost', () => {
       { type: 'text' as const, text: 'more' },
       { type: 'image' as const, base64Data: 'AAAA', mediaType: 'image/png', width: 1, height: 1 },
     ]
-    await expect(session.steer('turn-2', parts)).resolves.toBe('turn-1')
+    await expect(session.steer('turn-2', parts)).resolves.toEqual({
+      turnId: 'turn-1',
+      disposition: 'steered',
+    })
     expect(server.requestsFor('turn/steer')[0]?.params).toMatchObject({
       sessionId: session.sessionId,
       expectedTurnId: 'turn-2',
@@ -438,6 +443,29 @@ describe('MuseCodeHost', () => {
       offsetBytes: 0,
       byteLen: 12,
       eof: true,
+    })
+  })
+
+  it('refuses uncaptured child owner verbs without MSP while preserving captured close (M48)', async () => {
+    const { host, server } = setup()
+    server.handle('subagent/readResult', ack)
+    server.handle('subagent/reopen', ack)
+    server.handle('subagent/close', ack)
+    const session = await host.startSession(startOptions)
+    await expect(session.controlSubagent('opaque-child', 'readResult')).rejects.toThrow(
+      'subagent/readResult',
+    )
+    await expect(session.controlSubagent('opaque-child', 'reopen')).rejects.toThrow(
+      'subagent/reopen',
+    )
+    for (const method of ['subagent/readResult', 'subagent/reopen']) {
+      expect(server.requestsFor(method)).toEqual([])
+    }
+    await session.controlSubagent('opaque-child', 'close')
+    expect(server.requestsFor('subagent/close')[0]?.params).toMatchObject({
+      sessionId: session.sessionId,
+      subagentId: 'opaque-child',
+      commandId: expect.any(String),
     })
   })
 
@@ -1139,6 +1167,31 @@ describe('MuseCodeHost: prompts, receipts and resume (D26)', () => {
     expect(server.requestsFor('turn/start')).toHaveLength(0)
   })
 
+  it('refuses a Model API image retained across a switch before Muse turn or steer submission', async () => {
+    const imageBytes = new Uint8Array(8 * 1024 * 1024)
+    imageBytes.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+    imageBytes.set([0, 0, 0, 1], 16)
+    imageBytes.set([0, 0, 0, 1], 20)
+    const attachments = new AttachmentStore(() => 'model-api-image')
+    const admitted = attachments.add('large.png', imageBytes, true, true)
+    expect(admitted.ok).toBe(true)
+    if (!admitted.ok) {
+      return
+    }
+    const parts = [
+      { type: 'text' as const, text: 'Look at this' },
+      ...attachments.partsFor([admitted.attachment.id]),
+    ]
+    const { host, server } = setup()
+    const session = await host.startSession(startOptions)
+    await expect(session.sendTurn(parts)).rejects.toThrow(UI_TEXT.textFilesOverBudget)
+    expect(server.requestsFor('turn/start')).toHaveLength(0)
+    await session.sendTurn([{ type: 'text', text: 'Small turn' }])
+    await expect(session.steer('turn-1', parts)).rejects.toThrow(UI_TEXT.textFilesOverBudget)
+    expect(server.requestsFor('turn/start')).toHaveLength(1)
+    expect(server.requestsFor('turn/steer')).toHaveLength(0)
+  })
+
   it('clamps a session/list page to the host maximum', async () => {
     const { host, server } = setup()
     server.handle('session/list', () => ({ sessions: [], nextCursor: null }))
@@ -1472,5 +1525,29 @@ describe('MuseCodeHost: workflows (M47)', () => {
         message: WORKFLOW_MESSAGE,
       },
     })
+  })
+})
+
+// M56 (PLAN.md D43): the captured refusal of a mode above the host's ceiling.
+describe('MuseCodeHost: a permission mode above the ceiling', () => {
+  it('says why the session did not start, in words the user can act on', async () => {
+    const { host, server } = setup()
+    server.handle('session/start', rejectionFor('approval_mode_ceiling'))
+    const refusal = host.startSession({ ...startOptions, approvalMode: 'allowAll' })
+    await expect(refusal).rejects.toThrow(UI_TEXT.approvalModeCeiling)
+    await expect(refusal).rejects.toMatchObject({ cause: expect.any(Error) })
+  })
+
+  it('says why a mode change was refused, and passes other rejections through', async () => {
+    const { host, server } = setup()
+    const { session } = await listeningSession(host)
+    server.handle('session/setApprovalMode', rejectionFor('approval_mode_ceiling'))
+    await expect(session.setApprovalMode('onRequest')).rejects.toThrow(UI_TEXT.approvalModeCeiling)
+    server.handle('session/setApprovalMode', rejectionFor('session_busy'))
+    await expect(session.setApprovalMode('onRequest')).rejects.toThrow(
+      'command rejected: session_busy',
+    )
+    server.handle('session/start', refusalOf('commandRejected'))
+    await expect(host.startSession(startOptions)).rejects.toThrow('refused: commandRejected')
   })
 })

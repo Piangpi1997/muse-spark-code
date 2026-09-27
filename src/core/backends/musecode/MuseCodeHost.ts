@@ -16,6 +16,7 @@ import {
   GOAL_RECOVERY_PAGE_LIMIT,
   JSON_RPC_ERRORS,
   MILLISECONDS_PER_SECOND,
+  MSP_ATTACHMENT_FRAME_BUDGET_BYTES,
   MSP_COMMAND_ATTEMPTS,
   MSP_COMMAND_TIMEOUT_MS,
   MSP_FRAME_LIMIT_BYTES,
@@ -33,6 +34,7 @@ import {
 } from '../../../shared/constants'
 import { fill } from '../../../shared/l10n/text'
 import { withDeadline } from '../../timeouts'
+import { textFileInput } from '../../textAttachment'
 import {
   type SubscriptionUsage,
   subscriptionUsageSchema,
@@ -240,6 +242,21 @@ const PROMPT_SETTLED_KINDS: ReadonlyMap<string, PromptSettledReason> = new Map([
   ['userInputNotFound', 'gone'],
 ])
 
+// An approval mode above the host's ceiling (M56, PLAN.md D43): MSP answers
+// `session/start` and `session/setApprovalMode` with `commandRejected` and
+// this reason, "approval mode exceeds or is incomparable with the sealed
+// startup mode or the managed approval-mode set" (captured 2026-09-25).
+const APPROVAL_MODE_CEILING = 'approval_mode_ceiling'
+
+/** A refused approval mode as a reason the user can act on; anything else unchanged. */
+function ceilingOr(error: unknown): unknown {
+  return error instanceof MspError &&
+    error.kind === COMMAND_REJECTED &&
+    error.data['reason'] === APPROVAL_MODE_CEILING
+    ? new Error(UI_TEXT.approvalModeCeiling, { cause: error })
+    : error
+}
+
 /** A late decision or answer as a `PromptSettledError`; anything else unchanged. */
 function settledOr(error: unknown): unknown {
   if (!(error instanceof MspError)) {
@@ -296,6 +313,35 @@ function pause(ms: number): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, ms)
   })
+}
+
+/**
+ * A turn's parts as MSP takes them. `TurnInputPart` is text, image or skill
+ * in 1.3.0. Text files are named text parts; PDFs are refused because an
+ * unknown type is `invalidParams` (msp.d.ts, M54, sdk issue #48).
+ */
+function mspInput(parts: readonly TurnPart[]): readonly TurnPart[] {
+  const input: TurnPart[] = []
+  let attachmentBytes = 0
+  for (const part of parts) {
+    if (part.type === 'file') {
+      throw new Error(UI_TEXT.pdfNeedsModelApi)
+    }
+    const inputPart: TurnPart =
+      part.type === 'textFile' ? { type: 'text', text: textFileInput(part) } : part
+    if (part.type === 'image' || part.type === 'textFile') {
+      attachmentBytes +=
+        part.type === 'image'
+          ? Buffer.byteLength(part.base64Data) +
+            Buffer.byteLength(JSON.stringify({ ...part, base64Data: '' }))
+          : Buffer.byteLength(JSON.stringify(inputPart))
+      if (attachmentBytes > MSP_ATTACHMENT_FRAME_BUDGET_BYTES) {
+        throw new Error(UI_TEXT.textFilesOverBudget)
+      }
+    }
+    input.push(inputPart)
+  }
+  return input
 }
 
 /**
@@ -506,7 +552,7 @@ export class MuseSession implements AgentSession {
   public async sendTurn(parts: readonly TurnPart[], displayText?: string): Promise<TurnSubmission> {
     const result = turnStartResultSchema.parse(
       await this.command('turn/start', {
-        input: parts,
+        input: mspInput(parts),
         ...(displayText !== undefined && { displayText }),
       }),
     )
@@ -518,9 +564,9 @@ export class MuseSession implements AgentSession {
    * steer when that turn is no longer the running one, so input meant for one
    * turn never leaks into the next; callers fall back to `sendTurn`.
    */
-  public async steer(expectedTurnId: string, parts: readonly TurnPart[]): Promise<string> {
-    const result = await this.command('turn/steer', { expectedTurnId, input: parts })
-    return turnSteerResultSchema.parse(result).turnId
+  public async steer(expectedTurnId: string, parts: readonly TurnPart[]): Promise<TurnSubmission> {
+    const result = await this.command('turn/steer', { expectedTurnId, input: mspInput(parts) })
+    return { turnId: turnSteerResultSchema.parse(result).turnId, disposition: 'steered' }
   }
 
   /** Ask the host to stop the running turn gracefully. */
@@ -545,7 +591,11 @@ export class MuseSession implements AgentSession {
 
   /** Select one of the host's preconfigured approval modes. */
   public async setApprovalMode(mode: string): Promise<void> {
-    await this.command('session/setApprovalMode', { mode })
+    try {
+      await this.command('session/setApprovalMode', { mode })
+    } catch (error: unknown) {
+      throw ceilingOr(error)
+    }
   }
 
   /** Summarise older context; `status` is `noop` with a reason when nothing to do. */
@@ -644,8 +694,11 @@ export class MuseSession implements AgentSession {
     await this.command('session/userShell', { commandText: command })
   }
 
-  /** `subagent/interrupt`, `stop`, `resume` or `close` on a child (M18). */
+  /** Captured owner verbs on a child (M18); M48's uncaptured verbs stay unavailable. */
   public async controlSubagent(subagentId: string, action: SubagentAction): Promise<void> {
+    if (action === 'reopen' || action === 'readResult') {
+      throw new Error(`subagent/${action}`)
+    }
     await this.command(`subagent/${action}`, { subagentId })
   }
 
@@ -805,7 +858,7 @@ export class MuseCodeHost implements AgentHost {
     )
     if (parsed.sessionDurability !== undefined && parsed.sessionDurability !== DURABLE_SESSIONS) {
       this.log.warn(
-        `This muse serve keeps ${parsed.sessionDurability} sessions: History and resume will not find them after it exits`,
+        `This muse serve keeps ${parsed.sessionDurability} sessions: History and resume will not find them after it exits, and Muse Code 1.3.0 sent such a host's turns to no client (PLAN.md D43)`,
       )
     }
     // The SDK's connection keeps one handler; a throw inside it would end the
@@ -1253,12 +1306,17 @@ export class MuseCodeHost implements AgentHost {
 
   public async startSession(options: StartSessionOptions): Promise<MuseSession> {
     return await this.opened(async () => {
-      const result = await this.command('session/start', {
-        workspaceRoot: options.workspaceRoot,
-        modelId: options.modelId,
-        approvalMode: options.approvalMode,
-        ...this.mcpConfig(options.mcpServers),
-      })
+      let result: unknown
+      try {
+        result = await this.command('session/start', {
+          workspaceRoot: options.workspaceRoot,
+          modelId: options.modelId,
+          approvalMode: options.approvalMode,
+          ...this.mcpConfig(options.mcpServers),
+        })
+      } catch (error: unknown) {
+        throw ceilingOr(error)
+      }
       const { session } = sessionStartResultSchema.parse(result)
       return this.track(session, session.modelId ?? options.modelId)
     })

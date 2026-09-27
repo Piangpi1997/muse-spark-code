@@ -26,9 +26,15 @@ describe('readSettings', () => {
         environmentVariables: [{ name: 'MUSE_HOME', value: 'D:/muse' }],
         shellSandbox: 'off',
         backend: 'modelApi',
+        sandboxNetwork: 'restricted',
+        modelApiPromptCacheRetention: '24h',
+        modelApiHooks: true,
       }),
       new FakeLogOutputChannel(),
     )
+    // M56 (PLAN.md D43).
+    expect(settings.sandboxNetwork).toBe('restricted')
+    expect(settings.modelApiPromptCacheRetention).toBe('24h')
     expect(settings.preferredLocation).toBe('sidebar')
     expect(settings.initialPermissionMode).toBe('plan')
     expect(settings.useCtrlEnterToSend).toBe(true)
@@ -36,6 +42,7 @@ describe('readSettings', () => {
     expect(settings.environmentVariables).toEqual([{ name: 'MUSE_HOME', value: 'D:/muse' }])
     expect(settings.shellSandbox).toBe('off')
     expect(settings.backend).toBe('modelApi')
+    expect(settings.modelApiHooks).toBe(true)
   })
 
   it('reads the retention period as a whole number of days, 0 keeping for ever (D26)', () => {
@@ -54,14 +61,34 @@ describe('readSettings', () => {
         initialPermissionMode: 'yolo',
         environmentVariables: [{ name: 'X' }],
         shellSandbox: 'sometimes',
+        sandboxNetwork: 'offline',
+        modelApiPromptCacheRetention: '7d',
       }),
       log,
     )
     expect(settings.initialPermissionMode).toBe('manual')
     expect(settings.environmentVariables).toEqual([])
     expect(settings.shellSandbox).toBe('auto')
-    expect(log.warn).toHaveBeenCalledTimes(3)
+    expect(settings.sandboxNetwork).toBe('default')
+    expect(settings.modelApiPromptCacheRetention).toBe('in_memory')
+    expect(log.warn).toHaveBeenCalledTimes(5)
     expect(String(log.warn.mock.calls[0]?.[0])).toContain('museSpark.initialPermissionMode')
+  })
+
+  it('does not copy arbitrary environment values into an invalid-setting warning', () => {
+    const log = new FakeLogOutputChannel()
+    const value = 'private proxy passphrase with spaces'
+    const settings = readSettings(
+      fakeSettingsSource({
+        environmentVariables: [{ name: 'HTTPS_PROXY', value }, { name: 'OTHER' }],
+      }),
+      log,
+    )
+
+    expect(settings.environmentVariables).toEqual([])
+    expect(log.warn).toHaveBeenCalledOnce()
+    expect(String(log.warn.mock.calls[0]?.[0])).toContain('museSpark.environmentVariables')
+    expect(String(log.warn.mock.calls[0]?.[0])).not.toContain(value)
   })
 
   // M39: the settings are read about seven times a message.
@@ -91,6 +118,7 @@ describe('toSettingsSnapshot', () => {
     expect(snapshot).not.toHaveProperty('shellSandbox')
     expect(snapshot).not.toHaveProperty('enableNewConversationShortcut')
     expect(snapshot).not.toHaveProperty('backend')
+    expect(snapshot).not.toHaveProperty('modelApiHooks')
     expect(snapshot.preferredLocation).toBe(SETTING_DEFAULTS.preferredLocation)
   })
 })

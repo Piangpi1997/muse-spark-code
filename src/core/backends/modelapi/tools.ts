@@ -5,6 +5,7 @@
 // leave a patch document shaped like Muse Code's so the transcript rows,
 // Open diff and Revert (M5) work unchanged.
 
+import { Buffer } from 'node:buffer'
 import { createHash } from 'node:crypto'
 import path from 'node:path'
 import * as z from 'zod/mini'
@@ -15,12 +16,20 @@ import {
   todoItemSchema,
 } from '../../../shared/agentEvents'
 import {
+  IMAGE_EXTENSIONS,
   LIST_FILES_DEFAULT_LIMIT,
+  MAX_DOCUMENT_BYTES,
+  MAX_IMAGE_BYTES,
+  MODEL_API_SUBAGENT_TOOLS,
   MODEL_API_TOOLS,
   MODEL_TEXT,
+  PDF_EXTENSION,
+  PDF_MEDIA_TYPE,
   READ_FILE_DEFAULT_LIMIT,
   READ_FILE_MAX_LINE_CHARS,
   SEARCH_MAX_CANDIDATES,
+  SEARCH_MAX_FILE_BYTES,
+  SEARCH_MAX_HITS,
   SEARCH_MAX_RESULTS,
   SEARCH_PATTERN_MAX_LENGTH,
   SEARCH_TIMEOUT_MS,
@@ -30,6 +39,7 @@ import {
   TOOL_OUTPUT_CLIP_MARKER,
   TOOL_OUTPUT_ELIDED_MARKER,
   TOOL_OUTPUT_MAX_CHARS,
+  UI_TEXT,
 } from '../../../shared/constants'
 import {
   ADD_MARKER,
@@ -38,6 +48,10 @@ import {
   type PatchHunk,
   REMOVE_MARKER,
 } from '../../../shared/patchDocument'
+import { fill, formatNumber, plural } from '../../../shared/l10n/text'
+import type { DocumentPart, ImagePart } from '../../agent/agentBackend'
+import { readImageInfo } from '../../imageDimensions'
+import { isPdf, pdfPageCount } from '../../pdf'
 import { compileGlob } from './glob'
 import {
   EDIT_IMAGE_DESCRIPTION,
@@ -46,9 +60,11 @@ import {
   GENERATE_IMAGE_PARAMETERS,
 } from './imageToolDefinitions'
 import { GOAL_TOOL_DEFINITIONS } from './goals'
+import { MEMORY_TOOL_DEFINITIONS } from './memoryTools'
 
 import type { ToolClass } from './permissions'
-import type { FunctionToolDefinition } from './schemas'
+import type { FunctionOutputPart, FunctionToolDefinition } from './schemas'
+import { SUBAGENT_TOOL_DEFINITIONS } from './subagentTools'
 
 export interface ShellResult {
   readonly stdout: string
@@ -57,6 +73,8 @@ export interface ShellResult {
   readonly isTimedOut: boolean
   /** Stopped because the turn was (the Stop button, PLAN.md D25). */
   readonly isCancelled: boolean
+  /** The command exceeded its per-stream byte budget (M51 hooks). */
+  readonly isOutputTooLarge?: boolean
 }
 
 /**
@@ -90,6 +108,9 @@ export interface SearchJob {
   /** The workspace root: a file whose canonical path leaves it is skipped (D24). */
   readonly root: string
   readonly files: readonly { readonly relative: string; readonly absolute: string }[]
+  /** The canonical limits travel with the job so the worker stays small. */
+  readonly maxFileBytes: number
+  readonly maxHits: number
 }
 
 export interface SearchHit {
@@ -120,14 +141,19 @@ export interface ToolIo {
    * Rejects for a file that is not UTF-8 text (binary, UTF-16, Latin-1…):
    * decoding it lossily and writing it back would corrupt it (PLAN.md D27).
    */
-  readFile(absolutePath: string): Promise<string | undefined>
+  /** A canonical proof comes only from trusted workspace confinement, not tool arguments. */
+  readFile(absolutePath: string, expectedCanonicalPath?: string): Promise<string | undefined>
   /**
    * The file's bytes (M44: an image to edit); undefined when it does not
    * exist. Rejects, before reading, a file larger than `maxBytes`.
    */
-  readBytes(absolutePath: string, maxBytes: number): Promise<Uint8Array | undefined>
+  readBytes(
+    absolutePath: string,
+    maxBytes: number,
+    expectedCanonicalPath?: string,
+  ): Promise<Uint8Array | undefined>
   /** Replaces the file whole (a temporary file renamed into place), folders created. */
-  writeFile(absolutePath: string, content: string): Promise<void>
+  writeFile(absolutePath: string, content: string, expectedCanonicalPath?: string): Promise<void>
   /** Whether anything (a file, a folder, a link) is at the path. */
   pathExists(absolutePath: string): Promise<boolean>
   /**
@@ -136,7 +162,7 @@ export interface ToolIo {
    * overwritten. The file is taken before the image is bought, so a path
    * taken meanwhile costs nothing (the review of PR #27).
    */
-  reserveFile(absolutePath: string): Promise<FileReservation>
+  reserveFile(absolutePath: string, expectedCanonicalPath?: string): Promise<FileReservation>
   /** Whether an editor holds unsaved changes to the file (D27). */
   hasUnsavedChanges(absolutePath: string): boolean
   /** Workspace-relative, forward-slash paths of every listed file. */
@@ -153,6 +179,15 @@ export interface ToolIo {
     timeoutMs: number,
     signal?: AbortSignal,
     limit?: ShellTimeLimit,
+  ): Promise<ShellResult>
+  /** An explicitly enabled M51 hook, with JSON stdin and a cleared environment. */
+  runHook?(
+    command: string,
+    payload: string,
+    cwd: string,
+    timeoutMs: number,
+    signal?: AbortSignal,
+    extraEnvNames?: readonly string[],
   ): Promise<ShellResult>
   /**
    * The canonical form of an absolute path: links, junctions and short
@@ -174,6 +209,11 @@ export interface ToolContext {
   readonly workspaceRoot: string
   readonly platform: NodeJS.Platform
   readonly io: ToolIo
+  /** The checked write destination shown to the permission gate before approval. */
+  readonly approvedTarget?: {
+    readonly absolute: string
+    readonly checkedAbsolute: string
+  }
   /** The turn's: aborting it stops a running command (PLAN.md D25). */
   readonly signal?: AbortSignal
   /** The shell's time limit, lifted when the command moves to the background (M46). */
@@ -188,14 +228,25 @@ export interface ToolContext {
 
 const FINGERPRINT_HASH = 'sha256'
 
+/** A PDF or an image `read_file` read whole for the model to see (M54, PLAN.md D47). */
+export interface VisibleFile {
+  /** Workspace-relative, as the model named it. */
+  readonly path: string
+  readonly part: ImagePart | DocumentPart
+}
+
 export interface ToolOutcome {
   /** What the model receives as the function result. */
   readonly output: string
+  /** The result as content parts instead, when it holds pictures (an MCP tool's, M50). */
+  readonly outputParts?: readonly FunctionOutputPart[]
   /** What the transcript row shows. */
   readonly visibleOutput: string
   readonly failureReason?: string
   /** Edit-family tools: the stored patch document and its summary. */
   readonly patch?: { readonly document: string; readonly summary: PatchSummary }
+  /** `read_file` of a PDF or an image: the file itself, sent after the round's outputs. */
+  readonly visibleFile?: VisibleFile
 }
 
 const TOOL_CLASSES: Readonly<Record<string, ToolClass>> = {
@@ -211,6 +262,16 @@ const TOOL_CLASSES: Readonly<Record<string, ToolClass>> = {
   [MODEL_API_TOOLS.readSkill]: 'read',
   [MODEL_API_TOOLS.generateImage]: 'paid',
   [MODEL_API_TOOLS.editImage]: 'paid',
+  [MODEL_API_SUBAGENT_TOOLS.spawn]: 'spawn',
+  [MODEL_API_SUBAGENT_TOOLS.status]: 'interactive',
+  [MODEL_API_SUBAGENT_TOOLS.wait]: 'interactive',
+  [MODEL_API_SUBAGENT_TOOLS.sendMessage]: 'interactive',
+  [MODEL_API_SUBAGENT_TOOLS.readResult]: 'interactive',
+  [MODEL_API_SUBAGENT_TOOLS.cancel]: 'interactive',
+  // M49 (PLAN.md D41): a memory write is judged as an edit, never a protected one.
+  [MODEL_API_TOOLS.readMemory]: 'read',
+  [MODEL_API_TOOLS.addMemory]: 'edit',
+  [MODEL_API_TOOLS.editMemory]: 'edit',
   // The goal tools change only the session's goal (M45): no card, in any mode.
   [MODEL_API_TOOLS.createGoal]: 'interactive',
   [MODEL_API_TOOLS.getGoal]: 'interactive',
@@ -265,6 +326,12 @@ export interface ToolDefinitionOptions {
   readonly hasSkills: boolean
   /** True while paid image generation is on (M34, PLAN.md D30). */
   readonly hasImageGeneration?: boolean
+  /** Child sessions cannot spawn again (M48, PLAN.md D45). */
+  readonly hasSubagents?: boolean
+  /** Child sessions cannot ask the panel or set its task list. */
+  readonly isSubagent?: boolean
+  /** Muse Code's memory tools, trusted workspaces only (M49, PLAN.md D41). */
+  readonly hasMemory?: boolean
 }
 
 const DEFAULT_TOOL_OPTIONS: ToolDefinitionOptions = { hasShell: true, hasSkills: false }
@@ -295,7 +362,7 @@ export function toolDefinitions(
   return [
     define(
       MODEL_API_TOOLS.readFile,
-      'Read a text file from the workspace, numbered by line. Use offset and limit for long files.',
+      'Read a file from the workspace. A text file comes back numbered by line (use offset and limit for long files); a PDF or an image (PNG, JPEG, GIF, WebP) comes back whole, for you to see.',
       {
         path: PATH_PROPERTY,
         offset: { type: 'integer', description: '1-based first line to return' },
@@ -383,65 +450,79 @@ export function toolDefinitions(
           ),
         ]
       : []),
-    define(
-      MODEL_API_TOOLS.askUser,
-      'Ask the user one or more questions and wait for the answers. Use it for decisions only the user can make.',
-      {
-        questions: {
-          type: 'array',
-          items: {
-            type: 'object',
-            properties: {
-              id: { type: 'string' },
-              header: { type: 'string', description: 'Short label (a few words)' },
-              question: { type: 'string' },
-              selection: {
-                type: 'object',
-                properties: { mode: { type: 'string', enum: ['single', 'multiple'] } },
-                required: ['mode'],
-              },
-              options: {
+    ...(options.isSubagent === true
+      ? []
+      : [
+          define(
+            MODEL_API_TOOLS.askUser,
+            'Ask the user one or more questions and wait for the answers. Use it for decisions only the user can make.',
+            {
+              questions: {
                 type: 'array',
                 items: {
                   type: 'object',
-                  properties: { label: { type: 'string' }, description: { type: 'string' } },
-                  required: ['label'],
+                  properties: {
+                    id: { type: 'string' },
+                    header: { type: 'string', description: 'Short label (a few words)' },
+                    question: { type: 'string' },
+                    selection: {
+                      type: 'object',
+                      properties: { mode: { type: 'string', enum: ['single', 'multiple'] } },
+                      required: ['mode'],
+                    },
+                    options: {
+                      type: 'array',
+                      items: {
+                        type: 'object',
+                        properties: { label: { type: 'string' }, description: { type: 'string' } },
+                        required: ['label'],
+                      },
+                    },
+                  },
+                  required: ['id', 'header', 'question', 'selection', 'options'],
                 },
               },
             },
-            required: ['id', 'header', 'question', 'selection', 'options'],
-          },
-        },
-      },
-      ['questions'],
-    ),
-    define(
-      MODEL_API_TOOLS.todoWrite,
-      'Replace your task list, shown to the user while you work.',
-      {
-        items: {
-          type: 'array',
-          items: {
-            type: 'object',
-            properties: {
-              text: { type: 'string' },
-              status: { type: 'string', enum: ['pending', 'inProgress', 'completed'] },
-              activeForm: {
-                type: 'string',
-                description: 'Present-tense form shown while in progress',
+            ['questions'],
+          ),
+          define(
+            MODEL_API_TOOLS.todoWrite,
+            'Replace your task list, shown to the user while you work.',
+            {
+              items: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  properties: {
+                    text: { type: 'string' },
+                    status: { type: 'string', enum: ['pending', 'inProgress', 'completed'] },
+                    activeForm: {
+                      type: 'string',
+                      description: 'Present-tense form shown while in progress',
+                    },
+                  },
+                  required: ['text', 'status'],
+                },
               },
             },
-            required: ['text', 'status'],
-          },
-        },
-      },
-      ['items'],
-    ),
-    // Muse Code's goal tools (M45, PLAN.md D38), offered in every session as
-    // `muse serve` offers them.
-    ...GOAL_TOOL_DEFINITIONS.map((tool) =>
-      define(tool.name, tool.description, tool.properties, tool.required),
-    ),
+            ['items'],
+          ),
+          // Muse Code's goal tools (M45, PLAN.md D38), offered in every session as
+          // `muse serve` offers them.
+          ...GOAL_TOOL_DEFINITIONS.map((tool) =>
+            define(tool.name, tool.description, tool.properties, tool.required),
+          ),
+        ]),
+    ...(options.hasSubagents === true
+      ? SUBAGENT_TOOL_DEFINITIONS.map((tool) =>
+          define(tool.name, tool.description, tool.properties, tool.required),
+        )
+      : []),
+    ...(options.hasMemory === true
+      ? MEMORY_TOOL_DEFINITIONS.map((tool) =>
+          define(tool.name, tool.description, tool.properties, tool.required),
+        )
+      : []),
   ]
 }
 
@@ -460,6 +541,11 @@ export type PathResolution =
       readonly canonical: string
     }
   | { readonly ok: false; readonly reason: string }
+
+/** A confined path and the canonical target checked before a tool read. */
+type ConfinedPathResolution =
+  | (Extract<PathResolution, { readonly ok: true }> & { readonly checkedAbsolute: string })
+  | Extract<PathResolution, { readonly ok: false }>
 
 const PARENT_SEGMENT = '..'
 // Device names Windows resolves in every directory (`NUL`, `CON`, `COM1.txt`):
@@ -533,7 +619,7 @@ export async function confineWorkspacePath(
   given: string,
   platform: NodeJS.Platform,
   io: Pick<ToolIo, 'realPath'>,
-): Promise<PathResolution> {
+): Promise<ConfinedPathResolution> {
   const textual = resolveWorkspacePath(workspaceRoot, given, platform)
   if (!textual.ok) {
     return textual
@@ -552,7 +638,7 @@ export async function confineWorkspacePath(
   const p = pathModule(platform)
   const relative = p.relative(realRoot, realTarget)
   return isBelow(relative, p)
-    ? { ...textual, canonical: relative.split(p.sep).join('/') }
+    ? { ...textual, canonical: relative.split(p.sep).join('/'), checkedAbsolute: realTarget }
     : { ok: false, reason: `path ${given} leads outside the workspace through a link` }
 }
 
@@ -588,8 +674,8 @@ function clipMiddle(text: string, max: number): string {
   return `${text.slice(0, headEnd)}${TOOL_OUTPUT_ELIDED_MARKER}${text.slice(tailStart)}`
 }
 
-function failure(reason: string): ToolOutcome {
-  return { output: `Error: ${reason}`, visibleOutput: reason, failureReason: reason }
+function failure(reason: string, visibleReason = reason): ToolOutcome {
+  return { output: `Error: ${reason}`, visibleOutput: visibleReason, failureReason: visibleReason }
 }
 
 function argumentFailure(error: z.core.$ZodError): ToolOutcome {
@@ -724,6 +810,130 @@ function patchOutcome(
 
 // --- executors ---
 
+/** What `read_file` sends whole by the path's name (M54): a PDF, an image, or neither. */
+function visualKindOf(relative: string): 'pdf' | 'image' | undefined {
+  const extension = path.extname(relative).toLowerCase()
+  if (extension === PDF_EXTENSION) {
+    return 'pdf'
+  }
+  return Object.hasOwn(IMAGE_EXTENSIONS, extension) ? 'image' : undefined
+}
+
+/** The PDF, checked by its header, for the model to read whole (M54). */
+function pdfOutcome(relative: string, bytes: Uint8Array): ToolOutcome {
+  if (!isPdf(bytes)) {
+    return failure(
+      `${relative} ${MODEL_TEXT.notPdf}`,
+      fill(UI_TEXT.toolReadPdfInvalid, { path: relative }),
+    )
+  }
+  const pageCount = pdfPageCount(bytes)
+  const output = fill(MODEL_TEXT.readPdf, {
+    path: relative,
+    pages:
+      pageCount === undefined
+        ? MODEL_TEXT.pagesUnknown
+        : fill(MODEL_TEXT.pagesKnown, { count: String(pageCount) }),
+    bytes: String(bytes.byteLength),
+  })
+  const visiblePages =
+    pageCount === undefined
+      ? UI_TEXT.toolReadPdfPagesUnknown
+      : plural(UI_TEXT.toolReadPdfPages, pageCount, { count: formatNumber(pageCount) })
+  const visibleOutput = fill(UI_TEXT.toolReadPdf, {
+    path: relative,
+    pages: visiblePages,
+    bytes: formatNumber(bytes.byteLength),
+  })
+  return {
+    output,
+    visibleOutput,
+    visibleFile: {
+      path: relative,
+      part: {
+        type: 'file',
+        base64Data: Buffer.from(bytes).toString('base64'),
+        mediaType: PDF_MEDIA_TYPE,
+        name: path.basename(relative),
+        sizeBytes: bytes.byteLength,
+        pageCount,
+      },
+    },
+  }
+}
+
+/** The image, checked by its header, for the model to see (M54). */
+function imageOutcome(relative: string, bytes: Uint8Array): ToolOutcome {
+  const info = readImageInfo(bytes)
+  if (info === undefined) {
+    return failure(
+      `${relative} ${MODEL_TEXT.notImage}`,
+      fill(UI_TEXT.toolReadImageInvalid, { path: relative }),
+    )
+  }
+  const output = fill(MODEL_TEXT.readImage, {
+    path: relative,
+    mediaType: info.mediaType,
+    width: String(info.width),
+    height: String(info.height),
+    bytes: String(bytes.byteLength),
+  })
+  const visibleOutput = fill(UI_TEXT.toolReadImage, {
+    path: relative,
+    mediaType: info.mediaType,
+    width: formatNumber(info.width),
+    height: formatNumber(info.height),
+    bytes: formatNumber(bytes.byteLength),
+  })
+  return {
+    output,
+    visibleOutput,
+    visibleFile: {
+      path: relative,
+      part: {
+        type: 'image',
+        base64Data: Buffer.from(bytes).toString('base64'),
+        mediaType: info.mediaType,
+        width: info.width,
+        height: info.height,
+      },
+    },
+  }
+}
+
+/**
+ * A PDF or an image read whole (M54, PLAN.md D47), within what an attachment
+ * of its kind may be; the file itself reaches the model after the round.
+ */
+async function readVisual(
+  file: { readonly relative: string; readonly checkedAbsolute: string },
+  kind: 'pdf' | 'image',
+  context: ToolContext,
+): Promise<ToolOutcome> {
+  let bytes: Uint8Array | undefined
+  try {
+    bytes = await context.io.readBytes(
+      file.checkedAbsolute,
+      kind === 'pdf' ? MAX_DOCUMENT_BYTES : MAX_IMAGE_BYTES,
+      file.checkedAbsolute,
+    )
+  } catch (error: unknown) {
+    // Stop still belongs to the host's cancellation path, not a file error row.
+    if (context.signal?.aborted === true) {
+      throw error
+    }
+    const modelReason = error instanceof Error ? error.message : String(error)
+    return failure(modelReason, fill(UI_TEXT.toolVisualReadFailed, { path: file.relative }))
+  }
+  if (bytes === undefined) {
+    return failure(
+      `file not found: ${file.relative}`,
+      fill(UI_TEXT.toolVisualFileMissing, { path: file.relative }),
+    )
+  }
+  return kind === 'pdf' ? pdfOutcome(file.relative, bytes) : imageOutcome(file.relative, bytes)
+}
+
 async function readFile(
   args: z.infer<typeof readFileArgs>,
   context: ToolContext,
@@ -737,7 +947,11 @@ async function readFile(
   if (!resolved.ok) {
     return failure(resolved.reason)
   }
-  const raw = await context.io.readFile(resolved.absolute)
+  const visual = visualKindOf(resolved.relative)
+  if (visual !== undefined) {
+    return await readVisual(resolved, visual, context)
+  }
+  const raw = await context.io.readFile(resolved.checkedAbsolute, resolved.checkedAbsolute)
   if (raw === undefined) {
     return failure(`file not found: ${resolved.relative}`)
   }
@@ -766,6 +980,7 @@ async function located(
       readonly ok: true
       readonly relative: string
       readonly absolute: string
+      readonly checkedAbsolute: string
       readonly before: string | undefined
     }
   | { readonly ok: false; readonly outcome: ToolOutcome }
@@ -779,17 +994,31 @@ async function located(
   if (!resolved.ok) {
     return { ok: false, outcome: failure(resolved.reason) }
   }
-  const before = await context.io.readFile(resolved.absolute)
-  return { ok: true, relative: resolved.relative, absolute: resolved.absolute, before }
+  if (
+    context.approvedTarget !== undefined &&
+    (resolved.absolute !== context.approvedTarget.absolute ||
+      resolved.checkedAbsolute !== context.approvedTarget.checkedAbsolute)
+  ) {
+    return { ok: false, outcome: failure(MODEL_TEXT.pathChangedAfterApproval) }
+  }
+  const before = await context.io.readFile(resolved.checkedAbsolute, resolved.checkedAbsolute)
+  return {
+    ok: true,
+    relative: resolved.relative,
+    absolute: resolved.absolute,
+    checkedAbsolute: resolved.checkedAbsolute,
+    before,
+  }
 }
 
 /** Why an edit must not touch this file now, or undefined (D27). */
 function editRefusal(
-  file: { readonly relative: string; readonly absolute: string },
+  file: { readonly relative: string; readonly absolute: string; readonly checkedAbsolute: string },
   context: ToolContext,
 ): ToolOutcome | undefined {
   // Writing under an editor's unsaved changes makes VS Code ask which to keep.
-  return context.io.hasUnsavedChanges(file.absolute)
+  return context.io.hasUnsavedChanges(file.absolute) ||
+    context.io.hasUnsavedChanges(file.checkedAbsolute)
     ? failure(`${file.relative} ${MODEL_TEXT.fileHasUnsavedChanges}`)
     : undefined
 }
@@ -806,9 +1035,9 @@ async function writeFile(
   if (refusal !== undefined) {
     return refusal
   }
-  const { before, relative, absolute } = file
+  const { before, relative, absolute, checkedAbsolute } = file
   if (before === undefined) {
-    await context.io.writeFile(absolute, args.content)
+    await context.io.writeFile(checkedAbsolute, args.content, checkedAbsolute)
     context.seen.set(absolute, fingerprint(args.content))
     return patchOutcome(
       relative,
@@ -830,7 +1059,7 @@ async function writeFile(
       ? `${normalized}${LF}`
       : normalized
   const after = fileText(text, shape)
-  await context.io.writeFile(absolute, after)
+  await context.io.writeFile(checkedAbsolute, after, checkedAbsolute)
   context.seen.set(absolute, fingerprint(after))
   return patchOutcome(
     relative,
@@ -849,7 +1078,7 @@ async function editFile(
   if (!file.ok) {
     return file.outcome
   }
-  const { before, relative, absolute } = file
+  const { before, relative, absolute, checkedAbsolute } = file
   if (before === undefined) {
     return failure(`file not found: ${relative}`)
   }
@@ -875,7 +1104,7 @@ async function editFile(
   }
   const updated = `${current.slice(0, first)}${replace}${current.slice(first + find.length)}`
   const after = fileText(updated, shape)
-  await context.io.writeFile(absolute, after)
+  await context.io.writeFile(checkedAbsolute, after, checkedAbsolute)
   context.seen.set(absolute, fingerprint(after))
   return patchOutcome(relative, current, updated, 'edited', `edited ${relative}`)
 }
@@ -933,6 +1162,8 @@ async function search(
   const outcome = await context.io.searchFiles({
     pattern: args.pattern,
     root: context.workspaceRoot,
+    maxFileBytes: SEARCH_MAX_FILE_BYTES,
+    maxHits: SEARCH_MAX_HITS,
     files: searched.map((relative) => ({
       relative,
       absolute: p.join(context.workspaceRoot, ...relative.split('/')),

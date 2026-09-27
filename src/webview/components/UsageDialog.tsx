@@ -8,7 +8,7 @@
 // usage row, `/usage` and `/cost`; centred over the transcript with the
 // chat dimmed behind it.
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import {
   META_DASHBOARD_URL,
   MILLISECONDS_PER_SECOND,
@@ -16,8 +16,9 @@ import {
   PAID_PRICES_VERIFIED_ON,
   type PaidFeature,
   UI_TEXT,
+  USAGE_COUNTDOWN_REFRESH_MS,
 } from '../../shared/constants'
-import { fill, formatPercent, plural, templateParts } from '../../shared/l10n/text'
+import { fill, formatNumber, formatPercent, plural, templateParts } from '../../shared/l10n/text'
 import {
   paidCostUsd,
   paidFeatureName,
@@ -41,6 +42,8 @@ import {
 } from '../../shared/usage'
 import { estimateCostUsd, formatUsd, percentOf } from '../../core/usage/insights'
 import type { ContextSummary, UsageReport, UsageSummary } from '../state/uiState'
+import type { UiState } from '../state/uiState'
+import type { SignInMethod } from '../../shared/protocol'
 import { formatDurationMs } from '../agentFormat'
 import { Modal } from './Modal'
 
@@ -52,6 +55,9 @@ export interface UsageDialogProps {
   readonly modelId: string | undefined
   /** The paid features that are on and this window's tally (M33, PLAN.md D30). */
   readonly paid: PaidState
+  readonly auth: UiState['auth']
+  readonly onInstallMuseCode: () => void
+  readonly onSetupSignIn: (method: SignInMethod) => void
   readonly now: () => number
   readonly onOpenExternal: (url: string) => void
   readonly onClose: () => void
@@ -76,6 +82,16 @@ function UsageBar({
   readonly detail: string | undefined
   readonly nowMs: number
 }) {
+  if (resetsAtMs <= nowMs) {
+    return (
+      <div className="usage-row">
+        <div className="usage-row-head">
+          <span>{label}</span>
+        </div>
+        <div className="usage-row-meta">{UI_TEXT.usageAwaitingFreshReport}</div>
+      </div>
+    )
+  }
   const meta = [
     detail,
     fill(UI_TEXT.usageResetsIn, { duration: formatDuration(resetsAtMs, nowMs) }),
@@ -210,6 +226,12 @@ function paidUseText(feature: PaidFeature, tally: PaidTally): string {
         duration: formatDurationMs(tally.voiceSeconds * MILLISECONDS_PER_SECOND),
       })
     }
+    case 'scheduledPrompts': {
+      return plural(UI_TEXT.usagePaidScheduled, tally.scheduledRuns)
+    }
+    case 'subagents': {
+      return plural(UI_TEXT.usagePaidSubagentRequests, tally.subagentRequests ?? 0)
+    }
   }
 }
 
@@ -231,23 +253,49 @@ function PaidSection({
         {features.map((feature) => (
           <PaidRow key={feature} feature={feature} paid={paid} />
         ))}
-        <dt>{UI_TEXT.usagePaidTotal}</dt>
+        <dt>
+          {features.includes('subagents') ? UI_TEXT.usagePaidExtraTotal : UI_TEXT.usagePaidTotal}
+        </dt>
         <dd>{formatUsd(paidTotalUsd(paid.tally))}</dd>
       </dl>
       <p className="usage-row-meta">
         {fill(UI_TEXT.usagePaidNote, { date: PAID_PRICES_VERIFIED_ON })}
       </p>
+      {features.includes('subagents') ? (
+        <p className="usage-row-meta">{UI_TEXT.usagePaidSubagentSubset}</p>
+      ) : null}
     </>
   )
 }
 
 function PaidRow({ feature, paid }: { readonly feature: PaidFeature; readonly paid: PaidState }) {
   const state = paid.features.includes(feature) ? UI_TEXT.usagePaidOn : UI_TEXT.usagePaidOff
+  const requests = paid.tally.subagentRequests ?? 0
+  const unknown = paid.tally.subagentUnknownRequests ?? 0
+  const isEntirelyUnknown = feature === 'subagents' && requests > 0 && requests === unknown
+  const cost = formatUsd(paidCostUsd(feature, paid.tally))
+  let costDetail = cost
+  if (feature === 'scheduledPrompts') {
+    costDetail = UI_TEXT.usageScheduledIncluded
+  } else if (feature === 'subagents') {
+    costDetail = fill(UI_TEXT.usagePaidSubagentReported, { cost })
+  }
   return (
     <>
       <dt>{`${paidFeatureName(feature)} (${state})`}</dt>
-      <dd>
-        {`${paidUseText(feature, paid.tally)} · ${formatUsd(paidCostUsd(feature, paid.tally))}`}
+      <dd className={feature === 'subagents' ? 'usage-paid-child' : undefined}>
+        {paidUseText(feature, paid.tally)}
+        {isEntirelyUnknown ? null : ` · ${costDetail}`}
+        {feature === 'subagents' ? (
+          <>
+            {isEntirelyUnknown
+              ? null
+              : ` · ${fill(UI_TEXT.agentTokens, { tokens: formatNumber(paid.tally.subagentTokens ?? 0) })}`}
+            {unknown > 0 ? (
+              <p className="usage-row-meta">{plural(UI_TEXT.usagePaidSubagentUnknown, unknown)}</p>
+            ) : null}
+          </>
+        ) : null}
       </dd>
     </>
   )
@@ -384,10 +432,23 @@ export function UsageDialog({
   context,
   modelId,
   paid,
+  auth,
+  onInstallMuseCode,
+  onSetupSignIn,
   now,
   onOpenExternal,
   onClose,
 }: UsageDialogProps) {
+  const [confirmInstall, setConfirmInstall] = useState(false)
+  const [, setCountdownTick] = useState(0)
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setCountdownTick((tick) => tick + 1)
+    }, USAGE_COUNTDOWN_REFRESH_MS)
+    return () => {
+      clearInterval(interval)
+    }
+  }, [])
   const nowMs = now()
   // Priced on the Model API only, whose usage always carries its cached total.
   const cachedTokens = usage?.cachedTokens
@@ -456,6 +517,79 @@ export function UsageDialog({
   return (
     <Modal title={UI_TEXT.usageLabel} titleId="usage-title" onClose={onClose}>
       {body}
+      {auth.status === 'signedIn' ? (
+        <div className="usage-setup">
+          {auth.hasCli === false ? (
+            <>
+              {auth.installState === 'running' ? (
+                <p role="status">{UI_TEXT.installWaiting}</p>
+              ) : (
+                <>
+                  {auth.installState === 'failed' ? (
+                    <p role="alert">{auth.detail ?? UI_TEXT.installTimedOut}</p>
+                  ) : null}
+                  {confirmInstall && auth.installCommand !== undefined ? (
+                    <div className="gate-install-confirm">
+                      <p>{UI_TEXT.installConfirmDetail}</p>
+                      <code className="gate-install-command">{auth.installCommand}</code>
+                      <button
+                        type="button"
+                        className="button-primary"
+                        onClick={() => {
+                          setConfirmInstall(false)
+                          onInstallMuseCode()
+                        }}
+                      >
+                        {UI_TEXT.installConfirmAction}
+                      </button>
+                      <button
+                        type="button"
+                        className="button-secondary"
+                        onClick={() => {
+                          setConfirmInstall(false)
+                        }}
+                      >
+                        {UI_TEXT.installCancelAction}
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      className="button-secondary"
+                      onClick={() => {
+                        setConfirmInstall(true)
+                      }}
+                    >
+                      {UI_TEXT.installStartAction}
+                    </button>
+                  )}
+                </>
+              )}
+            </>
+          ) : null}
+          {auth.hasCli === true && auth.hasCliSession === false && auth.backend === 'modelApi' ? (
+            <button
+              type="button"
+              className="button-secondary"
+              onClick={() => {
+                onSetupSignIn('browser')
+              }}
+            >
+              {UI_TEXT.signInBrowser}
+            </button>
+          ) : null}
+          <button
+            type="button"
+            className="button-secondary"
+            onClick={() => {
+              onSetupSignIn('apiKey')
+            }}
+          >
+            {paid.isKeyStored ? UI_TEXT.usageReplaceModelApiKey : UI_TEXT.usageAddModelApiKey}
+          </button>
+          <p className="usage-row-meta">{UI_TEXT.signInApiKeyDetail}</p>
+        </div>
+      ) : null}
     </Modal>
   )
 }

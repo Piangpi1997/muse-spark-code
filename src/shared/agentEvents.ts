@@ -6,6 +6,7 @@
 // Shared by host and webview: no `vscode`, Node, or DOM imports.
 
 import * as z from 'zod/mini'
+import { scheduleViewSchema } from './schedule'
 import { PAID_FEATURES } from './constants'
 
 /** A source a reply cites: the page's URL and, when Meta sent one, its title (M33). */
@@ -15,12 +16,19 @@ export type CitationSummary = z.infer<typeof citationSchema>
 /** A stored-output handle (`item/readOutput` fetches the bytes by `id`). */
 export const outputRefSchema = z.object({ id: z.string(), byteLen: z.number() })
 
-/** A user message's image, as the durable log echoes it (MSP `MessageAttachment`). */
+/**
+ * A user message's image, as the durable log echoes it (MSP
+ * `MessageAttachment`, whose vocabulary "grows additively"), or a PDF the
+ * Model API backend sent (M54, `type: "file"`): its name, size and pages.
+ */
 const messageAttachmentSchema = z.object({
   type: z.string(),
   mediaType: z.string(),
   width: z.optional(z.number()),
   height: z.optional(z.number()),
+  name: z.optional(z.string()),
+  sizeBytes: z.optional(z.number()),
+  pageCount: z.optional(z.number()),
 })
 
 /** Server-authored edit summary: line counts, never hunks or bytes. */
@@ -174,6 +182,9 @@ export const approvalSubjectSchema = z.object({
   stages: z.optional(z.array(approvalStageSchema)),
   /** A call billed on top of tokens (M34, PLAN.md D30): the card names its price. */
   paidFeature: z.optional(z.enum(PAID_FEATURES)),
+  /** Model API child-task consent (M48): exact model and hard HTTP attempt cap. */
+  modelId: z.optional(z.string()),
+  requestLimit: z.optional(z.number()),
 })
 export type ApprovalSubject = z.infer<typeof approvalSubjectSchema>
 
@@ -227,6 +238,12 @@ export type SessionGoal = z.infer<typeof sessionGoalSchema>
 
 const agentEventSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('turnStarted'), turnId: z.string() }),
+  /** An accepted steer needed its own later turn after the previous one ended. */
+  z.object({
+    type: z.literal('userMessageTurnChanged'),
+    userMessageId: z.string(),
+    turnId: z.string(),
+  }),
   z.object({ type: z.literal('itemStarted'), item: itemSnapshotSchema }),
   z.object({
     type: z.literal('textDelta'),
@@ -279,6 +296,8 @@ const agentEventSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('approvalModeChanged'), mode: z.string() }),
   // The session's user-invocable skill set changed; re-list.
   z.object({ type: z.literal('skillsChanged') }),
+  /** Extension-owned Model API schedules, never Muse Code's native cron jobs (M52). */
+  z.object({ type: z.literal('schedulesChanged'), jobs: z.array(scheduleViewSchema) }),
   // The host is waiting for a decision on a gated tool call.
   z.object({
     type: z.literal('approvalRequested'),

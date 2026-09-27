@@ -59,9 +59,20 @@ export type PatchSummary = z.infer<typeof patchSummarySchema>
 const userAttachmentSchema = z.object({
   id: z.string(),
   name: z.string(),
+  mediaType: z.optional(z.string()),
   width: z.optional(z.number()),
   height: z.optional(z.number()),
 })
+
+export function hasFileAttachment(
+  attachments: readonly z.infer<typeof userAttachmentSchema>[],
+): boolean {
+  return attachments.some((attachment) =>
+    attachment.mediaType === undefined
+      ? attachment.width === undefined && attachment.height === undefined
+      : !attachment.mediaType.startsWith('image/'),
+  )
+}
 
 const userEntrySchema = z.object({
   kind: z.literal('user'),
@@ -78,6 +89,8 @@ const userEntrySchema = z.object({
   referenceLabel: z.optional(z.string()),
   /** The turn the message started, once known (fork cut points, M6). */
   turnId: z.optional(z.string()),
+  /** The Model API replay item's ID; live cards keep their local `id` for UI updates. */
+  replayItemId: z.optional(z.string()),
 })
 
 const assistantEntrySchema = z.object({
@@ -176,6 +189,8 @@ const subagentEntrySchema = z.object({
   role: z.optional(z.string()),
   objective: z.optional(z.string()),
   status: z.string(),
+  /** Model API children consume paid requests; retained across panel snapshots. */
+  paid: z.optional(z.enum(PAID_FEATURES)),
   controlStatus: z.optional(z.string()),
   subagentId: z.optional(z.string()),
   childSessionId: z.optional(z.string()),

@@ -9,7 +9,7 @@
 
 import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { lstat, mkdir, open, readFile, rm, stat } from 'node:fs/promises'
+import { type FileHandle, lstat, mkdir, open, rm, stat } from 'node:fs/promises'
 import path from 'node:path'
 import { StringDecoder } from 'node:string_decoder'
 import { Worker } from 'node:worker_threads'
@@ -29,9 +29,19 @@ import type {
   ToolIo,
 } from '../../core/backends/modelapi/tools'
 import { resolveExecutable } from '../../core/executables'
+import { isPdf } from '../../core/pdf'
+import type { ToolImageIo } from '../../core/toolImages'
+import { isSamePath } from '../../core/paths'
+import { powerShellQuoted } from '../../core/shellQuote'
 import {
+  BOUNDED_FILE_READ_CHUNK_BYTES,
   BYTES_PER_MIB,
   MODEL_TEXT,
+  MAX_DOCUMENT_BYTES,
+  PDF_HEADER_WINDOW_BYTES,
+  HOOK_OUTPUT_MAX_BYTES,
+  HOOK_FORBIDDEN_ENV_NAMES,
+  HOOK_STDIN_MAX_BYTES,
   SEARCH_TIMEOUT_MS,
   SHELL_DRAIN_GRACE_MS,
   SHELL_OUTPUT_MAX_CHARS,
@@ -111,6 +121,20 @@ const POWERSHELL = 'powershell'
 const PATH_VARIABLE = 'PATH'
 const PS_MODULE_PATH = 'PSModulePath'
 const PROGRAM_FILES = 'ProgramFiles'
+const HOOK_ENV_NAMES = [
+  'HOME',
+  'PATH',
+  'USER',
+  'LOGNAME',
+  'TMPDIR',
+  'TEMP',
+  'TMP',
+  'SHELL',
+  'LANG',
+  'LC_ALL',
+  'TERM',
+] as const
+const WINDOWS_HOOK_ENV_NAMES = ['COMSPEC', 'PATHEXT', 'SystemRoot', 'WINDIR'] as const
 
 // The variables VS Code's terminal strips from the extension host's
 // environment before a shell sees it (`sanitizeProcessEnvironment`,
@@ -217,6 +241,50 @@ export function shellEnvironment(
   return clean
 }
 
+/** Hooks get Muse Code's narrow environment; provider credentials never pass. */
+function isForbiddenHookEnv(name: string): boolean {
+  const upper = name.toUpperCase()
+  return upper.endsWith('_API_KEY') || HOOK_FORBIDDEN_ENV_NAMES.has(upper)
+}
+
+export function hookEnvironment(
+  env: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform,
+  extraNames: readonly string[] = [],
+): NodeJS.ProcessEnv {
+  const clean: NodeJS.ProcessEnv = {}
+  const names: readonly string[] =
+    platform === 'win32'
+      ? [...HOOK_ENV_NAMES, ...WINDOWS_HOOK_ENV_NAMES, ...extraNames]
+      : [...HOOK_ENV_NAMES, ...extraNames]
+  for (const name of names) {
+    if (isForbiddenHookEnv(name)) {
+      continue
+    }
+    const value = environmentValue(env, platform, name)
+    if (value === undefined) {
+      continue
+    }
+    const normalizedName = platform === 'win32' ? name.toUpperCase() : name
+    if (normalizedName === PATH_VARIABLE) {
+      const pathApi = platform === 'win32' ? path.win32 : path.posix
+      const delimiter = pathApi.delimiter
+      setEnvironmentVariable(
+        clean,
+        platform,
+        name,
+        value
+          .split(delimiter)
+          .filter((entry) => pathApi.isAbsolute(entry))
+          .join(delimiter),
+      )
+    } else if (normalizedName !== 'COMSPEC' || path.win32.isAbsolute(value)) {
+      setEnvironmentVariable(clean, platform, name, value)
+    }
+  }
+  return clean
+}
+
 /**
  * The interpreter for the shell tool, by absolute path: Windows PowerShell
  * under `%SystemRoot%` (else the first on the absolute PATH), bash from the
@@ -265,21 +333,171 @@ export function shellArguments(
     : ['-lc', command]
 }
 
+function hookProgramFor(deps: ToolIoDeps, configuredShell: string | undefined): string | undefined {
+  if (deps.platform === 'win32') {
+    return deps.systemRoot === undefined
+      ? resolveExecutable('cmd', {
+          platform: deps.platform,
+          pathVariable: deps.env()['PATH'],
+          fileExists: existsSync,
+        })
+      : path.win32.join(deps.systemRoot, 'System32', 'cmd.exe')
+  }
+  return configuredShell !== undefined &&
+    path.posix.isAbsolute(configuredShell) &&
+    existsSync(configuredShell)
+    ? configuredShell
+    : resolveExecutable('sh', {
+        platform: deps.platform,
+        pathVariable: deps.env()['PATH'],
+        fileExists: existsSync,
+      })
+}
+
+async function assertCheckedCanonicalPath(
+  absolutePath: string,
+  expectedCanonicalPath: string | undefined,
+  platform: NodeJS.Platform,
+) {
+  if (expectedCanonicalPath === undefined) {
+    return
+  }
+  const canonical = await canonicalPath(absolutePath)
+  if (!isSamePath(canonical, expectedCanonicalPath, platform)) {
+    throw new Error(MODEL_TEXT.pathChangedAfterApproval)
+  }
+}
+
+/** The sampled pathname must still name the opened file, never a swapped junction target. */
+async function checkedOpenedFile(
+  absolutePath: string,
+  file: FileHandle,
+  expectedCanonicalPath: string | undefined,
+  platform: NodeJS.Platform,
+): Promise<{ readonly dev: number; readonly ino: number }> {
+  const held = await file.stat()
+  // Node exposes inode identity, not a final path by handle. This catches
+  // observed swaps; rapid adversarial ABA swaps remain outside the guarantee.
+  if (expectedCanonicalPath === undefined) {
+    return { dev: held.dev, ino: held.ino }
+  }
+  for (let sample = 0; sample < 2; sample += 1) {
+    await assertCheckedCanonicalPath(absolutePath, expectedCanonicalPath, platform)
+    const current = await stat(absolutePath)
+    if (held.dev !== current.dev || held.ino !== current.ino) {
+      throw new Error(MODEL_TEXT.pathChangedAfterApproval)
+    }
+  }
+  return { dev: held.dev, ino: held.ino }
+}
+
+/** A path's metadata and bytes come from one handle; growth stops after max + 1 bytes. */
+async function readBoundedFile(
+  absolutePath: string,
+  maxBytes: number,
+  expectedCanonicalPath?: string,
+  platform?: NodeJS.Platform,
+  pdfMaxBytes?: number,
+): Promise<
+  | { readonly ok: true; readonly bytes: Buffer; readonly isPdf: boolean }
+  | { readonly ok: false; readonly size: number; readonly isPdf: boolean }
+> {
+  const file = await open(absolutePath, 'r')
+  try {
+    if (expectedCanonicalPath !== undefined && platform !== undefined) {
+      await checkedOpenedFile(absolutePath, file, expectedCanonicalPath, platform)
+    }
+    // An explicit position leaves this handle's sequential read at byte zero.
+    const header = pdfMaxBytes === undefined ? undefined : Buffer.alloc(PDF_HEADER_WINDOW_BYTES)
+    const headerRead =
+      header === undefined ? undefined : await file.read(header, 0, header.length, 0)
+    const isPdfFile =
+      header !== undefined &&
+      headerRead !== undefined &&
+      isPdf(header.subarray(0, headerRead.bytesRead))
+    const limit = isPdfFile ? (pdfMaxBytes ?? maxBytes) : maxBytes
+    const { size } = await file.stat()
+    if (size > limit) {
+      return { ok: false, size, isPdf: isPdfFile }
+    }
+    const chunks: Buffer[] = []
+    let total = 0
+    for (;;) {
+      const length = Math.min(BOUNDED_FILE_READ_CHUNK_BYTES, limit + 1 - total)
+      const chunk = Buffer.allocUnsafe(length)
+      const { bytesRead } = await file.read(chunk, 0, length, null)
+      if (bytesRead === 0) {
+        return { ok: true, bytes: Buffer.concat(chunks, total), isPdf: isPdfFile }
+      }
+      total += bytesRead
+      if (total > limit) {
+        return { ok: false, size: total, isPdf: isPdfFile }
+      }
+      chunks.push(chunk.subarray(0, bytesRead))
+    }
+  } finally {
+    await file.close()
+  }
+}
+
+/** Picker bytes use the same single-handle cap as tool reads, on the extension host. */
+export async function readPickedFile(
+  absolutePath: string,
+  maxBytes: number,
+  expectedCanonicalPath?: string,
+): Promise<{ readonly bytes: Uint8Array | undefined; readonly isPdf: boolean }> {
+  try {
+    const read = await readBoundedFile(
+      absolutePath,
+      maxBytes,
+      expectedCanonicalPath,
+      process.platform,
+      MAX_DOCUMENT_BYTES,
+    )
+    return { bytes: read.ok ? read.bytes : undefined, isPdf: read.isPdf }
+  } catch (error: unknown) {
+    if (isMissingFile(error)) {
+      return { bytes: undefined, isPdf: false }
+    }
+    throw error
+  }
+}
+
+/** The VS Code tool-row preview uses the same checked read as Model API tools. */
+export function toolImagePreviewIo(
+  toolIo: Pick<ToolIo, 'readBytes'>,
+  fileSize: ToolImageIo['fileSize'],
+): ToolImageIo {
+  return {
+    realPath: canonicalPath,
+    fileSize,
+    readBytes: (fsPath, maxBytes, expectedCanonicalPath) =>
+      toolIo.readBytes(fsPath, maxBytes, expectedCanonicalPath),
+  }
+}
+
 export function createToolIo(deps: ToolIoDeps): ToolIo {
   const interpreter = shellInterpreter(deps.platform, deps.systemRoot, deps.env(), existsSync)
+  const configuredHookShell = deps.env()['SHELL']
+  const hookProgram = hookProgramFor(deps, configuredHookShell)
   return {
-    async readFile(absolutePath) {
+    async readFile(absolutePath, expectedCanonicalPath) {
       let bytes: Uint8Array
       try {
-        // Refused before it is loaded (M39): the tools hold a file whole.
-        const { size } = await stat(absolutePath)
-        if (size > TOOL_FILE_MAX_BYTES) {
-          const mib = (size / BYTES_PER_MIB).toFixed(1)
+        // Refused before it is loaded (M39), including growth after metadata.
+        const read = await readBoundedFile(
+          absolutePath,
+          TOOL_FILE_MAX_BYTES,
+          expectedCanonicalPath,
+          deps.platform,
+        )
+        if (!read.ok) {
+          const mib = (read.size / BYTES_PER_MIB).toFixed(1)
           throw new Error(
             `${MODEL_TEXT.toolFileTooLarge} ${String(TOOL_FILE_MAX_MIB)} MiB, and this one is ${mib} MiB: ${MODEL_TEXT.toolFileTooLargeHint}`,
           )
         }
-        bytes = await readFile(absolutePath)
+        bytes = read.bytes
       } catch (error: unknown) {
         if (isMissingFile(error)) {
           return
@@ -288,15 +506,20 @@ export function createToolIo(deps: ToolIoDeps): ToolIo {
       }
       return decodeText(bytes, absolutePath)
     },
-    async readBytes(absolutePath, maxBytes) {
+    async readBytes(absolutePath, maxBytes, expectedCanonicalPath) {
       try {
-        const { size } = await stat(absolutePath)
-        if (size > maxBytes) {
+        const read = await readBoundedFile(
+          absolutePath,
+          maxBytes,
+          expectedCanonicalPath,
+          deps.platform,
+        )
+        if (!read.ok) {
           throw new Error(
-            `${path.basename(absolutePath)} is ${String(size)} bytes, over the ${String(maxBytes)} allowed`,
+            `${path.basename(absolutePath)} is ${String(read.size)} bytes, over the ${String(maxBytes)} allowed`,
           )
         }
-        return await readFile(absolutePath)
+        return read.bytes
       } catch (error: unknown) {
         if (isMissingFile(error)) {
           return
@@ -304,11 +527,15 @@ export function createToolIo(deps: ToolIoDeps): ToolIo {
         throw error
       }
     },
-    async writeFile(absolutePath, content) {
+    async writeFile(absolutePath, content, expectedCanonicalPath) {
       // A new file's folders are created (PLAN.md D26: `write_file` into a
       // missing folder failed); the caller confined the whole path first.
       // The write is atomic (D27): an interrupted one leaves the old file.
-      await writeFileAtomically(absolutePath, content, { sleep: pause })
+      await writeFileAtomically(absolutePath, content, {
+        sleep: pause,
+        ...(expectedCanonicalPath !== undefined && { expectedCanonicalPath }),
+        platform: deps.platform,
+      })
     },
     async pathExists(absolutePath) {
       try {
@@ -321,19 +548,52 @@ export function createToolIo(deps: ToolIoDeps): ToolIo {
         throw error
       }
     },
-    async reserveFile(absolutePath) {
+    async reserveFile(absolutePath, expectedCanonicalPath) {
+      await assertCheckedCanonicalPath(absolutePath, expectedCanonicalPath, deps.platform)
       await mkdir(path.dirname(absolutePath), { recursive: true })
+      await assertCheckedCanonicalPath(absolutePath, expectedCanonicalPath, deps.platform)
       // `wx`: created here or refused, never an existing file replaced (M34).
       const handle = await open(absolutePath, 'wx')
-      const release = async () => {
+      let identity: { readonly dev: number; readonly ino: number }
+      try {
+        identity = await handle.stat()
+      } catch (error: unknown) {
         await handle.close()
+        throw error
+      }
+      let isClosed = false
+      const close = async () => {
+        if (isClosed) {
+          return
+        }
+        await handle.close()
+        isClosed = true
+      }
+      const release = async () => {
+        await close()
+        await assertCheckedCanonicalPath(absolutePath, expectedCanonicalPath, deps.platform)
+        const current = await stat(absolutePath)
+        if (current.dev !== identity.dev || current.ino !== identity.ino) {
+          throw new Error(MODEL_TEXT.pathChangedAfterApproval)
+        }
         await rm(absolutePath, { force: true })
+      }
+      try {
+        await checkedOpenedFile(absolutePath, handle, expectedCanonicalPath, deps.platform)
+      } catch (error: unknown) {
+        try {
+          await release()
+        } catch {
+          // Do not delete an outside file if the path changed after open.
+        }
+        throw error
       }
       return {
         fill: async (bytes) => {
           try {
+            await checkedOpenedFile(absolutePath, handle, expectedCanonicalPath, deps.platform)
             await handle.writeFile(bytes)
-            await handle.close()
+            await close()
           } catch (error: unknown) {
             // A write that failed (a full disk) leaves no half file behind.
             try {
@@ -374,6 +634,47 @@ export function createToolIo(deps: ToolIoDeps): ToolIo {
         limit,
         tree: { platform: deps.platform, systemRoot: deps.systemRoot, log: deps.log },
         job,
+      })
+    },
+    async runHook(command, payload, cwd, timeoutMs, signal, extraEnvNames) {
+      // dispatchHooks enforces this too. Keep the adapter bounded when it is
+      // called directly, before any hook subprocess starts.
+      if (Buffer.byteLength(payload) > HOOK_STDIN_MAX_BYTES) {
+        throw new RangeError('Hook stdin exceeds the input cap')
+      }
+      const file = deps.platform === 'win32' ? interpreter : hookProgram
+      if (hookProgram === undefined || file === undefined) {
+        return {
+          stdout: '',
+          stderr: 'Hook shell is unavailable',
+          exitCode: null,
+          isTimedOut: false,
+          isCancelled: false,
+        }
+      }
+      const assembly = deps.platform === 'win32' ? await deps.shellJobAssembly?.() : undefined
+      const job = assembly === undefined ? undefined : newShellJob(assembly)
+      // On Windows PowerShell joins the job first, then starts cmd.exe with
+      // the configured command. The command itself uses cmd, as Muse Code does.
+      const args =
+        deps.platform === 'win32'
+          ? shellArguments(
+              deps.platform,
+              `& ${powerShellQuoted(hookProgram)} /D /S /C ${powerShellQuoted(command)}`,
+              job,
+            )
+          : ['-c', command]
+      return await runCommand({
+        file,
+        args,
+        cwd,
+        env: hookEnvironment(deps.env(), deps.platform, extraEnvNames),
+        timeoutMs,
+        signal,
+        tree: { platform: deps.platform, systemRoot: deps.systemRoot, log: deps.log },
+        job,
+        stdin: payload,
+        maxOutputBytes: HOOK_OUTPUT_MAX_BYTES,
       })
     },
   }
@@ -429,6 +730,10 @@ export interface CommandRun {
   readonly tree: ProcessTreeDeps
   /** The job object the command joins (Windows, M27). */
   readonly job?: ShellJob | undefined
+  /** One JSON payload for a hook process; ordinary shell tools leave stdin closed. */
+  readonly stdin?: string | undefined
+  /** Per-stream byte ceiling, killing the tree when crossed. */
+  readonly maxOutputBytes?: number | undefined
 }
 
 /**
@@ -450,13 +755,16 @@ export function runCommand(run: CommandRun): Promise<ShellResult> {
       cwd: run.cwd,
       env: run.env,
       windowsHide: true,
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: ['pipe', 'pipe', 'pipe'],
       ...treeSpawnOptions(run.tree.platform),
     })
     const stdout = new BoundedText(SHELL_OUTPUT_MAX_CHARS)
     const stderr = new BoundedText(SHELL_OUTPUT_MAX_CHARS)
     let isTimedOut = false
     let isCancelled = false
+    let isOutputTooLarge = false
+    let stdoutBytes = 0
+    let stderrBytes = 0
     let isSettled = false
     let drain: NodeJS.Timeout | undefined
     let kill: Promise<void> | undefined
@@ -491,6 +799,7 @@ export function runCommand(run: CommandRun): Promise<ShellResult> {
         exitCode,
         isTimedOut,
         isCancelled,
+        ...(isOutputTooLarge && { isOutputTooLarge }),
       }
       // killTree never rejects: what it cannot do, it logs.
       void (kill ?? Promise.resolve()).then(() => {
@@ -498,10 +807,26 @@ export function runCommand(run: CommandRun): Promise<ShellResult> {
       })
     }
     run.signal?.addEventListener('abort', onAbort, { once: true })
+    // A hook may exit before consuming stdin. EPIPE must not crash the host.
+    // Ordinary shell tools get EOF at once, as they did with ignored stdin.
+    child.stdin.on('error', () => {
+      // An early hook exit can close stdin before this write finishes.
+    })
+    child.stdin.end(run.stdin)
     child.stdout.on('data', (chunk: Buffer) => {
+      stdoutBytes += chunk.length
+      if (run.maxOutputBytes !== undefined && stdoutBytes > run.maxOutputBytes) {
+        isOutputTooLarge = true
+        stop()
+      }
       stdout.push(chunk)
     })
     child.stderr.on('data', (chunk: Buffer) => {
+      stderrBytes += chunk.length
+      if (run.maxOutputBytes !== undefined && stderrBytes > run.maxOutputBytes) {
+        isOutputTooLarge = true
+        stop()
+      }
       stderr.push(chunk)
     })
     child.on('error', (error) => {

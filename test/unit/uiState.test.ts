@@ -3,6 +3,7 @@ import type { AgentEvent, ItemSnapshot } from '../../src/shared/agentEvents'
 import { UI_TEXT } from '../../src/shared/constants'
 import type { HostToWebviewMessage } from '../../src/shared/protocol'
 import { restoredUiState, webviewStateOf } from '../../src/webview/state/snapshot'
+import type { ScheduleView } from '../../src/shared/schedule'
 import {
   canSend,
   agentsOf,
@@ -60,6 +61,15 @@ function reduceAll(actions: readonly UiAction[], start: UiState = initialUiState
     state = uiReducer(state, action)
   }
   return state
+}
+
+function expectBoundReplayCard(state: UiState) {
+  expect(state.transcript[0]).toMatchObject({
+    id: 'l1',
+    replayItemId: 'backend-u1',
+    turnId: 't1',
+    status: 'sent',
+  })
 }
 
 const NOW = 1_000_000
@@ -131,6 +141,47 @@ describe('uiReducer: shell', () => {
     })
     expect(state.model).toEqual({ modelId: 'muse-spark-1.3', contextLimit: 1_007_997 })
   })
+
+  it('clears account usage on sign-out and backend change', () => {
+    const subscription = {
+      observedAtMs: NOW,
+      tier: 'prior-account',
+      window: { usedPercent: 42, resetsAtMs: NOW + 60_000, windowDurationMins: 300 },
+      weekly: { usedPercent: 9, resetsAtMs: NOW + 86_400_000 },
+    }
+    const initial = reduceAll([
+      host({ type: 'authState', status: 'signedIn', backend: 'museCode' }),
+      host({ type: 'usageReport', backend: 'museCode', subscription }),
+    ])
+    expect(initial.usageReport?.subscription).toEqual(subscription)
+    expect(
+      uiReducer(initial, host({ type: 'authState', status: 'signedOut' })).usageReport,
+    ).toBeUndefined()
+    expect(
+      uiReducer(initial, host({ type: 'authState', status: 'signedIn', backend: 'modelApi' }))
+        .usageReport,
+    ).toBeUndefined()
+  })
+
+  it('keeps provider account usage unchanged when only the selected model changes', () => {
+    const subscription = {
+      observedAtMs: NOW,
+      tier: 'opaque-plan-id',
+      window: { usedPercent: 63, resetsAtMs: NOW + 60_000, windowDurationMins: 300 },
+      weekly: { usedPercent: 11, resetsAtMs: NOW + 86_400_000 },
+    }
+    const initial = reduceAll([
+      host({ type: 'authState', status: 'signedIn', backend: 'museCode' }),
+      host({ type: 'usageReport', backend: 'museCode', subscription }),
+      host({ type: 'sessionInfo', modelId: 'muse-spark-1.2', contextLimit: 1_007_997 }),
+    ])
+    const switched = uiReducer(
+      initial,
+      host({ type: 'sessionInfo', modelId: 'muse-spark-1.3', contextLimit: 1_007_997 }),
+    )
+    expect(switched.usageReport).toEqual(initial.usageReport)
+    expect(switched.model?.modelId).toBe('muse-spark-1.3')
+  })
 })
 
 describe('uiReducer: sending', () => {
@@ -152,6 +203,145 @@ describe('uiReducer: sending', () => {
     ])
     expect(state.transcript[0]).toMatchObject({ status: 'sent' })
     expect(state.activeTurnId).toBe('t1')
+  })
+
+  it('keeps the live card ID while binding its Model API replay ID through acceptance and snapshot (M53)', () => {
+    const state = reduceAll([
+      host({ type: 'sessionInfo', modelId: 'muse-spark-1.3', sessionId: 's1' }),
+      {
+        type: 'submitted',
+        localId: 'l1',
+        text: 'see image',
+        attachments: [],
+        contextLabel: undefined,
+      },
+      host({ type: 'turnAccepted', localId: 'l1', turnId: 't1', userMessageId: 'backend-u1' }),
+    ])
+    expectBoundReplayCard(state)
+    expect(restoredUiState(webviewStateOf(state, true)).transcript[0]).toMatchObject({
+      id: 'l1',
+      replayItemId: 'backend-u1',
+    })
+  })
+
+  it('binds a late accepted replay ID without restarting its completed turn (M53)', () => {
+    const state = reduceAll([
+      {
+        type: 'submitted',
+        localId: 'l1',
+        text: 'see image',
+        attachments: [],
+        contextLabel: undefined,
+      },
+      agent({ type: 'turnCompleted', turnId: 't1', terminal: 'completed' }),
+      host({ type: 'turnAccepted', localId: 'l1', turnId: 't1', userMessageId: 'backend-u1' }),
+    ])
+    expectBoundReplayCard(state)
+    expect(state.activeTurnId).toBeUndefined()
+  })
+
+  it('corrects a promoted steer by replay ID before or after its acceptance (M53)', () => {
+    const submit = {
+      type: 'submitted',
+      localId: 'l1',
+      text: 'steer',
+      attachments: [],
+      contextLabel: undefined,
+    } as const
+    const correction = agent({
+      type: 'userMessageTurnChanged',
+      userMessageId: 'backend-u1',
+      turnId: 'promoted-turn',
+    })
+    const acceptance = host({
+      type: 'turnAccepted',
+      localId: 'l1',
+      turnId: 'original-turn',
+      userMessageId: 'backend-u1',
+    })
+    const after = reduceAll([submit, acceptance, correction])
+    expect(after.transcript[0]).toMatchObject({
+      id: 'l1',
+      replayItemId: 'backend-u1',
+      turnId: 'promoted-turn',
+    })
+    const before = reduceAll([
+      submit,
+      correction,
+      agent({ type: 'turnCompleted', turnId: 'promoted-turn', terminal: 'completed' }),
+      acceptance,
+    ])
+    expect(before.transcript[0]).toMatchObject({
+      id: 'l1',
+      replayItemId: 'backend-u1',
+      turnId: 'promoted-turn',
+      status: 'sent',
+    })
+    expect(before.activeTurnId).toBeUndefined()
+  })
+
+  it('keeps queued-send and steered-card replay IDs distinct across promotion (M53)', () => {
+    const state = reduceAll([
+      { type: 'submitted', localId: 'l1', text: 'first', attachments: [], contextLabel: undefined },
+      host({ type: 'turnAccepted', localId: 'l1', turnId: 't1', userMessageId: 'backend-u1' }),
+      {
+        type: 'submitted',
+        localId: 'l2',
+        text: 'queued',
+        attachments: [],
+        contextLabel: undefined,
+      },
+      host({ type: 'turnAccepted', localId: 'l2', turnId: 't2', userMessageId: 'backend-u2' }),
+      {
+        type: 'submitted',
+        localId: 'l3',
+        text: 'steered',
+        attachments: [],
+        contextLabel: undefined,
+      },
+      host({ type: 'turnAccepted', localId: 'l3', turnId: 't2', userMessageId: 'backend-u3' }),
+      agent({
+        type: 'userMessageTurnChanged',
+        userMessageId: 'backend-u3',
+        turnId: 't3',
+      }),
+    ])
+    expect(state.transcript[1]).toMatchObject({
+      id: 'l2',
+      replayItemId: 'backend-u2',
+      turnId: 't2',
+    })
+    expect(state.transcript[2]).toMatchObject({
+      id: 'l3',
+      replayItemId: 'backend-u3',
+      turnId: 't3',
+    })
+  })
+
+  it('bounds early promoted-steer corrections by pending user cards (M53)', () => {
+    const state = reduceAll([
+      host({ type: 'sessionInfo', modelId: 'muse-spark-1.3', sessionId: 's1' }),
+      { type: 'submitted', localId: 'l1', text: 'one', attachments: [], contextLabel: undefined },
+      { type: 'submitted', localId: 'l2', text: 'two', attachments: [], contextLabel: undefined },
+      agent({ type: 'userMessageTurnChanged', userMessageId: 'backend-u0', turnId: 't0' }),
+      agent({ type: 'userMessageTurnChanged', userMessageId: 'backend-u1', turnId: 't1' }),
+      agent({ type: 'userMessageTurnChanged', userMessageId: 'backend-u2', turnId: 't2' }),
+    ])
+    expect(state.pendingReplayTurns).toEqual({ 'backend-u1': 't1', 'backend-u2': 't2' })
+    expect(restoredUiState(webviewStateOf(state, true)).pendingReplayTurns).toEqual(
+      state.pendingReplayTurns,
+    )
+    const first = uiReducer(
+      state,
+      host({ type: 'turnAccepted', localId: 'l1', turnId: 'old-t1', userMessageId: 'backend-u1' }),
+    )
+    expect(first.pendingReplayTurns).toEqual({ 'backend-u2': 't2' })
+    const second = uiReducer(
+      first,
+      host({ type: 'turnAccepted', localId: 'l2', turnId: 'old-t2', userMessageId: 'backend-u2' }),
+    )
+    expect(second.pendingReplayTurns).toEqual({})
+    expect(second.transcript[1]).toMatchObject({ replayItemId: 'backend-u2', turnId: 't2' })
   })
 
   it('marks the echo failed with the reason on sendFailed', () => {
@@ -259,6 +449,17 @@ describe('uiReducer: composer state', () => {
     expect(rejected.transcript).toEqual([])
     expect(rejected.banner).toContain('Unsupported file type: x.pdf.')
     expect(uiReducer(added, host({ type: 'attachmentsCleared' })).attachments).toEqual([])
+  })
+
+  it('records both same-name host refusal IDs and invalidates them on clear', () => {
+    const state = reduceAll([
+      host({ type: 'attachmentRejected', name: 'same.png', reason: 'unsupported', requestId: 'a' }),
+      host({ type: 'attachmentRejected', name: 'same.png', reason: 'unsupported', requestId: 'b' }),
+    ])
+    expect(state.attachmentSettlements).toEqual(['a', 'b'])
+    const cleared = uiReducer(state, { type: 'conversationCleared' })
+    expect(cleared.attachmentSettlements).toEqual([])
+    expect(cleared.attachmentEpoch).toBe(state.attachmentEpoch + 1)
   })
 
   it('keeps the latest mention results and queues inserts and focus requests', () => {
@@ -933,7 +1134,7 @@ describe('uiReducer: session history (M6)', () => {
       id: 'u1',
       text: 'what does this do?',
       status: 'sent',
-      attachments: [{ id: 'u1:0', name: 'image/png', width: 2, height: 3 }],
+      attachments: [{ id: 'u1:0', name: 'image/png', mediaType: 'image/png', width: 2, height: 3 }],
       turnId: 't1',
     })
     expect(state.transcript[1]).toMatchObject({ parts: ['why'], isStreaming: false })
@@ -966,6 +1167,37 @@ describe('uiReducer: session history (M6)', () => {
     expect(state.title).toBeUndefined()
   })
 
+  it('restores a PDF name from the stored user message', () => {
+    const state = reduceAll([
+      host({
+        type: 'historyLoaded',
+        sessionId: 'pdf-session',
+        todos: [],
+        items: [
+          {
+            itemId: 'pdf-user',
+            kind: 'userMessage',
+            status: 'completed',
+            text: 'Summarize this',
+            attachments: [
+              {
+                type: 'file',
+                mediaType: 'application/pdf',
+                name: 'report.pdf',
+                sizeBytes: 1024,
+                pageCount: 2,
+              },
+            ],
+          },
+        ],
+      }),
+    ])
+    expect(state.transcript[0]).toMatchObject({
+      kind: 'user',
+      attachments: [{ name: 'report.pdf' }],
+    })
+  })
+
   it('keeps the turn id on a sent card so a fork can cut before it', () => {
     const state = reduceAll([
       { type: 'submitted', localId: 'l1', text: 'one', attachments: [], contextLabel: undefined },
@@ -980,6 +1212,34 @@ describe('uiReducer: session history (M6)', () => {
     // A pending card (no turn yet) is not a fork point; a missing id neither.
     expect(forkCutBefore(state.transcript, 'l3')).toBeUndefined()
     expect(forkCutBefore(state.transcript, 'ghost')).toBeUndefined()
+  })
+
+  it('cuts before a distinct turn and refuses a steered first turn (M53)', () => {
+    const state = reduceAll([
+      { type: 'submitted', localId: 'l1', text: 'first', attachments: [], contextLabel: undefined },
+      host({ type: 'turnAccepted', localId: 'l1', turnId: 't1' }),
+      {
+        type: 'submitted',
+        localId: 'l2',
+        text: 'steer first',
+        attachments: [],
+        contextLabel: undefined,
+      },
+      host({ type: 'turnAccepted', localId: 'l2', turnId: 't1' }),
+      { type: 'submitted', localId: 'l3', text: 'next', attachments: [], contextLabel: undefined },
+      host({ type: 'turnAccepted', localId: 'l3', turnId: 't2' }),
+      {
+        type: 'submitted',
+        localId: 'l4',
+        text: 'steer next',
+        attachments: [],
+        contextLabel: undefined,
+      },
+      host({ type: 'turnAccepted', localId: 'l4', turnId: 't2' }),
+    ])
+    expect(forkCutBefore(state.transcript, 'l2')).toBeUndefined()
+    expect(forkCutBefore(state.transcript, 'l3')).toEqual({ type: 'afterTurn', lastTurnId: 't1' })
+    expect(forkCutBefore(state.transcript, 'l4')).toEqual({ type: 'afterTurn', lastTurnId: 't1' })
   })
 
   it('tracks a subagent through its lifecycle and a backgrounded tool call (M14)', () => {
@@ -1076,6 +1336,26 @@ describe('uiReducer: session history (M6)', () => {
     ])
     const cleared = reduceAll([{ type: 'conversationCleared' }], done)
     expect(cleared.childTranscripts).toEqual({})
+  })
+
+  it('keeps a paid child marker through sparse updates and saved panel state', () => {
+    const state = reduceAll([
+      agent({
+        type: 'itemStarted',
+        item: { itemId: 'paid-child', kind: 'subagent', status: 'inProgress', paid: 'subagents' },
+      }),
+      agent({
+        type: 'itemUpdated',
+        item: { itemId: 'paid-child', kind: 'subagent', status: 'completed' },
+      }),
+    ])
+    expect(agentsOf(state)[0]).toMatchObject({
+      id: 'paid-child',
+      paid: 'subagents',
+      status: 'completed',
+    })
+    const restored = restoredUiState(webviewStateOf({ ...state, sessionId: 'paid-parent' }, true))
+    expect(agentsOf(restored)[0]).toMatchObject({ id: 'paid-child', paid: 'subagents' })
   })
 
   it('turns a rejected upload into the composer banner until dismissed (M14)', () => {
@@ -1657,6 +1937,29 @@ describe('the end of a turn settles what it left running (M25)', () => {
     ).toBe(empty)
   })
 
+  it('routes a Model API child turn by its session prefix (M48)', () => {
+    const state = reduceAll([
+      agent({ type: 'turnStarted', turnId: 'parent' }),
+      agent({ type: 'itemStarted', item: { ...agentRow, childSessionId: 'parent:subagent-1' } }),
+      agent({ type: 'turnStarted', turnId: 'parent:subagent-1:turn-1' }),
+      agent({
+        type: 'itemStarted',
+        item: {
+          itemId: 'child-reply',
+          kind: 'agentMessage',
+          status: 'inProgress',
+          turnId: 'parent:subagent-1:turn-1',
+        },
+      }),
+      agent({ type: 'turnCompleted', turnId: 'parent:subagent-1:turn-1', terminal: 'completed' }),
+    ])
+    expect(state.activeTurnId).toBe('parent')
+    expect(state.childTranscripts['parent:subagent-1']?.entries[0]).toMatchObject({
+      id: 'child-reply',
+      isStreaming: false,
+    })
+  })
+
   it('starts nothing when the acceptance of a turn arrives after its end', () => {
     const state = reduceAll([
       sent('l1'),
@@ -1793,6 +2096,31 @@ describe('clears, restores and refusals (M25)', () => {
     ).toBe('t9')
   })
 
+  it('raises a stale restored upload epoch from surface state without losing draft or chips', () => {
+    const stale: UiState = {
+      ...initialUiState,
+      draft: 'keep typing',
+      attachments: [attachment],
+      pendingRestore: { sessionId: 's1', isTranscriptOmitted: false },
+    }
+    const synced = uiReducer(
+      stale,
+      host({ type: 'surfaceState', sessionId: 's1', attachmentEpoch: 3 }),
+    )
+    expect(synced.attachmentEpoch).toBe(3)
+    expect(synced.draft).toBe('keep typing')
+    expect(synced.attachments).toEqual([attachment])
+    expect(
+      uiReducer(synced, host({ type: 'surfaceState', sessionId: 's1', attachmentEpoch: 1 }))
+        .attachmentEpoch,
+    ).toBe(3)
+    const mismatched = uiReducer(
+      stale,
+      host({ type: 'surfaceState', sessionId: 's2', attachmentEpoch: 3 }),
+    )
+    expect(mismatched.attachmentEpoch).toBe(4)
+  })
+
   it('brings the chips of a refused message back when the host still holds them', () => {
     const sent: readonly UiAction[] = [
       host({ type: 'attachmentAdded', attachment }),
@@ -1873,6 +2201,28 @@ describe('clears, restores and refusals (M25)', () => {
     const noticed = reduceAll([{ type: 'noticeRaised', level: 'warning', text: 'careful' }])
     expect(noticed.transcript).toMatchObject([{ kind: 'notice', level: 'warning' }])
     expect(noticed.announcement?.text).toBe('careful')
+  })
+
+  it.each([
+    ['large.pdf', UI_TEXT.documentTooLarge],
+    ['many.pdf', UI_TEXT.documentsOverBudget],
+    ['packed.png', UI_TEXT.mediaTotalTooLarge],
+    ['large-muse.png', UI_TEXT.commandTooLarge],
+    ['report.pdf', UI_TEXT.pdfNeedsModelApi],
+    ['invalid.pdf', UI_TEXT.invalidPdf],
+    ['source.ts', UI_TEXT.textFilesOverModelApiBudget],
+    ['private.txt', UI_TEXT.textFilePrivate],
+  ])('shows the specific attachment refusal for %s', (name, reason) => {
+    const rejected = reduceAll([host({ type: 'attachmentRejected', name, reason })])
+    expect(rejected.banner).toBe(`${name}: ${reason}`)
+    expect(rejected.announcement?.text).toBe(`${name}: ${reason}`)
+  })
+
+  it('shows a local PDF-size refusal in the composer banner', () => {
+    const rejected = reduceAll([
+      { type: 'attachmentRefused', name: 'large.pdf', reason: UI_TEXT.documentTooLarge },
+    ])
+    expect(rejected.banner).toBe(`large.pdf: ${UI_TEXT.documentTooLarge}`)
   })
 
   it('chains output pages by offset and drops a page that does not follow', () => {
@@ -1999,7 +2349,7 @@ describe('uiReducer: paid features (M33, PLAN.md D30)', () => {
   it('keeps the host’s paid state', () => {
     const paid = {
       features: ['voice' as const],
-      tally: { webSearches: 1, images: 0, voiceSeconds: 3 },
+      tally: { webSearches: 1, images: 0, voiceSeconds: 3, scheduledRuns: 0 },
       isKeyStored: false,
     }
     expect(reduceAll([host({ type: 'paidState', state: paid })]).paid).toEqual(paid)
@@ -2237,6 +2587,230 @@ describe('uiReducer: the session goal (M45)', () => {
       host({ type: 'historyLoaded', sessionId: 's2', items: [], todos: [] }),
     )
     expect(switched.pendingGoalCommand).toBeUndefined()
+  })
+
+  it('keeps schedules and goal edits on a gap reload, then clears both on a session switch', () => {
+    const job: ScheduleView = {
+      id: 'job-a',
+      prompt: 'Check status',
+      cadence: { kind: 'interval', everyMs: 600_000 },
+      nextFireAtMs: 1_000_000,
+      fireCount: 0,
+    }
+    const modelApi = uiReducer(
+      withGoal,
+      host({ type: 'authState', status: 'signedIn', backend: 'modelApi' }),
+    )
+    const scheduled = uiReducer(modelApi, agent({ type: 'schedulesChanged', jobs: [job] }))
+    const withUsage = uiReducer(scheduled, host({ type: 'usageReport', backend: 'modelApi' }))
+    const editing = uiReducer(withUsage, { type: 'goalEditStarted', objective: goal.objective })
+    const pending = uiReducer(editing, { type: 'goalSubmitted', requestId: 'goal-a' })
+    const same = uiReducer(
+      pending,
+      host({
+        type: 'historyLoaded',
+        sessionId: 's1',
+        items: [],
+        todos: [],
+        goal: { ...goal, objective: 'Recovered objective' },
+      }),
+    )
+    expect(same.schedules).toEqual([job])
+    expect(same.usageReport?.backend).toBe('modelApi')
+    expect(same.goalEdit?.draft).toBe('Recovered objective')
+    expect(same.pendingGoalCommand?.requestId).toBe('goal-a')
+    const signingIn = uiReducer(
+      same,
+      host({ type: 'authState', status: 'signingIn', backend: 'modelApi' }),
+    )
+    expect(signingIn.schedules).toEqual([job])
+    expect(signingIn.usageReport).toBeUndefined()
+    // The device code arrives in a later update: still the same live Model
+    // API session, kept for a cancel to return to (the review of PR #43).
+    const withCode = uiReducer(
+      signingIn,
+      host({
+        type: 'authState',
+        status: 'signingIn',
+        backend: 'modelApi',
+        verificationUrl: 'https://example.test/device',
+        userCode: 'ABCD-1234',
+      }),
+    )
+    expect(withCode.sessionId).toBe('s1')
+    expect(withCode.schedules).toEqual([job])
+    expect(withCode.auth.userCode).toBe('ABCD-1234')
+    const cancelled = uiReducer(
+      withCode,
+      host({ type: 'authState', status: 'signedIn', backend: 'modelApi' }),
+    )
+    expect(cancelled.sessionId).toBe('s1')
+    expect(cancelled.schedules).toEqual([job])
+    // Success moves the window to Muse Code: that is the account boundary.
+    const onMuseCode = uiReducer(
+      withCode,
+      host({ type: 'authState', status: 'signedIn', backend: 'museCode' }),
+    )
+    expect(onMuseCode.sessionId).toBeUndefined()
+    expect(onMuseCode.schedules).toEqual([])
+    const signedOut = uiReducer(
+      same,
+      host({ type: 'authState', status: 'signedOut', backend: 'modelApi' }),
+    )
+    expect(signedOut.schedules).toEqual([])
+    expect(signedOut.usageReport).toBeUndefined()
+    const switchedBackend = uiReducer(
+      same,
+      host({ type: 'authState', status: 'signedIn', backend: 'museCode' }),
+    )
+    expect(switchedBackend.schedules).toEqual([])
+    expect(switchedBackend.usageReport).toBeUndefined()
+    const switched = uiReducer(
+      same,
+      host({
+        type: 'historyLoaded',
+        sessionId: 's2',
+        items: [],
+        todos: [],
+      }),
+    )
+    expect(switched.schedules).toEqual([])
+    expect(switched.goalEdit).toBeUndefined()
+    expect(switched.pendingGoalCommand).toBeUndefined()
+  })
+
+  it('removes account A private views on sign-out while keeping an unsent draft', () => {
+    const seed = reduceAll(
+      [
+        host({ type: 'authState', status: 'signedIn', backend: 'modelApi' }),
+        host({
+          type: 'historyLoaded',
+          sessionId: 'account-a',
+          items: [
+            { itemId: 'u1', kind: 'userMessage', status: 'completed', text: 'A private prompt' },
+          ],
+          todos: [],
+        }),
+        host({
+          type: 'childTranscript',
+          sessionId: 'child-a',
+          items: [{ itemId: 'c1', kind: 'agentMessage', status: 'completed', text: 'A child' }],
+        }),
+        host({
+          type: 'outputPage',
+          itemId: 'o1',
+          outputRef: 'a',
+          offsetBytes: 0,
+          byteLen: 8,
+          content: 'A output',
+          eof: true,
+        }),
+      ],
+      { ...initialUiState, draft: 'Unsent local draft' },
+    )
+    expect(seed.transcript).toHaveLength(1)
+    const signedOut = uiReducer(
+      seed,
+      host({
+        type: 'authState',
+        status: 'error',
+        backend: 'modelApi',
+        detail: UI_TEXT.signOutPending,
+      }),
+    )
+    const accountB = uiReducer(
+      signedOut,
+      host({ type: 'authState', status: 'signedIn', backend: 'modelApi' }),
+    )
+    expect(accountB.transcript).toEqual([])
+    expect(accountB.childTranscripts).toEqual({})
+    expect(accountB.outputPages).toEqual({})
+    expect(accountB.sessionId).toBeUndefined()
+    expect(accountB.draft).toBe('Unsent local draft')
+  })
+
+  it('clears a same-backend key replacement explicitly, but keeps secondary-key CLI chat', () => {
+    const active = reduceAll([
+      host({ type: 'authState', status: 'signedIn', backend: 'museCode' }),
+      host({
+        type: 'historyLoaded',
+        sessionId: 'cli-a',
+        items: [{ itemId: 'u1', kind: 'userMessage', status: 'completed', text: 'CLI chat' }],
+        todos: [],
+      }),
+    ])
+    const secondaryKey = uiReducer(
+      active,
+      host({ type: 'authState', status: 'signedIn', backend: 'museCode' }),
+    )
+    expect(secondaryKey.transcript).toEqual(active.transcript)
+    const switchedAccount = uiReducer(
+      secondaryKey,
+      host({ type: 'conversationCleared', accountBoundary: true }),
+    )
+    expect(switchedAccount.transcript).toEqual([])
+    expect(switchedAccount.sessionId).toBeUndefined()
+  })
+
+  it('does not swallow an account clear as the echo of a local New Conversation', () => {
+    const localClear = uiReducer(initialUiState, { type: 'conversationCleared' })
+    const privateAfterClear = uiReducer(
+      localClear,
+      host({
+        type: 'historyLoaded',
+        sessionId: 'old-a',
+        items: [{ itemId: 'u1', kind: 'userMessage', status: 'completed', text: 'A data' }],
+        todos: [],
+      }),
+    )
+    const boundary = uiReducer(
+      privateAfterClear,
+      host({ type: 'conversationCleared', accountBoundary: true }),
+    )
+    expect(boundary.transcript).toEqual([])
+    expect(boundary.pendingClearEchoes).toBe(0)
+  })
+
+  it('clears account caches on the boundary message before the next auth reply', () => {
+    const old: UiState = {
+      ...initialUiState,
+      auth: { status: 'signedIn', backend: 'museCode', detail: undefined, methods: undefined },
+      draft: 'Unsent local draft',
+      title: 'Private A title',
+      sessionId: 'account-a',
+      sessions: [],
+      archivedIds: ['account-a'],
+      model: { modelId: 'account-a-model', contextLimit: 100 },
+      models: [{ modelId: 'account-a-model', displayLabel: 'A model', isDefault: false }],
+      skills: [{ selector: 'account-a-skill', displayName: 'A skill', description: 'A' }],
+      usageReport: {
+        backend: 'museCode',
+        subscription: undefined,
+        account: { signInMethod: 'cli' },
+        insights: undefined,
+      },
+      editorContext: { relativePath: 'private-a.ts', startLine: 1, endLine: 2, isEmpty: false },
+      dismissedEditorPath: 'private-a.ts',
+      mentionResults: { requestId: 1, items: [] },
+      pendingInsert: 'Private A insert',
+      announcement: { text: 'Private A notice', sequence: 1 },
+    }
+    const cleared = uiReducer(old, host({ type: 'conversationCleared', accountBoundary: true }))
+    expect(cleared.auth.status).toBe('checking')
+    expect(cleared.draft).toBe('Unsent local draft')
+    expect(cleared.title).toBeUndefined()
+    expect(cleared.sessionId).toBeUndefined()
+    expect(cleared.sessions).toEqual([])
+    expect(cleared.archivedIds).toEqual([])
+    expect(cleared.model).toBeUndefined()
+    expect(cleared.models).toEqual([])
+    expect(cleared.skills).toBeUndefined()
+    expect(cleared.usageReport).toBeUndefined()
+    expect(cleared.editorContext).toBeUndefined()
+    expect(cleared.dismissedEditorPath).toBeUndefined()
+    expect(cleared.mentionResults).toBeUndefined()
+    expect(cleared.pendingInsert).toBeUndefined()
+    expect(cleared.announcement).toBeUndefined()
   })
 
   it('drops the goal with the conversation', () => {

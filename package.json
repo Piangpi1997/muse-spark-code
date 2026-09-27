@@ -176,6 +176,11 @@
         "category": "%command.category%"
       },
       {
+        "command": "museSpark.memory",
+        "title": "%command.memory.title%",
+        "category": "%command.category%"
+      },
+      {
         "command": "museSpark.newWorktree",
         "title": "%command.newWorktree.title%",
         "category": "%command.category%"
@@ -381,6 +386,24 @@
           "description": "%config.shellSandbox.description%",
           "scope": "machine"
         },
+        "museSpark.sandboxNetwork": {
+          "type": "string",
+          "enum": [
+            "default",
+            "proxy-only",
+            "restricted",
+            "enabled"
+          ],
+          "enumDescriptions": [
+            "%config.sandboxNetwork.enumDescriptions.default%",
+            "%config.sandboxNetwork.enumDescriptions.proxyOnly%",
+            "%config.sandboxNetwork.enumDescriptions.restricted%",
+            "%config.sandboxNetwork.enumDescriptions.enabled%"
+          ],
+          "default": "default",
+          "description": "%config.sandboxNetwork.description%",
+          "scope": "machine"
+        },
         "museSpark.autosave": {
           "type": "boolean",
           "default": true,
@@ -473,6 +496,38 @@
           "type": "boolean",
           "default": false,
           "description": "%config.modelApiVoice.description%",
+          "scope": "machine"
+        },
+        "museSpark.modelApiPromptCacheRetention": {
+          "type": "string",
+          "enum": [
+            "in_memory",
+            "24h"
+          ],
+          "enumDescriptions": [
+            "%config.modelApiPromptCacheRetention.enumDescriptions.inMemory%",
+            "%config.modelApiPromptCacheRetention.enumDescriptions.24h%"
+          ],
+          "default": "in_memory",
+          "description": "%config.modelApiPromptCacheRetention.description%",
+          "scope": "machine"
+        },
+        "museSpark.modelApiScheduledPrompts": {
+          "type": "boolean",
+          "default": false,
+          "description": "%config.modelApiScheduledPrompts.description%",
+          "scope": "machine"
+        },
+        "museSpark.modelApiSubagents": {
+          "type": "boolean",
+          "default": false,
+          "description": "%config.modelApiSubagents.description%",
+          "scope": "machine"
+        },
+        "museSpark.modelApiHooks": {
+          "type": "boolean",
+          "default": false,
+          "description": "%config.modelApiHooks.description%",
           "scope": "machine"
         }
       }

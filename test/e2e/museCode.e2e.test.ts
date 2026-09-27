@@ -69,6 +69,7 @@ function manager(
     ],
     workspaceRoot,
     getShellSandbox: () => 'off',
+    getSandboxNetwork: () => 'default',
     userProfileDir: undefined,
     isWorkspaceTrusted: () => true,
     getProxySettings: () => ({ proxy: '', noProxy: [] }),

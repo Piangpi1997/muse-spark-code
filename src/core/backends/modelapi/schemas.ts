@@ -6,6 +6,7 @@
 // (the API evolves additively).
 
 import * as z from 'zod/mini'
+import type { PromptCacheRetention } from '../../../shared/constants'
 import { webResultSchema } from '../../../shared/webResults'
 
 /** A source the reply cites (`url_citation`, search-grounding); offsets are not used. */
@@ -266,15 +267,37 @@ export interface InputMessageItem {
   readonly phase?: MessagePhase | undefined
 }
 
+/**
+ * A PDF sent inline (M54, PLAN.md D47; file-handling, "Send a file inline"):
+ * the bytes as a base64 data URL, never uploaded, with the name the model
+ * sees.
+ */
+export interface InputFilePart {
+  readonly type: 'input_file'
+  readonly filename: string
+  readonly file_data: string
+}
+
 export type InputContentPart =
+  | InputFilePart
   | { readonly type: 'input_text'; readonly text: string }
   | { readonly type: 'input_image'; readonly image_url: string; readonly detail: 'auto' }
   | { readonly type: 'output_text'; readonly text: string }
 
+/**
+ * A part of a function's output given as content (the Responses schema's
+ * `FunctionCallOutputContentListParam`, read 2026-09-25): text and pictures,
+ * which an MCP tool may return (M50).
+ */
+export type FunctionOutputPart =
+  | { readonly type: 'input_text'; readonly text: string }
+  | { readonly type: 'input_image'; readonly image_url: string; readonly detail: 'auto' }
+
 export interface FunctionCallOutputItem {
   readonly type: 'function_call_output'
   readonly call_id: string
-  readonly output: string
+  /** The result as text, or as content parts when it holds pictures. */
+  readonly output: string | readonly FunctionOutputPart[]
 }
 
 /**
@@ -327,7 +350,10 @@ export interface CreateResponseBody {
   readonly store: false
   readonly include: readonly IncludeField[]
   readonly max_output_tokens: number
+  /** One key per shared prefix, not per session (promptCache.ts, M56). */
   readonly prompt_cache_key: string
+  /** How long Meta is asked to keep the cached prefix; a hint (M56). */
+  readonly prompt_cache_retention: PromptCacheRetention
 }
 
 // --- images (M34, dev.meta.ai/docs/api-reference/images, read 2026-09-25) ---

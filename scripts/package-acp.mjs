@@ -25,6 +25,12 @@ import process from 'node:process'
 
 const STAGE = path.join('dist', 'acp-package')
 const BUNDLES = ['acp.js', 'searchWorker.js']
+// The C# of the shell tool's Windows job (M27), compiled on first use, as
+// the extension ships it (PLAN.md D6): its own file and the half it shares.
+const JOB_SOURCES = [
+  path.join('native', 'windows', 'MuseSparkJob.cs'),
+  path.join('native', 'windows', 'MuseSparkMcpJob.cs'),
+]
 const NATIVE_DEPENDENCY = '@napi-rs/keyring'
 const PACKAGE_NAME = 'muse-spark-code-acp'
 const README = path.join('docs', 'acp.md')
@@ -55,6 +61,10 @@ mkdirSync(path.join(STAGE, 'dist'), { recursive: true })
 for (const bundle of BUNDLES) {
   copyFileSync(path.join('dist', bundle), path.join(STAGE, 'dist', bundle))
 }
+for (const source of JOB_SOURCES) {
+  mkdirSync(path.join(STAGE, path.dirname(source)), { recursive: true })
+  copyFileSync(source, path.join(STAGE, source))
+}
 cpSync('l10n', path.join(STAGE, 'l10n'), {
   recursive: true,
   filter: (source) => !source.endsWith('untranslated.json'),
@@ -78,7 +88,7 @@ const agentManifest = {
   bugs: manifest.bugs,
   keywords: ['muse spark', 'muse code', 'agent client protocol', 'acp', 'coding agent'],
   bin: { [PACKAGE_NAME]: 'dist/acp.js' },
-  files: ['dist', 'l10n', 'README.md', 'LICENSE', NOTICES],
+  files: ['dist', 'native', 'l10n', 'README.md', 'LICENSE', NOTICES],
   engines: { node: manifest.engines.node },
   dependencies: { [NATIVE_DEPENDENCY]: keyringVersion },
 }

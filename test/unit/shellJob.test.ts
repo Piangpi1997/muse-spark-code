@@ -22,6 +22,7 @@ import {
   WINDOWS_POWERSHELL_UTF8_PREAMBLE,
 } from '../../src/shared/constants'
 import { removeFolder } from './helpers/temporaryFolders'
+import { readJobSource } from './helpers/jobSource'
 
 const paths = { root: '' }
 
@@ -62,6 +63,7 @@ describe('shellJobAssembly (M27)', () => {
     const powershell = fakePowerShell()
     const logged: string[] = []
     const ready = shellJobAssembly({
+      readJobSource,
       storageDir,
       systemRoot: String.raw`C:\Windows`,
       log: (message) => {
@@ -70,13 +72,11 @@ describe('shellJobAssembly (M27)', () => {
       run: powershell.run,
     })
     const assembly = await ready()
-    expect(assembly).toBe(path.join(folder, shellJobAssemblyName()))
+    const name = shellJobAssemblyName(await readJobSource('shellJob'))
+    expect(assembly).toBe(path.join(folder, name))
     expect(await ready()).toBe(assembly)
     const left = await readdir(folder)
-    expect(left.toSorted((a, b) => a.localeCompare(b))).toEqual([
-      shellJobAssemblyName(),
-      'notes.txt',
-    ])
+    expect(left.toSorted((a, b) => a.localeCompare(b))).toEqual([name, 'notes.txt'])
     // One compile, one self-test, however often it is asked.
     expect(powershell.scripts).toHaveLength(2)
     expect(powershell.scripts[0]).toContain('-OutputType Library')
@@ -85,6 +85,7 @@ describe('shellJobAssembly (M27)', () => {
     // A later window finds it compiled and only tests it.
     const later = fakePowerShell()
     await shellJobAssembly({
+      readJobSource,
       storageDir,
       systemRoot: String.raw`C:\Windows`,
       log: () => undefined,
@@ -98,6 +99,7 @@ describe('shellJobAssembly (M27)', () => {
     const storageDir = await storage('locked')
     const logged: string[] = []
     const assembly = await shellJobAssembly({
+      readJobSource,
       storageDir,
       systemRoot: String.raw`C:\Windows`,
       log: (message) => {
@@ -119,6 +121,7 @@ describe('shellJobAssembly (M27)', () => {
     const storageDir = await storage('broken')
     const logged: string[] = []
     const assembly = await shellJobAssembly({
+      readJobSource,
       storageDir,
       systemRoot: String.raw`C:\Windows`,
       log: (message) => {

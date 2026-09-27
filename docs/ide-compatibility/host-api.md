@@ -17,7 +17,7 @@ differs from the source. Do not edit it by hand.
 | `capabilities.untrustedWorkspaces` | `limited`                                                                                                                    |
 | `enabledApiProposals`              | none                                                                                                                         |
 | `activationEvents`                 | `onWebviewPanel:museSpark.chatPanel`                                                                                         |
-| `contributes`                      | `commands` (23), `configuration` (2), `keybindings` (7), `menus` (2), `views` (1), `viewsContainers` (1), `walkthroughs` (1) |
+| `contributes`                      | `commands` (24), `configuration` (2), `keybindings` (7), `menus` (2), `views` (1), `viewsContainers` (1), `walkthroughs` (1) |
 
 ## Build targets
 
@@ -29,15 +29,17 @@ differs from the source. Do not edit it by hand.
 
 ## Files that import `vscode`
 
-The VS Code adapter: 11 files. Everything else reaches VS Code only through them.
+The VS Code adapter: 13 files. Everything else reaches VS Code only through them.
 
 | File                                   | VS Code APIs used |
 | -------------------------------------- | ----------------- |
 | `src/extension.ts`                     | 143               |
-| `src/host/cliFeatures.ts`              | 25                |
+| `src/host/cliFeatures.ts`              | 26                |
+| `src/host/memoryFeatures.ts`           | 17                |
 | `src/host/mention/mentionQuickPick.ts` | 10                |
-| `src/host/paid/paidHost.ts`            | 11                |
+| `src/host/paid/paidHost.ts`            | 9                 |
 | `src/host/popups.ts`                   | 2                 |
+| `src/host/quickPick.ts`                | 5                 |
 | `src/host/views/ChatViewProvider.ts`   | 11                |
 | `src/host/views/chatPanel.ts`          | 11                |
 | `src/host/views/surfaceRegistry.ts`    | 1                 |
@@ -91,8 +93,8 @@ Functions, variables, classes, enums and members declared in `@types/vscode`; th
 | `ExtensionContext.workspaceState`                                                    | `src/extension.ts`                                                                                                                         |
 | `ExtensionKind.UI`                                                                   | `src/host/voice/dictationHost.ts`                                                                                                          |
 | `FileStat.size`                                                                      | `src/extension.ts`                                                                                                                         |
-| `FileSystem.delete`                                                                  | `src/extension.ts`                                                                                                                         |
-| `FileSystem.delete(options.useTrash)`                                                | `src/extension.ts`                                                                                                                         |
+| `FileSystem.delete`                                                                  | `src/extension.ts`, `src/host/memoryFeatures.ts`                                                                                           |
+| `FileSystem.delete(options.useTrash)`                                                | `src/extension.ts`, `src/host/memoryFeatures.ts`                                                                                           |
 | `FileSystem.readFile`                                                                | `src/extension.ts`                                                                                                                         |
 | `FileSystem.stat`                                                                    | `src/extension.ts`                                                                                                                         |
 | `FileSystem.writeFile`                                                               | `src/extension.ts`, `src/host/cliFeatures.ts`                                                                                              |
@@ -101,19 +103,19 @@ Functions, variables, classes, enums and members declared in `@types/vscode`; th
 | `FileSystemWatcher.onDidChange`                                                      | `src/extension.ts`                                                                                                                         |
 | `FileSystemWatcher.onDidCreate`                                                      | `src/extension.ts`                                                                                                                         |
 | `FileSystemWatcher.onDidDelete`                                                      | `src/extension.ts`                                                                                                                         |
-| `InputBoxOptions.ignoreFocusOut`                                                     | `src/extension.ts`, `src/host/worktreeFeatures.ts`                                                                                         |
+| `InputBoxOptions.ignoreFocusOut`                                                     | `src/extension.ts`, `src/host/memoryFeatures.ts`, `src/host/worktreeFeatures.ts`                                                           |
 | `InputBoxOptions.password`                                                           | `src/extension.ts`                                                                                                                         |
-| `InputBoxOptions.placeHolder`                                                        | `src/extension.ts`, `src/host/worktreeFeatures.ts`                                                                                         |
-| `InputBoxOptions.title`                                                              | `src/extension.ts`, `src/host/worktreeFeatures.ts`                                                                                         |
-| `InputBoxOptions.validateInput`                                                      | `src/extension.ts`, `src/host/worktreeFeatures.ts`                                                                                         |
+| `InputBoxOptions.placeHolder`                                                        | `src/extension.ts`, `src/host/memoryFeatures.ts`, `src/host/worktreeFeatures.ts`                                                           |
+| `InputBoxOptions.title`                                                              | `src/extension.ts`, `src/host/memoryFeatures.ts`, `src/host/worktreeFeatures.ts`                                                           |
+| `InputBoxOptions.validateInput`                                                      | `src/extension.ts`, `src/host/memoryFeatures.ts`, `src/host/worktreeFeatures.ts`                                                           |
 | `LogOutputChannel.error`                                                             | `src/extension.ts`                                                                                                                         |
 | `LogOutputChannel.info`                                                              | `src/extension.ts`                                                                                                                         |
 | `LogOutputChannel.trace`                                                             | `src/extension.ts`                                                                                                                         |
 | `LogOutputChannel.warn`                                                              | `src/extension.ts`                                                                                                                         |
-| `Memento.get`                                                                        | `src/extension.ts`, `src/host/paid/paidHost.ts`                                                                                            |
-| `Memento.update`                                                                     | `src/extension.ts`, `src/host/paid/paidHost.ts`                                                                                            |
-| `MessageOptions.detail`                                                              | `src/extension.ts`, `src/host/cliFeatures.ts`, `src/host/paid/paidHost.ts`, `src/host/worktreeFeatures.ts`                                 |
-| `MessageOptions.modal`                                                               | `src/extension.ts`, `src/host/cliFeatures.ts`, `src/host/paid/paidHost.ts`, `src/host/worktreeFeatures.ts`                                 |
+| `Memento.get`                                                                        | `src/extension.ts`                                                                                                                         |
+| `Memento.update`                                                                     | `src/extension.ts`                                                                                                                         |
+| `MessageOptions.detail`                                                              | `src/extension.ts`, `src/host/cliFeatures.ts`, `src/host/memoryFeatures.ts`, `src/host/paid/paidHost.ts`, `src/host/worktreeFeatures.ts`   |
+| `MessageOptions.modal`                                                               | `src/extension.ts`, `src/host/cliFeatures.ts`, `src/host/memoryFeatures.ts`, `src/host/paid/paidHost.ts`, `src/host/worktreeFeatures.ts`   |
 | `OpenDialogOptions.canSelectMany`                                                    | `src/extension.ts`                                                                                                                         |
 | `OpenDialogOptions.openLabel`                                                        | `src/extension.ts`                                                                                                                         |
 | `OutputChannel.show`                                                                 | `src/extension.ts`                                                                                                                         |
@@ -133,10 +135,10 @@ Functions, variables, classes, enums and members declared in `@types/vscode`; th
 | `QuickPickItem.label`                                                                | `src/host/cliFeatures.ts`                                                                                                                  |
 | `QuickPickOptions.canPickMany`                                                       | `src/host/cliFeatures.ts`                                                                                                                  |
 | `QuickPickOptions.ignoreFocusOut`                                                    | `src/host/cliFeatures.ts`                                                                                                                  |
-| `QuickPickOptions.matchOnDescription`                                                | `src/host/cliFeatures.ts`, `src/host/worktreeFeatures.ts`                                                                                  |
-| `QuickPickOptions.matchOnDetail`                                                     | `src/host/cliFeatures.ts`                                                                                                                  |
-| `QuickPickOptions.placeHolder`                                                       | `src/host/cliFeatures.ts`, `src/host/worktreeFeatures.ts`                                                                                  |
-| `QuickPickOptions.title`                                                             | `src/host/cliFeatures.ts`, `src/host/worktreeFeatures.ts`                                                                                  |
+| `QuickPickOptions.matchOnDescription`                                                | `src/host/cliFeatures.ts`, `src/host/quickPick.ts`, `src/host/worktreeFeatures.ts`                                                         |
+| `QuickPickOptions.matchOnDetail`                                                     | `src/host/cliFeatures.ts`, `src/host/quickPick.ts`                                                                                         |
+| `QuickPickOptions.placeHolder`                                                       | `src/host/cliFeatures.ts`, `src/host/quickPick.ts`, `src/host/worktreeFeatures.ts`                                                         |
+| `QuickPickOptions.title`                                                             | `src/host/cliFeatures.ts`, `src/host/quickPick.ts`, `src/host/worktreeFeatures.ts`                                                         |
 | `Range`                                                                              | `src/extension.ts`                                                                                                                         |
 | `Range.contains`                                                                     | `src/extension.ts`                                                                                                                         |
 | `Range.end`                                                                          | `src/extension.ts`                                                                                                                         |
@@ -166,7 +168,7 @@ Functions, variables, classes, enums and members declared in `@types/vscode`; th
 | `TextDocument.lineCount`                                                             | `src/extension.ts`                                                                                                                         |
 | `TextDocument.uri`                                                                   | `src/extension.ts`                                                                                                                         |
 | `TextDocumentContentProvider.provideTextDocumentContent`                             | `src/extension.ts`                                                                                                                         |
-| `TextDocumentShowOptions.preview`                                                    | `src/extension.ts`, `src/host/cliFeatures.ts`                                                                                              |
+| `TextDocumentShowOptions.preview`                                                    | `src/extension.ts`, `src/host/cliFeatures.ts`, `src/host/memoryFeatures.ts`                                                                |
 | `TextEditor.document`                                                                | `src/extension.ts`                                                                                                                         |
 | `TextEditor.edit`                                                                    | `src/extension.ts`                                                                                                                         |
 | `TextEditor.revealRange`                                                             | `src/extension.ts`                                                                                                                         |
@@ -176,7 +178,7 @@ Functions, variables, classes, enums and members declared in `@types/vscode`; th
 | `TextEditorRevealType.InCenter`                                                      | `src/extension.ts`                                                                                                                         |
 | `TextLine.range`                                                                     | `src/extension.ts`                                                                                                                         |
 | `Uri.authority`                                                                      | `src/extension.ts`                                                                                                                         |
-| `Uri.file`                                                                           | `src/extension.ts`, `src/host/cliFeatures.ts`, `src/host/worktreeFeatures.ts`                                                              |
+| `Uri.file`                                                                           | `src/extension.ts`, `src/host/cliFeatures.ts`, `src/host/memoryFeatures.ts`, `src/host/worktreeFeatures.ts`                                |
 | `Uri.fragment`                                                                       | `src/extension.ts`                                                                                                                         |
 | `Uri.from`                                                                           | `src/extension.ts`                                                                                                                         |
 | `Uri.from(components.path)`                                                          | `src/extension.ts`                                                                                                                         |
@@ -184,7 +186,7 @@ Functions, variables, classes, enums and members declared in `@types/vscode`; th
 | `Uri.from(components.scheme)`                                                        | `src/extension.ts`                                                                                                                         |
 | `Uri.fsPath`                                                                         | `src/extension.ts`, `src/host/cliFeatures.ts`                                                                                              |
 | `Uri.joinPath`                                                                       | `src/extension.ts`, `src/host/views/webviewSetup.ts`                                                                                       |
-| `Uri.parse`                                                                          | `src/extension.ts`, `src/host/cliFeatures.ts`                                                                                              |
+| `Uri.parse`                                                                          | `src/extension.ts`, `src/host/cliFeatures.ts`, `src/host/memoryFeatures.ts`                                                                |
 | `Uri.path`                                                                           | `src/extension.ts`                                                                                                                         |
 | `Uri.query`                                                                          | `src/extension.ts`                                                                                                                         |
 | `Uri.scheme`                                                                         | `src/extension.ts`, `src/host/cliFeatures.ts`                                                                                              |
@@ -221,12 +223,12 @@ Functions, variables, classes, enums and members declared in `@types/vscode`; th
 | `WorkspaceConfiguration.get`                                                         | `src/extension.ts`                                                                                                                         |
 | `WorkspaceConfiguration.update`                                                      | `src/extension.ts`, `src/host/paid/paidHost.ts`                                                                                            |
 | `WorkspaceFolder.uri`                                                                | `src/extension.ts`                                                                                                                         |
-| `commands.executeCommand`                                                            | `src/extension.ts`, `src/host/worktreeFeatures.ts`                                                                                         |
+| `commands.executeCommand`                                                            | `src/extension.ts`, `src/host/cliFeatures.ts`, `src/host/worktreeFeatures.ts`                                                              |
 | `commands.registerCommand`                                                           | `src/extension.ts`                                                                                                                         |
 | `env.appName`                                                                        | `src/host/voice/dictationHost.ts`                                                                                                          |
 | `env.clipboard`                                                                      | `src/extension.ts`                                                                                                                         |
 | `env.language`                                                                       | `src/extension.ts`                                                                                                                         |
-| `env.openExternal`                                                                   | `src/extension.ts`, `src/host/cliFeatures.ts`                                                                                              |
+| `env.openExternal`                                                                   | `src/extension.ts`, `src/host/cliFeatures.ts`, `src/host/memoryFeatures.ts`                                                                |
 | `env.remoteName`                                                                     | `src/extension.ts`, `src/host/voice/dictationHost.ts`                                                                                      |
 | `extensions.getExtension`                                                            | `src/host/voice/dictationHost.ts`                                                                                                          |
 | `languages.getDiagnostics`                                                           | `src/extension.ts`                                                                                                                         |
@@ -245,18 +247,18 @@ Functions, variables, classes, enums and members declared in `@types/vscode`; th
 | `window.registerWebviewViewProvider(options.webviewOptions)`                         | `src/extension.ts`                                                                                                                         |
 | `window.registerWebviewViewProvider(options.webviewOptions.retainContextWhenHidden)` | `src/extension.ts`                                                                                                                         |
 | `window.showErrorMessage`                                                            | `src/extension.ts`, `src/host/popups.ts`                                                                                                   |
-| `window.showInformationMessage`                                                      | `src/extension.ts`, `src/host/cliFeatures.ts`, `src/host/worktreeFeatures.ts`                                                              |
-| `window.showInputBox`                                                                | `src/extension.ts`, `src/host/worktreeFeatures.ts`                                                                                         |
+| `window.showInformationMessage`                                                      | `src/extension.ts`, `src/host/cliFeatures.ts`, `src/host/memoryFeatures.ts`, `src/host/worktreeFeatures.ts`                                |
+| `window.showInputBox`                                                                | `src/extension.ts`, `src/host/memoryFeatures.ts`, `src/host/worktreeFeatures.ts`                                                           |
 | `window.showOpenDialog`                                                              | `src/extension.ts`                                                                                                                         |
-| `window.showQuickPick`                                                               | `src/host/cliFeatures.ts`, `src/host/worktreeFeatures.ts`                                                                                  |
+| `window.showQuickPick`                                                               | `src/host/cliFeatures.ts`, `src/host/quickPick.ts`, `src/host/worktreeFeatures.ts`                                                         |
 | `window.showSaveDialog`                                                              | `src/host/cliFeatures.ts`                                                                                                                  |
-| `window.showTextDocument`                                                            | `src/extension.ts`, `src/host/cliFeatures.ts`                                                                                              |
-| `window.showWarningMessage`                                                          | `src/extension.ts`, `src/host/paid/paidHost.ts`, `src/host/popups.ts`, `src/host/worktreeFeatures.ts`                                      |
+| `window.showTextDocument`                                                            | `src/extension.ts`, `src/host/cliFeatures.ts`, `src/host/memoryFeatures.ts`                                                                |
+| `window.showWarningMessage`                                                          | `src/extension.ts`, `src/host/memoryFeatures.ts`, `src/host/paid/paidHost.ts`, `src/host/popups.ts`, `src/host/worktreeFeatures.ts`        |
 | `window.state`                                                                       | `src/host/paid/paidHost.ts`                                                                                                                |
 | `workspace.asRelativePath`                                                           | `src/extension.ts`                                                                                                                         |
 | `workspace.createFileSystemWatcher`                                                  | `src/extension.ts`                                                                                                                         |
 | `workspace.findFiles`                                                                | `src/extension.ts`                                                                                                                         |
-| `workspace.fs`                                                                       | `src/extension.ts`, `src/host/cliFeatures.ts`                                                                                              |
+| `workspace.fs`                                                                       | `src/extension.ts`, `src/host/cliFeatures.ts`, `src/host/memoryFeatures.ts`                                                                |
 | `workspace.getConfiguration`                                                         | `src/extension.ts`, `src/host/paid/paidHost.ts`                                                                                            |
 | `workspace.getWorkspaceFolder`                                                       | `src/extension.ts`                                                                                                                         |
 | `workspace.isTrusted`                                                                | `src/extension.ts`, `src/host/cliFeatures.ts`, `src/host/worktreeFeatures.ts`                                                              |
@@ -268,23 +270,25 @@ Functions, variables, classes, enums and members declared in `@types/vscode`; th
 | `workspace.textDocuments`                                                            | `src/extension.ts`                                                                                                                         |
 | `workspace.workspaceFolders`                                                         | `src/extension.ts`                                                                                                                         |
 
-## Node built-ins the host imports (14)
+## Node built-ins the host imports (16)
 
 | Module                | Files |
 | --------------------- | ----- |
-| `node:buffer`         | 10    |
-| `node:child_process`  | 6     |
-| `node:crypto`         | 6     |
-| `node:fs`             | 9     |
-| `node:fs/promises`    | 10    |
+| `node:buffer`         | 17    |
+| `node:child_process`  | 8     |
+| `node:crypto`         | 13    |
+| `node:fs`             | 11    |
+| `node:fs/promises`    | 15    |
 | `node:http`           | 1     |
+| `node:net`            | 1     |
 | `node:os`             | 4     |
-| `node:path`           | 34    |
+| `node:path`           | 44    |
 | `node:process`        | 1     |
-| `node:stream`         | 4     |
+| `node:stream`         | 5     |
 | `node:string_decoder` | 1     |
 | `node:url`            | 2     |
-| `node:util`           | 2     |
+| `node:util`           | 3     |
+| `node:vm`             | 1     |
 | `node:worker_threads` | 2     |
 
 ## The webview's host

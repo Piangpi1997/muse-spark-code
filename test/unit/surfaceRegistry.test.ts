@@ -28,6 +28,23 @@ describe('SurfaceRegistry', () => {
     expect(registry.active).toBe(known)
   })
 
+  it('identifies a live source surface even when another surface is active (M53)', () => {
+    const registry = new SurfaceRegistry()
+    const sidebar = fakeSurface('sidebar')
+    const source = fakeSurface('source')
+    const side = fakeSurface('side')
+    registry.add(sidebar)
+    const sourceRegistration = registry.add(source)
+    const sideRegistration = registry.add(side)
+    registry.setActive(side)
+    sideRegistration.dispose()
+    expect(registry.active).toBe(sidebar)
+    expect(registry.has(source)).toBe(true)
+    sourceRegistration.dispose()
+    expect(registry.has(source)).toBe(false)
+    expect(registry.has(fakeSurface('sidebar'))).toBe(false)
+  })
+
   it('falls back to another surface when the active one is unregistered', () => {
     const registry = new SurfaceRegistry()
     const first = fakeSurface('a')

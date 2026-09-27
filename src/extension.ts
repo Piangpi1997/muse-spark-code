@@ -9,12 +9,15 @@ import * as vscode from 'vscode'
 import * as z from 'zod/mini'
 import type { AgentHost, BackendKind } from './core/agent/agentBackend'
 import { environmentValue } from './core/backends/musecode/launch'
+import { confineWorkspacePath } from './core/backends/modelapi/tools'
 import { selectBackend } from './core/backendSelection'
 import { personalSkillsRoot } from './core/context/skills'
+import { memoryDataRoot } from './core/memory/memoryLocation'
+import { MemoryStore } from './core/memory/memoryStore'
 import { isSamePath } from './core/paths'
 import { terminalArgument } from './core/shellQuote'
 import { renderSupportReport } from './core/support/report'
-import type { CliInvocation } from './core/backends/musecode/sandbox'
+import { type CliInvocation, isSandboxNetworkApplied } from './core/backends/musecode/sandbox'
 import { type DiagnosticEntry, type DiagnosticSeverity, diagnosticsTool } from './core/diagnostics'
 import type { EditorContext } from './core/editorContext'
 import type { MentionSource } from './core/mention'
@@ -26,20 +29,33 @@ import {
   rootRelativePath,
 } from './core/workspaceRoot'
 import { AuthService } from './host/auth/authService'
+import { connectDeviceSession, runDeviceSignIn } from './host/auth/deviceSignIn'
 import { CredentialStore, isValidModelApiKey } from './host/auth/credentialStore'
 import { ModelApiBackendManager } from './host/backend/modelApiBackendManager'
+import { createFileScheduleStore } from './host/backend/fileScheduleStore'
 import { MuseCodeBackendManager } from './host/backend/museCodeBackendManager'
+import { chooseAuthorizedHost } from './host/backend/selectedHost'
 import { type ProcessResult, SandboxSetup } from './host/backend/sandboxSetup'
 import { fileContextIo } from './host/backend/contextIo'
 import { describeEnvironment } from './host/backend/environment'
 import { createFileSessionStore } from './host/backend/fileSessionStore'
+import { createModelApiMcpServers } from './host/backend/mcpServers'
+import { type JobHelper, jobSourceReader } from './host/backend/jobSource'
+import { mcpJobExecutable } from './host/backend/mcpJobExecutable'
+import { createMemoryIo, systemPath } from './host/backend/memoryIo'
 import {
   museSettingsPath,
   readDelegationMode,
   readWorkflowTriggerMode,
 } from './host/backend/museSettings'
-import { shellJobAssembly } from './host/backend/shellJob'
-import { createToolIo, terminalPlatform, withTerminalOverrides } from './host/backend/toolIo'
+import { type ShellJobDeps, shellJobAssembly } from './host/backend/shellJob'
+import {
+  createToolIo,
+  readPickedFile,
+  toolImagePreviewIo,
+  terminalPlatform,
+  withTerminalOverrides,
+} from './host/backend/toolIo'
 import { EditorContextTracker } from './host/editor/editorContextTracker'
 import { EditReview } from './host/editor/editReview'
 import { IdeMcpServer } from './host/ide/ideMcpServer'
@@ -61,8 +77,15 @@ import { ideImageTools } from './host/ide/imageTools'
 import { usablePaidFeatures } from './shared/paid'
 import { createCliFeatures } from './host/cliFeatures'
 import { createWorktreeFeatures } from './host/worktreeFeatures'
+import { createMemoryFeatures } from './host/memoryFeatures'
 import { processGitRunner } from './host/git'
 import { createLogger, errorDetail, type Logger, logRejection } from './host/logger'
+import {
+  liveFetch,
+  managedConfiguration,
+  readNetworkFacts,
+  readProxySettings,
+} from './host/networkPosture'
 import { OutputDocumentStore } from './host/outputDocuments'
 import { pickMentionFile } from './host/mention/mentionQuickPick'
 import { createWorkspaceFileLister, findRootFiles } from './host/mention/workspaceFiles'
@@ -75,13 +98,16 @@ import type { WebviewHostContext } from './host/views/webviewSetup'
 import { loadUiTable } from './host/l10n'
 import { createInsightsReader } from './host/usage/traceLogs'
 import { createDictationSetup, createMuseVoiceSetup } from './host/voice/dictationHost'
-import { isImagePurchaseConfirmed, createPaidFeatures } from './host/paid/paidHost'
+import {
+  createPaidFeatures,
+  isImagePurchaseConfirmed,
+  isScheduledRunConfirmed,
+  isSubagentTaskConfirmed,
+} from './host/paid/paidHost'
 import {
   BACKEND_SETTING,
   BYPASS_SETTING,
   CLI_PROCESS_SETTINGS,
-  HTTP_NO_PROXY_SETTING,
-  HTTP_PROXY_SETTING,
   HTTP_SETTINGS_SECTION,
   POSIX_TERMINAL_SHELL,
   TERMINAL_ENV_KEYS,
@@ -96,6 +122,7 @@ import {
   DICTATION_HELPER_DIR,
   FIND_FILES_GLOB,
   MODEL_API_BASE_URL,
+  MODEL_API_SCHEDULES_DIR,
   MODEL_API_SESSIONS_DIR,
   PAID_FEATURE_SETTINGS,
   PERSONAL_SKILLS_GLOB,
@@ -103,11 +130,15 @@ import {
   GLOBAL_STATE_KEYS,
   MENTION_INDEX_LIMIT,
   MENTION_INDEX_TTL_MS,
+  MUSE_CONFIG_STATUS_ARGS,
+  MUSE_CONFIG_STATUS_TIMEOUT_MS,
   MUSE_EDIT_SCHEME,
   MUSE_INIT_ARGS,
   MUSE_INIT_TIMEOUT_MS,
+  MUSE_INSTALL_COMMANDS,
   OUTPUT_DOCUMENT_SCHEME,
   PRODUCT_NAME,
+  SANDBOX_NETWORK_SETTING,
   SEARCH_WORKER_FILE,
   SETTINGS_SECTION,
   SHELL_SANDBOX_SETTING,
@@ -119,7 +150,7 @@ import {
 } from './shared/constants'
 import { fill } from './shared/l10n/text'
 import type { HostAction } from './shared/protocol'
-import { type AccountFacts, subscriptionUsageSchema } from './shared/usage'
+import type { AccountFacts } from './shared/usage'
 
 // `context.extension.packageJSON` is typed `any` by VS Code; validate the one
 // field we read instead of trusting it.
@@ -357,16 +388,23 @@ function runProcess(
   })
 }
 
-/** The shell tool's job helper on Windows (PLAN.md M27); nothing elsewhere. */
-function windowsShellJobs(
+/**
+ * A tested Windows job helper, compiled once from the shared C# (`jobSource.ts`):
+ * the shell tool's job assembly (M27) or the direct MCP stdio launcher (M50).
+ * Undefined off Windows.
+ */
+function windowsJobHelper(
+  build: (deps: ShellJobDeps) => () => Promise<string | undefined>,
   storageDir: string,
+  readJobSource: (helper: JobHelper) => Promise<string>,
   log: Logger,
 ): (() => Promise<string | undefined>) | undefined {
   const systemRoot = process.env['SystemRoot']
   return systemRoot !== undefined && process.platform === 'win32'
-    ? shellJobAssembly({
+    ? build({
         storageDir,
         systemRoot,
+        readJobSource,
         log: (message) => {
           log.warn(message)
         },
@@ -414,6 +452,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   log.info(
     `Activating ${PRODUCT_NAME} ${version} (VS Code ${vscode.version}, Node ${process.versions.node}, ${process.platform})`,
   )
+  // M16 stored an account-agnostic usage snapshot. Remove it before any
+  // surface opens: a later sign-in may belong to another Meta account.
+  try {
+    if (context.globalState.get(GLOBAL_STATE_KEYS.lastUsage) !== undefined) {
+      await context.globalState.update(GLOBAL_STATE_KEYS.lastUsage, undefined)
+    }
+  } catch {
+    // This obsolete value is never read again. A failed cleanup must not
+    // prevent the extension from activating for the current account.
+    log.warn('Could not remove the obsolete subscription usage snapshot')
+  }
   // The display language's table goes in before anything registers a view
   // or says a word (PLAN.md D33); the webviews get the same table.
   const l10n = await loadUiTable({
@@ -511,15 +560,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     getEnvironmentVariables: () => currentSettings().environmentVariables,
     workspaceRoot,
     getShellSandbox: () => currentSettings().shellSandbox,
+    getSandboxNetwork: () => currentSettings().sandboxNetwork,
     userProfileDir: process.env['USERPROFILE'],
     isWorkspaceTrusted: () => vscode.workspace.isTrusted,
-    getProxySettings: () => {
-      const http = vscode.workspace.getConfiguration(HTTP_SETTINGS_SECTION)
-      return {
-        proxy: http.get<string>(HTTP_PROXY_SETTING) ?? '',
-        noProxy: http.get<readonly string[]>(HTTP_NO_PROXY_SETTING) ?? [],
-      }
-    },
+    getProxySettings: () =>
+      readProxySettings(vscode.workspace.getConfiguration(HTTP_SETTINGS_SECTION)),
   })
   // Muse Code's own settings and trace logs (M14): read, never written; the
   // config root as the CLI sees it, `museSpark.environmentVariables` included.
@@ -578,6 +623,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     museSettingsPath: () => museSettingsPath(museConfig()),
     workspaceRoot,
     restartBackend: () => restartBackend('asked for after a skills or MCP change'),
+    // On the Model API backend the MCP servers view shows them as this
+    // window runs them (M50).
+    modelApiMcp: () =>
+      auth.current.backend === 'modelApi' ? () => modelApi.mcpSnapshot() : undefined,
+    modelApiHooks: () =>
+      auth.current.backend === 'modelApi' ? currentSettings().modelApiHooks : undefined,
+    openLog: () => {
+      channel.show(true)
+    },
     log,
   })
   const worktrees = createWorktreeFeatures({ workspaceRoot, runGit, log })
@@ -616,12 +670,43 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       hasEnvironmentKey: () => backend.hasEnvironmentKey(),
       getBackendMode: () => currentSettings().backend,
       restartBackend: (isConversationEnding) =>
-        restartBackend(isConversationEnding ? 'signed out' : 'signed in', isConversationEnding),
+        restartBackend('authentication changed', isConversationEnding),
     },
     credentials,
+    logoutHold: {
+      get: () => context.globalState.get<boolean>(GLOBAL_STATE_KEYS.cliLogoutHold) === true,
+      set: (isHeld) => context.globalState.update(GLOBAL_STATE_KEYS.cliLogoutHold, isHeld),
+    },
     runInTerminal: (cliPath, args) => {
       runInTerminal(cliPath, args, { name: UI_TEXT.museLoginTerminalName, cwd: undefined })
     },
+    installCommand:
+      process.platform === 'win32' ? MUSE_INSTALL_COMMANDS.win32 : MUSE_INSTALL_COMMANDS.posix,
+    runInstallerInTerminal: () => {
+      const isWindows = process.platform === 'win32'
+      const systemRoot = process.env['SystemRoot']
+      let shellPath: string | undefined = POSIX_TERMINAL_SHELL
+      if (isWindows) {
+        shellPath =
+          systemRoot === undefined ? undefined : `${systemRoot}${WINDOWS_POWERSHELL_TERMINAL_PATH}`
+      }
+      const terminal = vscode.window.createTerminal({
+        name: UI_TEXT.installStartAction,
+        ...(shellPath !== undefined && { shellPath }),
+      })
+      terminal.show(true)
+      terminal.sendText(isWindows ? MUSE_INSTALL_COMMANDS.win32 : MUSE_INSTALL_COMMANDS.posix)
+    },
+    runDeviceSignIn: (signal, onCode) =>
+      runDeviceSignIn({
+        connect: (connectSignal) =>
+          connectDeviceSession(backend, version, log, workspaceRoot, connectSignal),
+        credentialFileModifiedAt: () => modifiedAt(backend.credentialFilePath()),
+        sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+        now: Date.now,
+        signal,
+        onCode,
+      }),
     promptForApiKey,
     broadcast: (message) => {
       registry.broadcast(message)
@@ -662,6 +747,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     findFiles: findWorkspaceFiles,
     log,
   })
+  // The C# of both Windows job helpers, shipped beside the bundle (PLAN.md D6).
+  const readJobSource = jobSourceReader(context.extensionPath)
+  const storageDir = context.globalStorageUri.fsPath
+  const windowsJobAssembly = windowsJobHelper(shellJobAssembly, storageDir, readJobSource, log)
+  const windowsMcpJob = windowsJobHelper(mcpJobExecutable, storageDir, readJobSource, log)
   // The workspace's files and a shell (M7): the Model API backend's tools,
   // and the files the ide server's image tools read and write (M44).
   const toolIo = createToolIo({
@@ -685,7 +775,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     },
     // Each Windows command in a job object of its own, so a Stop ends
     // everything it started (PLAN.md M27).
-    shellJobAssembly: windowsShellJobs(context.globalStorageUri.fsPath, log),
+    shellJobAssembly: windowsJobAssembly,
     // An open editor with unsaved changes to the file (PLAN.md D27).
     hasUnsavedChanges: (absolutePath) =>
       vscode.workspace.textDocuments.some(
@@ -704,7 +794,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // Images for Muse Code (M44, PLAN.md D37): made here with the stored key,
   // never by `muse serve`, each one confirmed with its price.
   const keyClient = new ModelApiClient({
-    fetch: globalThis.fetch.bind(globalThis),
+    fetch: liveFetch,
     baseUrl: MODEL_API_BASE_URL,
     apiKey: () => credentials.getApiKey(),
     sleep: (ms) =>
@@ -715,11 +805,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     random: () => Math.random(),
     log,
   })
+  const ideTools = [diagnostics]
   const ideServer = new IdeMcpServer(
     () => [
       diagnostics,
       ...ideImageTools({
         isOffered: () => isKeyStored && paid.gate.isOn('imageGeneration'),
+        keyGeneration: () => auth.admissionGeneration,
         workspace:
           workspaceRoot === undefined
             ? undefined
@@ -822,13 +914,41 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // Muse Code's managed personal skill root, watched alongside the workspace's
   // `.agents/skills` so the palette follows the files (PLAN.md D13).
   const skillsHome = personalSkillsRoot(museConfig())
+  // Muse Code's memory (M49, PLAN.md D41): one store for the window, which
+  // the Model API's memory tools and the Memory view both use, in the data
+  // home `muse serve` sees (`museSpark.environmentVariables` included).
+  const memory = new MemoryStore({
+    io: createMemoryIo(toolIo, {
+      warn: (message) => {
+        log.warn(`Memory: ${message}`)
+      },
+    }),
+    platform: process.platform,
+    dataRoot: () =>
+      memoryDataRoot({
+        platform: process.platform,
+        homeDir: homedir(),
+        xdgDataHome: environmentValue(
+          backend.childEnvironment(),
+          process.platform,
+          'XDG_DATA_HOME',
+        ),
+      }),
+    workspaceRoot,
+    systemPath,
+    warn: (message) => {
+      log.warn(`Memory: ${message}`)
+    },
+  })
+  const memoryView = createMemoryFeatures({ store: memory, log })
   const modelApi = new ModelApiBackendManager({
     log,
     getApiKey: () => credentials.getApiKey(),
     workspaceRoot,
     io: toolIo,
     contextIo: fileContextIo,
-    fetch: globalThis.fetch.bind(globalThis),
+    // VS Code's proxy-aware fetch, as it stands at each request (M56, D43).
+    fetch: liveFetch,
     newId: () => crypto.randomUUID(),
     now: () => Date.now(),
     sleep: (ms) =>
@@ -838,6 +958,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     random: () => Math.random(),
     personalSkillsRoot: skillsHome,
     isWorkspaceTrusted: () => vscode.workspace.isTrusted,
+    hookSettingsPath: museSettingsPath(museConfig()),
+    isHooksEnabled: () => currentSettings().modelApiHooks,
     // Sessions survive the window (PLAN.md D14) in the workspace storage
     // directory; no folder open, no storage, no persistence.
     store:
@@ -853,6 +975,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
                 setTimeout(resolve, ms)
               }),
           }),
+    scheduleStore:
+      context.storageUri === undefined
+        ? undefined
+        : createFileScheduleStore({
+            directory: path.join(context.storageUri.fsPath, MODEL_API_SCHEDULES_DIR),
+            now: () => Date.now(),
+            log,
+          }),
     describeEnvironment: () =>
       describeEnvironment({
         runGit,
@@ -865,28 +995,53 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     notePaidUse: (feature, units) => {
       paid.usage.add(feature, units)
     },
+    promptCacheRetention: () => currentSettings().modelApiPromptCacheRetention,
+    // Muse Code's MCP servers, run by this window for the Model API backend
+    // (M50, PLAN.md D42): started in a trusted workspace only, stopped with
+    // the host.
+    createMcpServers: async (root) =>
+      createModelApiMcpServers({
+        workspaceRoot: root,
+        settingsPath: () => museSettingsPath(museConfig()),
+        isWorkspaceTrusted: () => vscode.workspace.isTrusted,
+        clientVersion: version,
+        platform: process.platform,
+        jobExecutablePath: await windowsMcpJob?.(),
+        env: () => process.env,
+        fetch: globalThis.fetch.bind(globalThis),
+        log,
+      }),
+    ideTools,
+    confirmSubagentTask: isSubagentTaskConfirmed,
+    noteSubagentUsage: (modelId, usage) => {
+      paid.usage.addSubagentUsage(modelId, usage)
+    },
+    memory,
   })
   const watchedHosts = new WeakSet<AgentHost>()
   let chosenBackend: BackendKind | undefined
   /** The host for the next conversation, by the same selection the sign-in gate uses. */
   const ensureSelectedHost = async () => {
-    const choice = selectBackend({
-      setting: currentSettings().backend,
-      hasCli: backend.resolveLaunch().ok,
-      hasCliSession: backend.credentialFileExists() || backend.hasEnvironmentKey(),
-      hasStoredKey: (await credentials.getApiKey()) !== undefined,
-    })
-    if (choice.kind !== chosenBackend) {
+    const host = await chooseAuthorizedHost(
+      () => auth.backend,
+      async () =>
+        selectBackend({
+          setting: currentSettings().backend,
+          hasCli: backend.resolveLaunch().ok,
+          hasCliSession: backend.credentialFileExists() || backend.hasEnvironmentKey(),
+          hasStoredKey: (await credentials.getApiKey()) !== undefined,
+        }),
+      async (kind): Promise<AgentHost> =>
+        kind === 'modelApi' ? await modelApi.ensureHost() : await backend.ensureHost(),
+      () => auth.admissionGeneration,
+    )
+    if (host.info.kind !== chosenBackend) {
       // Said when it changes, not on every message (M39).
-      chosenBackend = choice.kind
-      log.info(`Conversations run on the ${choice.kind ?? 'no'} backend`)
+      chosenBackend = host.info.kind
+      log.info(`Conversations run on the ${host.info.kind} backend`)
     }
-    if (choice.kind === 'modelApi') {
-      return await modelApi.ensureHost()
-    }
-    const host = await backend.ensureHost()
     // One exit listener per host, however many messages ask for it (D25).
-    if (!watchedHosts.has(host)) {
+    if (host.info.kind === 'museCode' && !watchedHosts.has(host)) {
       watchedHosts.add(host)
       host.onExit((exit) => {
         for (const active of controllers.values()) {
@@ -933,7 +1088,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         relativePath: relativePathInWorkspace(uri),
       }))
     },
-    readFile: async (fsPath) => await vscode.workspace.fs.readFile(vscode.Uri.file(fsPath)),
+    readFile: readPickedFile,
+    canonicalRelativePath: async (fsPath) => {
+      if (workspaceRoot === undefined) {
+        return
+      }
+      const resolved = await confineWorkspacePath(workspaceRoot, fsPath, process.platform, toolIo)
+      return resolved.ok
+        ? { canonical: resolved.canonical, checkedAbsolute: resolved.checkedAbsolute }
+        : undefined
+    },
     pickMentionFile: () =>
       pickMentionFile({
         createQuickPick: () => vscode.window.createQuickPick(),
@@ -1005,6 +1169,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         await cliFeatures.showHooks()
         break
       }
+      case 'showMemory': {
+        await memoryView.showMemory()
+        break
+      }
       case 'newWorktree': {
         await worktrees.newWorktree()
         break
@@ -1029,6 +1197,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         hasApprovalUi: HAS_APPROVAL_UI,
         openExternal: (url) => {
           void vscode.env.openExternal(vscode.Uri.parse(url))
+        },
+        openSideChat: (sessionId) => {
+          openChatPanel(hostContext, registry, {
+            sessionId,
+            isSideChat: true,
+            onDisposed: () => {
+              if (registry.has(surface)) {
+                surface.reveal()
+              }
+            },
+          })
         },
         mentions: {
           search: (query, limit) => mentions.search(query, limit),
@@ -1100,25 +1279,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         openDocument,
         openFile,
         readToolImage: async (imagePath) =>
-          await loadToolImage(imagePath, workspaceRoot, process.platform, {
-            realPath: canonicalPath,
-            fileSize: async (fsPath) => {
+          await loadToolImage(
+            imagePath,
+            workspaceRoot,
+            process.platform,
+            toolImagePreviewIo(toolIo, async (fsPath) => {
               const stat = await vscode.workspace.fs.stat(vscode.Uri.file(fsPath))
               return stat.size
-            },
-            readFile: async (fsPath) => await vscode.workspace.fs.readFile(vscode.Uri.file(fsPath)),
-          }),
-        usageCache: {
-          read: () => {
-            const parsed = subscriptionUsageSchema.safeParse(
-              context.globalState.get(GLOBAL_STATE_KEYS.lastUsage),
-            )
-            return parsed.success ? parsed.data : undefined
-          },
-          write: async (usage) => {
-            await context.globalState.update(GLOBAL_STATE_KEYS.lastUsage, usage)
-          },
-        },
+            }),
+          ),
         // A server that failed to start is started again, and the session
         // that asked waits for it, so it gets the tool too (D25).
         ideMcpEndpoint: async () => {
@@ -1169,6 +1338,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         },
         isWorkspaceTrusted: () => vscode.workspace.isTrusted,
         onForegroundTasksChanged: refreshTaskContext,
+        isScheduledPaidOn: () => paid.gate.isOn('scheduledPrompts'),
+        confirmScheduledRun: isScheduledRunConfirmed,
         now: () => Date.now(),
         log,
       })
@@ -1193,9 +1364,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         isFocused,
       )
     },
-    onSurfaceReady: (surface) => {
+    onSurfaceReady: (surface, attachmentEpoch) => {
       const controller = controllerFor(surface)
-      controller.surfaceReady()
+      controller.surfaceReady(attachmentEpoch)
       surface.post({ type: 'editorContext', context: editorContext.summary })
       surface.post({ type: 'paidState', state: paid.state() })
       // A rebuilt panel resumes the session it held (D15); the sidebar
@@ -1338,7 +1509,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       if (isCliSetting) {
         backend.invalidateLaunch()
       }
-      const isHostSetting = isCliSetting || event.affectsConfiguration(SHELL_SANDBOX_SETTING)
+      const isHostSetting =
+        isCliSetting ||
+        event.affectsConfiguration(SHELL_SANDBOX_SETTING) ||
+        event.affectsConfiguration(SANDBOX_NETWORK_SETTING)
       if (!isHostSetting || !backend.isRunning) {
         return
       }
@@ -1437,6 +1611,19 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       const settings = currentSettings()
       const resolution = backend.resolveLaunch()
       const posture = backend.shellSandboxPosture()
+      // The managed configuration as the CLI reads it (M56, PLAN.md D43): a
+      // local read, no model call, in the environment `muse serve` gets.
+      const managed = await managedConfiguration(
+        resolution.ok
+          ? () =>
+              runProcess(
+                { command: resolution.launch.command, args: MUSE_CONFIG_STATUS_ARGS },
+                MUSE_CONFIG_STATUS_TIMEOUT_MS,
+                workspaceRoot,
+                backend.childEnvironment(),
+              )
+          : undefined,
+      )
       log.info(
         renderSupportReport({
           extensionVersion: version,
@@ -1450,6 +1637,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           backendSetting: settings.backend,
           shellSandboxSetting: settings.shellSandbox,
           shellSandboxPosture: `${posture.isSandboxed ? 'sandboxed' : 'disabled'} (${posture.reason})`,
+          sandboxNetworkSetting: settings.sandboxNetwork,
+          isSandboxNetworkApplied: isSandboxNetworkApplied(settings.sandboxNetwork, posture),
           isBinaryPathConfigured: settings.museBinaryPath !== '',
           environmentVariableCount: settings.environmentVariables.length,
           cli: resolution.ok
@@ -1467,6 +1656,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           dictation: dictation.isAvailable
             ? { isAvailable: true }
             : { isAvailable: false, reason: dictation.reason },
+          network: readNetworkFacts(
+            vscode.workspace.getConfiguration(HTTP_SETTINGS_SECTION),
+            process.env,
+            process.platform,
+            backend,
+            globalThis,
+          ),
+          managedConfiguration: managed,
           homeDir: homedir(),
         }),
       )
@@ -1516,6 +1713,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     registerLoggedCommand(log, COMMAND_IDS.importSkills, () => cliFeatures.importSkills()),
     registerLoggedCommand(log, COMMAND_IDS.mcpServers, () => cliFeatures.showMcpServers()),
     registerLoggedCommand(log, COMMAND_IDS.hooks, () => cliFeatures.showHooks()),
+    registerLoggedCommand(log, COMMAND_IDS.memory, () => memoryView.showMemory()),
     registerLoggedCommand(log, COMMAND_IDS.newWorktree, () => worktrees.newWorktree()),
     registerLoggedCommand(log, COMMAND_IDS.removeWorktree, () => worktrees.removeWorktree()),
     registerLoggedCommand(log, COMMAND_IDS.exportConversation, async () => {

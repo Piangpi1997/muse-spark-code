@@ -51,6 +51,12 @@ describe('stripIdeContext / sessionTitle', () => {
     expect(stripIdeContext(prompt)).toBe('what does this do?')
     expect(stripIdeContext('<ide_opened_file>x</ide_opened_file> hi  there')).toBe('hi there')
     expect(stripIdeContext('plain')).toBe('plain')
+    expect(
+      stripIdeContext('Inspect this\n[Muse Spark Code attached text files: ["notes.txt"]]'),
+    ).toBe('Inspect this [Muse Spark Code attached text files: ["notes.txt"]]')
+    expect(
+      stripIdeContext('Inspect this\n[Muse Spark Code attached text files: broken]'),
+    ).toContain('broken')
   })
 
   it('prefers the allocated name, then the derived title, then the first prompt', () => {

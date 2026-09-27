@@ -1,5 +1,21 @@
 import { describe, expect, it } from 'vitest'
 import { renderSupportReport, type SupportFacts } from '../../src/core/support/report'
+import { MUSE_CONFIG_STATUS_MAX_CHARS } from '../../src/shared/constants'
+import { DEFAULT_NETWORK_FACTS } from './helpers/networkFacts'
+
+// `muse config status` as Muse Code 1.3.0 prints it with no managed
+// configuration on the machine (captured 2026-09-25, M56); the digest is
+// shortened here.
+const CONFIG_STATUS = [
+  'Enterprise configuration status',
+  'Generation: sha256:0f3c',
+  'Sources:',
+  '  plane=defaults source_class=system_file state=absent',
+  '  plane=policy source_class=system_file state=absent',
+  '  plane=defaults source_class=windows_machine_policy state=absent',
+  '  plane=policy source_class=windows_machine_policy state=absent',
+  '',
+].join('\n')
 
 const base: SupportFacts = {
   extensionVersion: '0.2.0',
@@ -13,6 +29,8 @@ const base: SupportFacts = {
   backendSetting: 'auto',
   shellSandboxSetting: 'auto',
   shellSandboxPosture: 'sandboxed (default)',
+  sandboxNetworkSetting: 'default',
+  isSandboxNetworkApplied: false,
   isBinaryPathConfigured: false,
   environmentVariableCount: 2,
   cli: {
@@ -26,6 +44,8 @@ const base: SupportFacts = {
   hasStoredApiKey: false,
   hasEnvironmentApiKey: false,
   dictation: { isAvailable: true },
+  network: DEFAULT_NETWORK_FACTS,
+  managedConfiguration: { ok: true, text: CONFIG_STATUS },
   homeDir: String.raw`C:\Users\r`,
 }
 
@@ -40,12 +60,25 @@ describe('renderSupportReport', () => {
         'workspace: open, trusted: yes',
         'backend setting: auto',
         'shell sandbox: setting auto, posture sandboxed (default)',
+        'sandbox network: setting default, not passed (Muse Code’s own default, or the shell sandbox is off)',
         'muse binary path configured: no; environment variables: 2',
         // The home directory is `~` in a report meant for a public issue (D24).
         String.raw`muse cli: found in ~\AppData\Local\Programs\muse (version 1.3.0)`,
         'muse subagent delegation: off; workflow trigger mode: auto',
         'cli credential file: yes; stored model api key: no; META_API_KEY in environment: no',
         'voice dictation: available',
+        'network: http.proxy set: no; proxySupport: override; proxyStrictSSL: yes; proxyAuthorization set: no; noProxy entries: 0; proxy in environment: no',
+        'certificates: system certificates: yes; NODE_EXTRA_CA_CERTS: no',
+        "extension requests through VS Code's network support: fetch yes, WebSocket yes",
+        'muse serve: proxy from none; SSL_CERT_FILE or SSL_CERT_DIR: no',
+        'muse config status:',
+        '  Enterprise configuration status',
+        '  Generation: sha256:0f3c',
+        '  Sources:',
+        '    plane=defaults source_class=system_file state=absent',
+        '    plane=policy source_class=system_file state=absent',
+        '    plane=defaults source_class=windows_machine_policy state=absent',
+        '    plane=policy source_class=windows_machine_policy state=absent',
       ].join('\n'),
     )
   })
@@ -71,5 +104,102 @@ describe('renderSupportReport', () => {
         cli: { ok: true, installDir: '/opt/muse', version: undefined },
       }),
     ).toContain('(version unknown)')
+  })
+
+  // M56 (PLAN.md D43): the network posture, as yes/no and counts only.
+  it('states a corporate network’s posture without its addresses', () => {
+    const text = renderSupportReport({
+      ...base,
+      sandboxNetworkSetting: 'restricted',
+      isSandboxNetworkApplied: true,
+      network: {
+        isProxySet: true,
+        proxySupport: 'on',
+        isProxyStrictSsl: false,
+        isProxyAuthorizationSet: true,
+        noProxyCount: 3,
+        isSystemCertificatesOn: false,
+        isFetchSupportOn: false,
+        isWebSocketSupportOn: true,
+        fetchRouting: 'routed',
+        webSocketRouting: 'routed',
+        hasEnvironmentProxy: true,
+        hasExtraCaCertificates: true,
+        museProxySource: 'vscode',
+        hasMuseCertificateOverride: true,
+      },
+    })
+    expect(text).toContain('sandbox network: setting restricted, passed to muse serve')
+    expect(text).toContain(
+      'network: http.proxy set: yes; proxySupport: on; proxyStrictSSL: no; proxyAuthorization set: yes; noProxy entries: 3; proxy in environment: yes',
+    )
+    expect(text).toContain('certificates: system certificates: no; NODE_EXTRA_CA_CERTS: yes')
+    expect(text).toContain('fetch no, WebSocket yes')
+    expect(text).toContain(
+      'muse serve: proxy from VS Code’s http.proxy; SSL_CERT_FILE or SSL_CERT_DIR: yes',
+    )
+    expect(
+      renderSupportReport({
+        ...base,
+        network: { ...base.network, museProxySource: 'environment' },
+      }),
+    ).toContain('muse serve: proxy from its environment;')
+  })
+
+  // M62 (PLAN.md D43): below VS Code 1.112 an extension's WebSocket is not
+  // routed, and on Node 20 there is none; the settings do not change that.
+  it('never claims a route the editor does not give a global', () => {
+    const olderVsCode = renderSupportReport({
+      ...base,
+      network: { ...base.network, webSocketRouting: 'notRouted' },
+    })
+    expect(olderVsCode).toContain(
+      "extension requests through VS Code's network support: fetch yes, WebSocket no (this editor does not route it; VS Code does from 1.112)",
+    )
+    const node20 = renderSupportReport({
+      ...base,
+      network: { ...base.network, webSocketRouting: 'absent' },
+    })
+    expect(node20).toContain('fetch yes, WebSocket none in this extension host')
+    const otherEditor = renderSupportReport({
+      ...base,
+      network: { ...base.network, fetchRouting: 'notRouted', webSocketRouting: 'notRouted' },
+    })
+    expect(otherEditor).toContain('fetch no (this editor does not route it), WebSocket no (')
+  })
+
+  it('shows captured status fields and omits unrecognized lines that may contain secrets', () => {
+    const managed = renderSupportReport({
+      ...base,
+      managedConfiguration: {
+        ok: true,
+        text: [
+          'Sources:',
+          '  plane=policy source_class=system_file state=absent',
+          '  plane=policy source_class=system_file state=absent token=abc123',
+          String.raw`plane=policy source=C:\Users\r\policy.json password="two words"`,
+        ].join('\n'),
+      },
+    })
+    expect(managed).toContain('    plane=policy source_class=system_file state=absent')
+    expect(managed).toContain('  [unrecognized status line omitted]')
+    expect(managed).not.toContain('abc123')
+    expect(managed).not.toContain('two words')
+    expect(managed).not.toContain('policy.json')
+    const long = renderSupportReport({
+      ...base,
+      managedConfiguration: {
+        ok: true,
+        text: Array.from({ length: MUSE_CONFIG_STATUS_MAX_CHARS }, () => 'Sources:').join('\n'),
+      },
+    })
+    expect(long).toContain('…')
+    expect(long).not.toContain('  Sources:\n'.repeat(MUSE_CONFIG_STATUS_MAX_CHARS))
+    expect(
+      renderSupportReport({
+        ...base,
+        managedConfiguration: { ok: false, reason: 'exit code 2: password=swordfish' },
+      }),
+    ).toContain('muse config status: could not read status')
   })
 })

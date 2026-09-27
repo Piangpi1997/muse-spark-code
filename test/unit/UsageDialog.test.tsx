@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { EN } from '../../src/shared/l10n/en'
 import { setUiText } from '../../src/shared/l10n/text'
@@ -44,16 +44,154 @@ function renderDialog(overrides: Partial<UsageDialogProps> = {}) {
     context: { usedTokens: 21_014, windowTokens: 1_007_997, pressure: 'normal' },
     modelId: 'muse-spark-1.3',
     paid: { features: [], tally: EMPTY_PAID_TALLY, isKeyStored: false },
+    auth: {
+      status: 'signedIn',
+      detail: undefined,
+      backend: 'museCode',
+      methods: ['browser', 'apiKey'],
+      hasCli: true,
+      hasCliSession: true,
+    },
+    onInstallMuseCode: vi.fn(),
+    onSetupSignIn: vi.fn(),
     now: () => NOW,
     onOpenExternal: vi.fn(),
     onClose: vi.fn(),
     ...overrides,
   }
-  render(<UsageDialog {...props} />)
-  return props
+  const view = render(<UsageDialog {...props} />)
+  return { ...props, unmount: view.unmount }
 }
 
 describe('UsageDialog', () => {
+  it('names an installer terminal failure while the Model API stays available', () => {
+    renderDialog({
+      auth: {
+        status: 'signedIn',
+        detail: 'The installer terminal could not open. Try again or use the install instructions.',
+        backend: 'modelApi',
+        methods: ['apiKey'],
+        hasCli: false,
+        installState: 'failed',
+      },
+    })
+    expect(screen.getByRole('alert')).toHaveTextContent('The installer terminal could not open')
+    expect(screen.getByRole('button', { name: 'Install Muse Code' })).toBeInTheDocument()
+  })
+
+  it('shows CLI install and key replacement inside its modal without running either on open', () => {
+    const props = renderDialog({
+      auth: {
+        status: 'signedIn',
+        detail: undefined,
+        backend: 'modelApi',
+        methods: ['apiKey'],
+        hasCli: false,
+        hasCliSession: false,
+        installCommand: 'irm https://dev.meta.ai/install.ps1 | iex',
+      },
+      paid: { features: [], tally: EMPTY_PAID_TALLY, isKeyStored: true },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Install Muse Code' }))
+    expect(screen.getByText('irm https://dev.meta.ai/install.ps1 | iex')).toBeInTheDocument()
+    expect(props.onInstallMuseCode).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Run installer' }))
+    expect(props.onInstallMuseCode).toHaveBeenCalledOnce()
+    fireEvent.click(screen.getByRole('button', { name: 'Replace Model API key' }))
+    expect(props.onSetupSignIn).toHaveBeenCalledWith('apiKey')
+  })
+  it('advances both reset countdowns while open and stops its clock when closed', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(NOW)
+    try {
+      const view = renderDialog({
+        now: () => Date.now(),
+        report: {
+          backend: 'museCode',
+          account: undefined,
+          insights: undefined,
+          subscription: {
+            ...subscription,
+            weekly: { ...subscription.weekly, resetsAtMs: NOW + HOUR + 60_000 },
+          },
+        },
+      })
+      const dialog = screen.getByRole('dialog')
+      expect(dialog).toHaveTextContent('5-hour window · resets in 2h 5m')
+      expect(dialog).toHaveTextContent('resets in 1h 1m')
+      act(() => {
+        vi.advanceTimersByTime(60_000)
+      })
+      expect(dialog).toHaveTextContent('5-hour window · resets in 2h 4m')
+      expect(dialog).toHaveTextContent('resets in 1h')
+      view.unmount()
+      expect(vi.getTimerCount()).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('hides expired percentages and waits for a fresh provider report per row', () => {
+    renderDialog({
+      report: {
+        backend: 'museCode',
+        account: undefined,
+        insights: undefined,
+        subscription: {
+          ...subscription,
+          window: { ...subscription.window, resetsAtMs: NOW - 1 },
+        },
+      },
+    })
+    const dialog = screen.getByRole('dialog')
+    expect(dialog).toHaveTextContent('Current window')
+    expect(dialog).toHaveTextContent('Waiting for a fresh Muse Code usage report.')
+    expect(screen.queryByRole('progressbar', { name: /Current window/ })).toBeNull()
+    expect(dialog).not.toHaveTextContent('resets in now')
+    expect(screen.getByRole('progressbar', { name: 'This week: 130% used' })).toBeVisible()
+  })
+
+  it('expires the weekly row independently of the current five-hour window', () => {
+    renderDialog({
+      report: {
+        backend: 'museCode',
+        account: undefined,
+        insights: undefined,
+        subscription: {
+          ...subscription,
+          weekly: { ...subscription.weekly, resetsAtMs: NOW - 1 },
+        },
+      },
+    })
+    const dialog = screen.getByRole('dialog')
+    expect(screen.getByRole('progressbar', { name: 'Current window: 42% used' })).toBeVisible()
+    expect(screen.queryByRole('progressbar', { name: /This week/ })).toBeNull()
+    expect(dialog).toHaveTextContent('This weekWaiting for a fresh Muse Code usage report.')
+  })
+
+  it('shows opaque tiers generically and provider percentages and reset times verbatim', () => {
+    renderDialog({
+      report: {
+        backend: 'museCode',
+        account: undefined,
+        insights: undefined,
+        subscription: {
+          ...subscription,
+          tier: '27681393394859588',
+          window: { usedPercent: 63, resetsAtMs: NOW + HOUR, windowDurationMins: 90 },
+          weekly: { usedPercent: 11, resetsAtMs: NOW + DAY },
+        },
+      },
+      modelId: 'muse-spark-1.2',
+    })
+    const dialog = screen.getByRole('dialog')
+    expect(dialog).toHaveTextContent('PlanMuse Code subscription')
+    expect(dialog).toHaveTextContent('90-minute window · resets in 1h')
+    expect(screen.getByRole('progressbar', { name: 'Current window: 63% used' })).toHaveValue(63)
+    expect(dialog).toHaveTextContent('This week11% used')
+    expect(dialog).toHaveTextContent('resets in 1d')
+  })
+
   it('shows the plan, both windows as bars with reset times, and the observation age', () => {
     renderDialog()
     const dialog = screen.getByRole('dialog', { name: 'Account & usage' })
@@ -156,7 +294,7 @@ describe('UsageDialog', () => {
     })
     // 800K fresh input at $1.25, 200K cached at $0.15, 100K output at $4.25.
     expect(screen.getByRole('dialog')).toHaveTextContent('Estimated cost$1.46')
-    expect(screen.getByRole('dialog')).toHaveTextContent('Prices read on 2026-09-22')
+    expect(screen.getByRole('dialog')).toHaveTextContent('Prices read on 2026-09-26')
   })
 
   it('focuses the close button, closes on it and on Escape', () => {
@@ -245,6 +383,28 @@ describe('UsageDialog insights fallback (M18)', () => {
 })
 
 describe('UsageDialog: paid features (M33, PLAN.md D30)', () => {
+  it('shows unknown child request cost without claiming it was free', () => {
+    renderDialog({
+      report: {
+        backend: 'modelApi',
+        subscription: undefined,
+        account: undefined,
+        insights: undefined,
+      },
+      paid: {
+        features: ['subagents'],
+        isKeyStored: true,
+        tally: { ...EMPTY_PAID_TALLY, subagentRequests: 1, subagentUnknownRequests: 1 },
+      },
+    })
+    const label = screen.getByText('Subagents (on)')
+    expect(label.nextElementSibling).toHaveTextContent('1 child request')
+    expect(label.nextElementSibling).toHaveTextContent('1 request has no reported cost yet')
+    expect(label.nextElementSibling).not.toHaveTextContent('$0')
+    expect(label.nextElementSibling).not.toHaveTextContent('0 tokens')
+    expect(screen.getByText(/Reported child costs are included/)).toBeInTheDocument()
+  })
+
   const modelApiReport = {
     backend: 'modelApi' as const,
     subscription: undefined,
@@ -257,7 +417,7 @@ describe('UsageDialog: paid features (M33, PLAN.md D30)', () => {
       report: modelApiReport,
       paid: {
         features: ['webSearch'],
-        tally: { webSearches: 4, images: 2, voiceSeconds: 90 },
+        tally: { webSearches: 4, images: 2, voiceSeconds: 90, scheduledRuns: 0 },
         isKeyStored: true,
       },
     })
@@ -266,8 +426,24 @@ describe('UsageDialog: paid features (M33, PLAN.md D30)', () => {
     expect(dialog).toHaveTextContent('Web search (on)4 searches · $0.0100')
     expect(dialog).toHaveTextContent('Images (off)2 images · $0.0200')
     expect(dialog).toHaveTextContent('Muse Voice (off)1m 30s of audio · $0.0045')
-    expect(dialog).toHaveTextContent('Estimated paid total$0.0345')
+    expect(dialog).toHaveTextContent('Estimated extra-feature total$0.0345')
     expect(dialog).toHaveTextContent('published prices, read on 2026-09-24')
+  })
+
+  it('counts scheduled runs without adding their tokens twice to the paid extra total (M52)', () => {
+    renderDialog({
+      report: modelApiReport,
+      paid: {
+        features: ['scheduledPrompts'],
+        tally: { webSearches: 0, images: 0, voiceSeconds: 0, scheduledRuns: 2 },
+        isKeyStored: true,
+      },
+    })
+    const dialog = screen.getByRole('dialog')
+    expect(dialog).toHaveTextContent(
+      'Scheduled prompts (on)2 scheduled runs · token cost included above',
+    )
+    expect(dialog).toHaveTextContent('Estimated extra-feature total$0.0000')
   })
 
   it('has no paid section on the Muse Code backend without a stored key', () => {
@@ -279,7 +455,7 @@ describe('UsageDialog: paid features (M33, PLAN.md D30)', () => {
     renderDialog({
       paid: {
         features: ['imageGeneration'],
-        tally: { webSearches: 0, images: 3, voiceSeconds: 0 },
+        tally: { webSearches: 0, images: 3, voiceSeconds: 0, scheduledRuns: 0 },
         isKeyStored: true,
       },
     })
@@ -294,7 +470,7 @@ describe('UsageDialog: paid features (M33, PLAN.md D30)', () => {
     renderDialog({
       paid: {
         features: ['imageGeneration'],
-        tally: { webSearches: 4, images: 3, voiceSeconds: 0 },
+        tally: { webSearches: 4, images: 3, voiceSeconds: 0, scheduledRuns: 0 },
         isKeyStored: true,
       },
     })

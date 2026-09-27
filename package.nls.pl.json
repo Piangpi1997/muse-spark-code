@@ -25,6 +25,7 @@
   "command.exportConversation.title": "Eksportuj rozmowę",
   "command.mcpServers.title": "Serwery MCP",
   "command.hooks.title": "Hooki",
+  "command.memory.title": "Pamięć",
   "command.newWorktree.title": "Nowe drzewo robocze…",
   "command.removeWorktree.title": "Usuń drzewo robocze…",
   "command.moveToBackground.title": "Przenieś uruchomione polecenie w tło",
@@ -79,5 +80,16 @@
   "walkthrough.gettingStarted.step.chat.description": "Wpisz wiadomość i naciśnij Enter. / otwiera paletę, @ wspomina plik, Shift+Tab przełącza tryb uprawnień, a okno dialogowe Historia przywraca poprzednie rozmowy.\n[Utwórz plik AGENTS.md](command:museSpark.createRulesFile)",
   "config.modelApiWebSearch.description": "Płatne, domyślnie wyłączone. W backendzie Model API pozwala modelowi przeszukiwać sieć podczas odpowiadania według stawki 2,50 USD za 1000 wyszukiwań, rozliczanych z Twojego klucza Model API oprócz tokenów. Włączenie wymaga potwierdzenia ceny; każde wyszukiwanie jest widoczne w rozmowie z oznaczeniem „płatne” i zliczane w sekcji „Konto i użycie”.",
   "config.modelApiImageGeneration.description": "Płatne, domyślnie wyłączone. Pozwala modelowi tworzyć pliki obrazów PNG w obszarze roboczym lub edytować obrazy z obszaru roboczego, tworząc z nich nowe, za pomocą muse-image-1.0, według stawki 0,01 USD za obraz rozliczanej z Twojego klucza Model API: w backendzie Model API oraz w backendzie Muse Code, gdy zapisany jest klucz (nigdy nie jest to rozliczane z subskrypcji). Przed każdym obrazem pojawia się pytanie o zgodę, w każdym trybie uprawnień. Włączenie wymaga potwierdzenia ceny.",
-  "config.modelApiVoice.description": "Płatne, domyślnie wyłączone. Mikrofon wysyła Twoje nagrania do usługi Muse Voice Transcribe firmy Meta zamiast do własnego modułu rozpoznawania mowy Twojego komputera, według stawki 0,18 USD za godzinę dźwięku rozliczanej z Twojego klucza Model API: w backendzie Model API oraz w backendzie Muse Code, gdy zapisany jest klucz. Włączenie wymaga potwierdzenia ceny; mikrofon pokazuje, kiedy jest płatny."
+  "config.modelApiVoice.description": "Płatne, domyślnie wyłączone. Mikrofon wysyła Twoje nagrania do usługi Muse Voice Transcribe firmy Meta zamiast do własnego modułu rozpoznawania mowy Twojego komputera, według stawki 0,18 USD za godzinę dźwięku rozliczanej z Twojego klucza Model API: w backendzie Model API oraz w backendzie Muse Code, gdy zapisany jest klucz. Włączenie wymaga potwierdzenia ceny; mikrofon pokazuje, kiedy jest płatny.",
+  "config.modelApiSubagents.description": "Funkcja płatna, domyślnie wyłączona. W backendzie Model API agenci podrzędni używają Twojego klucza Model API. Włączenie wymaga zaakceptowania cen tokenów. Każde nowe zadanie podrzędne wymaga zatwierdzenia, także w trybie Bypass, dla maksymalnie czterech żądań, łącznie z ponowieniami. Koszt tokenów agentów podrzędnych jest uwzględniony w oszacowaniu rozmowy.",
+  "config.modelApiHooks.description": "Uruchamiaj polecenia hooków Muse Code w zapleczu Model API. Domyślnie wyłączone. Polecenia działają z Twoimi uprawnieniami poza piaskownicą agenta. Przed włączeniem sprawdź je w Muse Spark: Hooks. Klucz Model API nie jest przekazywany procesom hooków.",
+  "config.modelApiScheduledPrompts.description": "Płatne, domyślnie wyłączone. Monit /loop, którego termin nadszedł, może zostać uruchomiony w zapleczu Model API dopiero po zaakceptowaniu ceny tokenów i potwierdzeniu tego uruchomienia. Zaplanowane monity nigdy nie są uruchamiane bez nadzoru; każde uruchomienie jest rozliczane przez Twój klucz Model API według opublikowanych stawek za tokeny modelu.",
+  "config.sandboxNetwork.description": "Sieć, którą piaskownica powłoki Muse Code udostępnia poleceniom. Obowiązuje tylko wtedy, gdy piaskownica jest włączona (museSpark.shellSandbox); bez piaskownicy polecenia mają dostęp do Twojej sieci. Zmiana powoduje ponowne uruchomienie hosta Muse Code.",
+  "config.sandboxNetwork.enumDescriptions.default": "Nie przekazuj niczego: obowiązuje domyślne ustawienie Muse Code (proxy-only) lub to, co ustala zarządzana konfiguracja Twojego administratora.",
+  "config.sandboxNetwork.enumDescriptions.proxyOnly": "Pytaj przed każdym nowym miejscem docelowym (host, port lub protokół), z którym łączy się polecenie.",
+  "config.sandboxNetwork.enumDescriptions.restricted": "Brak dostępu do sieci dla poleceń.",
+  "config.sandboxNetwork.enumDescriptions.enabled": "Pełny dostęp do sieci dla poleceń.",
+  "config.modelApiPromptCacheRetention.description": "Jak długo Meta ma przechowywać zapisany w pamięci podręcznej początek Twoich żądań Model API (instrukcje, narzędzia i dotychczasową rozmowę), rozliczany według niższej stawki za dane wejściowe z pamięci podręcznej. To tylko wskazówka: Meta może usunąć go wcześniej.",
+  "config.modelApiPromptCacheRetention.enumDescriptions.24h": "Do 24 godzin, więc rozmowa, do której wracasz po przerwie, nadal korzysta z pamięci podręcznej. Cena taka sama jak przy przechowywaniu w pamięci.",
+  "config.modelApiPromptCacheRetention.enumDescriptions.inMemory": "Ustawienie domyślne Meta: przechowywany w pamięci i usuwany wcześniej, przy obciążeniu lub po okresie bezczynności."
 }

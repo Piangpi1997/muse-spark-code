@@ -12,9 +12,13 @@ import { AcpPaidFeatures } from '../acp/paid'
 import type { AgentHost } from '../core/agent/agentBackend'
 import { environmentValue } from '../core/backends/musecode/launch'
 import { personalSkillsRoot } from '../core/context/skills'
+import { memoryDataRoot } from '../core/memory/memoryLocation'
+import { MemoryStore } from '../core/memory/memoryStore'
 import { fileContextIo } from '../host/backend/contextIo'
 import { describeEnvironment } from '../host/backend/environment'
 import { createFileSessionStore } from '../host/backend/fileSessionStore'
+import { jobSourceReader } from '../host/backend/jobSource'
+import { createMemoryIo, systemPath } from '../host/backend/memoryIo'
 import { ModelApiBackendManager } from '../host/backend/modelApiBackendManager'
 import { MuseCodeBackendManager, type ProxySettings } from '../host/backend/museCodeBackendManager'
 import { shellJobAssembly } from '../host/backend/shellJob'
@@ -81,23 +85,34 @@ function museCodeManager(deps: RuntimeBackendDeps, workspaceRoot: string | undef
     getEnvironmentVariables: () => [],
     workspaceRoot,
     getShellSandbox: () => options.shellSandbox,
+    // No `--sandbox-network` (M56): Muse Code's default, or a managed policy's.
+    getSandboxNetwork: () => SETTING_DEFAULTS.sandboxNetwork,
     userProfileDir: deps.env['USERPROFILE'],
     isWorkspaceTrusted: () => options.trustWorkspace,
     getProxySettings: () => NO_EDITOR_PROXY,
   })
 }
 
+/** Muse Code's config and data homes as `muse serve` sees them: its skills and its memory. */
+interface MuseHomes {
+  readonly xdgConfigHome: string | undefined
+  readonly xdgDataHome: string | undefined
+}
+
 function modelApiManager(
   deps: RuntimeBackendDeps,
   credentials: CredentialStore,
   workspaceRoot: string,
-  xdgConfigHome: string | undefined,
+  homes: MuseHomes,
   paid: AcpPaidFeatures,
 ): ModelApiBackendManager {
   const { options, log, platform } = deps
   const isWorkspaceTrusted = () => options.trustWorkspace
   const dataInput: DataFolderInput = { platform, env: deps.env, homeDir: deps.homeDir }
   const systemRoot = deps.env['SystemRoot']
+  const warn = (message: string) => {
+    log.warn(message)
+  }
   const listFiles = createWorkspaceFileLister({
     workspaceRoot,
     respectGitIgnore: () => SETTING_DEFAULTS.respectGitIgnore,
@@ -112,9 +127,7 @@ function modelApiManager(
     systemRoot,
     env: () => deps.env,
     searchWorkerPath: path.join(deps.distDir, SEARCH_WORKER_FILE),
-    log: (message) => {
-      log.warn(message)
-    },
+    log: warn,
     // The agent cannot see the editor's buffers (D62); the client's `fs/*` will (M63c).
     hasUnsavedChanges: () => false,
     shellJobAssembly:
@@ -122,11 +135,24 @@ function modelApiManager(
         ? shellJobAssembly({
             storageDir: agentDataFolder(dataInput),
             systemRoot,
-            log: (message) => {
-              log.warn(message)
-            },
+            // The job's C#, shipped in the package beside `dist/` (M56, PLAN.md D6).
+            readJobSource: jobSourceReader(path.dirname(deps.distDir)),
+            log: warn,
           })
         : undefined,
+  })
+  // Muse Code's memory (M49, PLAN.md D41), in the data home `muse serve` sees.
+  const warnMemory = (message: string) => {
+    warn(`Memory: ${message}`)
+  }
+  const memory = new MemoryStore({
+    io: createMemoryIo(io, { warn: warnMemory }),
+    platform,
+    dataRoot: () =>
+      memoryDataRoot({ platform, homeDir: deps.homeDir, xdgDataHome: homes.xdgDataHome }),
+    workspaceRoot,
+    systemPath,
+    warn: warnMemory,
   })
   return new ModelApiBackendManager({
     log,
@@ -139,7 +165,11 @@ function modelApiManager(
     now: () => Date.now(),
     sleep,
     random: () => Math.random(),
-    personalSkillsRoot: personalSkillsRoot({ platform, homeDir: deps.homeDir, xdgConfigHome }),
+    personalSkillsRoot: personalSkillsRoot({
+      platform,
+      homeDir: deps.homeDir,
+      xdgConfigHome: homes.xdgConfigHome,
+    }),
     isWorkspaceTrusted,
     store: createFileSessionStore({
       directory: workspaceSessionsFolder(dataInput, workspaceRoot),
@@ -160,6 +190,15 @@ function modelApiManager(
     notePaidUse: (feature, units) => {
       paid.noteUse(feature, units)
     },
+    // The panel's default (M56); the agent has no setting for the longer retention.
+    promptCacheRetention: () => SETTING_DEFAULTS.modelApiPromptCacheRetention,
+    // Child tasks are paid (M48, PLAN.md D45) and the agent's paid features are
+    // its two flags (D62), so `subagents` is never on here and no task is agreed.
+    confirmSubagentTask: () => Promise.resolve(false),
+    noteSubagentUsage: (modelId) => {
+      log.warn(`A subagent's usage on ${modelId} was reported, but the agent runs no subagents`)
+    },
+    memory,
   })
 }
 
@@ -172,11 +211,11 @@ export function createRuntimeBackend(deps: RuntimeBackendDeps): RuntimeBackend {
     deps.log.warn(message)
   })
   const paid = new AcpPaidFeatures(deps.options.paidFeatures, deps.log)
-  const xdgConfigHome = environmentValue(
-    museCode.childEnvironment(),
-    deps.platform,
-    'XDG_CONFIG_HOME',
-  )
+  const museEnvironment = museCode.childEnvironment()
+  const homes: MuseHomes = {
+    xdgConfigHome: environmentValue(museEnvironment, deps.platform, 'XDG_CONFIG_HOME'),
+    xdgDataHome: environmentValue(museEnvironment, deps.platform, 'XDG_DATA_HOME'),
+  }
 
   const museCodeReadiness = (): BackendReadiness => {
     const resolution = museCode.resolveLaunch()
@@ -208,8 +247,7 @@ export function createRuntimeBackend(deps: RuntimeBackendDeps): RuntimeBackend {
 
   const hostFor = (cwd: string): Promise<AgentHost> => {
     if (deps.options.backend === 'modelApi') {
-      const manager =
-        modelApiHosts.get(cwd) ?? modelApiManager(deps, credentials, cwd, xdgConfigHome, paid)
+      const manager = modelApiHosts.get(cwd) ?? modelApiManager(deps, credentials, cwd, homes, paid)
       modelApiHosts.set(cwd, manager)
       return manager.ensureHost()
     }

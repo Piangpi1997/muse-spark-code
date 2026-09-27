@@ -17,6 +17,8 @@ export type ConversationMessage = Exclude<
 /** One chat UI instance (the sidebar view or one editor panel). */
 export interface ChatSurface {
   readonly id: string
+  /** A side chat's surface (M53): opens in Plan and keeps its conversation apart. */
+  readonly isSideChat?: boolean
   post(message: HostToWebviewMessage): void
   /** Bring the surface into view and give it keyboard focus. */
   reveal(): void

@@ -93,11 +93,14 @@ Every change is in the [CHANGELOG](CHANGELOG.md).
   sources, image files made on request, and Meta's Muse Voice for
   dictation. Each is off until you turn it on and accept its price, marked
   paid wherever it is used, and tallied in Account & usage.
+- **Scheduled prompts under your control.** On the Model API backend,
+  `/loop` saves a recurring prompt in this conversation. A due prompt waits
+  for you to run and confirm it; your key is never spent unattended.
 - **Two backends, never mixed.** Your Muse subscription through the Muse Code
   CLI, or a Meta Model API key (pay as you go) with the extension's own
   tools. The pasted key is never handed to the CLI.
 - **Context the way you work.** `@` mentions with `.gitignore`-aware fuzzy
-  search, the open file or selection as a chip, images pasted or dropped, and
+  search, the open file or selection as a chip, images and PDFs pasted or dropped, and
   `Alt+K` to mention the editor selection. On the CLI backend the agent can
   also read the Problems panel.
 - **History that survives the window.** Every conversation in the workspace,
@@ -113,7 +116,7 @@ Every change is in the [CHANGELOG](CHANGELOG.md).
   model's side kept in English so it behaves the same everywhere.
 - **Accessible and observable.** Checked against WCAG 2.2 AA in every default
   theme, and a log that records what happened without what you wrote.
-- **No telemetry, no server of its own.** What leaves your machine and where
+- **No telemetry, no hosted server of its own.** What leaves your machine and where
   it goes is written down in [PRIVACY.md](docs/PRIVACY.md).
 
 ## Screenshots
@@ -162,14 +165,47 @@ harness:shots`) against a scripted session, so they match the build.
 2. Open the **Muse Spark** view from the activity bar (or press
    `Ctrl+Shift+Alt+Esc` on Windows, `Cmd+Shift+Esc` on macOS,
    `Ctrl+Shift+Esc` on Linux for a conversation in an editor tab).
-3. Sign in, one of two ways:
-   - **Sign in with your Meta account** opens a terminal running `muse login`
-     from the [Muse Code CLI](https://dev.meta.ai/products/muse-code/) and
-     waits for the browser sign-in to finish. Work is billed to your Muse
-     subscription.
+3. If Muse Code is missing, **Install Muse Code** opens a confirmation dialog
+   showing Meta's exact command for this operating system. The same action is
+   in **Account & usage** while you work with a Model API key. **Run installer**
+   opens a visible VS Code terminal;
+   the panel checks for the CLI and offers sign-in when it appears. You can also
+   open [Meta's installation instructions](https://dev.meta.ai/docs/muse-code).
+   If VS Code cannot open the installer terminal, the panel reports that
+   directly and keeps the manual instructions available.
+   Sign in, one of two ways:
+   - **Sign in with your Meta account** shows an approval code in the panel.
+     Open its sign-in page in your browser and approve the code. **Cancel
+     sign-in** stops the temporary CLI sign-in process. Work is billed to your
+     Muse subscription.
    - **Use a Model API key** takes a key shaped like `LLM|<id>|<secret>` from
      dev.meta.ai, stores it in VS Code's secret storage and runs the Model API
      backend with the extension's own tools, pay as you go.
+     **Account & usage** lets you add or replace that key while Muse Code is
+     signed in. The CLI session stays open; the key stays in VS Code secret
+     storage and enables only paid features you explicitly turn on. After a CLI
+     install, **Account & usage** also offers Muse Code browser sign-in. When
+     sign-in is needed in a conversation with history, its controls stay above
+     the transcript. Signing out cancels any still-open key prompt; a key
+     write and backend restart already in progress finish before the stored
+     key is cleared and conversations end. Two panels requesting sign-out
+     share one operation; the window stays gated until it finishes. A message
+     that was still opening its session
+     before sign-out keeps its draft and attachment chips for a fresh send;
+     it cannot run under the next signed-in account. If `muse logout` is still running
+     or its terminal could not open, the panel stays gated and tells you to
+     finish logout. An inherited `META_API_KEY` remains outside the extension:
+     remove it from your environment or VS Code's configured environment
+     variables, then choose **Check again**. Browser approval cannot override
+     that key's billing priority. If VS Code reports that sign-out protection
+     could not be saved, finish `muse logout` and remove `META_API_KEY`
+     before reopening VS Code. If the old CLI credential file remains, a
+     fresh browser approval can replace it; the panel requires a new file
+     write before using that sign-in. If VS Code cannot delete the stored
+     Model API key, sign-out stops this window's backend and keeps it gated
+     until the key can be cleared.
+     Model and skill picker choices reload for the next session; choices from
+     the previous account are cleared when its session ends.
 4. Type a message and press `Enter`. `/` shows the palette, `@` mentions a
    file, the microphone dictates.
 
@@ -182,10 +218,10 @@ The model pill shows the model as soon as the panel opens.
 
 ## Backends
 
-| Backend                                                                      | Sign-in                                                          | Billing                | Tools                                                                                                                                                                                           |
-| ---------------------------------------------------------------------------- | ---------------------------------------------------------------- | ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Muse Code CLI** (`muse serve`, Muse Session Protocol via `@muse-code/sdk`) | The CLI's own browser sign-in (`muse login`)                     | Your Muse subscription | The CLI's, inside its OS sandbox where that works (see `shellSandbox`); its bundled skills, your user rules, its own memory, subagents, and the Problems panel through the extension            |
-| **Meta Model API** (`https://api.meta.ai/v1`)                                | A key from dev.meta.ai, kept in SecretStorage, sent only to Meta | Pay as you go          | The extension's own: read, edit, write, search, list, shell, `read_skill`, `ask_user` (question cards) and `todo_write` (the task list), with approvals; the workspace rules, skills and memory |
+| Backend                                                                      | Sign-in                                                          | Billing                | Tools                                                                                                                                                                                                                 |
+| ---------------------------------------------------------------------------- | ---------------------------------------------------------------- | ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Muse Code CLI** (`muse serve`, Muse Session Protocol via `@muse-code/sdk`) | The CLI's own device-code browser sign-in                        | Your Muse subscription | The CLI's, inside its OS sandbox where that works (see `shellSandbox`); its bundled skills, your user rules, its own memory, subagents, and the Problems panel through the extension                                  |
+| **Meta Model API** (`https://api.meta.ai/v1`)                                | A key from dev.meta.ai, kept in SecretStorage, sent only to Meta | Pay as you go          | The extension tools: read, edit, write, search, list, shell, skills, questions, todos and diagnostics; opt-in bounded subagents; shared Muse Code memory tools and configured MCP servers; workspace rules and skills |
 
 `museSpark.backend` picks: `auto` (default) uses the CLI when it is installed
 and signed in, otherwise the Model API when a key is stored; `museCode` and
@@ -197,10 +233,34 @@ on Windows, `~/.local/bin` elsewhere).
 Conversations on the Model API backend are saved as they go under VS Code's
 workspace storage for the extension, so the History dialog lists them after
 a reload, and a resumed one continues with its transcript and its edit
-patches. The CLI backend keeps its own session store. If the panel itself
+patches while the same Model API key is stored. History, resume, reads and
+forks are limited to that key's sessions. Replacing the key starts a fresh
+conversation; older sessions remain on disk for their original key. Sessions
+saved before ownership was recorded remain on disk but cannot be reopened
+because their account cannot be proved. The CLI backend keeps its own session
+store. Replacing its secondary Model API key keeps the Muse Code conversation
+running. A paid image awaiting approval or retry stops if that key changes;
+the old request cannot use the new key. If the panel itself
 ever fails to render, it shows the error and a **Reload** button instead of
 going blank; Reload brings the conversation back as it was, running turn and
 waiting cards included.
+
+Sign-out and account replacement clear the panel's transcript, loaded tool
+output, agent transcripts and retained file chips before another account signs in. Unsent draft
+text stays in the composer. When an installer makes a signed-in Muse Code CLI
+available in `auto` mode, the current Model API session ends before the next
+message starts a fresh CLI session.
+An older missed-update history read cannot refill the panel after sign-out;
+a fresh account's own history reload still works while that read is pending.
+A panel reloaded while sign-out cancels the old turn receives an empty session
+instead of restoring that account's transcript.
+While a reloaded panel connects or checks sign-in, its saved conversation title
+and transcript, goal and task list stay hidden. They appear after the host
+confirms the live session and signed-in account. An account change clears
+the prior usage report, model and skill lists before the next sign-in reply.
+An output or rewind read begun before sign-out cannot open old content or
+restore its draft afterward. A paid scheduled run confirmed during a key
+change is refused before another Model API request.
 
 ## Other editors
 
@@ -236,7 +296,9 @@ approval needs an explicit choice. Edit automatically resumes when it is
 the only panel holding that session.
 
 "Always allow in this session" on a command allows that exact command line
-again, nothing broader. The Model API backend's file tools refuse any path
+again, nothing broader; on an MCP tool, that tool. An MCP tool asks like a
+command on the Model API backend; Auto runs one its server marks read-only
+without asking, as Muse Code does, and Plan refuses all but those, which ask. The Model API backend's file tools refuse any path
 that leaves the workspace, including through a symbolic link or junction
 inside it. Muse Code refuses such a write while its sandbox runs; without
 the sandbox (`shellSandbox` set to `off`, or `auto` for a Windows workspace
@@ -249,7 +311,10 @@ configure or run code always ask, whatever the mode: `.git`, `.husky`,
 agent's own skills and memory), `.muse` (Muse Code's hooks), `AGENTS.md`,
 `CLAUDE.md`, `.envrc` and `.gitmodules`. Plan refuses them and Bypass skips
 the card. On Muse Code the CLI decides which writes are protected, and the
-extension never approves one for you.
+extension never approves one for you. A note saved with the memory tools is
+the one exception under `.agents`: those tools write only Markdown notes in
+the memory folders, so they are treated as ordinary edits (see
+[Memory](#memory)).
 
 ## Rules, skills and memory
 
@@ -264,10 +329,8 @@ In a trusted workspace the agent follows the same files Muse Code does:
   lists them, `/id arguments` invokes one, and the model loads one itself
   when a task matches its description. `user-invocable: false` in the front
   matter keeps a skill out of the palette.
-- **Memory:** the project's `.agents/memory/MEMORY.md` index is read at the
-  start of a conversation, and the agent reads and updates the notes there
-  with its file tools. On the Model API backend those are protected writes,
-  so they always ask.
+- **Memory:** Markdown notes the agent keeps for later conversations, in
+  Muse Code's three places, on both backends; see [Memory](#memory).
 
 **Muse Spark: Create AGENTS.md** starts the rules file for a workspace that
 has none. `muse init` writes it when the CLI is installed and the workspace
@@ -280,10 +343,11 @@ On the Model API backend the extension loads the files above and nothing
 else:
 
 - **Sizes:** a rules file or a `SKILL.md` over 64 KB is skipped with a
-  warning in the log; the rules together are cut at 256 KB, and `MEMORY.md`
-  at 200 lines or 32 KB.
+  warning in the log; the rules together are cut at 256 KB, and each
+  scope's `MEMORY.md` at 200 lines or 32 KB.
 - **Encodings:** UTF-8, or UTF-16 with a byte-order mark; a file that is not
-  text is skipped with a line in the log.
+  text is skipped with a line in the log. Memory notes are UTF-8 only, as
+  Muse Code reads them.
 - **Links:** a skill folder may be a symbolic link or junction. In the
   workspace it must lead to a place inside it or it is skipped; links in the
   personal root are followed wherever they lead.
@@ -292,11 +356,64 @@ else:
   only), and a short set of working rules (read before editing, no commits
   unless asked, `path:line` references).
 
-In VS Code's **Restricted Mode** (an untrusted folder) neither backend loads
-rules, skills or memory, no shell command runs, and the extension runs no
-`git` (git reads the repository's own config, which can name programs to
-run): `@` mentions come from VS Code's file search and the prompt carries no
-git facts. Trust the workspace to enable them.
+In VS Code's **Restricted Mode** (an untrusted folder), neither backend loads
+rules or skills. The Model API backend loads no memory, offers no memory
+tools and starts no MCP servers. No shell command or `git` runs (git reads
+the repository's own config, which can name programs to run): `@` mentions
+come from VS Code's file search and the prompt carries no git facts. Trust
+the workspace to enable them. Muse Code itself, by its documentation,
+still reads a repository's committed project memory in an untrusted
+workspace: treat a checkout's `.agents/memory/MEMORY.md` as text someone
+else wrote.
+
+### Memory
+
+Muse Code keeps memory in three scopes, and both backends read and write the
+same notes, so a fact saved in one is known in the other:
+
+| Scope                                          | Where the notes are                                                           | Who sees them          |
+| ---------------------------------------------- | ----------------------------------------------------------------------------- | ---------------------- |
+| **Your memory for this project** (the default) | `~/.local/share/muse/memory/projects/<folder>-<hash>`, outside the repository | You, in this workspace |
+| **Project memory**                             | `.agents/memory` in the repository                                            | Everyone who clones it |
+| **Your memory for every project**              | `~/.local/share/muse/memory/personal`                                         | You, everywhere        |
+
+`$XDG_DATA_HOME` replaces `~/.local/share` when it is set (on Windows too, as
+Muse Code does). Each scope may keep a `MEMORY.md` index, one line per note:
+`- [Title](file.md) | hook`.
+Names with spaces or Markdown punctuation are encoded in the index link, so
+the note can still be found and its line removed when the note is deleted.
+
+- **Memory…** in the palette (`/memory`, or **Muse Spark: Memory** in the
+  Command Palette) lists up to 500 Markdown notes per scope, nested up to
+  eight folders, with each note's scope and what it is about.
+  Pick one to open it in an editor, where you read and change it like any
+  file, or to delete it (to the trash, after a confirmation). **New note…**
+  asks for the scope, a name and a one-line description, creates the note
+  and opens it. A note the view creates gets its line in the scope's
+  `MEMORY.md`, and a note it deletes loses its lines, so the index the next
+  conversation reads stays true.
+- **On the Model API backend** the model has Muse Code's own memory tools,
+  `read_memory`, `add_memory` and `edit_memory`, with the same arguments and
+  results, so their rows look the same as on the CLI backend. At the start of
+  a conversation it is given each scope's `MEMORY.md` and the names of the
+  other notes (up to 48 per scope), as Muse Code gives them. A new note gets
+  its line in its scope's index. A write asks in Manual, is made in Auto and
+  Edit automatically, and is refused in Plan, like any edit; a read never
+  asks. A path Muse Code would refuse (outside the scope, hidden, not a
+  `.md` file, or through a link) is refused before any card.
+- **On the CLI backend** Muse Code runs its memory tools itself.
+
+A new note is published only if its path is still free. The extension writes
+and syncs it under a hidden temporary name, then hard-links the complete file
+to the note's name in one step. Another writer's file is never replaced or
+exposed half written; a filesystem without hard-link support refuses the
+create rather than using a partial-write fallback. The index line is added
+only after publication. Updates to an existing note replace it whole (a
+temporary file renamed over it). The extension does not take Muse Code's own
+lock, so two agents updating the same note or index in the same instant could
+lose one of the writes.
+The `.muse-memory.lock` file can remain after its owner exits; its presence
+or stored PID alone does not show that a write is in progress.
 
 ## Muse Code's own tools
 
@@ -314,6 +431,8 @@ the ones that answer in JSON are shown as what they mean:
   next, and the tokens spent against any budget.
 - **Scheduled prompts** (`/loop` and cron): each prompt with its schedule,
   whether it repeats, its next run and how often it has run.
+  These rows report Muse Code's native cron tools, not the extension's Model
+  API schedules described below.
 - **Web search**: the results as links that open in your browser, with
   their snippets. Search rows on the Model API backend look the same.
 - **Background work**: a command Muse Code moved to the background shows
@@ -322,7 +441,8 @@ the ones that answer in JSON are shown as what they mean:
   under The panel for moving one there yourself and stopping it.
 - **Pictures**: when the agent reads an image, or the Model API backend
   generates one, the row shows it; click it to open the file. Only images
-  inside the workspace are shown.
+  inside the workspace are shown. The preview reads the checked target with
+  the same 10 MiB file cap if a workspace link or file changes meanwhile.
 - **MCP tools** read "tool (server)", and any tool the panel has no special
   view for shows its arguments and result as indented JSON.
 
@@ -358,10 +478,79 @@ hooks from `.muse/hooks.json`. The extension shows them and never edits them:
 - **Loud warnings** for the two settings mistakes that make Muse Code load no
   server at all: both `mcpServers` and the older `mcp_servers` in one file,
   or `required` beside `mode` on a server.
+- **On the Model API backend** the window runs the same servers itself, so
+  their tools work with your key as they do in Muse Code:
+  - **When:** they start with the first conversation, and the first message
+    waits for them; they stop with the window, and **Restart the MCP
+    servers** in the view restarts them with the settings as they are then.
+    At most four start together, so a long server list can make the first
+    message wait longer. None runs in Restricted Mode.
+  - **The view** shows each one's state: connected with how many tools, still
+    starting, turned off, or not running and why. A server's row opens the
+    log, where its stderr goes. The extension's own diagnostics server is
+    listed as `ide`, built in.
+  - **Loud:** a server that is not running is a warning in the panel, once
+    per conversation; a _required_ one (the default, unless its entry says
+    `"mode": "optional"`) stops the message with the reason and how to fix
+    it, as Muse Code refuses to start without it. Both keys in one file, or
+    `required` beside `mode`, loads none, as in Muse Code, and says so.
+  - **What an entry may hold:** `command`, `args`, `env`, `cwd` and
+    `framing` (`auto`, `line_delimited_json`, `content_length`) for a
+    local server; `url` and `headers` for a remote one (streamable HTTP);
+    `enabled`, `mode`, `startup_timeout_sec`, `tool_timeout_sec`,
+    `enabled_tools` and `disabled_tools` for either. `${VAR}` reads an
+    environment variable of VS Code's; an unset one keeps the server from
+    starting. A local server sees only a short list of VS Code's environment
+    variables (`PATH`, `HOME`, `TEMP` and the like) plus its own `env`.
+    On Windows a `.cmd` launcher such as `npx` runs through `cmd.exe`, and
+    an argument with `"` or `%` is refused there. A hidden Windows job
+    helper passes stdin, stdout and stderr as binary pipes, assigns the
+    server to its job before it runs, after a private handshake confirms
+    this extension process still owns the launch. It ends descendants on Stop,
+    server exit or extension shutdown. If Windows cannot load the helper,
+    local stdio servers do not start; the view gives the reason. Remote
+    HTTP servers can still connect.
+  - **Sign-in:** `muse mcp login` signs in Muse Code only. A remote server
+    that needs a credential takes it in its entry's `headers`
+    (`"Authorization": "Bearer ${MY_TOKEN}"`).
+  - **Tools** are named `mcp__<server>__<tool>` and read "tool (server)" in
+    the transcript. Their results reach the model as text and pictures;
+    audio and files are described instead. Resources, prompts and sampling
+    are not supported.
 - **Hooks…** lists the project's, yours and your administrator's hooks, and
   opens the file behind each. A hook runs through your shell outside Muse
   Code's sandbox and approvals, so read a repository's hooks before you
   trust its folder.
+
+On the **Model API backend**, `museSpark.modelApiHooks` is a machine-scoped
+setting, off by default. When enabled, a new session reads the same managed,
+user and project hook sources. Project hooks require VS Code workspace trust.
+The implementation currently fires `SessionStart`, `UserPromptSubmit`,
+`PreToolUse`, `PermissionRequest`, `PostToolUse`, `PostToolUseFailure`,
+`PostToolBatch`, `PreLLMCall`, `PostLLMCall`, `PreCompact`, `PostCompact`,
+`SubagentStart`, `SubagentStop`, `Stop`, `StopFailure`, `SessionEnd` and
+`Notification`;
+unsupported events and handlers are reported and skipped. Hook commands run as your user outside
+the agent's sandbox, with a narrow environment that excludes the Model API key.
+They get JSON on stdin, have a timeout and output cap, and may approve an
+ordinary tool call that would otherwise ask. Paid calls and protected writes
+still need your confirmation. A `PreToolUse` hook that asks forces a human
+card for memory reads or writes, including in Bypass and Edit automatically;
+Plan still refuses memory writes. Review each source with
+**Muse Spark: Hooks** in the Command Palette before enabling the setting.
+On the Model API backend, that picker shows the machine setting's on/off state
+and opens it. Turning the setting off stops hook dispatch in an open session;
+source file changes are read at the next session start.
+Model-call hooks receive bounded summaries without inline image bytes or the
+Model API key. A pre-call veto stops the request before it reaches Meta. A
+post-call veto stops returned tools and follow-up requests. An isolated Muse
+Code echo capture also ended the run as failed without another model request.
+Pasted media data URLs inside ordinary text are removed before any model-call
+hook preview is shortened; the original text still reaches the model.
+Tool hooks receive bounded previews of arguments and output, with media data
+URLs and credential-named fields omitted. MCP tools and the model still use
+the original arguments and results. A required MCP server failure ends the
+turn even if a post-tool hook asks to stop it.
 
 **Worktrees.** **New worktree…** asks for a new branch and its base (the
 current commit or any local branch), creates it in a folder of its own, and
@@ -409,6 +598,46 @@ both backends, as Muse Code's `/goal` does.
   its own, so your key pays for nothing you did not ask for. A token budget
   the agent gives a goal stops it once spent.
 
+## Scheduled prompts (Model API)
+
+On the Model API backend, `/loop 10m Review the build` saves a prompt in the
+current conversation to become due every ten minutes. Use `m`, `h`, or `d`
+for minutes, hours, or days; `/loop "0 9 * * 1-5" Summarize new bugs` uses
+a five-field cron expression in your machine's local time. `/loop <prompt>`
+defaults to ten minutes. `/loop list` refreshes the panel's schedule list,
+and `/loop cancel <id>` removes one. The list above the composer shows each
+prompt, cadence, next run or due state, run count, and ID, with **Run now**
+and **Cancel schedule** controls.
+
+Each job belongs to this workspace, conversation, and stored Model API key.
+Signing out or switching backends hides its prompts immediately; a temporary
+CLI sign-in attempt leaves the still-active Model API list in place.
+It expires after seven days; `/loop 7d ...` has no run before that deadline
+and is refused. A due prompt stays pending until Run, Cancel or expiry.
+Only a loaded conversation checks for due work;
+closing VS Code stops checks. A missed recurring interval leaves one due
+occurrence, without a backlog. A due prompt **never runs by itself**: turn
+on **Scheduled prompts (paid)** and accept both published standard and
+contributor token rates, then choose **Run now** and confirm that
+occurrence's prompt, model and exact tier rates in a separate modal. An
+unpriced model cannot be approved. Declining leaves it due until expiry and
+makes no API call. Bypass
+permissions does not skip either confirmation. A changed model, prompt,
+conversation or paid setting refuses an old confirmation; the client checks
+the key it actually reads before HTTP. A receipt claimed just before such a
+change is never replayed, so that occurrence may be skipped without a charge.
+A run that reaches its first Model API request has a paid row
+in the transcript and a count in Account & usage; its token cost is already
+in that conversation's token estimate. A run admitted just before a crash
+is not replayed, even if its result was never seen. Cancel does not stop a
+turn that already began.
+
+Muse Code has its own subscription-backed `cron_create`, `cron_list` and
+`cron_delete` tools. Ask it in chat to schedule, list or cancel its jobs;
+those are not the Model API jobs shown by this panel. Muse Code 1.3.0 does
+not expose scheduler controls over MSP or a `muse cron` CLI command, so the
+panel cannot present an authoritative native job list or direct cancel.
+
 ## The panel
 
 **Composer.**
@@ -417,11 +646,59 @@ both backends, as Muse Code's `/goal` does.
   through a setting). The box grows with your draft up to ten rows, then
   scrolls inside.
 - While a turn runs, `Enter` steers it and Stop cancels it; Stop also drops
-  messages still queued, which read "Not sent".
-- The `+` button uploads images (PNG, JPEG, GIF, WebP; other files become `@`
-  mentions) or starts a mention; images also paste and drop. An upload the
-  panel cannot take shows a dismissible banner: other files go in as `@`
-  mentions, or by absolute path for files outside the workspace.
+  messages still queued, which read "Not sent". A picked text file on Muse
+  Code queues a new turn so its file annotation survives History resume.
+- The `+` button attaches images (PNG, JPEG, GIF, WebP), PDFs on the Model
+  API backend, and UTF-8 text files up to 1 MiB from trusted, indexed workspace
+  paths. Text files travel with their names as text on both backends. Files
+  attached to Muse Code share its 10 MiB message limit; the composer counts
+  their serialized content, including escaping, and refuses combinations
+  that leave too little room for the prompt. Remove an attachment or shorten
+  the message if that happens. Switching backends keeps visible chips; Muse
+  Code checks them again before a send or steer and may require removal of an
+  image attached under Model API. Model API text attachments share a separate
+  768 KiB allowance for their UTF-8 content and file-name wrappers. A large
+  single file can be refused despite the 1 MiB per-file read cap; attach a
+  shorter excerpt or remove another text attachment. A long conversation may
+  still exceed the Model API context limit. Files outside that set
+  become `@` path mentions; known binary types and private
+  files are refused. A PDF picked under a `.png` or `.txt` name follows its
+  detected PDF header and 32 MB limit; Muse Code gives its PDF refusal.
+  Ordinary unindexed text remains a path mention, and private filenames are
+  refused before any PDF check.
+  Images and PDFs also paste and drop. A dismissible banner gives the specific
+  size, media, backend, text or private-file refusal; unknown file reasons
+  keep generic unsupported-type guidance. Muse Code's MSP 1.3.0 cannot take a PDF part, so a PDF attachment
+  there names the Model API backend instead. The Model API agent can read a
+  workspace PDF or image through `read_file`; other workspace files use its
+  existing UTF-8 text reader. Excluded text files share only a path mention,
+  and the Model API reader confines paths to the workspace. Picker reads stop
+  at the file's size cap even if it grows during the read. A native picker
+  still open after New Conversation or sign-out cannot add an old file or
+  mention to the new draft. Model API text,
+  image and PDF reads use the checked canonical workspace target if a link
+  changes after confinement. Host file I/O also rejects an observed change
+  to that checked path when a parent directory becomes a junction after the
+  first check; paid image output reservations recheck before fill and cleanup.
+  Combined image
+  and PDF data URLs are capped at 48 million encoded characters per message;
+  an excess pasted or dropped attachment is refused before the browser reads
+  and encodes it. Replayed requests use the same cap and
+  keep newer media, announcing when older media is omitted from the request.
+  Paste/drop checks the first 1 KiB of image-labelled files: a PDF named
+  `.png` or `.txt` uses the 32 MB PDF limit and PDF media type, while a real image over
+  10 MiB is refused without encoding its full bytes. The check is discarded
+  if the conversation changes before it finishes. Plain text clipboard content
+  keeps its normal paste behavior; text-named files without clipboard text are
+  probed and ignored when they are not PDFs. Private names are refused first.
+  A PDF whose page tree cannot be counted without ambiguity reserves all 50
+  image slots, including when comments, escaped names or indirect `/Count` or
+  `/Type` references obscure the real tree beside a visible decoy.
+  The original attachments remain in local history. A batch of Model API
+  `read_file` tool calls uses the same media cap; a file over that batch cap
+  gets a failed tool result before its bytes are retained. PDF and image
+  tool rows use the installed panel language and number format; the model
+  receives its English result.
 - A path with a space, `#` or `"` is written in quotes,
   `@"my notes/a b.md"#5-10`, and the menu searches what you type after `@"`.
 - The model pill reads `model effort` (effort tiers Minimal to Max, each
@@ -438,7 +715,7 @@ palette with a filter box of its own. Its groups:
   Continue a Claude Code or Codex session (CLI backend).
 - **Model:** switch model, effort (Left and Right step it), thinking.
 - **Customize:** permission mode, Focus view, Send with Ctrl+Enter, MCP
-  servers and hooks (CLI backend), settings, keybindings.
+  servers, hooks (CLI backend), settings, keybindings.
 - **Account & usage**, **Skills** (the session's own, plus Manage and Import
   on the CLI backend), **Slash commands** and **Support**.
 
@@ -448,7 +725,8 @@ commands narrowed as you type: `/agents`, `/clear`, `/compact`, `/config`,
 `/usage`, `/mcp` and `/hooks` (CLI backend), and the session's skills. Names
 that start with your letters come first. Up and Down move, `Enter` runs a
 command (a skill, or `/goal`, is completed so you can add what follows it),
-`Tab` completes the name and `Esc` closes the list. With nothing matching,
+`Tab` completes the name and `Esc` closes the list. `/loop` is offered on
+the Model API backend. With nothing matching,
 `Enter` sends the text as it is.
 
 **Transcript.**
@@ -492,11 +770,42 @@ change, and **Click to expand** opens the diff editor. To undo, use the
 rewind button on any sent message (on hover):
 
 - **Fork conversation from here**.
+- **Rewind conversation to here** starts a branch before that message and
+  puts its prompt back in the composer. The original conversation stays in
+  History. Images return when the backend still has their bytes; the panel
+  warns if it cannot restore one. A Model API conversation cannot be rewound
+  before its latest compaction. A rewind queued for a session the tab has since
+  left is ignored. Messages steered into one turn use the last earlier turn as
+  their branch point; if none exists, the conversation rewind choice is hidden.
+  Wait for the selected turn to finish before rewinding its conversation.
+  A just-sent Model API image can be restored before History is reopened.
+  Conversation rewind is hidden for each PDF or named text file card because
+  its bytes cannot be restored reliably on every backend and History path;
+  an earlier text-only card in the same turn keeps its rewind choice. A
+  request made outside the menu is checked against the served card and cut
+  before the conversation changes.
 - **Rewind code to here** reverts every edit made after that message, the
   conversation's and its subagents', in the reverse of the order they
   landed. A file the edit created goes to the trash, unless you have added
   to it since, in which case your lines stay.
 - **Fork conversation and rewind code**.
+
+**Side chat.** Use **Side chat** in the header to open a separate Plan-mode
+conversation with the completed turns as reference. Its inherited goal is
+cleared; the original tab keeps its session, goal and running turn. A delayed
+side-chat request is ignored if the original tab has since changed sessions.
+On the Model API backend, the side branch keeps Plan mode after reopen,
+suppresses local hooks and refuses external MCP tools, including ones their
+server labels read only. It also refuses scheduled prompt creation, cancellation
+and paid runs before any job claim or Model API request. Muse Code applies its
+own project and session rules in Plan mode;
+review those rules before treating that branch as read only. Close the side
+tab to return to the main one; its branch stays in History. It uses the
+selected backend's normal model allowance or key billing; it does not route
+Model API calls through a Muse subscription. In a side chat, `Shift+Tab`
+moves keyboard focus normally because its permission mode is fixed. A side
+panel's History shows only its own side branches; the same boundary applies
+when the window reloads.
 
 Each edit is undone only where its own lines (the changed lines and the few
 around them) are still exactly as the edit left them. If you added or
@@ -513,7 +822,8 @@ not see. On the Model API backend the file tools also refuse a file an
 editor holds unsaved changes to, keep a file's BOM, line breaks and final
 line break, refuse files that are not UTF-8 text rather than rewrite them,
 and replace an existing file with `write_file` only after reading it (as
-Claude Code does).
+Claude Code does). A linked path checks both its requested and canonical
+editor locations for unsaved changes.
 
 **History.** The clock icon lists the workspace's conversations by day with
 search, resume (full transcript), archive and **Show archived**. Archive with
@@ -575,7 +885,7 @@ same card and leaves `Ctrl+B` to VS Code until approval resolves.
 A fork has no running commands from its source; it carries the ending or
 lost-output context into the agent's next request for any inherited task.
 
-**Subagents.** When Muse Code spawns native subagents they appear as rows and
+**Subagents.** When either backend spawns subagents they appear as rows and
 an **N agents** pill in the header opens the **Agent map** (also `/agents`):
 this conversation, its agents with role, objective, status, duration and
 tokens, the background tasks, and each agent's own transcript.
@@ -589,8 +899,30 @@ tokens, the background tasks, and each agent's own transcript.
 - An agent's own replies and tool calls stay in its transcript in the map,
   and the map's details offer the controls Muse Code provides: Interrupt and
   Stop while it runs, a note to it, Resume, Close, and a follow-up task once
-  its result is ready.
-- The Model API backend spawns no agents.
+  its result is ready. A ready result can be marked read; a closed agent can
+  be reopened on the Model API backend. Muse Code's Reopen and Mark result
+  read controls wait for a live capture of their accepted MSP commands;
+  its captured Interrupt, Stop, Resume and Close controls remain available.
+- On the Model API backend, the agent can spawn up to eight child sessions at
+  once; more wait in order, up to 64 per conversation. A child has its own
+  conversation and the same workspace tools and approvals, but cannot spawn
+  again or ask you a question. Children share the workspace and use your
+  Model API key; their tokens count in the conversation's usage. Paid
+  subagents are off by default. Enabling them accepts the published model
+  rates; each new child task then asks again before it starts, including in
+  Bypass mode. Plan refuses the task. One approval allows at most four actual
+  response requests, including retries and tool rounds. A running note uses
+  that same allowance; a follow-up or reopen needs a new approval. This is
+  a request limit, not a dollar limit. Failed requests without a usage report
+  appear as unknown cost in Account & usage. A resumed child whose queued
+  notes survived a window restart shows those notes in its fresh approval
+  before they run. Stopping a
+  queued child drops its unsent notes; reopening it starts from its retained
+  objective without those canceled notes. A second panel joining during a
+  child's pending tool approval sees the same card. Child tokens spent on an
+  active goal count against that goal's budget; a replacement goal does not
+  inherit an earlier child's cost. The paid feature and its certification
+  remain in the staged M48 milestone until its gates pass.
 
 **Workflows.** Muse Code can run a multi-agent workflow: a short script,
 written by the model for the task or saved in Muse Code beforehand, that
@@ -632,8 +964,16 @@ backend runs no workflows.
 
 - **Account:** auth method, plan, backend, Muse Code version and model.
 - **Usage (Muse Code):** the subscription's current window and week. Muse
-  Code reports them only after a reply; until then the modal shows the last
-  window it reported, dated "as of".
+  Code reports them only after a reply. The modal reads the latest report
+  from the signed-in CLI when opened; it does not use an account-agnostic
+  snapshot after a host restart or sign-out. Countdowns update each minute
+  while the modal is open. Once a reported reset has passed, that row waits
+  for a fresh Muse Code report instead of showing an expired percentage or
+  reset countdown. Each observation is dated "as of". The numbers are the
+  CLI's account-level percentages and reset times: changing the selected
+  model does not create a separate local quota or reset calculation, and an
+  opaque plan ID is shown as "Muse Code subscription". Personal Muse
+  Power/Maximum plan grants are separate from this CLI usage report.
 - **This conversation:** token totals (on Muse Code, prompt tokens as it
   counts them once). On the Model API also the cached tokens, the cache-hit
   rate and a dollar estimate from Meta's published per-token prices
@@ -644,16 +984,20 @@ backend runs no workflows.
   from Muse's reminder agents (which run after every reply), from subagents,
   and from sessions active for 8+ hours. Approximate, this machine only.
 
-**Prompt caching.** The Model API backend sends a per-session cache key so
-repeated prefixes are billed at the cached rate; the CLI caches on its own.
-Meta does not publish the cache lifetime, so there is no "warm for N
-minutes" countdown; on the Model API the modal shows the cache-hit rate
-instead.
+**Prompt caching.** The Model API backend sends a stable key for requests
+that share a model, instructions and tools, so repeated prefixes can be
+billed at the cached rate; the CLI caches on its own. The retention setting
+asks Meta for its shorter in-memory default, or up to 24 hours when you
+choose that machine-scoped setting. Either is a hint rather than a guaranteed
+lifetime. The modal shows the cache-hit
+rate instead of a "warm for N minutes" countdown.
 
-**Diagnostics (CLI backend).** The agent can read the Problems panel through a
-`getDiagnostics` tool the extension serves on a loopback MCP server, bound to
-`127.0.0.1` with a per-window token and started when a session first needs
-it. Nothing else is exposed. It reports the workspace's files only (the
+**Diagnostics.** The agent can read the Problems panel through a
+`getDiagnostics` tool. On the CLI backend the extension serves it on a
+loopback MCP server, bound to `127.0.0.1` with a per-window token and
+started when a session first needs it; nothing else is exposed. On the
+Model API backend it runs inside the extension under the same name
+(`mcp__ide__getDiagnostics`), as a read in every mode. It reports the workspace's files only (the
 first folder), by relative path, each message cut at 1,000 characters, and
 past 200 problems a count instead of the rest.
 
@@ -735,22 +1079,32 @@ device is available", and step markers on stderr name where a start failed.
 
 ## Paid features
 
-Three extras of Meta's Model API cost money on top of tokens. They are
+Four extras of Meta's Model API cost money on top of ordinary chat tokens. They are
 always billed to your Model API key, never to your Muse Code subscription,
-and all three are **off until you turn them on**. All three work on the
+and all four are **off until you turn them on**. All four work on the
 Model API backend; images and Muse Voice also work on the Muse Code backend
 while a key is stored (web search is Muse Code's own there, on the
 subscription):
 
-| Feature          | Price (Meta, read 2026-09-24) | What it does                                                                                                                          |
-| ---------------- | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| Web search       | $2.50 per 1,000 searches      | The model may search the web while it answers; the reply lists the pages it cites                                                     |
-| Image generation | $0.01 per image               | The model may create a PNG file in the workspace with `muse-image-1.0`, or edit workspace images into a new one, asking you each time |
-| Muse Voice       | $0.18 per hour of audio       | The microphone uses Meta's Muse Voice Transcribe instead of your computer's own recogniser                                            |
+| Feature          | Price (Meta, read 2026-09-24)                                         | What it does                                                                                                                          |
+| ---------------- | --------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| Web search       | $2.50 per 1,000 searches                                              | The model may search the web while it answers; the reply lists the pages it cites                                                     |
+| Image generation | $0.01 per image                                                       | The model may create a PNG file in the workspace with `muse-image-1.0`, or edit workspace images into a new one, asking you each time |
+| Muse Voice       | $0.18 per hour of audio                                               | The microphone uses Meta's Muse Voice Transcribe instead of your computer's own recogniser                                            |
+| Subagents        | Selected model's published input, cached input and output token rates | Child tasks on the Model API backend; every task asks again and admits at most four response requests                                 |
+
+Scheduled prompts use ordinary Model API tokens, rather than an extra
+per-run service fee. The off-by-default paid gate names both standard
+($1.25/$0.15/$4.25) and contributor ($0.10/$0.002/$0.20) rates per million
+input/cached/output tokens. Each due run names only its selected model's
+exact tier before any model call; an unpriced model cannot be approved.
+Other paid tools you have enabled may
+add their own charges during that confirmed turn.
 
 Turn one on from the palette (**Account & usage** group, where the backend
 can use it) or with its setting (`museSpark.modelApiWebSearch`,
-`modelApiImageGeneration`, `modelApiVoice`). Either way a confirmation
+`modelApiImageGeneration`, `modelApiVoice`, `modelApiSubagents`,
+`modelApiScheduledPrompts`). Either way a confirmation
 names the price first; declining it turns the setting back off, and turning
 a setting off means the next time asks again. The settings are
 machine-scoped, so a repository cannot turn one on.
@@ -761,13 +1115,20 @@ While one is on, you can always tell:
   search, Images"), with the prices in its tooltip; it opens Account &
   usage.
 - **Every use is its own row** marked _paid_: each search, with its query
-  and results, and each image, with its path.
+  and results; each image, with its path; and each admitted scheduled run.
 - **Every image asks first**, in every permission mode, Bypass included,
   with the prompt, the images an edit starts from, and the price on the
   card and no "always allow". Plan refuses it (it writes a file), and a
   path that is taken, outside the workspace, or not a `.png`, or a source
   that is missing, outside the workspace, not a PNG, JPEG or WebP image, or
-  over 10 MB, is refused before anything is asked or billed.
+  over 10 MB, is refused before anything is asked or billed. Edit sources
+  are read from their checked canonical workspace targets, even if a link
+  changes after the check.
+- **Every new child task asks first**, in every mode, Bypass included; Plan
+  refuses it. The decision shows its objective, model, published rates and
+  four-request ceiling. Retries count; a running note spends the same grant.
+  The child row is marked paid, and the child estimate in Account & usage is
+  part of the conversation's total, not an extra charge added to it.
 - **On the Muse Code backend**, images come from the extension itself: its
   `ide` tool server, which every Muse Code session loads, offers Muse Code
   an image and an image-edit tool while image generation is on and a key is
@@ -777,8 +1138,11 @@ While one is on, you can always tell:
   leaves the extension, and the row is marked paid as on the Model API.
 - **The microphone says so**: ringed, and named "Record voice with Muse
   Voice (paid)" with the price in its tooltip.
-- **Account & usage keeps the tally**: this window's searches, images and
-  seconds of audio, each with its estimated cost at the published prices.
+- **Account & usage keeps the tally**: this window's searches, images,
+  seconds of audio, child request attempts and scheduled runs, with estimated
+  cost when usage was reported. An attempt with no usage report has unknown
+  cost. Scheduled-run tokens are included in the session token estimate rather
+  than added to the extra-features total.
   The dev.meta.ai dashboard is the bill.
 
 Web search's count errs high: Meta does not say how it bills a search with
@@ -839,46 +1203,50 @@ What stays in English:
 
 ## Limits
 
-| What                             | Limit                                                                                                            |
-| -------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| Images                           | 10 MB each, 20 per message                                                                                       |
-| A message to Muse Code           | 10 MiB, images counting a third more than their file size                                                        |
-| Model API: tool rounds           | 50 per turn                                                                                                      |
-| Model API: shell commands        | 2 minutes by default, 10 at most                                                                                 |
-| Model API: retries               | Up to 5 attempts on 429, 500 and 503, honouring `Retry-After`, shown in the transcript; Stop cuts the wait short |
-| Model API: a silent reply stream | Ended after 5 minutes with nothing from the server; send again to retry                                          |
-| Model API: file tools            | Files up to 10 MiB; the search tool skips files over 1 MiB                                                       |
-| Opened tool outputs              | 16 MiB each; the latest 20, and 32 million characters together                                                   |
+| What                             | Limit                                                                                                                                                                                    |
+| -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Images                           | 10 MB each, 20 per message                                                                                                                                                               |
+| PDFs on the Model API backend    | 32 MB each locally (Meta allows 50 MB per inline file); images and PDF page images together: 50 per message. Meta reads text from the first 100 pages and page images from the first 50. |
+| Model API encoded media          | 48 million data URL characters total per new message and replay request; older replayed media is named but omitted when over the cap.                                                    |
+| Picked UTF-8 text attachments    | 1 MiB per-file read cap from trusted and indexed workspace paths; Model API also caps combined text and file-name wrappers at 768 KiB to leave context room.                             |
+| A message to Muse Code           | 10 MiB. Attachment admission reserves 2 MiB for the prompt, context and frame; serialized text and base64 images count toward the rest. The exact outbound frame is checked at send.     |
+| Model API: tool rounds           | 50 per turn                                                                                                                                                                              |
+| Model API: shell commands        | 2 minutes by default, 10 at most                                                                                                                                                         |
+| Model API: retries               | Up to 5 attempts on 429, 500 and 503, honouring `Retry-After`, shown in the transcript; Stop cuts the wait short                                                                         |
+| Model API: a silent reply stream | Ended after 5 minutes with nothing from the server; send again to retry                                                                                                                  |
+| Model API: file tools            | Text and images up to 10 MiB, PDFs up to 32 MB; the search tool skips files over 1 MiB                                                                                                   |
+| Opened tool outputs              | 16 MiB each; the latest 20, and 32 million characters together                                                                                                                           |
 
 ## Commands and keybindings
 
-| Command                                             | Default keybinding                                                                   | What it does                                                                                                                                              |
-| --------------------------------------------------- | ------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Muse Spark: Open in Sidebar                         | —                                                                                    | Focus the chat view in the activity bar                                                                                                                   |
-| Muse Spark: New Conversation                        | `Ctrl+N` (`Cmd+N`) when `enableNewConversationShortcut` is on, Muse focused          | Clear the active panel to a new conversation, or open one where `preferredLocation` says                                                                  |
-| Muse Spark: Sign Out                                | —                                                                                    | Forget the stored Model API key and run `muse logout` when the CLI is signed in                                                                           |
-| Muse Spark: Open in Terminal                        | —                                                                                    | Run the Muse Code CLI's own interactive interface in a VS Code terminal at the workspace root                                                             |
-| Muse Spark: Create AGENTS.md                        | —                                                                                    | Write the rules file with `muse init` (or the same template without the CLI) and open it; an existing file is opened                                      |
-| Muse Spark: Open Walkthrough                        | —                                                                                    | Open the four-step Get Started walkthrough                                                                                                                |
-| Muse Spark: Open in New Tab                         | `Ctrl+Shift+Alt+Esc` on Windows, `Cmd+Shift+Esc` on macOS, `Ctrl+Shift+Esc` on Linux | Open an independent conversation as an editor tab (also the `+` in the view title); the panel header's own button starts a new conversation in place      |
-| Muse Spark: Toggle Focus                            | `Ctrl+Alt+Esc` on Windows, `Cmd+Esc` on macOS, `Ctrl+Esc` on Linux                   | Move keyboard focus between the editor and the composer                                                                                                   |
-| Muse Spark: Insert @-Mention for Selection          | `Alt+K`, editor focused                                                              | Insert `@path#start-end` for the active editor selection into the composer                                                                                |
-| Muse Spark: Toggle Focus View                       | `Ctrl+Alt+F`, Muse focused                                                           | Flip the `museSpark.focusView` setting (hides tool calls and reasoning)                                                                                   |
-| Muse Spark: Toggle Thinking                         | `Ctrl+Alt+T` (macOS `Option+T`, Linux `Ctrl+Alt+O`), composer only                   | Turn reasoning on or off for this conversation. Claude Code uses `Alt+T`; on Windows that opens the Terminal menu, on GNOME `Ctrl+Alt+T` opens a terminal |
-| Muse Spark: Set Up Shell Sandbox                    | —                                                                                    | Windows: run Muse Code's one-time `muse sandbox windows setup` through a UAC prompt and report the result; elsewhere reports that no setup is needed      |
-| Muse Spark: Show Logs                               | —                                                                                    | Open the "Muse Spark" log channel (keys redacted)                                                                                                         |
-| Muse Spark: Diagnostics                             | —                                                                                    | Write the versions, the backend and CLI facts, credential presence (as yes/no) and the dictation state to the log and open it: what a bug report needs    |
-| Muse Spark: Manage Skills                           | —                                                                                    | Turn Muse Code's skills on or off (`muse skills enable`/`disable`), then offer to restart it so the change takes effect                                   |
-| Muse Spark: Import Skills from Claude Code or Codex | —                                                                                    | Preview what `muse skills import` would copy, import it once you confirm, report what was imported, skipped or failed                                     |
-| Muse Spark: Export Conversation                     | —                                                                                    | Save the conversation in front of you as Markdown where you choose, and open it                                                                           |
-| Muse Spark: MCP Servers                             | —                                                                                    | Show the MCP servers Muse Code will load, sign in to or out of a remote one, open the settings file                                                       |
-| Muse Spark: Hooks                                   | —                                                                                    | Show where Muse Code's hooks come from (project, yours, managed) and open each file                                                                       |
-| Muse Spark: New Worktree…                           | —                                                                                    | Ask for a new branch and its base, create it in its own folder beside the repository, then offer to open it in a new window                               |
-| Muse Spark: Remove Worktree…                        | —                                                                                    | Delete another worktree's folder (its branch stays), asking again before discarding uncommitted changes                                                   |
-| Muse Spark: Move Running Command to Background      | `Ctrl+B` (also on macOS), while the conversation in view runs a shell command        | Let the running shell commands go on in the background while the agent carries on; VS Code keeps `Ctrl+B` otherwise                                       |
-| Muse Spark: Stop Background Tasks                   | —                                                                                    | Stop every background task of the conversation in view                                                                                                    |
-| (composer) Record voice                             | `Ctrl+D` (`Cmd+D`), composer only                                                    | Tap to start or stop voice dictation, hold to record while held                                                                                           |
-| (composer) Run a shell command                      | Start the message with `!`                                                           | Run it in the workspace as you, outside any turn; the agent sees it with your next message                                                                |
+| Command                                             | Default keybinding                                                                   | What it does                                                                                                                                                                                      |
+| --------------------------------------------------- | ------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Muse Spark: Open in Sidebar                         | —                                                                                    | Focus the chat view in the activity bar                                                                                                                                                           |
+| Muse Spark: New Conversation                        | `Ctrl+N` (`Cmd+N`) when `enableNewConversationShortcut` is on, Muse focused          | Clear the active panel to a new conversation, or open one where `preferredLocation` says                                                                                                          |
+| Muse Spark: Sign Out                                | —                                                                                    | Forget the stored Model API key and run `muse logout` when the CLI is signed in                                                                                                                   |
+| Muse Spark: Open in Terminal                        | —                                                                                    | Run the Muse Code CLI's own interactive interface in a VS Code terminal at the workspace root                                                                                                     |
+| Muse Spark: Create AGENTS.md                        | —                                                                                    | Write the rules file with `muse init` (or the same template without the CLI) and open it; an existing file is opened                                                                              |
+| Muse Spark: Open Walkthrough                        | —                                                                                    | Open the four-step Get Started walkthrough                                                                                                                                                        |
+| Muse Spark: Open in New Tab                         | `Ctrl+Shift+Alt+Esc` on Windows, `Cmd+Shift+Esc` on macOS, `Ctrl+Shift+Esc` on Linux | Open an independent conversation as an editor tab (also the `+` in the view title); the panel header's own button starts a new conversation in place                                              |
+| Muse Spark: Toggle Focus                            | `Ctrl+Alt+Esc` on Windows, `Cmd+Esc` on macOS, `Ctrl+Esc` on Linux                   | Move keyboard focus between the editor and the composer                                                                                                                                           |
+| Muse Spark: Insert @-Mention for Selection          | `Alt+K`, editor focused                                                              | Insert `@path#start-end` for the active editor selection into the composer                                                                                                                        |
+| Muse Spark: Toggle Focus View                       | `Ctrl+Alt+F`, Muse focused                                                           | Flip the `museSpark.focusView` setting (hides tool calls and reasoning)                                                                                                                           |
+| Muse Spark: Toggle Thinking                         | `Ctrl+Alt+T` (macOS `Option+T`, Linux `Ctrl+Alt+O`), composer only                   | Turn reasoning on or off for this conversation. Claude Code uses `Alt+T`; on Windows that opens the Terminal menu, on GNOME `Ctrl+Alt+T` opens a terminal                                         |
+| Muse Spark: Set Up Shell Sandbox                    | —                                                                                    | Windows: run Muse Code's one-time `muse sandbox windows setup` through a UAC prompt and report the result; elsewhere reports that no setup is needed                                              |
+| Muse Spark: Show Logs                               | —                                                                                    | Open the "Muse Spark" log channel (keys redacted)                                                                                                                                                 |
+| Muse Spark: Diagnostics                             | —                                                                                    | Write the versions, the backend and CLI facts, credential presence (as yes/no), the dictation state, the network posture and `muse config status` to the log and open it: what a bug report needs |
+| Muse Spark: Manage Skills                           | —                                                                                    | Turn Muse Code's skills on or off (`muse skills enable`/`disable`), then offer to restart it so the change takes effect                                                                           |
+| Muse Spark: Import Skills from Claude Code or Codex | —                                                                                    | Preview what `muse skills import` would copy, import it once you confirm, report what was imported, skipped or failed                                                                             |
+| Muse Spark: Export Conversation                     | —                                                                                    | Save the conversation in front of you as Markdown where you choose, and open it                                                                                                                   |
+| Muse Spark: MCP Servers                             | —                                                                                    | Show the MCP servers Muse Code will load (on the Model API backend, how each is running), sign in to or out of a remote one, open the settings file                                               |
+| Muse Spark: Hooks                                   | —                                                                                    | Show where Muse Code's hooks come from (project, yours, managed) and open each file                                                                                                               |
+| Muse Spark: Memory                                  | —                                                                                    | List Muse Code's memory notes for this workspace, open one to edit, create one, or delete one to the trash, keeping each `MEMORY.md` index in step                                                |
+| Muse Spark: New Worktree…                           | —                                                                                    | Ask for a new branch and its base, create it in its own folder beside the repository, then offer to open it in a new window                                                                       |
+| Muse Spark: Remove Worktree…                        | —                                                                                    | Delete another worktree's folder (its branch stays), asking again before discarding uncommitted changes                                                                                           |
+| Muse Spark: Move Running Command to Background      | `Ctrl+B` (also on macOS), while the conversation in view runs a shell command        | Let the running shell commands go on in the background while the agent carries on; VS Code keeps `Ctrl+B` otherwise                                                                               |
+| Muse Spark: Stop Background Tasks                   | —                                                                                    | Stop every background task of the conversation in view                                                                                                                                            |
+| (composer) Record voice                             | `Ctrl+D` (`Cmd+D`), composer only                                                    | Tap to start or stop voice dictation, hold to record while held                                                                                                                                   |
+| (composer) Run a shell command                      | Start the message with `!`                                                           | Run it in the workspace as you, outside any turn; the agent sees it with your next message                                                                                                        |
 
 Windows keeps `Ctrl+Esc` for Start and `Ctrl+Shift+Esc` for Task Manager,
 which is why its two shortcuts add `Alt`. Nine commands appear in the
@@ -892,7 +1260,7 @@ the two worktree commands with a folder open.
 
 All settings live under `museSpark.*`; changes apply to open panels
 immediately. The settings that choose what runs and what is billed
-(`initialPermissionMode`, `backend`, `shellSandbox`,
+(`initialPermissionMode`, `backend`, `shellSandbox`, `sandboxNetwork`,
 `allowDangerouslySkipPermissions`, `museBinaryPath`, `environmentVariables`
 and the three paid features) are machine-scoped: they take effect from your user settings only, never from
 a repository's `.vscode/settings.json`. In a remote window (SSH, WSL, a dev
@@ -902,43 +1270,90 @@ Bypass permissions and asks you once before entering it. Turning
 `allowDangerouslySkipPermissions` off moves every open conversation out of
 Bypass at once.
 
-| Setting                           | Default  | Purpose                                                                                                                                                                                                                                                                                                                                |
-| --------------------------------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `preferredLocation`               | `panel`  | Where new conversations open: `sidebar` or `panel` (editor tab)                                                                                                                                                                                                                                                                        |
-| `initialPermissionMode`           | `manual` | `manual`, `acceptEdits`, `plan`, `auto` or `bypassPermissions` for new conversations; `bypassPermissions` applies only while `allowDangerouslySkipPermissions` is on, otherwise the conversation starts in `manual`                                                                                                                    |
-| `autosave`                        | `true`   | Save all dirty editors before every turn                                                                                                                                                                                                                                                                                               |
-| `attachOpenFile`                  | `true`   | Show the open-file chip and send the active file / selection with each message                                                                                                                                                                                                                                                         |
-| `useCtrlEnterToSend`              | `false`  | Send with Ctrl/Cmd+Enter instead of Enter                                                                                                                                                                                                                                                                                              |
-| `enableNewConversationShortcut`   | `false`  | `Ctrl+N` / `Cmd+N` starts a new conversation while a Muse panel is focused                                                                                                                                                                                                                                                             |
-| `hideOnboarding`                  | `false`  | Hide the getting-started tips                                                                                                                                                                                                                                                                                                          |
-| `focusView`                       | `false`  | Show only prompts and responses                                                                                                                                                                                                                                                                                                        |
-| `respectGitIgnore`                | `true`   | Exclude `.gitignore` patterns from file searches and `@`-mentions                                                                                                                                                                                                                                                                      |
-| `confidentialWorkspace`           | `false`  | Block contributor-tier models (Meta may train on their traffic) in this workspace                                                                                                                                                                                                                                                      |
-| `allowDangerouslySkipPermissions` | `false`  | List Bypass permissions in the Modes menu and the Shift+Tab cycle (sandboxes only)                                                                                                                                                                                                                                                     |
-| `archiveInactiveSessions`         | `14`     | Hide sessions idle for this many days from the History dialog (`1`, `2`, `7`, `14`, or `0` for never); they stay on disk and **Show archived** lists them                                                                                                                                                                              |
-| `cleanupPeriodDays`               | `30`     | Delete Model API conversations idle for more than this many days when a window lists them (`0` keeps them); Muse Code's own sessions are the CLI's to keep                                                                                                                                                                             |
-| `backend`                         | `auto`   | `auto`: Muse Code when the CLI is signed in, else the Model API when a key is stored; `museCode` / `modelApi` force one. The pasted key never reaches the CLI. Changing it restarts the host                                                                                                                                           |
-| `shellSandbox`                    | `auto`   | `auto`: Muse Code's OS sandbox, except for Windows workspaces under your profile where it cannot run commands; `muse`: always the sandbox; `off`: commands run directly as you, gated by approvals (Claude Code style). Without the sandbox Muse Code's file tools may also write outside the workspace. Changing it restarts the host |
-| `museBinaryPath`                  | `""`     | Absolute path to the Muse Code executable (a relative one is refused); empty discovers it on `PATH` or the install dir. Changing it restarts the host                                                                                                                                                                                  |
-| `modelApiWebSearch`               | `false`  | [Paid](#paid-features): web search on the Model API backend, $2.50 per 1,000 searches; asks you to confirm the price when turned on                                                                                                                                                                                                    |
-| `modelApiImageGeneration`         | `false`  | [Paid](#paid-features): image files on the Model API backend, $0.01 per image; every image asks first, in every mode                                                                                                                                                                                                                   |
-| `modelApiVoice`                   | `false`  | [Paid](#paid-features): Muse Voice as the microphone's engine on the Model API backend, $0.18 per hour of audio                                                                                                                                                                                                                        |
-| `environmentVariables`            | `[]`     | `{ name, value }` pairs for the Muse Code process (an `XDG_CONFIG_HOME` here is where the extension looks for the CLI's sign-in and settings too). Never put API keys here; use Sign in. Changing it restarts the host                                                                                                                 |
+| Setting                           | Default     | Purpose                                                                                                                                                                                                                                                                                                                                     |
+| --------------------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `preferredLocation`               | `panel`     | Where new conversations open: `sidebar` or `panel` (editor tab)                                                                                                                                                                                                                                                                             |
+| `initialPermissionMode`           | `manual`    | `manual`, `acceptEdits`, `plan`, `auto` or `bypassPermissions` for new conversations; `bypassPermissions` applies only while `allowDangerouslySkipPermissions` is on, otherwise the conversation starts in `manual`                                                                                                                         |
+| `autosave`                        | `true`      | Save all dirty editors before every turn                                                                                                                                                                                                                                                                                                    |
+| `attachOpenFile`                  | `true`      | Show the open-file chip and send the active file / selection with each message                                                                                                                                                                                                                                                              |
+| `useCtrlEnterToSend`              | `false`     | Send with Ctrl/Cmd+Enter instead of Enter                                                                                                                                                                                                                                                                                                   |
+| `enableNewConversationShortcut`   | `false`     | `Ctrl+N` / `Cmd+N` starts a new conversation while a Muse panel is focused                                                                                                                                                                                                                                                                  |
+| `hideOnboarding`                  | `false`     | Hide the getting-started tips                                                                                                                                                                                                                                                                                                               |
+| `focusView`                       | `false`     | Show only prompts and responses                                                                                                                                                                                                                                                                                                             |
+| `respectGitIgnore`                | `true`      | Exclude `.gitignore` patterns from file searches and `@`-mentions                                                                                                                                                                                                                                                                           |
+| `confidentialWorkspace`           | `false`     | Block contributor-tier models (Meta may train on their traffic) in this workspace                                                                                                                                                                                                                                                           |
+| `allowDangerouslySkipPermissions` | `false`     | List Bypass permissions in the Modes menu and the Shift+Tab cycle (sandboxes only)                                                                                                                                                                                                                                                          |
+| `archiveInactiveSessions`         | `14`        | Hide sessions idle for this many days from the History dialog (`1`, `2`, `7`, `14`, or `0` for never); they stay on disk and **Show archived** lists them                                                                                                                                                                                   |
+| `cleanupPeriodDays`               | `30`        | Delete Model API conversations idle for more than this many days when a window lists them (`0` keeps them); Muse Code's own sessions are the CLI's to keep                                                                                                                                                                                  |
+| `backend`                         | `auto`      | `auto`: Muse Code when the CLI is signed in, else the Model API when a key is stored; `museCode` / `modelApi` force one. The pasted key never reaches the CLI. Changing it restarts the host                                                                                                                                                |
+| `shellSandbox`                    | `auto`      | `auto`: Muse Code's OS sandbox, except for Windows workspaces under your profile where it cannot run commands; `muse`: always the sandbox; `off`: commands run directly as you, gated by approvals (Claude Code style). Without the sandbox Muse Code's file tools may also write outside the workspace. Changing it restarts the host      |
+| `sandboxNetwork`                  | `default`   | The network Muse Code's shell sandbox gives commands: `proxy-only` asks before each new destination, `restricted` allows none, `enabled` allows all; `default` passes nothing, leaving Muse Code's own default (`proxy-only`) or your administrator's managed configuration. Applies while the sandbox is on. Changing it restarts the host |
+| `museBinaryPath`                  | `""`        | Absolute path to the Muse Code executable (a relative one is refused); empty discovers it on `PATH` or the install dir. Changing it restarts the host                                                                                                                                                                                       |
+| `modelApiWebSearch`               | `false`     | [Paid](#paid-features): web search on the Model API backend, $2.50 per 1,000 searches; asks you to confirm the price when turned on                                                                                                                                                                                                         |
+| `modelApiImageGeneration`         | `false`     | [Paid](#paid-features): image files on the Model API backend, $0.01 per image; every image asks first, in every mode                                                                                                                                                                                                                        |
+| `modelApiVoice`                   | `false`     | [Paid](#paid-features): Muse Voice as the microphone's engine on the Model API backend, $0.18 per hour of audio                                                                                                                                                                                                                             |
+| `modelApiPromptCacheRetention`    | `in_memory` | How long Meta is asked to keep the cached start of Model API requests: `in_memory` by default, or up to `24h` when you choose it. Both have the same cached-input price; longer retention may improve cache hits after a pause. Meta may evict sooner. Machine-scoped, so a repository cannot extend it                                     |
+| `modelApiSubagents`               | `false`     | [Paid](#paid-features): Model API child tasks, with a model-rate confirmation and a fresh four-request approval for every task                                                                                                                                                                                                              |
+| `modelApiScheduledPrompts`        | `false`     | [Paid](#scheduled-prompts-model-api): a due prompt can run only after this machine-scoped gate and a separate confirmation of that occurrence's Model API token rates; never unattended                                                                                                                                                     |
+| `environmentVariables`            | `[]`        | `{ name, value }` pairs for the Muse Code process (an `XDG_CONFIG_HOME` here is where the extension looks for the CLI's sign-in and settings too). Never put API keys here; use Sign in. Changing it restarts the host                                                                                                                      |
 
-Muse Code also gets VS Code's `http.proxy` (and `http.noProxy`) as
-`HTTPS_PROXY` / `HTTP_PROXY` / `NO_PROXY` when neither its environment nor
-`environmentVariables` sets one, in either case. The Model API backend's
-shell tool applies `terminal.integrated.env.*` the way VS Code's terminal
-does. A restart of Muse Code, for a setting, trust granted, a sign-in or a
-crash, keeps the conversation: the running turn is stopped and the next
-message resumes the same session.
+The Model API backend's shell tool applies `terminal.integrated.env.*` the
+way VS Code's terminal does. A restart of Muse Code, for a setting, trust
+granted, a sign-in or a crash, keeps the conversation: the running turn is
+stopped and the next message resumes the same session.
+
+### Proxies and certificates
+
+- **The extension's own requests** (the Model API, the paid features, Muse
+  Voice's socket) go through VS Code's network support, as every
+  extension's `fetch` does on every VS Code this extension supports, and
+  its WebSocket from VS Code 1.112: `http.proxy`, or
+  the system's proxy settings or PAC file; proxy authentication as VS Code
+  handles it (Basic and Kerberos); `http.noProxy`; and the
+  operating system's certificate store while `http.systemCertificates` is
+  on. `http.proxySupport`, `http.fetchAdditionalSupport` and
+  `http.webSocketAdditionalSupport` must stay on (their defaults) for that.
+  A network that inspects HTTPS needs its root in the system store. Naming
+  the root's file in `NODE_EXTRA_CA_CERTS` before VS Code starts works only
+  with `http.systemCertificates` off: in the M56 drill the variable did not
+  help while that setting was on (its default).
+- **Muse Voice on VS Code 1.101 to 1.111**: those versions do not route an
+  extension's WebSocket, so Muse Voice's socket goes to Meta directly,
+  without VS Code's proxy, proxy authentication, `http.noProxy` or the
+  certificates VS Code adds. Behind a proxy or a network that inspects
+  HTTPS, use VS Code 1.112 or later for Muse Voice; the Model API's requests
+  are routed on every supported version. On 1.99 and 1.100 Muse Voice is
+  unavailable (their Node has no WebSocket). An editor built on VS Code may
+  route neither; **Muse Spark: Diagnostics** says which of the two this one
+  routes.
+- **Muse Code** reads proxy variables from its environment (`HTTPS_PROXY`,
+  `HTTP_PROXY`, `ALL_PROXY`, `NO_PROXY`). The extension hands it VS Code's
+  `http.proxy` (and `http.noProxy`) when neither its environment nor
+  `environmentVariables` sets one, in either case; a proxy VS Code finds in
+  the system settings or a PAC file does not reach it, so set `http.proxy`
+  or `HTTPS_PROXY` in `environmentVariables`; keep proxy credentials out of
+  shared workspace settings. If `http.proxy` or `http.noProxy` has the wrong
+  type, the extension ignores that value for Muse Code instead of passing it
+  into the CLI's environment; correct the VS Code setting to restore it.
+  Loopback bypasses an environment proxy, so Muse Code reaches the extension's
+  `ide` tools. Muse Code also has its own `endpoint_transport.proxy` setting,
+  which this extension does not manage. Muse Code 1.3.0 trusts the operating system's certificate
+  store; `SSL_CERT_FILE` or `SSL_CERT_DIR` replace that store for it
+  entirely, so a file named there must hold every root it needs.
+- **Muse Spark: Diagnostics** reports which of these are set (never a
+  proxy's address), whether this editor routes the extension's `fetch` and
+  WebSocket at all, and known-safe source and generation fields from
+  Muse Code's managed configuration (`muse config status`). Unrecognized
+  lines and failed-command output stay out of the public-issue report.
 
 ## Requirements
 
 - VS Code 1.99.0 or newer, on Windows, macOS or Linux, or an editor built
   on it: VSCodium 1.99.3 and 1.135, code-server 4.99.4 and Theia 1.75 were
   tested (see [hosts.md](docs/ide-compatibility/hosts.md)). On 1.99 and 1.100, whose
-  extension host is Node 20, Muse Voice is unavailable.
+  extension host is Node 20, Muse Voice is unavailable; on 1.101 to 1.111 its
+  socket does not use VS Code's proxy support (see
+  [Proxies and certificates](#proxies-and-certificates)).
 - The [Muse Code CLI](https://dev.meta.ai/products/muse-code/) signed in with
   a Meta account (subscription), or a Meta Model API key (pay as you go).
 - `git` on `PATH` for `.gitignore`-aware `@` mentions, worktrees and the
@@ -962,7 +1377,7 @@ message resumes the same session.
   carries the open file's path and any selected text (`attachOpenFile`); on
   the CLI backend each turn carries a short hidden note asking the model to
   offer choices through the question card. The extension has no telemetry
-  and no server of its own. Details: [PRIVACY.md](docs/PRIVACY.md).
+  and no hosted server of its own. Details: [PRIVACY.md](docs/PRIVACY.md).
 - A pasted Model API key lives only in VS Code's SecretStorage, is sent only
   to `api.meta.ai`, is never passed to any child process, and never reaches
   settings, logs or the CLI.
@@ -987,14 +1402,28 @@ message resumes the same session.
   output; keys are redacted.
 - The usage insights read the Muse Code CLI's trace logs on this machine and
   send nothing anywhere.
-- Workspace rules, skill files and the memory index are read only in a
+- On the Model API backend Meta caches the start of each request to answer
+  the next one faster and cheaper; the extension asks for the shorter
+  `in_memory` retention by default. Only your machine-scoped
+  `museSpark.modelApiPromptCacheRetention` setting can request up to 24 hours;
+  a repository cannot extend your choice. The cache key is a digest
+  of the instructions and tools it starts with, not a session or user id.
+- Behind a corporate network the extension's requests use VS Code's proxy
+  and certificate settings, and Muse Code gets the proxy and certificate
+  variables described under [Proxies and certificates](#proxies-and-certificates).
+- Workspace rules, skill files and the memory snapshot are read only in a
   trusted workspace; on the Model API backend their text is part of what
   goes to Meta with each request, on the CLI backend Muse Code sends them
-  under its own terms.
+  under its own terms. The memory snapshot is each scope's `MEMORY.md` and
+  its notes' names, your personal scopes included; a note's text goes only
+  when the model reads it.
 - The Model API backend's file tools resolve every path through the file
   system before touching it: a path that leaves the workspace, directly or
   through a link, is refused, and Windows names that would be reinterpreted
   (alternate data streams, device names, trailing dots) are refused too.
+  Text reads and writes use the checked canonical target if a workspace
+  link changes between the check and the operation. Paid image output is
+  reserved at that same checked target before the API request.
   Its shell tool starts PowerShell or bash by absolute path with the
   environment VS Code's own terminal would give (the editor's internal
   variables removed). Stop and a timeout end everything a command started:
@@ -1019,6 +1448,27 @@ message resumes the same session.
   - **More detail:** set the channel's level to **Trace** (the gear in the
     Output view) to see how long each Muse Code command and Model API
     request took.
+- **A Model API request fails with "The server's certificate is not
+  trusted"** — the network inspects HTTPS and re-signs it with its own
+  root. Install that root in the operating system's certificate store and
+  keep `http.systemCertificates` on, or turn `http.systemCertificates` off
+  and name the root's file in `NODE_EXTRA_CA_CERTS` before starting VS
+  Code; the variable does not help while that setting is on. Muse Code
+  reads the system store too.
+- **"The proxy asked for credentials"** or **"The proxy refused the
+  connection (HTTP 403)"** — the proxy wants a sign-in VS Code did not give
+  it, or does not allow `api.meta.ai`. Check `http.proxy` and
+  `http.proxyAuthorization`, or ask for the host to be allowed.
+- **Muse Code cannot reach Meta behind a proxy the browser uses** — the
+  proxy comes from the system settings or a PAC file, which only VS Code
+  reads. Set `http.proxy`, or `HTTPS_PROXY` in
+  `museSpark.environmentVariables`, and the next message restarts Muse Code
+  with it. **Muse Spark: Diagnostics** says where Muse Code's proxy comes
+  from.
+- **A permission mode is refused with "Muse Code's configuration … does not
+  allow this permission mode"** — its default permission profile or a
+  policy your administrator manages caps the modes; choose a stricter one.
+  **Muse Spark: Diagnostics** prints `muse config status`.
 - **A Model API reply ends with "sent nothing for 300 s"** — the stream
   stalled, so the turn was ended rather than left running until **Stop**.
   Send the message again to retry.
@@ -1039,12 +1489,13 @@ message resumes the same session.
   without the sandbox for such workspaces: commands run directly as you, in
   the project, still gated by the approval cards, and the panel says so once
   per conversation. `muse` keeps the sandbox regardless; `off` never sandboxes.
-- **No Rename in the header, no Fork in a message's menu (Windows)** — Muse
+- **No Rename, conversation rewind or Side chat on Muse Code 1.3.0 for Windows** — Muse
   Code 1.3.0 refuses `session/rename` and `session/fork` on Windows
   ([#30](https://github.com/meta-models/muse-code-sdk/issues/30),
   [#31](https://github.com/meta-models/muse-code-sdk/issues/31)), so the
-  panel does not offer them there; **Rewind code to here** still works. A
-  newer Muse Code gets both back, and the Model API backend has both.
+  panel does not offer fork-based actions there; **Rewind code to here**
+  still works. A newer Muse Code gets them back when its fork method works,
+  and the Model API backend offers them now.
 - **A warning that "Muse Code reported an error for the decision (the tool
   may have run anyway): … approval ledger durability fence …"** — Muse Code
   1.3.0 on Windows sometimes fails its own ledger write after applying your
@@ -1178,14 +1629,14 @@ never sets it.
 
 ```
 src/extension.ts            activation: the view, the panel, the commands, the output and file openers
-src/host/                   VS Code-facing code: views and webview wiring, conversation, backend managers and the search worker, commands, auth, settings, mentions, editor tracking, usage trace logs, voice, the diagnostics MCP server
-src/core/                   backend-agnostic logic, no `vscode` import: MSP host, Model API client and tools, rules/skills/memory, export, worktrees, usage insights, dictation driver
+src/host/                   VS Code-facing code: views and webview wiring, conversation, backend managers and the search worker, commands, auth, settings, mentions, editor tracking, usage trace logs, voice, the diagnostics MCP server, the MCP servers' spawner
+src/core/                   backend-agnostic logic, no `vscode` import: MSP host, Model API client and tools, the MCP client, rules/skills/memory, export, worktrees, usage insights, dictation driver
 src/shared/                 constants + zod message protocol shared with the webview
 src/shared/l10n/            the English table (en.ts), the fill, plural and Intl helpers, and the table checks
 l10n/                       the translated tables (ui.<language>.json) and the gate's list of names left in English
 package.nls.json            the manifest's text: commands, settings, the walkthrough
 src/webview/                React app (own tsconfig, browser libs)
-native/windows/             dictate.ps1: the Windows dictation helper (System.Speech)
+native/windows/             dictate.ps1: the Windows dictation helper (System.Speech); MuseSparkJob.cs, MuseSparkMcpLauncher.cs, MuseSparkMcpJob.cs: the Windows job helpers' C#, compiled on first use
 native/darwin/              Dictation.swift, Info.plist, build.sh, check-disclaim.sh: the macOS helper (built and checked in CI)
 resources/walkthrough/      the Get Started walkthrough
 test/unit/                  vitest tests, vscode mock, fakes
@@ -1200,7 +1651,8 @@ media/                      icons, banner, social preview, README screenshots
 .github/                    workflows (ci, build, release), audit exceptions, pinned semgrep, CODEOWNERS, Dependabot
 ```
 
-**Releases.** CI (`ci.yml`, every push to `main` and every pull request) calls
+**Releases.** CI (`ci.yml`, every pull request and optional manual branch
+dispatch) calls
 `build.yml`:
 
 - `quality:gates` on Ubuntu, Windows and macOS;

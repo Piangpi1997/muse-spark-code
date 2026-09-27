@@ -17,6 +17,7 @@ import {
   AUTH_REQUIRED_ERROR_KIND,
   BACKGROUND_INITIATOR_USER,
   CLARIFICATION_MAX_CHARS,
+  BASE64_DATA_URL_OVERHEAD_CHARS,
   CONTEXT_PRESSURE_HIGH,
   CONTEXT_PRESSURE_MEDIUM,
   DEFAULT_EFFORT,
@@ -24,53 +25,100 @@ import {
   GOAL_OBJECTIVE_MAX_CHARS,
   GOAL_STATUS,
   type GoalCommandVerb,
+  type SubagentAction,
   HTTP_UNAUTHORIZED,
+  HOOK_MAX_STOP_CONTINUATIONS,
+  HOOK_NOTIFICATION_DELAY_MS,
+  HOOK_SESSION_END_TIMEOUT_MS,
+  IDE_MCP_SERVER_NAME,
   MODEL_API_CONTEXT_WINDOW,
   MODEL_API_EFFORT_OFF,
   ISO_DATE_LENGTH,
   MODEL_API_MAX_OUTPUT_TOKENS,
   MODEL_API_MAX_RETRIES,
   MODEL_API_MAX_TOOL_ROUNDS,
+  MAX_ENCODED_MEDIA_CHARS,
+  MAX_MODEL_API_TEXT_ATTACHMENT_BYTES,
+  MODEL_API_MEDIA_PER_REQUEST,
+  MODEL_API_PDF_PAGE_IMAGES,
+  MODEL_API_HOOK_PROVIDER,
   MODEL_API_RETRYABLE_STREAM_CODES,
   MODEL_API_MODEL_PREFIX,
   MODEL_API_OUTPUT_ENCODING,
   MODEL_API_OUTPUT_MEDIA_TYPE,
   MODEL_API_SERVER_NAME,
+  MODEL_API_SCHEDULED_TOOL,
+  MODEL_API_SUBAGENT_TOOLS,
   MODEL_API_TOOLS,
   MODEL_API_VERSION,
   MODEL_API_WEB_SEARCH_TOOL,
   MODEL_TEXT,
   OUTPUT_REF_PREFIX,
+  SCHEDULE_LIFETIME_MS,
+  SCHEDULE_MAX_INTERVAL_MS,
+  SCHEDULE_MAX_JOBS_PER_SESSION,
+  SCHEDULE_MAX_PROMPT_CHARS,
+  SCHEDULE_MIN_INTERVAL_MS,
+  SCHEDULE_POLL_INTERVAL_MS,
   type PaidFeature,
   QUESTION_OUTCOME_CLARIFIED,
+  type PromptCacheRetention,
   STORED_SESSION_VERSION,
+  SUBAGENT_CAPACITY,
+  SUBAGENT_DEPTH,
+  SUBAGENT_ID_PREFIX,
+  SUBAGENT_MAX_PER_CONVERSATION,
+  SUBAGENT_RESULT_READY,
+  SUBAGENT_WAIT_DEFAULT_MS,
+  SUBAGENT_SUMMARY_MAX_CHARS,
+  SUBAGENT_RESULT_TEXT_MAX_CHARS,
+  SUBAGENT_TASK_MAX_REQUESTS,
   THINKING_OFF_EFFORT,
+  TOOL_OUTPUT_CLIP_MARKER,
+  TOOL_OUTPUT_MAX_CHARS,
   TOOL_STATUS_INTERRUPTED,
   UI_TEXT,
   USER_SHELL_ITEM_KIND,
   USER_SHELL_TIMEOUT_MS,
 } from '../../../shared/constants'
+import { fill, plural } from '../../../shared/l10n/text'
 import { APPROVAL_MODES, type ApprovalMode } from '../../../shared/permissionModes'
-import { fill } from '../../../shared/l10n/text'
+import {
+  modelApiPaidTier,
+  type SubagentTaskConfirmation,
+  type SubagentUsage,
+} from '../../../shared/paid'
 import type { SubscriptionUsage } from '../../../shared/usage'
+import {
+  scheduleCadenceSchema,
+  scheduleViewOf,
+  type ScheduleCadence,
+  type ScheduledPrompt,
+  type ScheduleRunConfirmation,
+  type ScheduleStore,
+} from '../../../shared/schedule'
 import {
   type AgentHost,
   type AgentSession,
   type ApprovalDecision,
   type CompactOutcome,
+  type DocumentPart,
   type GoalCommand,
   type GoalCommandOutcome,
   type GoalRefusal,
   GoalRefusedError,
   type HostExit,
   type HostInfo,
+  type ImagePart,
   type ListSessionsOptions,
   type LoadedSession,
   type ModelSummary,
   type OutputPage,
   type OutputPageRequest,
+  type SentImage,
   type SessionEventListener,
   type SessionHistoryOutcome,
+  type SessionMcpHttpServer,
   type SessionListEvent,
   type SessionPage,
   type SessionRecord,
@@ -83,12 +131,17 @@ import type { ContextIo } from '../../context/contextFiles'
 import { type SkillDefinition } from '../../context/skills'
 import { WorkspaceContext } from '../../context/workspaceContext'
 import type { CoreLogger } from '../../logging'
+import { textFileInput } from '../../textAttachment'
+import type { McpTool } from '../../mcp'
+import type { MemoryStore } from '../../memory/memoryStore'
 import {
+  type ConfirmedModelRequest,
   MissingApiKeyError,
   type ModelApiClient,
   ModelApiError,
   type RetryBudget,
   type RetryNotice,
+  type ResponseAttemptGuard,
 } from './client'
 import {
   applyGoalCommand,
@@ -102,7 +155,22 @@ import {
   withTokensUsed,
 } from './goals'
 import { type EnvironmentFacts, instructionsFor } from './instructions'
+import {
+  dispatchHooks,
+  type HookDefinition,
+  type HookDispatch,
+  type HookEvent,
+  toolMatcherNames,
+} from './hooks'
+import { postModelCallFields, preModelCallFields } from './modelCallHooks'
+import { nextScheduleFire } from './schedules'
+import { toolHookInput, toolHookOutput } from './toolHookPayload'
 import { type ImagePlan, prepareImageCall, runImageCall } from './imageGeneration'
+import { promptCacheKey } from './promptCache'
+import { MediaBudget } from './mediaBudget'
+import { mcpFunctionDefinition, mcpFunctionName } from './mcp/functions'
+import type { McpPoolSnapshot, McpToolRef, McpToolSource } from './mcp/pool'
+import { isMemoryTool, placeMemoryCall, runMemoryCall } from './memoryTools'
 import {
   APPROVAL_CHOICE_IDS,
   choicesFor,
@@ -111,11 +179,14 @@ import {
   paidChoices,
   PermissionEngine,
   type PermissionQuery,
+  type PermissionVerdict,
+  type ToolClass,
 } from './permissions'
 import {
   headerOf,
   recordOf,
   type SessionStore,
+  type StoredReplayItem,
   type StoredSession,
   type StoredSessionHeader,
 } from './sessionStore'
@@ -124,6 +195,7 @@ import {
   citationsOf,
   type CreateResponseBody,
   type FunctionCallItem,
+  type FunctionOutputPart,
   type IncludeField,
   type InputContentPart,
   type InputItem,
@@ -144,7 +216,6 @@ import {
   confineWorkspacePath,
   executeTool,
   parseQuestions,
-  type PathResolution,
   readSkillArgs,
   type ShellResult,
   shellOutcome,
@@ -155,9 +226,31 @@ import {
   toolDefinitions,
   type ToolIo,
   type ToolOutcome,
+  type VisibleFile,
 } from './tools'
+import {
+  isSubagentTool,
+  sendMessageArgs,
+  spawnArgs,
+  statusArgs,
+  type SubagentState,
+  targetArgs,
+  waitArgs,
+} from './subagentTools'
 
-export interface ModelApiHostDeps {
+/** Paid state and usage are injected by the host, never read from workspace settings. */
+export interface ModelApiPaidHooks {
+  /** Whether a paid feature is on: its machine setting and accepted price. */
+  readonly isPaidFeatureOn: (feature: PaidFeature) => boolean
+  /** Counts attempts and extra-feature uses for the window. */
+  readonly notePaidUse: (feature: PaidFeature, units: number) => void
+  /** A fresh user decision before an owner-initiated child task. */
+  readonly confirmSubagentTask: (task: SubagentTaskConfirmation) => Promise<boolean>
+  /** Child token cost is a subset of the parent's conversation estimate. */
+  readonly noteSubagentUsage: (modelId: string, usage: SubagentUsage) => void
+}
+
+export interface ModelApiHostDeps extends ModelApiPaidHooks {
   readonly client: ModelApiClient
   readonly workspaceRoot: string
   readonly platform: NodeJS.Platform
@@ -180,15 +273,66 @@ export interface ModelApiHostDeps {
   readonly isPaidFeatureOn: (feature: PaidFeature) => boolean
   /** Counts paid uses for the window's tally: searches made, images returned. */
   readonly notePaidUse: (feature: PaidFeature, units: number) => void
+  /** `museSpark.modelApiPromptCacheRetention`, read per request (M56, PLAN.md D43). */
+  readonly promptCacheRetention: () => PromptCacheRetention
+  /** A smaller replay cap for focused media-budget verification. */
+  readonly mediaBudgetMaxEncodedChars?: number
+  /** Extension-owned, workspace-local schedules; absent without workspace storage. */
+  readonly scheduleStore?: ScheduleStore | undefined
+  /** SHA-256 digest of the current SecretStorage key, never its plaintext. */
+  readonly getAccountId: () => Promise<string | undefined>
+  /** A fresh snapshot at each session start (M51); disabled means empty. */
+  readonly loadHooks?: () => Promise<readonly HookDefinition[]>
+  /** Machine hook opt-in is checked again for every dispatch. */
+  readonly isHooksEnabled?: (() => boolean) | undefined
+  /** Tests can shorten the six-second Notification delay without waiting. */
+  readonly hookNotificationDelayMs?: number | undefined
+  /** The MCP servers of Muse Code's settings (M50, PLAN.md D42), closed with the host. */
+  readonly mcpServers?: McpToolSource | undefined
+  /**
+   * The extension's own IDE tools (`getDiagnostics`), offered in process as
+   * `mcp__ide__<tool>`, the names Muse Code sessions see them by (M50).
+   */
+  readonly ideTools?: readonly McpTool[] | undefined
+  /**
+   * Muse Code's memory (M49, PLAN.md D41): the memory tools and the
+   * session-start snapshot; undefined leaves them out.
+   */
+  readonly memory: MemoryStore | undefined
 }
 
 const NO_ENVIRONMENT: EnvironmentFacts = { git: undefined }
 
+/** A request before its prompt-cache fields are added (M56). */
+type UnkeyedBody = Omit<CreateResponseBody, 'prompt_cache_key' | 'prompt_cache_retention'>
+
 interface ReplayItem {
   readonly turnId: string
   readonly item: InputItem
+  readonly userMessageId?: string
   /** The background task whose terminal context this note carries (M46). */
   readonly backgroundTaskId?: string
+}
+
+/** A tool-read file until a completed model request has actually carried its media part. */
+interface PendingReadFile {
+  readonly path: string
+  readonly lead: InputContentPart
+  readonly media: InputContentPart
+  readonly encodedChars: number
+  readonly slots: number
+}
+
+type FunctionImagePart = Extract<FunctionOutputPart, { readonly type: 'input_image' }>
+
+function turnMediaEncodedChars(part: ImagePart | DocumentPart): number {
+  return BASE64_DATA_URL_OVERHEAD_CHARS + part.mediaType.length + part.base64Data.length
+}
+
+function turnMediaSlots(part: ImagePart | DocumentPart): number {
+  return part.type === 'image'
+    ? 1
+    : Math.min(part.pageCount ?? MODEL_API_PDF_PAGE_IMAGES, MODEL_API_PDF_PAGE_IMAGES)
 }
 
 interface PendingNote {
@@ -201,10 +345,51 @@ interface TranscriptItem {
   readonly item: ItemSnapshot
 }
 
+/** One Model API child: a private session with its own replay and transcript. */
+interface ChildRecord {
+  readonly id: string
+  readonly role: string
+  readonly objective: string
+  readonly itemId: string
+  readonly parentTurnId: string
+  readonly session: ModelApiSession
+  readonly startedAt: number
+  state: SubagentState
+  result:
+    { readonly summary: string; readonly text?: string; readonly errorKind?: string } | undefined
+  terminal: string | undefined
+  usage: {
+    inputTokens: number
+    outputTokens: number
+    cachedTokens: number
+    reasoningTokens: number
+  }
+  /** The goal active when this child's current turn began, never a later replacement. */
+  chargedGoalId: string | undefined
+  readonly waiters: Set<() => void>
+  readonly pendingMessages: string[]
+  followupAfterStop: string | undefined
+  /** New consent waiting for an interrupted prior turn to finish; never persisted. */
+  nextTaskGrant: ChildTaskGrant | undefined
+  /** Any state change invalidates a modal opened before it. */
+  revision: number
+}
+
+/** One consented child task; only in memory, never in the session snapshot. */
+interface ChildTaskGrant {
+  readonly modelId: string
+  readonly keyDigest: string
+  readonly goalId: string | undefined
+  remainingAttempts: number
+}
+
 interface QueuedTurn {
   readonly turnId: string
   readonly parts: readonly TurnPart[]
   readonly displayText: string | undefined
+  readonly userMessageId?: string
+  /** In memory only: the model and key identity accepted for a scheduled run. */
+  readonly confirmedRequest?: ConfirmedModelRequest
   /**
    * Woken by a goal command (M45, PLAN.md D38): its prompt is the model's
    * cue, replayed but not a message of the user's, so the transcript shows
@@ -226,10 +411,25 @@ const GOAL_WAKING_VERBS: ReadonlySet<GoalCommandVerb> = new Set(['set', 'edit', 
 interface ActiveTurn {
   readonly turnId: string
   readonly abort: AbortController
+  readonly confirmedRequest?: ConfirmedModelRequest
   /** Steered input, appended before the next model call. */
-  readonly steered: (readonly TurnPart[])[]
+  readonly steered: { readonly parts: readonly TurnPart[]; readonly userMessageId: string }[]
+  /** Named text accepted for this turn, including steers already drained into replay. */
+  acceptedTextAttachmentBytes: number
+  modelFailure?: unknown
   /** A goal accepted after the current model request began needs another round. */
   goalWakePending: boolean
+}
+
+interface HookToolResult {
+  readonly record: Readonly<Record<string, unknown>>
+  readonly stopReason: string | undefined
+}
+
+interface StreamedCall {
+  readonly calls: readonly FunctionCallItem[]
+  readonly goalCommandRevision: number
+  readonly postContexts: readonly string[]
 }
 
 interface Pending<T> {
@@ -287,6 +487,13 @@ function characterEnd(bytes: Uint8Array, index: number): number {
 interface ApprovalOutcome {
   readonly isApproved: boolean
   readonly feedback: string | undefined
+  readonly deniedByHook?: boolean
+}
+
+/** A call's outcome, and whether the mode or the user refused it. */
+interface CallResult {
+  readonly outcome: ToolOutcome
+  readonly isRejected: boolean
 }
 
 /** Where a streamed output item stands while its deltas arrive. */
@@ -355,12 +562,29 @@ const COMPLETED = 'completed'
 const FAILED = 'failed'
 const REJECTED = 'rejected'
 const CANCELLED = 'cancelled'
+const CHILD_RESULT_STATES: ReadonlySet<SubagentState> = new Set([
+  'result_ready',
+  'closed',
+  'interrupted',
+])
+const FORWARDED_CHILD_EVENTS: ReadonlySet<AgentEvent['type']> = new Set([
+  'turnStarted',
+  'itemStarted',
+  'itemUpdated',
+  'itemCompleted',
+  'textDelta',
+  'approvalRequested',
+  'approvalUpdated',
+  'approvalResolved',
+])
 const IDLE = 'idle'
 const RUNNING = 'running'
 const NOOP = 'noop'
 const ACCEPTED = 'accepted'
 const NO_COMPACTABLE_HISTORY = 'no_compactable_history'
 const COMPACTION_TURN_ID = 'compaction'
+// A replayed picture (`contentPartsFor`): `data:<media type>;base64,<data>`.
+const DATA_URL = /^data:([^;,]+);base64,(.+)$/s
 const MODEL_API_ERROR_KIND = 'modelApi'
 const TURN_NOT_RUNNING = 'the turn is not running'
 
@@ -381,6 +605,31 @@ const DECISION_APPROVED = 'approved'
 const DECISION_ABORT = 'abort'
 const RESOLVED_BY_USER = 'user'
 const NO_UNSUBSCRIBE = (): undefined => undefined
+// A child is recorded inside its parent, not in the host's session map.
+const NO_CHILD_DISPOSAL = (): undefined => undefined
+
+/**
+ * A replay with a call still waiting for its output cannot be replayed
+ * after a crash — neither the parent's nor, nested in its snapshot, a
+ * child's (the review of PR #35).
+ */
+function hasUnansweredCall(replay: readonly StoredReplayItem[]): boolean {
+  const answered = new Set(
+    replay.flatMap((entry) =>
+      entry.item.type === 'function_call_output' ? [entry.item.call_id] : [],
+    ),
+  )
+  return replay.some(
+    (entry) => entry.item.type === 'function_call' && !answered.has(entry.item.call_id),
+  )
+}
+
+function hasUnansweredSessionCall(snapshot: StoredSession): boolean {
+  return (
+    hasUnansweredCall(snapshot.replay) ||
+    (snapshot.children ?? []).some((child) => hasUnansweredCall(child.session.replay))
+  )
+}
 
 /** A stream that ended with an error event the docs say to retry (the whole request). */
 class RetryableStreamError extends Error {
@@ -397,6 +646,13 @@ class AbortedError extends Error {
   public constructor() {
     super('cancelled')
     this.name = 'AbortedError'
+  }
+}
+
+class HookStoppedError extends Error {
+  public constructor(message: string) {
+    super(message)
+    this.name = 'HookStoppedError'
   }
 }
 
@@ -456,6 +712,125 @@ function questionResultText(reply: QuestionReply): string {
   }
 }
 
+function subagentFailure(reason: string): ToolOutcome {
+  return {
+    output: `Error: ${reason}`,
+    visibleOutput: UI_TEXT.agentControlFailed,
+    failureReason: UI_TEXT.agentControlFailed,
+  }
+}
+
+const CHILD_TASK_REFUSALS = [
+  'paidOff',
+  'consentDeclined',
+  'requestLimit',
+  'keyChanged',
+  'modelChanged',
+  'goalEnded',
+  'tariffUnknown',
+  'planMode',
+  'webSearchOff',
+] as const
+type ChildTaskRefusal = (typeof CHILD_TASK_REFUSALS)[number]
+
+function childTaskMessages(kind: ChildTaskRefusal): {
+  readonly model: string
+  readonly visible: string
+} {
+  switch (kind) {
+    case 'paidOff': {
+      return { model: MODEL_TEXT.subagentPaidOff, visible: UI_TEXT.subagentPaidOff }
+    }
+    case 'consentDeclined': {
+      return { model: MODEL_TEXT.subagentConsentDeclined, visible: UI_TEXT.subagentConsentDeclined }
+    }
+    case 'requestLimit': {
+      const limit = SUBAGENT_TASK_MAX_REQUESTS
+      return {
+        model: fill(MODEL_TEXT.subagentRequestLimit, { limit }),
+        visible: fill(UI_TEXT.subagentRequestLimit, { limit }),
+      }
+    }
+    case 'keyChanged': {
+      return { model: MODEL_TEXT.subagentKeyChanged, visible: UI_TEXT.subagentKeyChanged }
+    }
+    case 'modelChanged': {
+      return { model: MODEL_TEXT.subagentModelChanged, visible: UI_TEXT.subagentModelChanged }
+    }
+    case 'goalEnded': {
+      return { model: MODEL_TEXT.subagentGoalEnded, visible: UI_TEXT.subagentGoalEnded }
+    }
+    case 'tariffUnknown': {
+      return { model: MODEL_TEXT.subagentTariffUnknown, visible: UI_TEXT.subagentTariffUnknown }
+    }
+    case 'planMode': {
+      return { model: MODEL_TEXT.subagentPlanMode, visible: UI_TEXT.subagentPlanMode }
+    }
+    case 'webSearchOff': {
+      return { model: MODEL_TEXT.subagentWebSearchOff, visible: UI_TEXT.subagentWebSearchOff }
+    }
+  }
+}
+
+function childTaskFailure(kind: ChildTaskRefusal): ToolOutcome {
+  const { model, visible } = childTaskMessages(kind)
+  return { output: `Error: ${model}`, visibleOutput: visible, failureReason: visible }
+}
+
+/** A refused tool call, with the user's answer when they gave one. */
+function refusedOutcome(
+  call: FunctionCallItem,
+  feedback: string | undefined,
+  isDeniedByHook = false,
+): ToolOutcome {
+  const reason = `${call.name} ${isDeniedByHook ? MODEL_TEXT.toolRejectedByHook : MODEL_TEXT.toolRejectedByUser}`
+  const withFeedback = feedback === undefined ? '' : `\nUser: ${feedback}`
+  return {
+    output: `Error: ${reason}${withFeedback}`,
+    visibleOutput: reason,
+    failureReason: reason,
+  }
+}
+
+class ChildTaskRefusedError extends Error {
+  public readonly visible: string
+
+  public constructor(public readonly kind: ChildTaskRefusal) {
+    const messages = childTaskMessages(kind)
+    super(messages.model)
+    this.name = 'ChildTaskRefusedError'
+    this.visible = messages.visible
+  }
+}
+
+function modelChildFailure(
+  errorKind: string | undefined,
+  fallback: string | undefined,
+): string | undefined {
+  const kind = CHILD_TASK_REFUSALS.find((candidate) => errorKind === `subagent_${candidate}`)
+  return kind === undefined ? fallback : childTaskMessages(kind).model
+}
+
+function childStateLabel(state: SubagentState): string {
+  switch (state) {
+    case 'queued': {
+      return UI_TEXT.agentStatuses.queued
+    }
+    case 'running': {
+      return UI_TEXT.agentStatuses.inProgress
+    }
+    case 'interrupted': {
+      return UI_TEXT.agentStatuses.interrupted
+    }
+    case 'result_ready': {
+      return UI_TEXT.agentStatuses.resultReady
+    }
+    case 'closed': {
+      return UI_TEXT.agentStatuses.closed
+    }
+  }
+}
+
 /** A typed `/id arguments`, as the transcript shows it. */
 function typedInvocation(selector: string, args: string | undefined): string {
   return `/${selector}${args === undefined ? '' : ` ${args}`}`
@@ -469,6 +844,43 @@ function skillInvocationText(skill: SkillDefinition, args: string | undefined): 
   return `${MODEL_TEXT.skillInvoked} "${skill.id}". ${MODEL_TEXT.skillArguments} ${args ?? MODEL_TEXT.skillNoArguments}\n\n${skill.body}`
 }
 
+/** An image or a PDF as Meta reads it: inline, as a data URL (M54 for the PDF). */
+function mediaPartFor(part: ImagePart | DocumentPart): InputContentPart {
+  const dataUrl = `data:${part.mediaType};base64,${part.base64Data}`
+  return part.type === 'image'
+    ? { type: 'input_image', image_url: dataUrl, detail: 'auto' }
+    : { type: 'input_file', filename: part.name, file_data: dataUrl }
+}
+
+/** What the user card lists for a message's images and PDFs (no bytes). */
+function attachmentsOf(parts: readonly TurnPart[]): NonNullable<ItemSnapshot['attachments']> {
+  return parts.flatMap((part): NonNullable<ItemSnapshot['attachments']> => {
+    switch (part.type) {
+      case 'image': {
+        return [
+          { type: 'image', mediaType: part.mediaType, width: part.width, height: part.height },
+        ]
+      }
+      case 'file':
+      case 'textFile': {
+        return [
+          {
+            type: 'file',
+            mediaType: part.mediaType,
+            name: part.name,
+            sizeBytes: part.sizeBytes,
+            ...(part.type === 'file' &&
+              part.pageCount !== undefined && { pageCount: part.pageCount }),
+          },
+        ]
+      }
+      default: {
+        return []
+      }
+    }
+  })
+}
+
 function contentPartsFor(
   parts: readonly TurnPart[],
   resolveSkill: (selector: string) => SkillDefinition | undefined,
@@ -478,12 +890,12 @@ function contentPartsFor(
       case 'text': {
         return { type: 'input_text', text: part.text }
       }
-      case 'image': {
-        return {
-          type: 'input_image',
-          image_url: `data:${part.mediaType};base64,${part.base64Data}`,
-          detail: 'auto',
-        }
+      case 'textFile': {
+        return { type: 'input_text', text: textFileInput(part) }
+      }
+      case 'image':
+      case 'file': {
+        return mediaPartFor(part)
       }
       case 'skill': {
         // An unknown selector (the catalogue changed under the palette) goes as typed.
@@ -500,6 +912,25 @@ function contentPartsFor(
   })
 }
 
+/** Model-facing named text, including its file-name wrapper. */
+function textAttachmentBytes(parts: readonly TurnPart[]): number {
+  let bytes = 0
+  for (const part of parts) {
+    if (part.type !== 'textFile') {
+      continue
+    }
+    bytes += Buffer.byteLength(textFileInput(part))
+  }
+  return bytes
+}
+
+/** Reject an aggregate named-text payload before it can enter replay or an HTTP request. */
+function textAttachmentBudgetError(bytes: number): Error | undefined {
+  return bytes > MAX_MODEL_API_TEXT_ATTACHMENT_BYTES
+    ? new Error(UI_TEXT.textFilesOverModelApiBudget)
+    : undefined
+}
+
 function typedText(parts: readonly TurnPart[]): string {
   return parts
     .flatMap((part) => {
@@ -510,7 +941,9 @@ function typedText(parts: readonly TurnPart[]): string {
         case 'skill': {
           return [typedInvocation(part.selector, part.arguments)]
         }
-        case 'image': {
+        case 'image':
+        case 'file':
+        case 'textFile': {
           return []
         }
       }
@@ -566,11 +999,88 @@ function imageKindOf(toolName: string): ImagePlan['kind'] | undefined {
   }
 }
 
+/**
+ * A tool that is not one of the harness's own (M50): the extension's IDE
+ * tool, run in process, or an MCP server's.
+ */
+type ExternalTool =
+  | { readonly kind: 'ide'; readonly tool: McpTool }
+  | { readonly kind: 'mcp'; readonly ref: McpToolRef }
+
+/** The IDE tool's function name: `mcp__ide__<tool>`, as Muse Code sessions call it. */
+function ideFunctionName(tool: McpTool): string {
+  return mcpFunctionName(IDE_MCP_SERVER_NAME, tool.name, new Set())
+}
+
+function clipOutput(text: string): string {
+  return text.length > TOOL_OUTPUT_MAX_CHARS
+    ? `${text.slice(0, TOOL_OUTPUT_MAX_CHARS)}${TOOL_OUTPUT_CLIP_MARKER}`
+    : text
+}
+
+/** What the MCP servers' state says to the user, each keyed so it is said once per session. */
+function mcpNotices(snapshot: McpPoolSnapshot): readonly { key: string; text: string }[] {
+  const { fault } = snapshot
+  if (fault !== undefined) {
+    switch (fault.kind) {
+      case 'keys': {
+        return [{ key: 'fault:keys', text: UI_TEXT.mcpNoServersKeys }]
+      }
+      case 'mode': {
+        const servers = fault.servers.join(', ')
+        return [{ key: `fault:mode:${servers}`, text: fill(UI_TEXT.mcpNoServersMode, { servers }) }]
+      }
+      case 'unreadable': {
+        return [
+          {
+            key: `fault:unreadable:${fault.reason}`,
+            text: fill(UI_TEXT.mcpNoServersUnreadable, { reason: fault.reason }),
+          },
+        ]
+      }
+    }
+  }
+  // A required server's failure fails the turn and says why there.
+  return snapshot.servers.flatMap((server) =>
+    server.state.status === 'failed' && !server.isRequired
+      ? [
+          {
+            key: `server:${server.name}:${server.state.reason}`,
+            text: fill(UI_TEXT.mcpServerUnavailable, {
+              name: server.name,
+              reason: server.state.reason,
+            }),
+          },
+        ]
+      : [],
+  )
+}
+
 /** What the approval card is about, in the MSP subject vocabulary. */
-function subjectFor(call: FunctionCallItem, platform: NodeJS.Platform): ApprovalSubject {
+function subjectFor(
+  call: FunctionCallItem,
+  platform: NodeJS.Platform,
+  isExternal: boolean,
+  childTask?: SubagentTaskConfirmation,
+): ApprovalSubject {
   const args = argumentsOf(call)
+  if (childTask !== undefined) {
+    return {
+      kind: 'paidTool',
+      toolName: call.name,
+      paidFeature: 'subagents',
+      target: childTask.role,
+      modelId: childTask.modelId,
+      requestLimit: childTask.attemptLimit,
+    }
+  }
   if (call.name === shellToolFor(platform).name) {
     return { kind: 'shell', command: pick(args, 'command') ?? call.arguments }
+  }
+  // An MCP tool is a tool, whatever its arguments say: never a `fileWrite`,
+  // which Edit automatically would answer by itself (D24).
+  if (isExternal) {
+    return { kind: 'tool', toolName: call.name }
   }
   const paidFeature = paidFeatureOf(call.name)
   const path = pick(args, 'path')
@@ -587,6 +1097,25 @@ function subjectFor(call: FunctionCallItem, platform: NodeJS.Platform): Approval
   return path === undefined
     ? { kind: 'tool', toolName: call.name }
     : { kind: 'fileWrite', path, toolName: call.name }
+}
+
+/** `work`'s value, or an `AbortedError` as soon as the turn is stopped; `work` runs on. */
+async function unlessStopped<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) {
+    throw new AbortedError()
+  }
+  let onAbort: () => void = NO_UNSUBSCRIBE
+  const stopped = new Promise<never>((_resolve, reject) => {
+    onAbort = () => {
+      reject(new AbortedError())
+    }
+    signal.addEventListener('abort', onAbort, { once: true })
+  })
+  try {
+    return await Promise.race([work, stopped])
+  } finally {
+    signal.removeEventListener('abort', onAbort)
+  }
 }
 
 /** Resolves with the awaited value, or rejects as soon as the turn is cancelled. */
@@ -618,6 +1147,8 @@ export class ModelApiSession implements AgentSession {
   private readonly replay: ReplayItem[] = []
   private readonly transcript: TranscriptItem[] = []
   private readonly turnIds: string[] = []
+  /** The real last turn summarized by an accepted compaction, not inferred from replay gaps. */
+  private compactedThroughTurnId: string | undefined
   private readonly outputs = new Map<string, string>()
   private readonly permissions: PermissionEngine
   /** The rules, skills and memory of the workspace (PLAN.md D13). */
@@ -644,10 +1175,55 @@ export class ModelApiSession implements AgentSession {
    * ended, the user ran one) while a turn or a compaction holds the replay.
    */
   private readonly pendingNotes: PendingNote[] = []
+  private hookStarted = false
+  private hookEnded = false
+  private readonly pendingHookContexts: string[] = []
+  private readonly pendingHookMessages: string[] = []
+  private hookStartStopReason: string | undefined
   private readonly queuedTurns: QueuedTurn[] = []
+  private readonly children = new Map<string, ChildRecord>()
+  private readonly spawnCommands = new Map<string, string>()
+  private readonly pendingChildResults: string[] = []
+  private childTaskGrant: ChildTaskGrant | undefined
+  private readonly admitChildAttempt = (
+    keyDigest: string | undefined,
+    body: CreateResponseBody,
+  ): void => {
+    const grant = this.childTaskGrant
+    const parent = this.parentSession
+    if (grant === undefined || parent === undefined || this.isDisposed || parent.isDisposed) {
+      throw new ChildTaskRefusedError('consentDeclined')
+    }
+    const refusal = parent.childGrantRefusal(grant, keyDigest, this.modelId)
+    if (refusal !== undefined) {
+      throw new ChildTaskRefusedError(refusal)
+    }
+    if (
+      body.tools.some((tool) => tool.type === MODEL_API_WEB_SEARCH_TOOL) &&
+      !this.deps.isPaidFeatureOn('webSearch')
+    ) {
+      throw new ChildTaskRefusedError('webSearchOff')
+    }
+    grant.remainingAttempts -= 1
+    this.deps.notePaidUse('subagents', 1)
+  }
   private active: ActiveTurn | undefined
   /** Each file as the model last read or wrote it, for `write_file`'s check (D27). */
   private readonly seenFiles = new Map<string, string>()
+  /** Keeps each request within the page and encoded-media budgets (M54, PLAN.md D47). */
+  private readonly budget: MediaBudget
+  private mediaNoticeSent = false
+  /**
+   * The PDFs and images `read_file` read this round (M54): they follow the
+   * round's outputs in a user message, where Meta reads them.
+   */
+  private readonly readFiles: VisibleFile[] = []
+  /** Synthetic tool-read media still waiting for a completed model request. */
+  private readonly readFileMessages = new WeakMap<ReplayItem, readonly PendingReadFile[]>()
+  /** Function-output images awaiting their first completed model request. */
+  private readonly pendingOutputMedia = new Map<ReplayItem, readonly FunctionImagePart[]>()
+  /** The MCP notices this session has shown (M50): each is said once. */
+  private readonly announcedMcp = new Set<string>()
   /** The compaction in flight (D26): it holds the session like a turn. */
   private compacting: AbortController | undefined
   private effort: string = DEFAULT_EFFORT
@@ -658,11 +1234,22 @@ export class ModelApiSession implements AgentSession {
   private goalCommandRevision = 0
   /** Model calls since the goal last moved: the step probe's count (D38). */
   private goalSteps = 0
+  private scheduleTimer: ReturnType<typeof setInterval> | undefined
   private usage = { inputTokens: 0, outputTokens: 0, cachedTokens: 0, reasoningTokens: 0 }
   private firstPrompt: string | undefined
   private isDisposed = false
   /** The surfaces holding this session: closing one must not cancel another's turn. */
   private holders = 1
+  public readonly schedules?: {
+    create: (cadence: ScheduleCadence, prompt: string) => Promise<ScheduledPrompt>
+    list: () => Promise<readonly ScheduledPrompt[]>
+    cancel: (id: string) => Promise<boolean>
+    run: (
+      id: string,
+      occurrenceMs: number,
+      confirmed: ScheduleRunConfirmation,
+    ) => Promise<TurnSubmission>
+  }
   public modelId: string
   public name: string | undefined
   public createdAt: string
@@ -677,22 +1264,40 @@ export class ModelApiSession implements AgentSession {
     approvalMode: ApprovalMode,
     private readonly deps: ModelApiHostDeps,
     private readonly onChanged: () => void,
+    private readonly onPersisted: () => Promise<void>,
     private readonly onDispose: () => void,
+    private readonly isSubagent = false,
+    private readonly parentSession?: ModelApiSession,
+    private readonly childSubagentId?: string,
+    private readonly hooks: readonly HookDefinition[] = [],
+    private readonly hookStartSource: 'startup' | 'resume' | 'fork' = 'startup',
+    private readonly isSideChat = false,
   ) {
     this.modelId = modelId
     this.permissions = new PermissionEngine(approvalMode)
+    this.budget = new MediaBudget(deps.mediaBudgetMaxEncodedChars)
+    const { memory } = deps
     this.context = new WorkspaceContext({
       io: deps.contextIo,
       workspaceRoot: deps.workspaceRoot,
       platform: deps.platform,
       personalSkillsRoot: deps.personalSkillsRoot,
       isWorkspaceTrusted: deps.isWorkspaceTrusted,
+      loadMemory: memory === undefined ? undefined : () => memory.snapshot(),
       warn: (message) => {
         deps.log.warn(`Workspace context: ${message}`)
       },
     })
     this.createdAt = new Date(deps.now()).toISOString()
     this.lastActivityAt = this.createdAt
+    if (deps.store !== undefined && deps.scheduleStore !== undefined) {
+      this.schedules = {
+        create: (cadence, prompt) => this.createSchedule(cadence, prompt),
+        list: () => this.listSchedules(),
+        cancel: (id) => this.cancelSchedule(id),
+        run: (id, occurrenceMs, confirmed) => this.runSchedule(id, occurrenceMs, confirmed),
+      }
+    }
   }
 
   private emit(event: AgentEvent): void {
@@ -706,6 +1311,118 @@ export class ModelApiSession implements AgentSession {
     this.onChanged()
   }
 
+  private hookPayload(
+    event: HookEvent,
+    turnId: string | undefined,
+    fields: Readonly<Record<string, unknown>>,
+  ): Readonly<Record<string, unknown>> {
+    return {
+      hook_event_name: event,
+      session_id: this.sessionId,
+      ...(turnId !== undefined && { turn_id: turnId }),
+      cwd: this.deps.workspaceRoot,
+      transcript_path: null,
+      model: this.modelId,
+      model_provider: 'meta',
+      permission_mode: this.permissions.currentMode,
+      ...fields,
+    }
+  }
+
+  private appendHookContexts(turnId: string, contexts: readonly string[]): void {
+    for (const context of contexts) {
+      this.replay.push({
+        turnId,
+        item: {
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_text', text: context }],
+        },
+      })
+    }
+  }
+
+  private async runHooks(
+    event: HookEvent,
+    turnId: string | undefined,
+    fields: Readonly<Record<string, unknown>>,
+    matcher: string | readonly string[] | undefined,
+    signal: AbortSignal | undefined,
+    shouldReplayContext = true,
+    shouldShowMessages = true,
+  ): Promise<HookDispatch> {
+    const enabledHooks = this.isSideChat || this.deps.isHooksEnabled?.() === false ? [] : this.hooks
+    const result = await dispatchHooks(
+      enabledHooks,
+      event,
+      this.hookPayload(event, turnId, fields),
+      matcher,
+      this.deps.io,
+      signal,
+      (warning) => {
+        this.deps.log.warn(`Model API hooks: ${warning}`)
+      },
+    )
+    if (shouldShowMessages) {
+      for (const message of result.messages) {
+        this.emit({ type: 'backendNotice', level: 'info', text: message })
+      }
+    }
+    if (turnId !== undefined && shouldReplayContext) {
+      this.appendHookContexts(turnId, result.contexts)
+    }
+    return result
+  }
+
+  /** Pre-call veto and context use the same boundary for turns and compaction. */
+  private async beforeModelCall(
+    turnId: string,
+    body: CreateResponseBody,
+    requestId: string,
+    attempt: number,
+    step: number,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const pre = await this.runHooks(
+      'PreLLMCall',
+      turnId,
+      preModelCallFields(body, requestId, attempt, step),
+      MODEL_API_HOOK_PROVIDER,
+      signal,
+      false,
+    )
+    if (pre.blockedReason !== undefined) {
+      throw new HookStoppedError(pre.blockedReason)
+    }
+    this.appendHookContexts(turnId, pre.contexts)
+  }
+
+  private async collectStartHooks(
+    source: 'startup' | 'resume' | 'fork' | 'compact',
+    signal: AbortSignal | undefined,
+  ): Promise<void> {
+    const start = await this.runHooks(
+      'SessionStart',
+      undefined,
+      { source },
+      source,
+      signal,
+      false,
+      false,
+    )
+    this.pendingHookContexts.push(...start.contexts)
+    this.pendingHookMessages.push(...start.messages)
+    if (source === 'compact') {
+      // Manual compaction has no running turn to stop. The next user turn is
+      // unrelated and must not inherit a veto from this completed operation.
+      if (start.stopReason !== undefined) {
+        this.pendingHookMessages.push(start.stopReason)
+      }
+    } else {
+      this.hookStartStopReason = start.stopReason
+    }
+  }
+
   /** Never throws: a describer that fails leaves the section at "no git". */
   private async loadEnvironment(): Promise<EnvironmentFacts> {
     try {
@@ -716,27 +1433,58 @@ export class ModelApiSession implements AgentSession {
     }
   }
 
+  /**
+   * A request with its prompt-cache key and retention (M56, PLAN.md D43):
+   * the key is computed from the request's own prefix, so a compaction,
+   * which sends no tools, gets a key of its own.
+   */
+  private keyed(request: UnkeyedBody): CreateResponseBody {
+    return {
+      ...request,
+      prompt_cache_key: promptCacheKey(request),
+      prompt_cache_retention: this.deps.promptCacheRetention(),
+    }
+  }
+
+  private drainChildResults(): void {
+    for (const text of this.pendingChildResults.splice(0)) {
+      this.replay.push({
+        turnId: this.turnIds.at(-1) ?? this.sessionId,
+        item: { type: 'message', role: 'user', content: [{ type: 'input_text', text }] },
+      })
+    }
+  }
+
   private body(): CreateResponseBody {
+    this.drainChildResults()
     const shell = shellToolFor(this.deps.platform)
     const hasShell = this.deps.isWorkspaceTrusted()
+    // Memory is the workspace context's (D13): offered in a trusted workspace only (D41).
+    const hasMemory = hasShell && this.deps.memory !== undefined
     const context = this.context.sections()
     const goalSection = goalInstructions(this.goal, this.goalSteps)
-    return {
+    const input = this.budget.fit(this.replay.map((entry) => entry.item))
+    if (this.budget.omitted && !this.mediaNoticeSent) {
+      this.emit({ type: 'backendNotice', level: 'warning', text: UI_TEXT.olderMediaOmitted })
+      this.mediaNoticeSent = true
+    }
+    return this.keyed({
       model: this.modelId,
-      input: this.replay.map((entry) => entry.item),
+      input,
       instructions: instructionsFor({
         workspaceRoot: this.deps.workspaceRoot,
         platform: this.deps.platform,
         shellToolName: shell.name,
         shellName: shell.shellName,
         hasShell,
+        hasMemory,
         today: new Date(this.deps.now()).toISOString().slice(0, ISO_DATE_LENGTH),
         environment: this.environment ?? NO_ENVIRONMENT,
         context,
         // Pinned while the goal is active (M45, PLAN.md D38).
         ...(goalSection !== undefined && { goalSection }),
       }),
-      tools: this.tools(hasShell, context.skills.length > 0),
+      tools: this.tools(hasShell, context.skills.length > 0, hasMemory),
       tool_choice: 'auto',
       reasoning: {
         effort: this.effort === THINKING_OFF_EFFORT ? MODEL_API_EFFORT_OFF : this.effort,
@@ -746,20 +1494,121 @@ export class ModelApiSession implements AgentSession {
       store: false,
       include: this.includes(),
       max_output_tokens: MODEL_API_MAX_OUTPUT_TOKENS,
-      prompt_cache_key: this.sessionId,
-    }
+    })
   }
 
-  /** The in-process tools, and Meta's web search while that paid feature is on (M33). */
-  private tools(hasShell: boolean, hasSkills: boolean): readonly ToolDefinition[] {
+  /** Retain only what a completed request carried; History keeps its file chips separately. */
+  private commitFittedReplay(
+    requestReplay: readonly ReplayItem[],
+    fittedInput: readonly InputItem[],
+  ): boolean {
+    if (requestReplay.length !== fittedInput.length) {
+      this.deps.log.warn('Model API media fit changed replay length; durable replacement skipped')
+      return false
+    }
+    let hasChanged = false
+    for (const [index, entry] of requestReplay.entries()) {
+      const fitted = fittedInput[index]
+      if (fitted === undefined || fitted === entry.item) {
+        continue
+      }
+      const currentIndex = this.replay.indexOf(entry)
+      if (currentIndex === -1) {
+        continue
+      }
+      this.replay[currentIndex] = { ...entry, item: fitted }
+      // Any tracked media not sent was replaced by budget text, so it has no
+      // bytes left for a later Stop to scrub from this replay entry.
+      this.readFileMessages.delete(entry)
+      hasChanged = true
+    }
+    return hasChanged
+  }
+
+  /** In-process, IDE, MCP and paid search tools offered to this request. */
+  private tools(
+    hasShell: boolean,
+    hasSkills: boolean,
+    hasMemory: boolean,
+  ): readonly ToolDefinition[] {
     const own = toolDefinitions(this.deps.platform, {
       hasShell,
       hasSkills,
       hasImageGeneration: this.deps.isPaidFeatureOn('imageGeneration'),
+      hasSubagents: !this.isSubagent && this.deps.isPaidFeatureOn('subagents'),
+      isSubagent: this.isSubagent,
+      hasMemory,
     })
+    const ide = (this.deps.ideTools ?? []).map(
+      (tool) => mcpFunctionDefinition(ideFunctionName(tool), tool).definition,
+    )
+    const mcp = hasShell ? (this.deps.mcpServers?.definitions() ?? []) : []
+    const offered = [...own, ...ide, ...mcp]
     return this.deps.isPaidFeatureOn('webSearch')
-      ? [...own, { type: MODEL_API_WEB_SEARCH_TOOL }]
-      : own
+      ? [...offered, { type: MODEL_API_WEB_SEARCH_TOOL }]
+      : offered
+  }
+
+  /** The IDE tool or MCP server tool a function name is, when it is one (M50). */
+  private externalTool(name: string): ExternalTool | undefined {
+    const tool = this.deps.ideTools?.find((candidate) => ideFunctionName(candidate) === name)
+    if (tool !== undefined) {
+      return { kind: 'ide', tool }
+    }
+    const ref = this.deps.mcpServers?.find(name)
+    return ref === undefined ? undefined : { kind: 'mcp', ref }
+  }
+
+  /**
+   * The MCP servers, started (or already running) before the turn's first
+   * request (M50): each new problem is said once as a notice, and a required
+   * server that is not running fails the turn, as Muse Code aborts its run.
+   */
+  private async prepareMcp(signal: AbortSignal): Promise<void> {
+    const servers = this.deps.mcpServers
+    if (servers === undefined) {
+      return
+    }
+    await unlessStopped(servers.start(), signal)
+    const snapshot = servers.snapshot()
+    for (const notice of mcpNotices(snapshot)) {
+      if (this.announcedMcp.has(notice.key)) {
+        continue
+      }
+      this.announcedMcp.add(notice.key)
+      this.emit({ type: 'backendNotice', level: 'warning', text: notice.text })
+    }
+    const requiredFailure = this.requiredMcpFailure(snapshot)
+    if (requiredFailure !== undefined) {
+      throw requiredFailure
+    }
+  }
+
+  private requiredMcpFailure(snapshot: McpPoolSnapshot | undefined): Error | undefined {
+    const required = snapshot?.servers.find(
+      (server) => server.isRequired && server.state.status === 'failed',
+    )
+    return required?.state.status === 'failed'
+      ? new Error(
+          fill(UI_TEXT.mcpRequiredFailed, { name: required.name, reason: required.state.reason }),
+        )
+      : undefined
+  }
+
+  /** Final synchronous check after key retrieval, before each response POST or retry. */
+  private responseAttemptGuard(body: CreateResponseBody): ResponseAttemptGuard | undefined {
+    if (this.deps.mcpServers === undefined && !this.isSubagent) {
+      return undefined
+    }
+    return (keyDigest) => {
+      const required = this.requiredMcpFailure(this.deps.mcpServers?.snapshot())
+      if (required !== undefined) {
+        throw required
+      }
+      if (this.isSubagent) {
+        this.admitChildAttempt(keyDigest, body)
+      }
+    }
   }
 
   /** The encrypted reasoning always; the search results while search is on, for the rows. */
@@ -786,20 +1635,19 @@ export class ModelApiSession implements AgentSession {
     turnId: string,
     parts: readonly TurnPart[],
     displayText: string | undefined,
+    reservedUserMessageId?: string,
   ): void {
+    const itemId = reservedUserMessageId ?? this.deps.newId()
     this.replay.push({
       turnId,
+      userMessageId: itemId,
       item: { type: 'message', role: 'user', content: this.contentParts(parts) },
     })
     const text = displayText ?? typedText(parts)
     this.firstPrompt ??= text
-    const attachments = parts.flatMap((part) =>
-      part.type === 'image'
-        ? [{ type: 'image', mediaType: part.mediaType, width: part.width, height: part.height }]
-        : [],
-    )
+    const attachments = attachmentsOf(parts)
     this.recordTranscript(turnId, {
-      itemId: this.deps.newId(),
+      itemId,
       kind: 'userMessage',
       status: COMPLETED,
       turnId,
@@ -926,6 +1774,13 @@ export class ModelApiSession implements AgentSession {
       cachedTokens: this.usage.cachedTokens + (usage.input_tokens_details?.cached_tokens ?? 0),
       reasoningTokens:
         this.usage.reasoningTokens + (usage.output_tokens_details?.reasoning_tokens ?? 0),
+    }
+    if (this.isSubagent) {
+      this.deps.noteSubagentUsage(this.modelId, {
+        inputTokens: usage.input_tokens,
+        outputTokens: usage.output_tokens,
+        cachedTokens: usage.input_tokens_details?.cached_tokens ?? 0,
+      })
     }
     this.emit({ type: 'tokenUsage', ...this.usage, modelId: this.modelId })
     this.noteContext(usage.input_tokens + usage.output_tokens)
@@ -1054,6 +1909,7 @@ export class ModelApiSession implements AgentSession {
     event: StreamEvent,
     open: Map<string, OpenItem>,
     turnId: string,
+    chargedGoalId: string | undefined,
   ): ResponseObject | undefined {
     switch (event.type) {
       case 'response.output_item.added': {
@@ -1102,6 +1958,7 @@ export class ModelApiSession implements AgentSession {
         return event.response
       }
       case 'response.failed': {
+        this.noteUsage(event.response.usage, chargedGoalId)
         const failure = event.response.error
         throw new ModelApiError(
           failure?.message ?? 'The response failed',
@@ -1191,15 +2048,14 @@ export class ModelApiSession implements AgentSession {
   private async streamOnce(
     turnId: string,
     signal: AbortSignal,
-  ): Promise<{
-    readonly calls: readonly FunctionCallItem[]
-    readonly goalCommandRevision: number
-  }> {
+    step: number,
+    confirmedRequest?: ConfirmedModelRequest,
+  ): Promise<StreamedCall> {
     const budget: RetryBudget = { retriesUsed: 0 }
     for (;;) {
       const open = new Map<string, OpenItem>()
       try {
-        return await this.streamAttempt(turnId, signal, open, budget)
+        return await this.streamAttempt(turnId, signal, open, budget, step, confirmedRequest)
       } catch (error: unknown) {
         // What a failed attempt showed stays in the history, the last one's
         // too (the review of PR #28); a Stop is the turn's own business.
@@ -1238,11 +2094,16 @@ export class ModelApiSession implements AgentSession {
     signal: AbortSignal,
     open: Map<string, OpenItem>,
     budget: RetryBudget,
-  ): Promise<{
-    readonly calls: readonly FunctionCallItem[]
-    readonly goalCommandRevision: number
-  }> {
-    let final: ResponseObject | undefined
+    step: number,
+    confirmedRequest?: ConfirmedModelRequest,
+  ): Promise<StreamedCall> {
+    const requestId = this.deps.newId()
+    const attempt = budget.retriesUsed + 1
+    await this.beforeModelCall(turnId, this.body(), requestId, attempt, step, signal)
+    const requiredAfterPreHook = this.requiredMcpFailure(this.deps.mcpServers?.snapshot())
+    if (requiredAfterPreHook !== undefined) {
+      throw requiredAfterPreHook
+    }
     // An HTTP or whole-stream retry gets its own snapshot: the goal may have
     // changed between attempts, but a reply never charges a newly set goal.
     const chargedGoalId = isGoalActive(this.goal) ? this.goal.goal_id : undefined
@@ -1258,13 +2119,20 @@ export class ModelApiSession implements AgentSession {
         reason: notice.reason,
       })
     }
-    for await (const event of this.deps.client.streamResponse(
-      this.body(),
+    const body = this.body()
+    const requestReplay = [...this.replay]
+    let final: ResponseObject | undefined
+    const admitAttempt = this.responseAttemptGuard(body)
+    const responseStream = this.deps.client.streamResponse(
+      body,
       signal,
       onRetry,
       budget,
-    )) {
-      final = this.applyStreamEvent(event, open, turnId) ?? final
+      admitAttempt,
+      confirmedRequest,
+    )
+    for await (const event of responseStream) {
+      final = this.applyStreamEvent(event, open, turnId, chargedGoalId) ?? final
     }
     if (final === undefined) {
       throw new ModelApiError(
@@ -1274,10 +2142,33 @@ export class ModelApiSession implements AgentSession {
         undefined,
       )
     }
-    return {
-      calls: this.adoptOutput(turnId, final, open, chargedGoalId),
-      goalCommandRevision,
+    this.markReadFileMediaDelivered(turnId, body.input)
+    const wasFitted = this.commitFittedReplay(requestReplay, body.input)
+    this.markOutputMediaDelivered(requestReplay, body.input)
+    const calls = this.adoptOutput(turnId, final, open, chargedGoalId)
+    if (wasFitted) {
+      this.touch()
     }
+    const post = await this.runHooks(
+      'PostLLMCall',
+      turnId,
+      postModelCallFields(body, final, requestId, attempt, step, this.sessionId),
+      MODEL_API_HOOK_PROVIDER,
+      signal,
+      false,
+    )
+    const requiredAfterPostHook = this.requiredMcpFailure(this.deps.mcpServers?.snapshot())
+    if (requiredAfterPostHook !== undefined) {
+      this.skipCalls(turnId, calls, MODEL_TEXT.mcpRequiredUnavailable)
+      throw requiredAfterPostHook
+    }
+    if (post.blockedReason !== undefined) {
+      // Muse Code's isolated echo capture ended its run on a PostLLM block.
+      // Stop here, pairing calls so a later session can still replay them.
+      this.skipCalls(turnId, calls, post.blockedReason)
+      throw new HookStoppedError(post.blockedReason)
+    }
+    return { calls, goalCommandRevision, postContexts: post.contexts }
   }
 
   /**
@@ -1363,7 +2254,30 @@ export class ModelApiSession implements AgentSession {
     call: FunctionCallItem,
     signal: AbortSignal,
     query: PermissionQuery,
+    subject: ApprovalSubject,
+    childTask?: SubagentTaskConfirmation,
+    requiresUserApproval = false,
   ): Promise<ApprovalOutcome> {
+    const hook = await this.runHooks(
+      'PermissionRequest',
+      this.active?.turnId,
+      { tool_name: call.name, tool_input: toolHookInput(argumentsOf(call)) },
+      toolMatcherNames(call.name),
+      signal,
+      false,
+    )
+    if (hook.blockedReason !== undefined) {
+      return { isApproved: false, feedback: hook.blockedReason, deniedByHook: true }
+    }
+    if (
+      !requiresUserApproval &&
+      childTask === undefined &&
+      query.isProtected !== true &&
+      query.toolClass !== 'paid' &&
+      hook.approvalDecision === 'allow'
+    ) {
+      return { isApproved: true, feedback: undefined }
+    }
     const approvalId = this.deps.newId()
     const request: Extract<AgentEvent, { type: 'approvalRequested' }> = {
       type: 'approvalRequested',
@@ -1372,14 +2286,38 @@ export class ModelApiSession implements AgentSession {
       toolName: call.name,
       rawArgs: call.arguments,
       requirementId: { approvalId, sourceIndex: 0 },
-      subject: subjectFor(call, this.deps.platform),
+      subject,
       availableChoices: [
-        ...(query.toolClass === 'paid' ? paidChoices() : choicesFor(call.name, query.command)),
+        ...(childTask !== undefined || query.toolClass === 'paid'
+          ? paidChoices()
+          : choicesFor(call.name, query.command)),
       ],
-      isJudgeEscalated: false,
+      isJudgeEscalated: requiresUserApproval,
       isProtectedWrite: query.isProtected === true,
     }
     let decision: ApprovalDecision
+    const notificationAbort = new AbortController()
+    const onTurnAbort = () => {
+      notificationAbort.abort()
+    }
+    signal.addEventListener('abort', onTurnAbort, { once: true })
+    const notification = this.hooks.some((entry) => entry.event === 'Notification')
+      ? setTimeout(() => {
+          void this.runHooks(
+            'Notification',
+            this.active?.turnId,
+            {
+              notification_type: 'permission_prompt',
+              title: call.name,
+              message: call.arguments,
+            },
+            'permission_prompt',
+            notificationAbort.signal,
+          ).catch((error: unknown) => {
+            this.deps.log.warn(`Model API Notification hook failed: ${describe(error)}`)
+          })
+        }, this.deps.hookNotificationDelayMs ?? HOOK_NOTIFICATION_DELAY_MS)
+      : undefined
     try {
       decision = await waitFor<ApprovalDecision>(signal, (pending) => {
         this.pendingApprovals.set(approvalId, pending)
@@ -1389,14 +2327,21 @@ export class ModelApiSession implements AgentSession {
     } finally {
       this.pendingApprovalEvents.delete(approvalId)
       this.pendingApprovals.delete(approvalId)
+      clearTimeout(notification)
+      notificationAbort.abort()
+      signal.removeEventListener('abort', onTurnAbort)
     }
-    if (decision.choiceId === APPROVAL_CHOICE_IDS.allowSession) {
+    const isOffered = request.availableChoices.some(
+      (choice) => choice.choiceId === decision.choiceId,
+    )
+    if (isOffered && decision.choiceId === APPROVAL_CHOICE_IDS.allowSession) {
       this.permissions.allowForSession(call.name, query.command)
     }
     // Only the two allow choices this card offered approve; anything else refuses.
     const isApproved =
-      decision.choiceId === APPROVAL_CHOICE_IDS.allowOnce ||
-      decision.choiceId === APPROVAL_CHOICE_IDS.allowSession
+      isOffered &&
+      (decision.choiceId === APPROVAL_CHOICE_IDS.allowOnce ||
+        decision.choiceId === APPROVAL_CHOICE_IDS.allowSession)
     this.emit({
       type: 'approvalResolved',
       approvalId,
@@ -1473,7 +2418,225 @@ export class ModelApiSession implements AgentSession {
   }
 
   private contentParts(parts: readonly TurnPart[]): InputContentPart[] {
-    return contentPartsFor(parts, (selector) => this.context.skill(selector))
+    const content = contentPartsFor(parts, (selector) => this.context.skill(selector))
+    // The budget learns each PDF's pages from its attachment, not its bytes (M54).
+    for (const [index, part] of parts.entries()) {
+      const sent = content[index]
+      if (part.type === 'file' && sent?.type === 'input_file') {
+        this.budget.note(sent, part.pageCount)
+      }
+    }
+    return content
+  }
+
+  /**
+   * The PDFs and images `read_file` read this round, in one user message
+   * after the round's outputs (M54, PLAN.md D47): Meta reads images only in
+   * user messages (image-understanding), and a message there between two
+   * of a response's outputs would split them.
+   */
+  private appendReadFiles(turnId: string, isRoundComplete: boolean): void {
+    const files = this.readFiles.splice(0)
+    if (files.length === 0) {
+      return
+    }
+    const pending: PendingReadFile[] = []
+    const content = files.flatMap((file): InputContentPart[] => {
+      if (!isRoundComplete) {
+        return [
+          {
+            type: 'input_text',
+            text: fill(MODEL_TEXT.toolFileNotDelivered, { path: file.path }),
+          },
+        ]
+      }
+      const [sent] = this.contentParts([file.part])
+      if (sent === undefined) {
+        return []
+      }
+      const lead: InputContentPart = {
+        type: 'input_text',
+        text: fill(MODEL_TEXT.toolFileFollows, { path: file.path }),
+      }
+      pending.push({
+        path: file.path,
+        lead,
+        media: sent,
+        encodedChars: turnMediaEncodedChars(file.part),
+        slots: turnMediaSlots(file.part),
+      })
+      return [lead, sent]
+    })
+    const replay: ReplayItem = { turnId, item: { type: 'message', role: 'user', content } }
+    this.replay.push(replay)
+    if (pending.length > 0) {
+      this.readFileMessages.set(replay, pending)
+    }
+  }
+
+  /** Only media present in a completed request has reached the model. */
+  private markReadFileMediaDelivered(turnId: string, input: readonly InputItem[]): void {
+    const sent = new Set(
+      input.flatMap((item) =>
+        item.type === 'message' && item.role === 'user' ? item.content : [],
+      ),
+    )
+    for (const replay of this.replay) {
+      if (replay.turnId !== turnId) {
+        continue
+      }
+      const pending = this.readFileMessages.get(replay)
+      if (pending === undefined) {
+        continue
+      }
+      const remaining = pending.filter((file) => !sent.has(file.media))
+      if (remaining.length === 0) {
+        this.readFileMessages.delete(replay)
+      } else {
+        this.readFileMessages.set(replay, remaining)
+      }
+    }
+  }
+
+  /** A completed request delivers or durably omits pending function-output images. */
+  private markOutputMediaDelivered(
+    requestReplay: readonly ReplayItem[],
+    input: readonly InputItem[],
+  ): void {
+    const sent = new Set(
+      input.flatMap((item) =>
+        item.type === 'function_call_output' && typeof item.output !== 'string' ? item.output : [],
+      ),
+    )
+    for (const entry of requestReplay) {
+      const pending = this.pendingOutputMedia.get(entry)
+      if (pending === undefined) {
+        continue
+      }
+      const remaining = pending.filter((part) => !sent.has(part))
+      if (remaining.length === 0 || !this.replay.includes(entry)) {
+        this.pendingOutputMedia.delete(entry)
+      } else {
+        this.pendingOutputMedia.set(entry, remaining)
+      }
+    }
+  }
+
+  /** A stopped or failed turn replaces only media no completed request carried. */
+  private dropUndeliveredMedia(turnId: string): void {
+    for (const [index, replay] of this.replay.entries()) {
+      if (replay.turnId !== turnId || replay.item.type !== 'message') {
+        continue
+      }
+      const pending = this.readFileMessages.get(replay)
+      if (pending === undefined) {
+        continue
+      }
+      const leads = new Map(pending.map((file) => [file.lead, file.path]))
+      const media = new Set(pending.map((file) => file.media))
+      const content = replay.item.content.flatMap((part): InputContentPart[] => {
+        const filePath = leads.get(part)
+        if (filePath !== undefined) {
+          return [
+            { type: 'input_text', text: fill(MODEL_TEXT.toolFileNotDelivered, { path: filePath }) },
+          ]
+        }
+        return media.has(part) ? [] : [part]
+      })
+      this.replay[index] = {
+        ...replay,
+        item: {
+          ...replay.item,
+          content,
+        },
+      }
+      this.readFileMessages.delete(replay)
+    }
+    for (const [replay, pending] of this.pendingOutputMedia) {
+      if (replay.turnId !== turnId) {
+        continue
+      }
+      const index = this.replay.indexOf(replay)
+      if (
+        index !== -1 &&
+        replay.item.type === 'function_call_output' &&
+        typeof replay.item.output !== 'string'
+      ) {
+        const media = new Set<FunctionOutputPart>(pending)
+        const output = replay.item.output.map((part): FunctionOutputPart =>
+          media.has(part)
+            ? { type: 'input_text', text: MODEL_TEXT.toolOutputImageNotDelivered }
+            : part,
+        )
+        this.replay[index] = { ...replay, item: { ...replay.item, output } }
+      }
+      this.pendingOutputMedia.delete(replay)
+    }
+  }
+
+  /** Media awaiting the next request: tool outputs, read files and accepted steering. */
+  private queuedMediaUsage(): { readonly chars: number; readonly slots: number } {
+    let chars = 0
+    let slots = 0
+    for (const file of this.readFiles) {
+      chars += turnMediaEncodedChars(file.part)
+      slots += turnMediaSlots(file.part)
+    }
+    for (const replay of this.replay) {
+      const pending = this.readFileMessages.get(replay) ?? []
+      for (const file of pending) {
+        chars += file.encodedChars
+        slots += file.slots
+      }
+    }
+    for (const images of this.pendingOutputMedia.values()) {
+      for (const image of images) {
+        chars += image.image_url.length
+        slots += 1
+      }
+    }
+    const steers = this.active?.steered ?? []
+    for (const steer of steers) {
+      for (const part of steer.parts) {
+        if (part.type !== 'image' && part.type !== 'file') {
+          continue
+        }
+        chars += turnMediaEncodedChars(part)
+        slots += turnMediaSlots(part)
+      }
+    }
+    return { chars, slots }
+  }
+
+  private canQueueMedia(chars: number, slots: number): boolean {
+    const queued = this.queuedMediaUsage()
+    const limit = this.deps.mediaBudgetMaxEncodedChars ?? MAX_ENCODED_MEDIA_CHARS
+    return queued.chars + chars <= limit && queued.slots + slots <= MODEL_API_MEDIA_PER_REQUEST
+  }
+
+  /** Reserve all current-batch visual outputs before their tool row reports success. */
+  private canQueueToolMedia(outcome: ToolOutcome): boolean {
+    const newImages = outcome.outputParts?.filter((part) => part.type === 'input_image') ?? []
+    const chars =
+      (outcome.visibleFile === undefined ? 0 : turnMediaEncodedChars(outcome.visibleFile.part)) +
+      newImages.reduce((total, image) => total + image.image_url.length, 0)
+    const slots =
+      (outcome.visibleFile === undefined ? 0 : turnMediaSlots(outcome.visibleFile.part)) +
+      newImages.length
+    return this.canQueueMedia(chars, slots)
+  }
+
+  private canQueueSteeredMedia(parts: readonly TurnPart[]): boolean {
+    let chars = 0
+    let slots = 0
+    for (const part of parts) {
+      if (part.type !== 'image' && part.type !== 'file') {
+        continue
+      }
+      chars += turnMediaEncodedChars(part)
+      slots += turnMediaSlots(part)
+    }
+    return slots === 0 || this.canQueueMedia(chars, slots)
   }
 
   /** `read_skill`: the body of a catalogue skill, by id; never a path. */
@@ -1514,13 +2677,20 @@ export class ModelApiSession implements AgentSession {
     })
   }
 
-  /** `generate_image` and `edit_image`, after the card: the image, written as a new file, and counted. */
-  private async makeImage(call: FunctionCallItem, signal: AbortSignal): Promise<ToolOutcome> {
-    const prepared = await this.imagePlan(call)
-    if (!prepared.ok) {
-      return toolFailure(prepared.reason)
+  /** `generate_image` and `edit_image`, using the approved source bytes and destination. */
+  private async makeImage(plan: ImagePlan, signal: AbortSignal): Promise<ToolOutcome> {
+    for (const path of [plan.target, ...plan.sources]) {
+      const current = await confineWorkspacePath(
+        this.deps.workspaceRoot,
+        path.absolute,
+        this.deps.platform,
+        this.deps.io,
+      )
+      if (!current.ok || current.checkedAbsolute !== path.checkedAbsolute) {
+        return toolFailure(MODEL_TEXT.pathChangedAfterApproval)
+      }
     }
-    return await runImageCall(prepared.plan, {
+    return await runImageCall(plan, {
       client: this.deps.client,
       io: this.deps.io,
       signal,
@@ -1532,7 +2702,9 @@ export class ModelApiSession implements AgentSession {
   }
 
   /** Where an edit-family call writes, confined (links resolved), or why it cannot. */
-  private async editTarget(call: FunctionCallItem): Promise<PathResolution | undefined> {
+  private async editTarget(
+    call: FunctionCallItem,
+  ): Promise<Awaited<ReturnType<typeof confineWorkspacePath>> | undefined> {
     const given = pick(argumentsOf(call), 'path')
     return given === undefined
       ? undefined
@@ -1542,7 +2714,8 @@ export class ModelApiSession implements AgentSession {
   /** A tool that named a path may have entered a directory with its own rules file. */
   private async touchPath(call: FunctionCallItem): Promise<void> {
     const given = pick(argumentsOf(call), 'path')
-    if (given === undefined) {
+    // A memory note's path is under its scope's root, not the workspace (M49).
+    if (given === undefined || isMemoryTool(call.name)) {
       return
     }
     const resolved = await confineWorkspacePath(
@@ -1606,12 +2779,640 @@ export class ModelApiSession implements AgentSession {
     return { outcome: { output: MODEL_TEXT.shellMovedToBackground, visibleOutput: '' }, running }
   }
 
+  /** The IDE tool in process, or the MCP server's tool over its connection (M50). */
+  private async performExternal(
+    external: ExternalTool,
+    call: FunctionCallItem,
+    signal: AbortSignal,
+  ): Promise<ToolOutcome> {
+    if (external.kind === 'ide') {
+      const text = clipOutput(await external.tool.call(argumentsOf(call)))
+      return { output: text, visibleOutput: text }
+    }
+    const servers = this.deps.mcpServers
+    if (servers === undefined) {
+      return toolFailure(`${call.name} ${MODEL_TEXT.mcpToolUnavailable}`)
+    }
+    const outcome = await servers.call(call.name, call.arguments, signal)
+    return {
+      output: outcome.output,
+      visibleOutput: outcome.visibleOutput,
+      ...(outcome.outputParts !== undefined && { outputParts: outcome.outputParts }),
+      ...(outcome.failureReason !== undefined && { failureReason: outcome.failureReason }),
+    }
+  }
+
+  /** The Agent map's row is the durable parent-side account of a child. */
+  private childSnapshot(child: ChildRecord): ItemSnapshot {
+    const isDone = child.state === 'result_ready' || child.state === 'closed'
+    let status: ItemSnapshot['status'] = IN_PROGRESS
+    if (child.state === 'interrupted') {
+      status = CANCELLED
+    } else if (isDone) {
+      status = child.terminal ?? COMPLETED
+    }
+    return {
+      itemId: child.itemId,
+      kind: 'subagent',
+      turnId: child.parentTurnId,
+      status,
+      role: child.role,
+      objective: child.objective,
+      subagentId: child.id,
+      childSessionId: child.session.sessionId,
+      depth: SUBAGENT_DEPTH,
+      controlStatus: child.state === 'result_ready' ? SUBAGENT_RESULT_READY : child.state,
+      ...(isDone && { durationMs: this.deps.now() - child.startedAt }),
+      usage: child.usage,
+      paid: 'subagents',
+      ...(child.result !== undefined && { result: child.result }),
+    }
+  }
+
+  private updateChild(child: ChildRecord): void {
+    child.revision += 1
+    const item = this.childSnapshot(child)
+    this.rerecordTranscript(item)
+    this.emit({ type: 'itemUpdated', item })
+    this.touch()
+    for (const wake of child.waiters) {
+      wake()
+    }
+  }
+
+  /** Charge only the goal that owned this child turn, never a replacement. */
+  private chargeChildGoal(child: ChildRecord, spentTokens: number): void {
+    if (spentTokens <= 0 || child.chargedGoalId === undefined) {
+      return
+    }
+    const goal = this.goal
+    if (goal?.goal_id !== child.chargedGoalId) {
+      return
+    }
+    this.replaceGoal(withTokensUsed(goal, spentTokens, this.deps.now()))
+  }
+
+  private childEvent(child: ChildRecord, event: AgentEvent): void {
+    if (event.type === 'turnStarted') {
+      child.chargedGoalId = isGoalActive(this.goal) ? this.goal.goal_id : undefined
+    } else if (event.type === 'tokenUsage') {
+      const latest = child.session.usage
+      const inputDelta = latest.inputTokens - child.usage.inputTokens
+      const outputDelta = latest.outputTokens - child.usage.outputTokens
+      this.chargeChildGoal(child, inputDelta + outputDelta)
+      this.usage = {
+        inputTokens: this.usage.inputTokens + inputDelta,
+        outputTokens: this.usage.outputTokens + outputDelta,
+        cachedTokens: this.usage.cachedTokens + latest.cachedTokens - child.usage.cachedTokens,
+        reasoningTokens:
+          this.usage.reasoningTokens + latest.reasoningTokens - child.usage.reasoningTokens,
+      }
+      child.usage = { ...latest }
+      this.emit({ type: 'tokenUsage', ...this.usage, modelId: this.modelId })
+      this.updateChild(child)
+      return
+    }
+    if (event.type === 'turnCompleted') {
+      child.chargedGoalId = undefined
+      child.session.childTaskGrant = undefined
+      if (child.nextTaskGrant !== undefined) {
+        child.session.childTaskGrant = child.nextTaskGrant
+        child.nextTaskGrant = undefined
+      }
+      child.terminal = event.terminal
+      if (child.state !== 'closed' && child.state !== 'interrupted') {
+        child.state = 'result_ready'
+      }
+      const reply = child.session.transcript.findLast(
+        (entry) => entry.turnId === event.turnId && entry.item.kind === 'agentMessage',
+      )
+      const isTaskRefusal = event.errorKind?.startsWith('subagent_') === true
+      const text =
+        (isTaskRefusal ? event.reason : (reply?.item.text ?? event.reason)) ??
+        MODEL_TEXT.subagentNoReply
+      const modelText = isTaskRefusal ? (modelChildFailure(event.errorKind, text) ?? text) : text
+      child.result = {
+        summary: text.slice(0, SUBAGENT_SUMMARY_MAX_CHARS),
+        ...(text !== '' && { text: text.slice(0, SUBAGENT_RESULT_TEXT_MAX_CHARS) }),
+        ...(event.errorKind !== undefined && { errorKind: event.errorKind }),
+      }
+      this.pendingChildResults.push(
+        `${MODEL_TEXT.subagentResult}\n${child.id}: ${JSON.stringify({ ...child.result, summary: modelText.slice(0, SUBAGENT_SUMMARY_MAX_CHARS), text: modelText.slice(0, SUBAGENT_RESULT_TEXT_MAX_CHARS) })}`,
+      )
+      this.emit(event)
+      this.updateChild(child)
+      if (child.followupAfterStop !== undefined) {
+        child.pendingMessages.push(child.followupAfterStop)
+        child.followupAfterStop = undefined
+        child.state = 'queued'
+      }
+      this.startQueuedChildren()
+      return
+    }
+    if (FORWARDED_CHILD_EVENTS.has(event.type)) {
+      this.emit(event)
+    }
+  }
+
+  private installChildGrant(child: ChildRecord, grant: ChildTaskGrant): void {
+    if (child.session.activeTurnId === undefined) {
+      child.session.childTaskGrant = grant
+    } else {
+      child.nextTaskGrant = grant
+    }
+  }
+
+  /** Every new task buys a fresh bounded grant; a running note does not. */
+  private childTaskFor(call: FunctionCallItem): SubagentTaskConfirmation | undefined {
+    if (call.name === MODEL_API_SUBAGENT_TOOLS.spawn) {
+      const parsed = spawnArgs.safeParse(argumentsOf(call))
+      return parsed.success
+        ? {
+            role: parsed.data.role,
+            objective: parsed.data.objective,
+            modelId: this.modelId,
+            attemptLimit: SUBAGENT_TASK_MAX_REQUESTS,
+          }
+        : undefined
+    }
+    if (call.name !== MODEL_API_SUBAGENT_TOOLS.sendMessage) {
+      return undefined
+    }
+    const parsed = sendMessageArgs.safeParse(argumentsOf(call))
+    const child = parsed.success ? this.childById(parsed.data.subagent_id) : undefined
+    if (
+      child === undefined ||
+      child.state === 'closed' ||
+      child.state === 'queued' ||
+      (child.state === 'running' && parsed.success && parsed.data.interrupt !== true)
+    ) {
+      return undefined
+    }
+    return {
+      role: child.role,
+      objective: parsed.success ? parsed.data.message : child.objective,
+      modelId: this.modelId,
+      attemptLimit: SUBAGENT_TASK_MAX_REQUESTS,
+    }
+  }
+
+  private childGrantRefusal(
+    grant: ChildTaskGrant,
+    keyDigest: string | undefined,
+    childModelId: string,
+  ): ChildTaskRefusal | undefined {
+    if (this.isDisposed) {
+      return 'consentDeclined'
+    }
+    if (this.permissions.currentMode === 'denyUnmatched') {
+      return 'planMode'
+    }
+    if (!this.deps.isPaidFeatureOn('subagents')) {
+      return 'paidOff'
+    }
+    if (modelApiPaidTier(grant.modelId) === undefined) {
+      return 'tariffUnknown'
+    }
+    if (childModelId !== grant.modelId || this.modelId !== grant.modelId) {
+      return 'modelChanged'
+    }
+    if (keyDigest !== grant.keyDigest) {
+      return 'keyChanged'
+    }
+    if (
+      grant.goalId !== undefined &&
+      (!isGoalActive(this.goal) || this.goal.goal_id !== grant.goalId)
+    ) {
+      return 'goalEnded'
+    }
+    return grant.remainingAttempts <= 0 ? 'requestLimit' : undefined
+  }
+
+  private async prepareChildGrant(): Promise<ChildTaskGrant> {
+    if (!this.deps.isPaidFeatureOn('subagents')) {
+      throw new ChildTaskRefusedError('paidOff')
+    }
+    if (this.goal?.status === GOAL_STATUS.budgetLimited) {
+      throw new ChildTaskRefusedError('goalEnded')
+    }
+    if (modelApiPaidTier(this.modelId) === undefined) {
+      throw new ChildTaskRefusedError('tariffUnknown')
+    }
+    return {
+      modelId: this.modelId,
+      keyDigest: await this.deps.client.currentKeyDigest(),
+      goalId: isGoalActive(this.goal) ? this.goal.goal_id : undefined,
+      remainingAttempts: SUBAGENT_TASK_MAX_REQUESTS,
+    }
+  }
+
+  private async validateChildGrant(grant: ChildTaskGrant): Promise<void> {
+    let keyDigest: string | undefined
+    try {
+      keyDigest = await this.deps.client.currentKeyDigest()
+    } catch (error: unknown) {
+      if (!(error instanceof MissingApiKeyError)) {
+        throw error
+      }
+    }
+    const reason = this.childGrantRefusal(grant, keyDigest, grant.modelId)
+    if (reason !== undefined) {
+      throw new ChildTaskRefusedError(reason)
+    }
+  }
+
+  /** A user-owned follow-up or reopen gets one native price decision. */
+  private async confirmOwnerChildTask(
+    child: ChildRecord,
+    objective: string,
+  ): Promise<ChildTaskGrant> {
+    try {
+      const grant = await this.prepareChildGrant()
+      const isAccepted = await this.deps.confirmSubagentTask({
+        role: child.role,
+        objective,
+        modelId: grant.modelId,
+        attemptLimit: SUBAGENT_TASK_MAX_REQUESTS,
+      })
+      if (!isAccepted) {
+        throw new ChildTaskRefusedError('consentDeclined')
+      }
+      await this.validateChildGrant(grant)
+      return grant
+    } catch (error: unknown) {
+      if (error instanceof ChildTaskRefusedError) {
+        throw new Error(error.visible, { cause: error })
+      }
+      throw error
+    }
+  }
+
+  /** The exact task text sent after queued notes are added to a child turn. */
+  private queuedChildTask(child: ChildRecord, additions: readonly string[]): string {
+    const parts = child.session.turnCount === 0 ? [child.objective, ...additions] : additions
+    return parts.join('\n\n') || MODEL_TEXT.subagentResume
+  }
+
+  /** Starts queued children in spawn order, bounded by the Model API capacity. */
+  private startQueuedChildren(): void {
+    if (this.isDisposed) {
+      return
+    }
+    let active = 0
+    for (const entry of this.children.values()) {
+      if (entry.state === 'running' || entry.session.activeTurnId !== undefined) {
+        active += 1
+      }
+    }
+    for (const child of this.children.values()) {
+      if (active >= SUBAGENT_CAPACITY) {
+        return
+      }
+      if (child.state !== 'queued' || child.session.activeTurnId !== undefined) {
+        continue
+      }
+      const grant = child.session.childTaskGrant
+      const refusal =
+        grant === undefined
+          ? 'consentDeclined'
+          : this.childGrantRefusal(grant, grant.keyDigest, child.session.modelId)
+      if (refusal !== undefined) {
+        const messages = childTaskMessages(refusal)
+        child.state = 'closed'
+        child.terminal = FAILED
+        child.result = {
+          summary: messages.visible,
+          text: messages.visible,
+          errorKind: `subagent_${refusal}`,
+        }
+        child.pendingMessages.length = 0
+        child.session.childTaskGrant = undefined
+        this.pendingChildResults.push(
+          `${MODEL_TEXT.subagentResult}\n${child.id}: ${JSON.stringify({ summary: messages.model, text: messages.model, errorKind: `subagent_${refusal}` })}`,
+        )
+        this.updateChild(child)
+        continue
+      }
+      active += 1
+      child.state = 'running'
+      child.result = undefined
+      child.terminal = undefined
+      const additions = child.pendingMessages.splice(0)
+      const task = this.queuedChildTask(child, additions)
+      this.updateChild(child)
+      void child.session.sendTurn(
+        [{ type: 'text', text: `${MODEL_TEXT.subagentObjective}\n\n${task}` }],
+        task,
+      )
+    }
+  }
+
+  private spawnChild(
+    call: FunctionCallItem,
+    turnId: string,
+    grant: ChildTaskGrant | undefined,
+  ): ToolOutcome {
+    if (grant === undefined) {
+      return childTaskFailure('consentDeclined')
+    }
+    const parsed = spawnArgs.safeParse(argumentsOf(call))
+    if (!parsed.success) {
+      return subagentFailure('invalid subagent_spawn arguments')
+    }
+    if (parsed.data.worktree_isolation !== undefined && parsed.data.worktree_isolation !== false) {
+      return subagentFailure('worktree isolation is unavailable on this backend')
+    }
+    const prior =
+      parsed.data.command_id === undefined
+        ? undefined
+        : this.spawnCommands.get(parsed.data.command_id)
+    if (prior !== undefined) {
+      const child = this.childById(prior)
+      if (child !== undefined) {
+        if (child.role !== parsed.data.role || child.objective !== parsed.data.objective) {
+          return subagentFailure('command_id was already used for a different spawn')
+        }
+        return {
+          output: JSON.stringify({
+            subagent_id: child.id,
+            state: child.state,
+            child_session_id: child.session.sessionId,
+          }),
+          visibleOutput: `${child.role}: ${childStateLabel(child.state)}`,
+        }
+      }
+    }
+    if (this.children.size >= SUBAGENT_MAX_PER_CONVERSATION) {
+      return subagentFailure('subagent limit reached for this conversation')
+    }
+    const id = `${SUBAGENT_ID_PREFIX}${String(this.children.size + 1)}`
+    const child = new ModelApiSession(
+      `${this.sessionId}:${id}`,
+      this.modelId,
+      this.isSideChat ? 'denyUnmatched' : this.permissions.currentMode,
+      this.deps,
+      () => {
+        this.touch()
+      },
+      // A child snapshot lives in its parent's stored session.
+      () => this.onPersisted(),
+      NO_CHILD_DISPOSAL,
+      true,
+      this,
+      id,
+      this.hooks,
+      'startup',
+      this.isSideChat,
+    )
+    child.childTaskGrant = grant
+    const record: ChildRecord = {
+      id,
+      role: parsed.data.role,
+      objective: parsed.data.objective,
+      itemId: this.deps.newId(),
+      parentTurnId: turnId,
+      session: child,
+      startedAt: this.deps.now(),
+      state: 'queued',
+      result: undefined,
+      terminal: undefined,
+      usage: { inputTokens: 0, outputTokens: 0, cachedTokens: 0, reasoningTokens: 0 },
+      chargedGoalId: undefined,
+      waiters: new Set(),
+      pendingMessages: [],
+      followupAfterStop: undefined,
+      nextTaskGrant: undefined,
+      revision: 0,
+    }
+    child.onEvent((event) => {
+      this.childEvent(record, event)
+    })
+    this.children.set(id, record)
+    if (parsed.data.command_id !== undefined) {
+      this.spawnCommands.set(parsed.data.command_id, id)
+    }
+    const row = this.childSnapshot(record)
+    this.recordTranscript(turnId, row)
+    this.emit({ type: 'itemStarted', item: row })
+    this.startQueuedChildren()
+    return {
+      output: JSON.stringify({
+        subagent_id: id,
+        state: record.state,
+        child_session_id: child.sessionId,
+      }),
+      visibleOutput: `${record.role}: ${childStateLabel(record.state)}`,
+    }
+  }
+
+  private childById(id: string): ChildRecord | undefined {
+    return this.children.get(id)
+  }
+
+  private async waitForChild(
+    child: ChildRecord,
+    timeoutMs: number,
+    signal: AbortSignal,
+  ): Promise<ToolOutcome> {
+    if (signal.aborted) {
+      throw new AbortedError()
+    }
+    if (CHILD_RESULT_STATES.has(child.state)) {
+      return {
+        output: JSON.stringify({ subagent_id: child.id, state: child.state, result: child.result }),
+        visibleOutput: child.result?.summary ?? childStateLabel(child.state),
+      }
+    }
+    const state = await new Promise<'ready' | 'timeout' | 'aborted'>((resolve) => {
+      const finish = (value: 'ready' | 'timeout' | 'aborted') => {
+        clearTimeout(timer)
+        child.waiters.delete(wake)
+        signal.removeEventListener('abort', abort)
+        resolve(value)
+      }
+      const wake = () => {
+        if (CHILD_RESULT_STATES.has(child.state)) {
+          finish('ready')
+        }
+      }
+      const abort = () => {
+        finish('aborted')
+      }
+      const timer = setTimeout(() => {
+        finish('timeout')
+      }, timeoutMs)
+      child.waiters.add(wake)
+      signal.addEventListener('abort', abort, { once: true })
+      wake()
+    })
+    if (state === 'aborted') {
+      throw new AbortedError()
+    }
+    return {
+      output: JSON.stringify({
+        subagent_id: child.id,
+        state: child.state,
+        timed_out: state === 'timeout',
+        result: child.result,
+      }),
+      visibleOutput: child.result?.summary ?? childStateLabel(child.state),
+    }
+  }
+
+  private async runSubagentTool(
+    turnId: string,
+    call: FunctionCallItem,
+    signal: AbortSignal,
+    grant?: ChildTaskGrant,
+  ): Promise<ToolOutcome> {
+    if (this.isSubagent) {
+      return subagentFailure('a subagent cannot spawn or control other subagents')
+    }
+    const args = argumentsOf(call)
+    if (call.name === MODEL_API_SUBAGENT_TOOLS.spawn) {
+      return this.spawnChild(call, turnId, grant)
+    }
+    if (call.name === MODEL_API_SUBAGENT_TOOLS.status) {
+      const parsed = statusArgs.safeParse(args)
+      if (!parsed.success) {
+        return subagentFailure('invalid subagent_status arguments')
+      }
+      if (parsed.data.subagent_id !== undefined && !this.children.has(parsed.data.subagent_id)) {
+        return subagentFailure('unknown subagent')
+      }
+      const children: {
+        subagent_id: string
+        role: string
+        objective: string
+        state: SubagentState
+        result: ChildRecord['result']
+      }[] = []
+      for (const child of this.children.values()) {
+        if (parsed.data.subagent_id !== undefined && child.id !== parsed.data.subagent_id) {
+          continue
+        }
+        const statusFilter = parsed.data.status_filter
+        if (statusFilter && statusFilter !== 'all' && child.state !== statusFilter) {
+          continue
+        }
+        children.push({
+          subagent_id: child.id,
+          role: child.role,
+          objective: child.objective,
+          state: child.state,
+          result: child.result,
+        })
+      }
+      return {
+        output: JSON.stringify({ subagents: children }),
+        visibleOutput: plural(UI_TEXT.agentsCount, children.length),
+      }
+    }
+    if (call.name === MODEL_API_SUBAGENT_TOOLS.wait) {
+      const parsed = waitArgs.safeParse(args)
+      if (!parsed.success) {
+        return subagentFailure('invalid subagent_wait arguments')
+      }
+      const child = this.childById(parsed.data.subagent_id)
+      return child === undefined
+        ? subagentFailure('unknown subagent')
+        : await this.waitForChild(child, parsed.data.timeout_ms ?? SUBAGENT_WAIT_DEFAULT_MS, signal)
+    }
+    if (call.name === MODEL_API_SUBAGENT_TOOLS.sendMessage) {
+      const parsed = sendMessageArgs.safeParse(args)
+      if (!parsed.success) {
+        return subagentFailure('invalid subagent_send_message arguments')
+      }
+      const child = this.childById(parsed.data.subagent_id)
+      if (child === undefined || child.state === 'closed') {
+        return subagentFailure('subagent is unavailable')
+      }
+      const isNewTask =
+        (parsed.data.interrupt === true && child.state === 'running') ||
+        child.state === 'interrupted' ||
+        child.state === 'result_ready'
+      if (isNewTask) {
+        if (grant === undefined) {
+          return childTaskFailure('consentDeclined')
+        }
+        this.installChildGrant(child, grant)
+      }
+      if (parsed.data.interrupt === true && child.state === 'running') {
+        child.followupAfterStop = parsed.data.message
+        child.state = 'interrupted'
+        await child.session.cancel()
+      } else if (child.state === 'running') {
+        const activeTurnId = child.session.activeTurnId
+        if (activeTurnId === undefined) {
+          return subagentFailure('subagent turn is settling; retry the message')
+        }
+        await child.session.steer(activeTurnId, [{ type: 'text', text: parsed.data.message }])
+      } else {
+        child.pendingMessages.push(parsed.data.message)
+        child.state = 'queued'
+        this.startQueuedChildren()
+      }
+      this.updateChild(child)
+      return {
+        output: JSON.stringify({ subagent_id: child.id, state: child.state }),
+        visibleOutput: childStateLabel(child.state),
+      }
+    }
+    const parsed = targetArgs.safeParse(args)
+    if (!parsed.success) {
+      return subagentFailure('invalid subagent target')
+    }
+    const child = this.childById(parsed.data.subagent_id)
+    if (child === undefined) {
+      return subagentFailure('unknown subagent')
+    }
+    if (call.name === MODEL_API_SUBAGENT_TOOLS.readResult) {
+      if (child.state !== 'result_ready') {
+        return subagentFailure('subagent result is not ready')
+      }
+      child.state = 'closed'
+      this.updateChild(child)
+      return {
+        output: JSON.stringify({ subagent_id: child.id, result: child.result }),
+        visibleOutput: child.result?.summary ?? '',
+      }
+    }
+    if (call.name === MODEL_API_SUBAGENT_TOOLS.cancel) {
+      child.revision += 1
+      child.pendingMessages.length = 0
+      child.followupAfterStop = undefined
+      child.nextTaskGrant = undefined
+      child.session.childTaskGrant = undefined
+      child.terminal ??= CANCELLED
+      child.state = 'closed'
+      await child.session.cancel()
+      this.updateChild(child)
+      this.startQueuedChildren()
+      return {
+        output: JSON.stringify({ subagent_id: child.id, state: child.state }),
+        visibleOutput: childStateLabel(child.state),
+      }
+    }
+    return subagentFailure(`unknown tool ${call.name}`)
+  }
+
   private async perform(
+    turnId: string,
     itemId: string,
     call: FunctionCallItem,
     signal: AbortSignal,
     goalCommandRevision: number,
+    childGrant?: ChildTaskGrant,
+    approvedTarget?: { readonly absolute: string; readonly checkedAbsolute: string },
+    approvedImagePlan?: ImagePlan,
   ): Promise<Performed> {
+    const external = this.externalTool(call.name)
+    if (external !== undefined) {
+      return { outcome: await this.performExternal(external, call, signal) }
+    }
+    if (isSubagentTool(call.name)) {
+      return { outcome: await this.runSubagentTool(turnId, call, signal, childGrant) }
+    }
     switch (call.name) {
       case MODEL_API_TOOLS.askUser: {
         return { outcome: await this.askUser(itemId, call, signal) }
@@ -1624,7 +3425,12 @@ export class ModelApiSession implements AgentSession {
       }
       case MODEL_API_TOOLS.generateImage:
       case MODEL_API_TOOLS.editImage: {
-        return { outcome: await this.makeImage(call, signal) }
+        return {
+          outcome:
+            approvedImagePlan === undefined
+              ? toolFailure(MODEL_TEXT.imageGenerationOff)
+              : await this.makeImage(approvedImagePlan, signal),
+        }
       }
       case MODEL_API_TOOLS.createGoal:
       case MODEL_API_TOOLS.updateGoal:
@@ -1654,69 +3460,245 @@ export class ModelApiSession implements AgentSession {
             io: this.deps.io,
             signal,
             seen: this.seenFiles,
+            ...(approvedTarget !== undefined && { approvedTarget }),
           }),
         }
       }
     }
   }
 
+  /**
+   * The mode's verdict on a call, and the card when it asks: the refusal, or
+   * undefined when the call may run.
+   */
+  private async judge(
+    itemId: string,
+    call: FunctionCallItem,
+    signal: AbortSignal,
+    query: PermissionQuery,
+    subject: ApprovalSubject,
+    shouldForceApproval = false,
+  ): Promise<CallResult | undefined> {
+    const verdict = this.verdictWithHook(query, shouldForceApproval)
+    if (verdict === 'deny') {
+      return this.refusedByMode(call)
+    }
+    if (verdict === 'allow') {
+      return undefined
+    }
+    const approval = await this.askApproval(
+      itemId,
+      call,
+      signal,
+      query,
+      subject,
+      undefined,
+      shouldForceApproval,
+    )
+    return approval.isApproved
+      ? undefined
+      : {
+          outcome: refusedOutcome(call, approval.feedback, approval.deniedByHook === true),
+          isRejected: true,
+        }
+  }
+
+  /** A hook may add a card to an allow, never override a mode's denial. */
+  private verdictWithHook(query: PermissionQuery, shouldForceApproval: boolean): PermissionVerdict {
+    const permitted = this.permissions.verdict(query)
+    return permitted === 'allow' && shouldForceApproval ? 'ask' : permitted
+  }
+
+  private refusedByMode(call: FunctionCallItem): CallResult {
+    return {
+      outcome: toolFailure(`${call.name} ${MODEL_TEXT.toolRefusedByMode}`),
+      isRejected: true,
+    }
+  }
+
+  /**
+   * A memory call (M49, PLAN.md D41): its note placed before any card (a
+   * refused path asks nothing); a write judged as an edit, never a
+   * protected one, its card naming the note.
+   */
+  private async decideAndRunMemory(
+    itemId: string,
+    call: FunctionCallItem,
+    signal: AbortSignal,
+    toolClass: ToolClass,
+    shouldForceApproval: boolean,
+  ): Promise<CallResult> {
+    const { memory } = this.deps
+    if (memory === undefined) {
+      return { outcome: toolFailure(`unknown tool ${call.name}`), isRejected: false }
+    }
+    if (!this.deps.isWorkspaceTrusted()) {
+      return { outcome: toolFailure(MODEL_TEXT.memoryRestrictedMode), isRejected: true }
+    }
+    const placed = await placeMemoryCall(memory, call.name, call.arguments)
+    if (!placed.ok) {
+      return { outcome: toolFailure(placed.reason), isRejected: false }
+    }
+    if (toolClass !== 'read' || shouldForceApproval) {
+      const subject: ApprovalSubject =
+        toolClass === 'read'
+          ? { kind: 'tool', toolName: call.name }
+          : { kind: 'fileWrite', path: placed.value.place.display, toolName: call.name }
+      const refusal = await this.judge(
+        itemId,
+        call,
+        signal,
+        { toolName: call.name, toolClass, isProtected: false },
+        subject,
+        shouldForceApproval,
+      )
+      if (refusal !== undefined) {
+        return refusal
+      }
+      // The card was open: a swapped directory would redirect the write, so
+      // the note is located again after the approval (review of PR #36).
+      const replaced = await placeMemoryCall(memory, call.name, call.arguments)
+      return {
+        outcome: replaced.ok
+          ? await runMemoryCall(memory, replaced.value)
+          : toolFailure(replaced.reason),
+        isRejected: false,
+      }
+    }
+    return { outcome: await runMemoryCall(memory, placed.value), isRejected: false }
+  }
+
   /** The permission check and, when it allows, the tool itself. May throw (an abort, an I/O error). */
   private async decideAndRun(
+    turnId: string,
     itemId: string,
     call: FunctionCallItem,
     signal: AbortSignal,
     goalCommandRevision: number,
+    shouldForceApproval = false,
   ): Promise<CallResult> {
-    const toolClass = classifyTool(call.name)
+    const external = this.externalTool(call.name)
+    if (external !== undefined && this.isSideChat) {
+      return {
+        outcome: toolFailure(`${call.name} ${MODEL_TEXT.toolRefusedByMode}`),
+        isRejected: true,
+      }
+    }
+    // The IDE tool reads VS Code's Problems panel: a read, in every mode.
+    let toolClass: ToolClass | undefined = classifyTool(call.name)
+    if (external !== undefined) {
+      toolClass = external.kind === 'ide' ? 'read' : 'mcp'
+    }
     if (toolClass === undefined) {
       return { outcome: toolFailure(`unknown tool ${call.name}`), isRejected: false }
     }
-    if (toolClass === 'shell' && !this.deps.isWorkspaceTrusted()) {
+    if (isMemoryTool(call.name)) {
+      return await this.decideAndRunMemory(itemId, call, signal, toolClass, shouldForceApproval)
+    }
+    if (
+      this.isSubagent &&
+      (isSubagentTool(call.name) ||
+        call.name === MODEL_API_TOOLS.askUser ||
+        call.name === MODEL_API_TOOLS.todoWrite ||
+        call.name === MODEL_API_TOOLS.createGoal ||
+        call.name === MODEL_API_TOOLS.getGoal ||
+        call.name === MODEL_API_TOOLS.updateGoal ||
+        call.name === MODEL_API_TOOLS.reportProgress)
+    ) {
+      return { outcome: subagentFailure('tool unavailable to a subagent'), isRejected: true }
+    }
+    const childTask = this.childTaskFor(call)
+    if (childTask === undefined && call.name === MODEL_API_SUBAGENT_TOOLS.spawn) {
+      return { outcome: subagentFailure('invalid subagent_spawn arguments'), isRejected: true }
+    }
+    if ((toolClass === 'shell' || toolClass === 'mcp') && !this.deps.isWorkspaceTrusted()) {
       // Restricted Mode (PLAN.md D13): the tool is not offered, and a model
       // that calls it anyway is refused, never prompted.
-      return { outcome: toolFailure(MODEL_TEXT.shellRestrictedMode), isRejected: true }
+      const reason =
+        toolClass === 'mcp' ? MODEL_TEXT.mcpRestrictedMode : MODEL_TEXT.shellRestrictedMode
+      return { outcome: toolFailure(reason), isRejected: true }
     }
+    let approvedImagePlan: ImagePlan | undefined
     if (toolClass === 'paid') {
       const prepared = await this.imagePlan(call)
       if (!prepared.ok) {
         return { outcome: toolFailure(prepared.reason), isRejected: false }
       }
+      approvedImagePlan = prepared.plan
     }
-    const target =
-      toolClass === 'edit' || toolClass === 'paid' ? await this.editTarget(call) : undefined
+    const target = toolClass === 'edit' ? await this.editTarget(call) : undefined
     if (target?.ok === false) {
       // A path the tool would refuse anyway is refused before any card.
       return { outcome: toolFailure(target.reason), isRejected: false }
     }
     const query: PermissionQuery = {
       toolName: call.name,
-      toolClass,
+      toolClass: childTask === undefined ? toolClass : 'spawn',
       command: toolClass === 'shell' ? pick(argumentsOf(call), 'command') : undefined,
-      isProtected: target?.ok === true && isProtectedPath(target.canonical),
+      isProtected:
+        target?.ok === true
+          ? isProtectedPath(target.canonical)
+          : approvedImagePlan !== undefined && isProtectedPath(approvedImagePlan.target.canonical),
+      isReadOnly: external?.kind === 'mcp' && external.ref.isReadOnly,
     }
-    const verdict = this.permissions.verdict(query)
+    const verdict = this.verdictWithHook(query, shouldForceApproval)
     if (verdict === 'deny') {
-      return {
-        outcome: toolFailure(`${call.name} ${MODEL_TEXT.toolRefusedByMode}`),
-        isRejected: true,
+      return this.refusedByMode(call)
+    }
+    let childGrant: ChildTaskGrant | undefined
+    if (childTask !== undefined) {
+      try {
+        childGrant = await this.prepareChildGrant()
+      } catch (error: unknown) {
+        if (error instanceof ChildTaskRefusedError) {
+          return { outcome: childTaskFailure(error.kind), isRejected: true }
+        }
+        throw error
       }
     }
     if (verdict === 'ask') {
-      const approval = await this.askApproval(itemId, call, signal, query)
+      const approval = await this.askApproval(
+        itemId,
+        call,
+        signal,
+        query,
+        subjectFor(call, this.deps.platform, toolClass === 'mcp', childTask),
+        childTask,
+        shouldForceApproval,
+      )
       if (!approval.isApproved) {
-        const reason = `${call.name} ${MODEL_TEXT.toolRejectedByUser}`
-        const feedback = approval.feedback === undefined ? '' : `\nUser: ${approval.feedback}`
+        if (childTask !== undefined && approval.deniedByHook !== true) {
+          return { outcome: childTaskFailure('consentDeclined'), isRejected: true }
+        }
         return {
-          outcome: {
-            output: `Error: ${reason}${feedback}`,
-            visibleOutput: reason,
-            failureReason: reason,
-          },
+          outcome: refusedOutcome(call, approval.feedback, approval.deniedByHook === true),
           isRejected: true,
         }
       }
     }
-    return { ...(await this.perform(itemId, call, signal, goalCommandRevision)), isRejected: false }
+    if (childGrant !== undefined) {
+      try {
+        await this.validateChildGrant(childGrant)
+      } catch (error: unknown) {
+        if (error instanceof ChildTaskRefusedError) {
+          return { outcome: childTaskFailure(error.kind), isRejected: true }
+        }
+        throw error
+      }
+    }
+    return {
+      ...(await this.perform(
+        turnId,
+        itemId,
+        call,
+        signal,
+        goalCommandRevision,
+        childGrant,
+        target?.ok === true ? target : undefined,
+        approvedImagePlan,
+      )),
+      isRejected: false,
+    }
   }
 
   /**
@@ -1750,10 +3732,22 @@ export class ModelApiSession implements AgentSession {
     }
     this.emit({ type: 'itemCompleted', item: completed })
     this.rerecordTranscript(completed)
-    this.replay.push({
+    const replay: ReplayItem = {
       turnId,
-      item: { type: 'function_call_output', call_id: call.call_id, output: outcome.output },
-    })
+      item: {
+        type: 'function_call_output',
+        call_id: call.call_id,
+        output: outcome.outputParts ?? outcome.output,
+      },
+    }
+    this.replay.push(replay)
+    const outputImages = outcome.outputParts?.filter((part) => part.type === 'input_image') ?? []
+    if (outputImages.length > 0) {
+      this.pendingOutputMedia.set(replay, outputImages)
+    }
+    if (outcome.visibleFile !== undefined) {
+      this.readFiles.push(outcome.visibleFile)
+    }
   }
 
   /** Permission check, execution and the transcript row for one tool call. */
@@ -1762,49 +3756,135 @@ export class ModelApiSession implements AgentSession {
     call: FunctionCallItem,
     signal: AbortSignal,
     goalCommandRevision: number,
-  ): Promise<void> {
+  ): Promise<HookToolResult> {
     const itemId = this.deps.newId()
-    const paid = paidFeatureOf(call.name)
+    const startedAt = this.deps.now()
+    const pre = await this.runHooks(
+      'PreToolUse',
+      turnId,
+      { tool_name: call.name, tool_input: toolHookInput(argumentsOf(call)), tool_use_id: itemId },
+      toolMatcherNames(call.name),
+      signal,
+      false,
+    )
+    const effectiveCall: FunctionCallItem =
+      pre.updatedInput === undefined
+        ? call
+        : { ...call, arguments: JSON.stringify(pre.updatedInput) }
+    const paid =
+      this.childTaskFor(effectiveCall) === undefined ? paidFeatureOf(call.name) : 'subagents'
     const started: ItemSnapshot = {
       itemId,
       kind: 'toolCall',
       status: IN_PROGRESS,
       turnId,
       tool: call.name,
-      args: call.arguments,
+      args: effectiveCall.arguments,
       ...(paid !== undefined && { paid }),
     }
     this.recordTranscript(turnId, started)
     this.emit({ type: 'itemStarted', item: started })
     let result: CallResult
     try {
-      result = await this.decideAndRun(itemId, call, signal, goalCommandRevision)
+      result =
+        pre.blockedReason === undefined
+          ? await this.decideAndRun(
+              turnId,
+              itemId,
+              effectiveCall,
+              signal,
+              goalCommandRevision,
+              pre.forceApproval,
+            )
+          : { outcome: toolFailure(pre.blockedReason), isRejected: true }
     } catch (error: unknown) {
       if (error instanceof AbortedError || signal.aborted) {
         this.finishCall(
           turnId,
           started,
-          call,
+          effectiveCall,
           toolFailure(MODEL_TEXT.toolCancelledByStop),
           CANCELLED,
         )
         throw new AbortedError()
       }
-      // A tool that threw (a disk error, a directory for a file) is a failed
-      // call the model is told about, not the end of the turn.
+      // A tool that threw (a disk error, a directory for a file, an MCP
+      // server's error or deadline) is a failed call the model is told
+      // about, not the end of the turn.
       result = { outcome: toolFailure(describe(error)), isRejected: false }
     }
-    await this.touchPath(call)
-    const { outcome, isRejected, running } = result
-    if (running !== undefined) {
-      this.continueInBackground(turnId, started, call, outcome, running)
-      return
+    // An MCP tool's `path` is its own business, not a workspace file it read.
+    if (this.externalTool(effectiveCall.name) === undefined) {
+      await this.touchPath(effectiveCall)
     }
-    let status = COMPLETED
-    if (outcome.failureReason !== undefined) {
-      status = isRejected ? REJECTED : FAILED
+    let { outcome } = result
+    const { isRejected, running } = result
+    if (running === undefined) {
+      if (!this.canQueueToolMedia(outcome)) {
+        outcome = {
+          output: `Error: ${MODEL_TEXT.toolMediaBudgetExceeded}`,
+          visibleOutput: UI_TEXT.mediaTotalTooLarge,
+          failureReason: UI_TEXT.mediaTotalTooLarge,
+        }
+      }
+      let status = COMPLETED
+      if (outcome.failureReason !== undefined) {
+        status = isRejected ? REJECTED : FAILED
+      }
+      this.finishCall(turnId, started, effectiveCall, outcome, status)
+    } else {
+      this.continueInBackground(turnId, started, effectiveCall, outcome, running)
     }
-    this.finishCall(turnId, started, call, outcome, status)
+    for (const context of pre.contexts) {
+      this.replay.push({
+        turnId,
+        item: {
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_text', text: context }],
+        },
+      })
+    }
+    const post = await this.runHooks(
+      outcome.failureReason === undefined ? 'PostToolUse' : 'PostToolUseFailure',
+      turnId,
+      outcome.failureReason === undefined
+        ? {
+            tool_name: effectiveCall.name,
+            tool_input: toolHookInput(argumentsOf(effectiveCall)),
+            tool_use_id: itemId,
+            tool_response: toolHookOutput(outcome.output),
+          }
+        : {
+            tool_name: effectiveCall.name,
+            tool_input: toolHookInput(argumentsOf(effectiveCall)),
+            tool_use_id: itemId,
+            error: toolHookOutput(outcome.failureReason),
+            is_interrupt: false,
+            duration_ms: this.deps.now() - startedAt,
+          },
+      toolMatcherNames(effectiveCall.name),
+      signal,
+    )
+    if (post.stopReason === undefined && post.blockedReason !== undefined) {
+      this.replay.push({
+        turnId,
+        item: {
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_text', text: post.blockedReason }],
+        },
+      })
+    }
+    return {
+      record: {
+        tool_name: effectiveCall.name,
+        tool_input: toolHookInput(argumentsOf(effectiveCall)),
+        tool_use_id: itemId,
+        tool_response: toolHookOutput(outcome.output),
+      },
+      stopReason: post.stopReason,
+    }
   }
 
   /**
@@ -1967,10 +4047,11 @@ export class ModelApiSession implements AgentSession {
   private drainSteered(turn: ActiveTurn): void {
     // What ended or ran meanwhile first (M46), then what the user added.
     this.settleNotes(turn.turnId)
-    for (const parts of turn.steered.splice(0)) {
+    for (const { parts, userMessageId: itemId } of turn.steered.splice(0)) {
       const text = typedText(parts)
       this.replay.push({
         turnId: turn.turnId,
+        userMessageId: itemId,
         item: {
           type: 'message',
           role: 'user',
@@ -1980,24 +4061,25 @@ export class ModelApiSession implements AgentSession {
           ],
         },
       })
+      const attachments = attachmentsOf(parts)
       this.recordTranscript(turn.turnId, {
-        itemId: this.deps.newId(),
+        itemId,
         kind: 'userMessage',
         status: COMPLETED,
         turnId: turn.turnId,
         text,
+        ...(attachments.length > 0 && { attachments }),
       })
     }
   }
 
   /** Accepted steering that missed this turn's last request becomes user turns. */
   private queuedSteered(turn: ActiveTurn): QueuedTurn[] {
-    return turn.steered.splice(0).map((parts) => ({
-      turnId: this.deps.newId(),
-      parts,
-      displayText: undefined,
-      isGoalWake: false,
-    }))
+    return turn.steered.splice(0).map(({ parts, userMessageId }) => {
+      const turnId = this.deps.newId()
+      this.emit({ type: 'userMessageTurnChanged', userMessageId, turnId })
+      return { turnId, parts, displayText: undefined, userMessageId, isGoalWake: false }
+    })
   }
 
   /** A busy goal command was not in the request already in flight. */
@@ -2021,22 +4103,43 @@ export class ModelApiSession implements AgentSession {
 
   private async loop(turn: ActiveTurn): Promise<void> {
     const { signal } = turn.abort
+    let isStopHookActive = false
+    let stopContinuations = 0
     for (let round = 0; round < MODEL_API_MAX_TOOL_ROUNDS; round += 1) {
       if (isAbortRequested(signal)) {
         throw new AbortedError()
       }
+      const requiredBeforeRound = this.requiredMcpFailure(this.deps.mcpServers?.snapshot())
+      if (requiredBeforeRound !== undefined) {
+        throw requiredBeforeRound
+      }
       this.drainSteered(turn)
       this.drainGoalWake(turn)
       const wasBudgetLimited = this.goal?.status === GOAL_STATUS.budgetLimited
-      const { calls, goalCommandRevision } = await this.streamOnce(turn.turnId, signal)
+      let streamed: StreamedCall
+      try {
+        streamed = await this.streamOnce(turn.turnId, signal, round, turn.confirmedRequest)
+      } catch (error: unknown) {
+        if (!isAbortRequested(signal)) {
+          turn.modelFailure = error
+        }
+        throw error
+      }
+      const { calls, goalCommandRevision, postContexts } = streamed
       if (isAbortRequested(signal)) {
         // A buffered completed response may arrive after Stop. Its calls
         // still need outputs for valid replay, but no work or steering runs.
         this.skipCalls(turn.turnId, calls)
         throw new AbortedError()
       }
+      const requiredAfterStream = this.requiredMcpFailure(this.deps.mcpServers?.snapshot())
+      if (requiredAfterStream !== undefined) {
+        this.skipCalls(turn.turnId, calls, MODEL_TEXT.mcpRequiredUnavailable)
+        throw requiredAfterStream
+      }
       if (!wasBudgetLimited && this.goal?.status === GOAL_STATUS.budgetLimited) {
         this.skipCalls(turn.turnId, calls, MODEL_TEXT.goalBudgetReached)
+        this.appendHookContexts(turn.turnId, postContexts)
         this.queuedTurns.unshift(...this.queuedSteered(turn))
         return
       }
@@ -2045,24 +4148,122 @@ export class ModelApiSession implements AgentSession {
         this.goalSteps += 1
       }
       if (calls.length === 0) {
+        this.appendHookContexts(turn.turnId, postContexts)
         // A message typed while the final answer streamed gets its own round
         // instead of being accepted and dropped (D26).
         if (turn.steered.length === 0 && !(turn.goalWakePending && isGoalActive(this.goal))) {
+          const lastAssistantMessage =
+            this.transcript.findLast(
+              (entry) => entry.item.turnId === turn.turnId && entry.item.kind === 'agentMessage',
+            )?.item.text ?? ''
+          const stopEvent = this.isSubagent ? 'SubagentStop' : 'Stop'
+          const stop = await this.runHooks(
+            stopEvent,
+            turn.turnId,
+            {
+              stop_hook_active: isStopHookActive,
+              last_assistant_message: lastAssistantMessage,
+              ...(this.isSubagent &&
+                this.childSubagentId !== undefined && {
+                  subagent_id: this.childSubagentId,
+                  child_session_id: this.sessionId,
+                }),
+            },
+            undefined,
+            signal,
+          )
+          const requiredAfterStopHook = this.requiredMcpFailure(this.deps.mcpServers?.snapshot())
+          if (requiredAfterStopHook !== undefined) {
+            throw requiredAfterStopHook
+          }
+          if (stop.stopReason !== undefined) {
+            return
+          }
+          if (stop.blockedReason !== undefined && stopContinuations < HOOK_MAX_STOP_CONTINUATIONS) {
+            isStopHookActive = true
+            stopContinuations += 1
+            this.replay.push({
+              turnId: turn.turnId,
+              item: {
+                type: 'message',
+                role: 'user',
+                content: [{ type: 'input_text', text: stop.blockedReason }],
+              },
+            })
+            continue
+          }
+          if (stop.blockedReason !== undefined) {
+            this.deps.log.warn(`Model API ${stopEvent} hook reached its continuation limit`)
+          }
           return
         }
         continue
       }
-      for (const [index, call] of calls.entries()) {
-        if (isAbortRequested(signal)) {
-          this.skipCalls(turn.turnId, calls.slice(index))
-          throw new AbortedError()
+      let isRoundComplete = false
+      const batch: Readonly<Record<string, unknown>>[] = []
+      try {
+        for (const [index, call] of calls.entries()) {
+          if (isAbortRequested(signal)) {
+            this.skipCalls(turn.turnId, calls.slice(index))
+            throw new AbortedError()
+          }
+          const requiredBeforeCall = this.requiredMcpFailure(this.deps.mcpServers?.snapshot())
+          if (requiredBeforeCall !== undefined) {
+            this.skipCalls(turn.turnId, calls.slice(index), MODEL_TEXT.mcpRequiredUnavailable)
+            throw requiredBeforeCall
+          }
+          try {
+            const finished = await this.runCall(turn.turnId, call, signal, goalCommandRevision)
+            batch.push(finished.record)
+            if (finished.stopReason !== undefined) {
+              const requiredAfterCall = this.requiredMcpFailure(this.deps.mcpServers?.snapshot())
+              if (requiredAfterCall !== undefined) {
+                throw requiredAfterCall
+              }
+              this.skipCalls(turn.turnId, calls.slice(index + 1), finished.stopReason)
+              this.dropUndeliveredMedia(turn.turnId)
+              return
+            }
+          } catch (error: unknown) {
+            this.skipCalls(turn.turnId, calls.slice(index + 1))
+            throw error
+          }
         }
-        try {
-          await this.runCall(turn.turnId, call, signal, goalCommandRevision)
-        } catch (error: unknown) {
-          this.skipCalls(turn.turnId, calls.slice(index + 1))
-          throw error
-        }
+        isRoundComplete = true
+      } finally {
+        // A user message between a function call and its output is invalid
+        // replay. Post-model context follows the whole tool batch instead.
+        this.appendHookContexts(turn.turnId, postContexts)
+        // A stopped or failed round names its read files without replaying
+        // bytes that no model request saw (M54).
+        this.appendReadFiles(turn.turnId, isRoundComplete && !isAbortRequested(signal))
+      }
+      const afterBatch = await this.runHooks(
+        'PostToolBatch',
+        turn.turnId,
+        { tool_calls: batch },
+        undefined,
+        signal,
+      )
+      if (afterBatch.stopReason === undefined && afterBatch.blockedReason !== undefined) {
+        this.replay.push({
+          turnId: turn.turnId,
+          item: {
+            type: 'message',
+            role: 'user',
+            content: [{ type: 'input_text', text: afterBatch.blockedReason }],
+          },
+        })
+      }
+      const requiredAfterCalls = this.requiredMcpFailure(this.deps.mcpServers?.snapshot())
+      if (requiredAfterCalls !== undefined) {
+        throw requiredAfterCalls
+      }
+      if (afterBatch.stopReason !== undefined) {
+        // Hooks can stop a completed tool batch without a cancelled terminal.
+        // Those read-file bytes were queued, not delivered to a model request.
+        this.dropUndeliveredMedia(turn.turnId)
+        return
       }
     }
     // Input accepted during the last permitted round still needs a request
@@ -2079,11 +4280,17 @@ export class ModelApiSession implements AgentSession {
   }
 
   private async runTurn(queued: QueuedTurn): Promise<void> {
+    this.mediaNoticeSent = false
     const turn: ActiveTurn = {
       turnId: queued.turnId,
       abort: new AbortController(),
       steered: [],
+      acceptedTextAttachmentBytes: textAttachmentBytes(queued.parts),
+      modelFailure: undefined,
       goalWakePending: false,
+      ...(queued.confirmedRequest !== undefined && {
+        confirmedRequest: queued.confirmedRequest,
+      }),
     }
     this.active = turn
     this.status = RUNNING
@@ -2096,27 +4303,110 @@ export class ModelApiSession implements AgentSession {
     this.environment ??= await this.loadEnvironment()
     // Pending background output and user shell commands precede this turn.
     this.settleNotes(turn.turnId)
-    if (queued.isGoalWake) {
-      this.appendGoalWake(turn.turnId, queued.parts)
-    } else {
-      this.appendUserMessage(turn.turnId, queued.parts, queued.displayText)
-    }
     this.touch()
     const startedAt = this.deps.now()
     let terminal = COMPLETED
     let reason: string | undefined
     let errorKind: string | undefined
     try {
+      await this.startHooks()
+      for (const message of this.pendingHookMessages.splice(0)) {
+        this.emit({ type: 'backendNotice', level: 'info', text: message })
+      }
+      for (const context of this.pendingHookContexts.splice(0)) {
+        this.replay.push({
+          turnId: turn.turnId,
+          item: { type: 'message', role: 'user', content: [{ type: 'input_text', text: context }] },
+        })
+      }
+      if (this.hookStartStopReason !== undefined) {
+        const stopReason = this.hookStartStopReason
+        this.hookStartStopReason = undefined
+        throw new HookStoppedError(stopReason)
+      }
+      if (this.isSubagent && this.turnCount === 0) {
+        if (this.childSubagentId === undefined) {
+          throw new Error('child session has no subagent id')
+        }
+        await this.runHooks(
+          'SubagentStart',
+          turn.turnId,
+          { subagent_id: this.childSubagentId, child_session_id: this.sessionId },
+          undefined,
+          turn.abort.signal,
+        )
+      }
+      this.drainChildResults()
+      if (queued.isGoalWake) {
+        this.appendGoalWake(turn.turnId, queued.parts)
+      } else {
+        this.appendUserMessage(turn.turnId, queued.parts, queued.displayText, queued.userMessageId)
+      }
+      if (!queued.isGoalWake) {
+        const replayBeforeSubmit = this.replay.length
+        const submitted = await this.runHooks(
+          'UserPromptSubmit',
+          turn.turnId,
+          { prompt: typedText(queued.parts) },
+          undefined,
+          turn.abort.signal,
+        )
+        if (submitted.blockedReason !== undefined) {
+          // A rejected prompt stays visible in History, but never reaches a
+          // later model request through the replay (M51).
+          this.replay.splice(replayBeforeSubmit)
+          const userIndex = this.replay.findLastIndex(
+            (entry) =>
+              entry.turnId === turn.turnId &&
+              entry.item.type === 'message' &&
+              entry.item.role === 'user',
+          )
+          if (userIndex !== -1) {
+            this.replay.splice(userIndex, 1)
+          }
+          throw new HookStoppedError(submitted.blockedReason)
+        }
+      }
+      await this.prepareMcp(turn.abort.signal)
       await this.loop(turn)
     } catch (error: unknown) {
       if (turn.abort.signal.aborted) {
         terminal = CANCELLED
       } else {
         terminal = FAILED
-        reason = describe(error)
-        errorKind = isAuthFailure(error) ? AUTH_REQUIRED_ERROR_KIND : MODEL_API_ERROR_KIND
-        this.deps.log.warn(`Model API turn ${turn.turnId} failed: ${reason}`)
+        reason = error instanceof ChildTaskRefusedError ? error.visible : describe(error)
+        if (error instanceof ChildTaskRefusedError) {
+          errorKind = `subagent_${error.kind}`
+        } else {
+          errorKind = isAuthFailure(error) ? AUTH_REQUIRED_ERROR_KIND : MODEL_API_ERROR_KIND
+        }
+        this.deps.log.warn(
+          error instanceof HookStoppedError
+            ? `Model API turn ${turn.turnId} stopped by a hook`
+            : `Model API turn ${turn.turnId} failed: ${reason}`,
+        )
+        if (turn.modelFailure !== undefined && !(error instanceof ChildTaskRefusedError)) {
+          const lastAssistantMessage = this.transcript.findLast(
+            (entry) => entry.item.turnId === turn.turnId && entry.item.kind === 'agentMessage',
+          )?.item.text
+          await this.runHooks(
+            'StopFailure',
+            turn.turnId,
+            {
+              error: errorKind,
+              error_details: reason,
+              ...(lastAssistantMessage !== undefined && {
+                last_assistant_message: lastAssistantMessage,
+              }),
+            },
+            errorKind,
+            turn.abort.signal,
+          )
+        }
       }
+    }
+    if (terminal !== COMPLETED) {
+      this.dropUndeliveredMedia(turn.turnId)
     }
     // `loop` returns only with nothing steered left (D26), and `steer` is
     // refused once `active` is cleared, so no input is lost between the two.
@@ -2171,6 +4461,7 @@ export class ModelApiSession implements AgentSession {
         return event.delta
       }
       case 'response.failed': {
+        this.noteUsage(event.response.usage, chargedGoalId)
         throw new ModelApiError(
           event.response.error?.message ?? 'The response failed',
           0,
@@ -2203,14 +4494,24 @@ export class ModelApiSession implements AgentSession {
     body: CreateResponseBody,
     signal: AbortSignal,
     chargedGoalId: string | undefined,
-  ): Promise<string> {
+  ): Promise<{ readonly text: string; readonly response: ResponseObject }> {
     let text = ''
-    let isComplete = false
-    for await (const event of this.deps.client.streamResponse(body, signal)) {
-      isComplete ||= event.type === 'response.completed'
+    let response: ResponseObject | undefined
+    const admitAttempt = this.responseAttemptGuard(body)
+    const responseStream = this.deps.client.streamResponse(
+      body,
+      signal,
+      undefined,
+      undefined,
+      admitAttempt,
+    )
+    for await (const event of responseStream) {
+      if (event.type === 'response.completed') {
+        response = event.response
+      }
       text += this.collectedText(event, chargedGoalId)
     }
-    if (!isComplete) {
+    if (response === undefined) {
       throw new ModelApiError(
         'The stream ended without a completed response',
         0,
@@ -2218,26 +4519,43 @@ export class ModelApiSession implements AgentSession {
         undefined,
       )
     }
-    return text
+    return { text, response }
   }
 
   /** The summary call of `compact`, and the replay it leaves behind. */
   private async runCompaction(signal: AbortSignal): Promise<CompactOutcome> {
+    const compactionBody = (): CreateResponseBody =>
+      this.keyed({
+        ...this.body(),
+        // Within Meta's image budget too (M54): a conversation past it can still be compacted.
+        input: this.budget.fit([
+          ...this.replay.map((entry) => entry.item),
+          {
+            type: 'message',
+            role: 'user',
+            content: [{ type: 'input_text', text: MODEL_TEXT.compactionPrompt }],
+          },
+        ]),
+        tools: [],
+        include: ['reasoning.encrypted_content'],
+      })
+    const turnId = this.turnIds.at(-1) ?? COMPACTION_TURN_ID
+    const requestId = this.deps.newId()
+    await this.beforeModelCall(turnId, compactionBody(), requestId, 1, 0, signal)
     const chargedGoalId = isGoalActive(this.goal) ? this.goal.goal_id : undefined
-    const body: CreateResponseBody = {
-      ...this.body(),
-      input: [
-        ...this.replay.map((entry) => entry.item),
-        {
-          type: 'message',
-          role: 'user',
-          content: [{ type: 'input_text', text: MODEL_TEXT.compactionPrompt }],
-        },
-      ],
-      tools: [],
-      include: ['reasoning.encrypted_content'],
+    const body = compactionBody()
+    const { text: summary, response } = await this.collectText(body, signal, chargedGoalId)
+    const post = await this.runHooks(
+      'PostLLMCall',
+      turnId,
+      postModelCallFields(body, response, requestId, 1, 0, this.sessionId),
+      MODEL_API_HOOK_PROVIDER,
+      signal,
+      false,
+    )
+    if (post.blockedReason !== undefined) {
+      throw new HookStoppedError(post.blockedReason)
     }
-    const summary = await this.collectText(body, signal, chargedGoalId)
     this.replay.splice(0, this.replay.length, {
       turnId: COMPACTION_TURN_ID,
       item: {
@@ -2246,6 +4564,8 @@ export class ModelApiSession implements AgentSession {
         content: [{ type: 'input_text', text: `${MODEL_TEXT.compactionPrefix}\n\n${summary}` }],
       },
     })
+    this.compactedThroughTurnId = this.turnIds.at(-1)
+    this.appendHookContexts(COMPACTION_TURN_ID, post.contexts)
     const item: ItemSnapshot = {
       itemId: this.deps.newId(),
       kind: 'compaction',
@@ -2265,12 +4585,271 @@ export class ModelApiSession implements AgentSession {
     return { status: ACCEPTED, reason: undefined }
   }
 
+  /**
+   * The index in `turnIds` of the last turn the compaction summary stands
+   * for, or -1 when the conversation was never compacted: a compaction
+   * replaces the replay of every turn before it with one summary (M53).
+   */
+  private compactedThrough(turnIds: readonly string[]): number {
+    if (this.replay.every((entry) => entry.turnId !== COMPACTION_TURN_ID)) {
+      return -1
+    }
+    if (this.compactedThroughTurnId !== undefined) {
+      const index = turnIds.indexOf(this.compactedThroughTurnId)
+      return index === -1 ? turnIds.length - 1 : index
+    }
+    // Old session files have no boundary field. The last completed
+    // compaction row marks where the summary was accepted in transcript
+    // order; replay gaps from later rejected prompts do not move it.
+    const compactionIndex = this.transcript.findLastIndex(
+      (entry) => entry.item.kind === 'compaction' && entry.item.status === COMPLETED,
+    )
+    if (compactionIndex === -1) {
+      // A summary without its event cannot prove an earlier cut is safe.
+      return turnIds.length - 1
+    }
+    for (let index = compactionIndex - 1; index >= 0; index -= 1) {
+      const turnIndex = turnIds.indexOf(this.transcript[index]?.turnId ?? '')
+      if (turnIndex !== -1) {
+        return turnIndex
+      }
+    }
+    return -1
+  }
+
+  /** Only a stored key's digest scopes a job; a changed key sees no old jobs. */
+  private async scheduleAccountId(): Promise<string> {
+    const id = await this.deps.getAccountId()
+    if (id === undefined) {
+      throw new Error(UI_TEXT.scheduleAccountMissing)
+    }
+    return id
+  }
+
+  private scheduleStore(): ScheduleStore {
+    const store = this.deps.scheduleStore
+    if (store === undefined) {
+      throw new Error(UI_TEXT.scheduleStorageMissing)
+    }
+    return store
+  }
+
+  private isScheduleBusy(): boolean {
+    return this.active !== undefined || this.compacting !== undefined || this.queuedTurns.length > 0
+  }
+
+  private publishSchedules(jobs: readonly ScheduledPrompt[]): readonly ScheduledPrompt[] {
+    this.emit({ type: 'schedulesChanged', jobs: jobs.map((job) => scheduleViewOf(job)) })
+    if (this.scheduleTimer === undefined && !this.isDisposed) {
+      this.scheduleTimer = setInterval(() => {
+        if (!this.isDisposed) {
+          void this.listSchedules().catch((error: unknown) => {
+            this.deps.log.warn(`Scheduled prompts could not be refreshed: ${describe(error)}`)
+          })
+        }
+      }, SCHEDULE_POLL_INTERVAL_MS)
+    }
+    return jobs
+  }
+
+  /** A loaded session polls only its own jobs. Polls never make model calls. */
+  private async listSchedules(): Promise<readonly ScheduledPrompt[]> {
+    // A removed key clears the panel without waiting for storage. Check again
+    // after the read so a slow poll cannot publish a previous account's jobs.
+    if ((await this.deps.getAccountId()) === undefined) {
+      return this.publishSchedules([])
+    }
+    const store = this.scheduleStore()
+    const stored = await store.list(this.sessionId)
+    const accountId = await this.deps.getAccountId()
+    const jobs =
+      accountId === undefined
+        ? []
+        : stored.filter(
+            (job) => job.workspaceRoot === this.deps.workspaceRoot && job.accountId === accountId,
+          )
+    return this.publishSchedules(jobs)
+  }
+
+  private async createSchedule(cadence: ScheduleCadence, prompt: string): Promise<ScheduledPrompt> {
+    if (this.isSideChat) {
+      throw new Error(UI_TEXT.sideChatPlanOnly)
+    }
+    const parsed = scheduleCadenceSchema.safeParse(cadence)
+    const cleanPrompt = prompt.trim()
+    if (
+      cleanPrompt === '' ||
+      cleanPrompt.length > SCHEDULE_MAX_PROMPT_CHARS ||
+      !parsed.success ||
+      (parsed.data.kind === 'interval' &&
+        (!Number.isSafeInteger(parsed.data.everyMs) ||
+          parsed.data.everyMs < SCHEDULE_MIN_INTERVAL_MS ||
+          parsed.data.everyMs > SCHEDULE_MAX_INTERVAL_MS))
+    ) {
+      throw new Error(UI_TEXT.scheduleInvalid)
+    }
+    const existing = await this.listSchedules()
+    if (existing.length >= SCHEDULE_MAX_JOBS_PER_SESSION) {
+      throw new Error(UI_TEXT.scheduleTooMany)
+    }
+    const now = this.deps.now()
+    const expiresAtMs = now + SCHEDULE_LIFETIME_MS
+    const nextFireAtMs = nextScheduleFire(parsed.data, now, expiresAtMs)
+    if (nextFireAtMs === undefined) {
+      throw new Error(UI_TEXT.scheduleNoFire)
+    }
+    const job: ScheduledPrompt = {
+      id: this.deps.newId(),
+      sessionId: this.sessionId,
+      workspaceRoot: this.deps.workspaceRoot,
+      accountId: await this.scheduleAccountId(),
+      prompt: cleanPrompt,
+      cadence: parsed.data,
+      createdAtMs: now,
+      expiresAtMs,
+      nextFireAtMs,
+      fireCount: 0,
+    }
+    await this.scheduleStore().create(job)
+    this.touch()
+    try {
+      // The schedule must not be reported as created until its owning session
+      // is durable too; a crash would otherwise leave an orphaned job.
+      await this.onPersisted()
+    } catch (error: unknown) {
+      await this.scheduleStore().remove(this.sessionId, job.id)
+      throw error
+    }
+    await this.listSchedules()
+    return job
+  }
+
+  private async cancelSchedule(id: string): Promise<boolean> {
+    if (this.isSideChat) {
+      throw new Error(UI_TEXT.sideChatPlanOnly)
+    }
+    const jobs = await this.listSchedules()
+    const job = jobs.find((entry) => entry.id === id)
+    if (job === undefined) {
+      return false
+    }
+    const isRemoved = await this.scheduleStore().remove(this.sessionId, id)
+    await this.listSchedules()
+    if (isRemoved) {
+      this.touch()
+    }
+    return isRemoved
+  }
+
+  /** A confirmed occurrence: check gate and identity again, then claim before spending. */
+  private async runSchedule(
+    id: string,
+    occurrenceMs: number,
+    confirmed: ScheduleRunConfirmation,
+  ): Promise<TurnSubmission> {
+    if (this.isSideChat) {
+      throw new Error(UI_TEXT.sideChatPlanOnly)
+    }
+    if (confirmed.sessionId !== this.sessionId || confirmed.modelId !== this.modelId) {
+      throw new Error(UI_TEXT.scheduleConfirmationExpired)
+    }
+    if (!this.deps.isPaidFeatureOn('scheduledPrompts')) {
+      throw new Error(UI_TEXT.schedulePaidOff)
+    }
+    if (this.isScheduleBusy()) {
+      throw new Error(UI_TEXT.scheduleBusy)
+    }
+    const jobs = await this.listSchedules()
+    const job = jobs.find((entry) => entry.id === id)
+    if (job?.nextFireAtMs !== occurrenceMs || occurrenceMs > this.deps.now()) {
+      throw new Error(UI_TEXT.scheduleNotDue)
+    }
+    if (job.prompt !== confirmed.prompt || this.modelId !== confirmed.modelId) {
+      throw new Error(UI_TEXT.scheduleConfirmationExpired)
+    }
+    if (!(await this.scheduleStore().claim(job, occurrenceMs))) {
+      throw new Error(UI_TEXT.scheduleAlreadyRun)
+    }
+    const accountId = await this.scheduleAccountId()
+    if (this.isDisposed || this.isScheduleBusy()) {
+      throw new Error(UI_TEXT.scheduleBusy)
+    }
+    if (!this.deps.isPaidFeatureOn('scheduledPrompts')) {
+      throw new Error(UI_TEXT.schedulePaidOff)
+    }
+    if (this.modelId !== confirmed.modelId || accountId !== job.accountId) {
+      throw new Error(UI_TEXT.scheduleConfirmationExpired)
+    }
+    // The request carries only the confirmed model and a digest of the key.
+    // The client checks the actual SecretStorage key just before HTTP.
+    const requestFor = (turnId: string): ConfirmedModelRequest => {
+      let hasStarted = false
+      return {
+        modelId: confirmed.modelId,
+        keyDigest: job.accountId,
+        isStillAllowed: () =>
+          !this.isDisposed &&
+          this.modelId === confirmed.modelId &&
+          this.deps.isPaidFeatureOn('scheduledPrompts'),
+        onRequestStarted: () => {
+          if (hasStarted) {
+            return
+          }
+          hasStarted = true
+          const item: ItemSnapshot = {
+            itemId: this.deps.newId(),
+            kind: 'toolCall',
+            status: COMPLETED,
+            turnId,
+            tool: MODEL_API_SCHEDULED_TOOL,
+            args: JSON.stringify({ id: job.id, prompt: job.prompt }),
+            visibleOutput: UI_TEXT.scheduleRunStarted,
+            paid: 'scheduledPrompts',
+          }
+          this.recordTranscript(turnId, item)
+          this.emit({ type: 'itemCompleted', item })
+          this.deps.notePaidUse('scheduledPrompts', 1)
+          this.touch()
+        },
+      }
+    }
+    // No await between this check and sendTurn: a new turn cannot slip in and
+    // turn a confirmed scheduled prompt into a silently queued later run.
+    const submission = await this.sendTurn(
+      [{ type: 'text', text: job.prompt }],
+      job.prompt,
+      requestFor,
+    )
+    this.touch()
+    try {
+      await this.listSchedules()
+    } catch (error: unknown) {
+      // A run already admitted and started must never be reported as rejected.
+      this.deps.log.warn(`Scheduled prompts could not be refreshed: ${describe(error)}`)
+    }
+    return submission
+  }
+
   // --- AgentSession ---
+
+  /** SessionStart runs when the session opens; context enters its first turn. */
+  public async startHooks(): Promise<void> {
+    if (this.hookStarted) {
+      return
+    }
+    this.hookStarted = true
+    await this.collectStartHooks(this.hookStartSource, undefined)
+  }
 
   public onEvent(listener: SessionEventListener): () => void {
     this.listeners.add(listener)
     for (const request of this.pendingApprovalEvents.values()) {
       listener({ ...request, isReplayed: true })
+    }
+    for (const child of this.children.values()) {
+      for (const request of child.session.pendingApprovalEvents.values()) {
+        listener({ ...request, isReplayed: true })
+      }
     }
     return () => {
       this.listeners.delete(listener)
@@ -2281,24 +4860,59 @@ export class ModelApiSession implements AgentSession {
     return this.permissions.currentMode
   }
 
-  public sendTurn(parts: readonly TurnPart[], displayText?: string): Promise<TurnSubmission> {
-    const turnId = this.deps.newId()
-    const queued: QueuedTurn = { turnId, parts, displayText, isGoalWake: false }
+  public sendTurn(
+    parts: readonly TurnPart[],
+    displayText?: string,
+    requestFor?: (turnId: string) => ConfirmedModelRequest,
+  ): Promise<TurnSubmission> {
+    if (this.isDisposed) {
+      return Promise.reject(new Error(UI_TEXT.turnStoppedByRestart))
+    }
+    const textBudgetError = textAttachmentBudgetError(textAttachmentBytes(parts))
+    if (textBudgetError !== undefined) {
+      return Promise.reject(textBudgetError)
+    }
+    const turnId = this.isSubagent ? `${this.sessionId}:${this.deps.newId()}` : this.deps.newId()
+    const userMessageId = this.deps.newId()
+    const confirmedRequest = requestFor?.(turnId)
+    const queued: QueuedTurn = {
+      turnId,
+      parts,
+      displayText,
+      userMessageId,
+      isGoalWake: false,
+      ...(confirmedRequest !== undefined && { confirmedRequest }),
+    }
     // A compaction is a turn too (D26): a message sent during one waits for it.
     if (this.active === undefined && this.compacting === undefined) {
       void this.runTurn(queued)
-      return Promise.resolve({ turnId, disposition: 'started' })
+      return Promise.resolve({ turnId, disposition: 'started', userMessageId })
     }
     this.queuedTurns.push(queued)
-    return Promise.resolve({ turnId, disposition: 'queued' })
+    return Promise.resolve({ turnId, disposition: 'queued', userMessageId })
   }
 
-  public steer(expectedTurnId: string, parts: readonly TurnPart[]): Promise<string> {
+  public steer(expectedTurnId: string, parts: readonly TurnPart[]): Promise<TurnSubmission> {
+    if (this.isDisposed) {
+      return Promise.reject(new Error(UI_TEXT.turnStoppedByRestart))
+    }
     if (this.active?.turnId !== expectedTurnId || this.active.abort.signal.aborted) {
       return Promise.reject(new Error(TURN_NOT_RUNNING))
     }
-    this.active.steered.push(parts)
-    return Promise.resolve(expectedTurnId)
+    const addedTextBytes = textAttachmentBytes(parts)
+    const textBudgetError = textAttachmentBudgetError(
+      this.active.acceptedTextAttachmentBytes + addedTextBytes,
+    )
+    if (textBudgetError !== undefined) {
+      return Promise.reject(textBudgetError)
+    }
+    if (!this.canQueueSteeredMedia(parts)) {
+      return Promise.reject(new Error(UI_TEXT.mediaTotalTooLarge))
+    }
+    const userMessageId = this.deps.newId()
+    this.active.acceptedTextAttachmentBytes += addedTextBytes
+    this.active.steered.push({ parts, userMessageId })
+    return Promise.resolve({ turnId: expectedTurnId, disposition: 'steered', userMessageId })
   }
 
   /**
@@ -2342,10 +4956,16 @@ export class ModelApiSession implements AgentSession {
   }
 
   public setApprovalMode(mode: string): Promise<void> {
+    if (mode !== 'denyUnmatched' && this.isSideChat) {
+      return Promise.reject(new Error(UI_TEXT.sideChatPlanOnly))
+    }
     if (!(APPROVAL_MODES as readonly string[]).includes(mode)) {
       return Promise.reject(new Error(`unknown approval mode ${mode}`))
     }
     this.permissions.setMode(mode as ApprovalMode)
+    for (const child of this.children.values()) {
+      void child.session.setApprovalMode(mode)
+    }
     this.touch()
     return Promise.resolve()
   }
@@ -2361,13 +4981,35 @@ export class ModelApiSession implements AgentSession {
     if (this.active !== undefined || this.compacting !== undefined) {
       throw new Error(TURN_RUNNING)
     }
+    this.mediaNoticeSent = false
     // Running like a turn (D26): Stop ends it, and messages sent meanwhile queue.
     const abort = new AbortController()
     this.compacting = abort
     this.status = RUNNING
     this.emit({ type: 'sessionStatus', status: RUNNING })
     try {
-      return await this.runCompaction(abort.signal)
+      const before = await this.runHooks(
+        'PreCompact',
+        this.turnIds.at(-1),
+        { trigger: 'manual' },
+        'manual',
+        abort.signal,
+      )
+      if (before.stopReason !== undefined) {
+        return { status: NOOP, reason: before.stopReason }
+      }
+      const outcome = await this.runCompaction(abort.signal)
+      await this.runHooks(
+        'PostCompact',
+        this.turnIds.at(-1),
+        { trigger: 'manual' },
+        'manual',
+        abort.signal,
+      )
+      if (outcome.status === 'accepted') {
+        await this.collectStartHooks('compact', abort.signal)
+      }
+      return outcome
     } catch (error: unknown) {
       if (abort.signal.aborted) {
         return { status: CANCELLED, reason: UI_TEXT.compactionStopped }
@@ -2391,6 +5033,11 @@ export class ModelApiSession implements AgentSession {
   public decideApproval(decision: ApprovalDecision): Promise<void> {
     const pending = this.pendingApprovals.get(decision.approvalId)
     if (pending === undefined) {
+      for (const child of this.children.values()) {
+        if (child.session.pendingApprovals.has(decision.approvalId)) {
+          return child.session.decideApproval(decision)
+        }
+      }
       return Promise.reject(new Error(`approval ${decision.approvalId} is not pending`))
     }
     if (!isKnownChoice(decision.choiceId)) {
@@ -2475,13 +5122,117 @@ export class ModelApiSession implements AgentSession {
     return Promise.resolve()
   }
 
-  /** This backend runs no subagents (PLAN.md D17); the map never offers the controls. */
-  public controlSubagent(subagentId: string): Promise<void> {
-    return Promise.reject(new Error(`${UI_TEXT.subagentsUnsupported} (${subagentId})`))
+  /** Owner controls for Model API children (M48, PLAN.md D45). */
+  public async controlSubagent(subagentId: string, action: SubagentAction): Promise<void> {
+    const child = this.childById(subagentId)
+    if (child === undefined) {
+      throw new Error(`unknown subagent ${subagentId}`)
+    }
+    switch (action) {
+      case 'readResult': {
+        if (child.state !== 'result_ready') {
+          throw new Error('subagent result is not ready')
+        }
+        child.state = 'closed'
+
+        break
+      }
+      case 'reopen':
+      case 'resume': {
+        if (child.state !== 'closed' && child.state !== 'interrupted') {
+          throw new Error('subagent cannot resume from this state')
+        }
+        const stateBeforeConsent = child.state
+        const revisionBeforeConsent = child.revision
+        const taskBeforeConsent = this.queuedChildTask(child, [
+          ...child.pendingMessages,
+          MODEL_TEXT.subagentResume,
+        ])
+        const grant = await this.confirmOwnerChildTask(child, taskBeforeConsent)
+        if (
+          this.isDisposed ||
+          child.state !== stateBeforeConsent ||
+          child.revision !== revisionBeforeConsent ||
+          this.queuedChildTask(child, [...child.pendingMessages, MODEL_TEXT.subagentResume]) !==
+            taskBeforeConsent
+        ) {
+          throw new Error(UI_TEXT.subagentConsentDeclined)
+        }
+        this.installChildGrant(child, grant)
+        child.pendingMessages.push(MODEL_TEXT.subagentResume)
+        child.state = 'queued'
+        this.startQueuedChildren()
+
+        break
+      }
+      case 'interrupt': {
+        if (child.state !== 'running') {
+          throw new Error('subagent is not running')
+        }
+        child.state = 'interrupted'
+        await child.session.cancel()
+
+        break
+      }
+      default: {
+        child.revision += 1
+        if (action === 'stop') {
+          child.terminal ??= CANCELLED
+        }
+        child.pendingMessages.length = 0
+        child.followupAfterStop = undefined
+        child.nextTaskGrant = undefined
+        child.session.childTaskGrant = undefined
+        child.state = 'closed'
+        await child.session.cancel()
+        this.startQueuedChildren()
+      }
+    }
+    this.updateChild(child)
   }
 
-  public messageSubagent(subagentId: string): Promise<void> {
-    return Promise.reject(new Error(`${UI_TEXT.subagentsUnsupported} (${subagentId})`))
+  public async messageSubagent(
+    subagentId: string,
+    body: string,
+    isFollowup: boolean,
+  ): Promise<void> {
+    const child = this.childById(subagentId)
+    if (child === undefined || child.state === 'closed') {
+      throw new Error(`subagent ${subagentId} is unavailable`)
+    }
+    if (body.trim() === '') {
+      throw new Error('subagent message is empty')
+    }
+    if (isFollowup && child.state === 'running') {
+      throw new Error('subagent is still running')
+    }
+    if (!isFollowup && child.state === 'running') {
+      const turnId = child.session.activeTurnId
+      if (turnId === undefined) {
+        throw new Error('subagent turn is settling; retry the message')
+      }
+      await child.session.steer(turnId, [{ type: 'text', text: body }])
+    } else {
+      if (child.state !== 'queued') {
+        const stateBeforeConsent = child.state
+        const revisionBeforeConsent = child.revision
+        const taskBeforeConsent = this.queuedChildTask(child, [...child.pendingMessages, body])
+        const grant = await this.confirmOwnerChildTask(child, taskBeforeConsent)
+        if (
+          this.isDisposed ||
+          child.state !== stateBeforeConsent ||
+          child.revision !== revisionBeforeConsent ||
+          this.queuedChildTask(child, [...child.pendingMessages, body]) !== taskBeforeConsent
+        ) {
+          throw new Error(UI_TEXT.subagentConsentDeclined)
+        }
+        this.installChildGrant(child, grant)
+      }
+      child.pendingMessages.push(body)
+      child.state = 'queued'
+      this.startQueuedChildren()
+    }
+    this.updateChild(child)
   }
 
   /**
@@ -2567,9 +5318,46 @@ export class ModelApiSession implements AgentSession {
     return Promise.resolve(name)
   }
 
+  /** The exact user card's pictures, or unavailable without a durable replay link. */
+  public sentImages(turnId: string, itemId: string): readonly SentImage[] | undefined {
+    const card = this.transcript.find(
+      (entry) =>
+        entry.turnId === turnId &&
+        entry.item.kind === 'userMessage' &&
+        entry.item.itemId === itemId,
+    )
+    if (card === undefined) {
+      return undefined
+    }
+    const entry = this.replay.find(
+      (candidate) =>
+        candidate.turnId === turnId &&
+        candidate.userMessageId === itemId &&
+        candidate.item.type === 'message' &&
+        candidate.item.role === 'user',
+    )
+    if (entry?.item.type !== 'message') {
+      return undefined
+    }
+    return entry.item.content.flatMap((part) => {
+      const parsed = part.type === 'input_image' ? DATA_URL.exec(part.image_url) : null
+      const [, mediaType, base64Data] = parsed ?? []
+      return mediaType === undefined || base64Data === undefined ? [] : [{ mediaType, base64Data }]
+    })
+  }
+
   /** One more surface holds this session (a second panel resumed it, PLAN.md D25). */
   public retain(): void {
     this.holders += 1
+  }
+
+  /** Orderly host shutdown; SessionEnd is observation only (M51). */
+  public async endHooks(signal: AbortSignal): Promise<void> {
+    if (this.hookEnded || !this.hookStarted) {
+      return
+    }
+    this.hookEnded = true
+    await this.runHooks('SessionEnd', undefined, { reason: 'shutdown' }, 'shutdown', signal)
   }
 
   /** Releases a surface's hold; the last one stops the turn and forgets the session. */
@@ -2582,11 +5370,18 @@ export class ModelApiSession implements AgentSession {
       return
     }
     this.isDisposed = true
+    if (this.scheduleTimer !== undefined) {
+      clearInterval(this.scheduleTimer)
+      this.scheduleTimer = undefined
+    }
     void this.cancel()
     // Nothing is left running unwatched (M46): the background commands and
     // the user's own go with the session.
     for (const stop of [...this.backgroundShells.values(), ...this.userShells.values()]) {
       stop.abort()
+    }
+    for (const child of this.children.values()) {
+      child.session.disposeAll()
     }
     this.listeners.clear()
     this.onDispose()
@@ -2608,6 +5403,7 @@ export class ModelApiSession implements AgentSession {
   public record(): SessionRecord {
     return {
       sessionId: this.sessionId,
+      ...(this.isSideChat && { sideChat: true }),
       ...(this.name !== undefined && { name: this.name }),
       ...(this.firstPrompt !== undefined && {
         title: this.firstPrompt,
@@ -2626,6 +5422,7 @@ export class ModelApiSession implements AgentSession {
   public history(): SessionHistoryOutcome {
     return {
       mode: 'inline',
+      sideChat: this.isSideChat,
       items: this.transcript.map((entry) => entry.item),
       name: this.name,
       todos: [...this.todos],
@@ -2638,6 +5435,7 @@ export class ModelApiSession implements AgentSession {
     return {
       version: STORED_SESSION_VERSION,
       sessionId: this.sessionId,
+      ...(this.isSideChat && { sideChat: true }),
       workspaceRoot: this.deps.workspaceRoot,
       modelId: this.modelId,
       approvalMode: this.permissions.currentMode,
@@ -2646,6 +5444,9 @@ export class ModelApiSession implements AgentSession {
       createdAt: this.createdAt,
       lastActivityAt: this.lastActivityAt,
       turnIds: [...this.turnIds],
+      ...(this.compactedThroughTurnId !== undefined && {
+        compactedThroughTurnId: this.compactedThroughTurnId,
+      }),
       ...(this.forkedFrom !== undefined && { forkedFrom: this.forkedFrom }),
       ...(this.firstPrompt !== undefined && { firstPrompt: this.firstPrompt }),
       todos: [...this.todos],
@@ -2654,6 +5455,25 @@ export class ModelApiSession implements AgentSession {
       transcript: [...this.transcript],
       outputs: Object.fromEntries(this.outputs),
       usage: { ...this.usage },
+      ...(this.spawnCommands.size > 0 && { spawnCommands: Object.fromEntries(this.spawnCommands) }),
+      ...(this.pendingChildResults.length > 0 && {
+        pendingChildResults: [...this.pendingChildResults],
+      }),
+      ...(this.children.size > 0 && {
+        children: Array.from(this.children.values(), (child) => ({
+          id: child.id,
+          role: child.role,
+          objective: child.objective,
+          itemId: child.itemId,
+          parentTurnId: child.parentTurnId,
+          startedAt: child.startedAt,
+          state: child.state,
+          ...(child.result !== undefined && { result: child.result }),
+          ...(child.terminal !== undefined && { terminal: child.terminal }),
+          pendingMessages: [...child.pendingMessages],
+          session: child.session.snapshot(),
+        })),
+      }),
     }
   }
 
@@ -2662,6 +5482,7 @@ export class ModelApiSession implements AgentSession {
     this.replay.push(...stored.replay)
     this.transcript.push(...withoutRunning(stored.transcript))
     this.turnIds.push(...stored.turnIds)
+    this.compactedThroughTurnId = stored.compactedThroughTurnId
     // A background command its window took with it (M46): the model, told it
     // runs on, hears that it ended and its output was lost.
     for (const { item } of stored.transcript) {
@@ -2679,7 +5500,7 @@ export class ModelApiSession implements AgentSession {
     this.effort = stored.effort
     this.name = stored.name
     this.todos = [...stored.todos]
-    this.goal = stored.goal
+    this.goal = this.isSideChat ? undefined : stored.goal
     this.firstPrompt = stored.firstPrompt
     this.forkedFrom = stored.forkedFrom
     this.createdAt = stored.createdAt
@@ -2687,21 +5508,84 @@ export class ModelApiSession implements AgentSession {
     this.turnCount = stored.turnIds.length
     this.usage = { ...stored.usage }
     this.status = IDLE
+    this.pendingChildResults.push(...(stored.pendingChildResults ?? []))
+    const savedCommands = Object.entries(stored.spawnCommands ?? {})
+    for (const [commandId, childId] of savedCommands) {
+      this.spawnCommands.set(commandId, childId)
+    }
+    const savedChildren = stored.children ?? []
+    for (const saved of savedChildren) {
+      const session = new ModelApiSession(
+        saved.session.sessionId,
+        saved.session.modelId,
+        this.isSideChat ? 'denyUnmatched' : saved.session.approvalMode,
+        this.deps,
+        () => {
+          this.touch()
+        },
+        () => this.onPersisted(),
+        NO_CHILD_DISPOSAL,
+        true,
+        this,
+        saved.id,
+        this.hooks,
+        'resume',
+        this.isSideChat,
+      )
+      session.adopt(saved.session)
+      const record: ChildRecord = {
+        id: saved.id,
+        role: saved.role,
+        objective: saved.objective,
+        itemId: saved.itemId,
+        parentTurnId: saved.parentTurnId,
+        session,
+        startedAt: saved.startedAt,
+        state: saved.state === 'running' || saved.state === 'queued' ? 'interrupted' : saved.state,
+        result: saved.result,
+        terminal: saved.terminal,
+        usage: { ...saved.session.usage },
+        chargedGoalId: undefined,
+        waiters: new Set(),
+        pendingMessages: [...saved.pendingMessages],
+        followupAfterStop: undefined,
+        nextTaskGrant: undefined,
+        revision: 0,
+      }
+      session.onEvent((event) => {
+        this.childEvent(record, event)
+      })
+      this.children.set(record.id, record)
+      this.rerecordTranscript(this.childSnapshot(record))
+    }
   }
 
-  /** Copies the turns through `lastTurnId` (all of them when absent) into `target`. */
+  /**
+   * Copies the completed turns through `lastTurnId` (all of them when
+   * absent) into `target`. A turn still running is never copied, as MSP's
+   * fork copies completed turns only (a side chat opens while the main turn
+   * runs, M53). A cut before the last compaction is refused (PLAN.md D46):
+   * its summary stands for the turns after the cut too, so the branch would
+   * carry what it was cut from.
+   */
   public copyInto(target: ModelApiSession, lastTurnId: string | undefined): void {
-    const cut =
-      lastTurnId === undefined ? this.turnIds.length - 1 : this.turnIds.indexOf(lastTurnId)
+    const completed = this.turnIds.filter((turnId) => turnId !== this.active?.turnId)
+    const cut = lastTurnId === undefined ? completed.length - 1 : completed.indexOf(lastTurnId)
     if (cut === -1) {
-      throw new Error(`invalid fork boundary for session ${this.sessionId}: unknown turn`)
+      const why = lastTurnId === undefined ? 'no completed turn' : 'unknown turn'
+      throw new Error(`invalid fork boundary for session ${this.sessionId}: ${why}`)
     }
-    const kept = new Set(this.turnIds.slice(0, cut + 1))
+    const compactedIndex = this.compactedThrough(completed)
+    if (cut < compactedIndex) {
+      throw new Error(UI_TEXT.rewindBeforeCompaction)
+    }
+    const kept = new Set(completed.slice(0, cut + 1))
     kept.add(COMPACTION_TURN_ID)
     target.replay.push(...this.replay.filter((entry) => kept.has(entry.turnId)))
     const retained = this.transcript.filter((entry) => kept.has(entry.turnId))
     target.transcript.push(...withoutRunning(retained))
-    target.turnIds.push(...this.turnIds.slice(0, cut + 1))
+    target.turnIds.push(...completed.slice(0, cut + 1))
+    target.compactedThroughTurnId = completed[compactedIndex]
     const copiedNotes = new Set(
       target.replay.flatMap((entry) =>
         entry.backgroundTaskId === undefined ? [] : [entry.backgroundTaskId],
@@ -2731,19 +5615,72 @@ export class ModelApiSession implements AgentSession {
     target.effort = this.effort
     // The goal as it stands goes with the fork (M45): a goal has no history
     // to cut, so a fork from an earlier turn gets today's goal too.
-    target.goal = this.goal
+    target.goal = target.isSideChat ? undefined : this.goal
+    for (const child of this.children.values()) {
+      if (!kept.has(child.parentTurnId)) {
+        continue
+      }
+      const sessionId = `${target.sessionId}:${child.id}`
+      const session = new ModelApiSession(
+        sessionId,
+        child.session.modelId,
+        target.isSideChat ? 'denyUnmatched' : child.session.approvalMode,
+        this.deps,
+        () => {
+          target.touch()
+        },
+        () => target.onPersisted(),
+        NO_CHILD_DISPOSAL,
+        true,
+        target,
+        child.id,
+        target.hooks,
+        'fork',
+        target.isSideChat,
+      )
+      session.adopt({ ...child.session.snapshot(), sessionId })
+      const cloned: ChildRecord = {
+        ...child,
+        session,
+        state: 'closed',
+        usage: { ...child.usage },
+        chargedGoalId: undefined,
+        waiters: new Set(),
+        pendingMessages: [],
+        followupAfterStop: undefined,
+        nextTaskGrant: undefined,
+        revision: 0,
+      }
+      session.onEvent((event) => {
+        target.childEvent(cloned, event)
+      })
+      target.children.set(cloned.id, cloned)
+      target.rerecordTranscript(target.childSnapshot(cloned))
+    }
     for (const [ref, content] of this.outputs) {
       target.outputs.set(ref, content)
     }
+  }
+
+  /** Child transcripts are read through the host, not listed as conversations. */
+  public childHistory(sessionId: string): SessionHistoryOutcome | undefined {
+    for (const child of this.children.values()) {
+      if (child.session.sessionId === sessionId) {
+        return child.session.history()
+      }
+    }
+    return undefined
   }
 }
 
 export class ModelApiHost implements AgentHost {
   private readonly sessions = new Map<string, ModelApiSession>()
+  /** Pinned at first use; a host cannot serve a different stored-key account. */
+  private accountIdValue: string | undefined
   /** What the store holds for this workspace, kept current as sessions change. */
   private readonly stored = new Map<string, StoredSessionHeader>()
   private readonly listListeners = new Set<(event: SessionListEvent) => void>()
-  /** Saves run one after another; a failure is logged and never surfaces. */
+  /** Saves run one after another; failures are logged, and strict callers also see them. */
   private saving: Promise<void> = Promise.resolve()
   public readonly info: HostInfo = {
     kind: 'modelApi',
@@ -2755,65 +5692,139 @@ export class ModelApiHost implements AgentHost {
 
   public constructor(private readonly deps: ModelApiHostDeps) {}
 
+  private async requireAccountId(): Promise<string> {
+    const current = await this.deps.getAccountId()
+    if (
+      current === undefined ||
+      (this.accountIdValue !== undefined && current !== this.accountIdValue)
+    ) {
+      throw new Error(UI_TEXT.notSignedInReason)
+    }
+    this.accountIdValue = current
+    return current
+  }
+
+  private ownedSnapshot(snapshot: StoredSession): StoredSession {
+    const accountId = this.accountIdValue
+    if (accountId === undefined) {
+      throw new Error(UI_TEXT.notSignedInReason)
+    }
+    return {
+      ...snapshot,
+      accountId,
+      ...(snapshot.children !== undefined && {
+        children: snapshot.children.map((child) => ({
+          ...child,
+          session: this.ownedSnapshot(child.session),
+        })),
+      }),
+    }
+  }
+
   private announce(session: ModelApiSession): void {
     for (const listener of this.listListeners) {
       listener({ type: 'changed', record: session.record() })
     }
   }
 
-  private persist(session: ModelApiSession): void {
-    const { store } = this.deps
-    if (store === undefined) {
-      return
+  private queueSave(
+    snapshot: StoredSession,
+    store: SessionStore,
+    shouldSetHeaderAfterSave: boolean,
+  ): Promise<void> {
+    const header = headerOf(snapshot)
+    if (!shouldSetHeaderAfterSave) {
+      this.stored.set(snapshot.sessionId, header)
     }
-    const snapshot = session.snapshot()
-    // A turn-start user message can be saved, but a function call without
-    // its output cannot be replayed after a crash. Goal/settings touches
-    // during a pending tool still announce live; the settled touch saves.
-    const answered = new Set(
-      snapshot.replay.flatMap((entry) =>
-        entry.item.type === 'function_call_output' ? [entry.item.call_id] : [],
-      ),
-    )
-    if (
-      snapshot.replay.some(
-        (entry) => entry.item.type === 'function_call' && !answered.has(entry.item.call_id),
-      )
-    ) {
-      return
-    }
-    this.stored.set(snapshot.sessionId, headerOf(snapshot))
     const previous = this.saving
-    this.saving = (async () => {
+    const saved = (async () => {
       await previous
+      await store.save(snapshot)
+      if (shouldSetHeaderAfterSave) {
+        this.stored.set(snapshot.sessionId, header)
+      }
+    })()
+    this.saving = (async () => {
       try {
-        await store.save(snapshot)
+        await saved
       } catch (error: unknown) {
         this.deps.log.warn(`Session ${snapshot.sessionId} was not saved: ${describe(error)}`)
       }
     })()
+    return saved
+  }
+
+  private persist(session: ModelApiSession, isStrict = false): Promise<void> {
+    const { store } = this.deps
+    if (store === undefined) {
+      return isStrict ? Promise.reject(new Error(UI_TEXT.historyUnavailable)) : Promise.resolve()
+    }
+    const snapshot = this.ownedSnapshot(session.snapshot())
+    // A turn-start user message can be saved, but a function call without
+    // its output cannot be replayed after a crash. Goal/settings touches
+    // during a pending tool still announce live; the settled touch saves.
+    // A child's unsettled turn holds the parent's save the same way: its
+    // replay is nested in this snapshot.
+    if (hasUnansweredSessionCall(snapshot)) {
+      return isStrict ? Promise.reject(new Error(UI_TEXT.historyUnavailable)) : Promise.resolve()
+    }
+    const saved = this.queueSave(snapshot, store, isStrict)
+    return isStrict ? saved : this.saving
+  }
+
+  /** A schedule create needs proof its owning session was saved before success. */
+  private persistStrict(session: ModelApiSession): Promise<void> {
+    const { store } = this.deps
+    if (store === undefined) {
+      return Promise.reject(new Error(UI_TEXT.scheduleStorageMissing))
+    }
+    const snapshot = this.ownedSnapshot(session.snapshot())
+    // A schedule cannot make an unsafe replay durable. The caller removes
+    // its new job on this refusal, leaving the last valid session snapshot.
+    return hasUnansweredSessionCall(snapshot)
+      ? Promise.reject(new Error(UI_TEXT.scheduleBusy))
+      : this.queueSave(snapshot, store, false)
   }
 
   private create(
     modelId: string,
     approvalMode: ApprovalMode,
     sessionId: string = this.deps.newId(),
+    hooks: readonly HookDefinition[] = [],
+    hookStartSource: 'startup' | 'resume' | 'fork' = 'startup',
+    isSideChat = false,
   ): ModelApiSession {
-    const session = new ModelApiSession(
+    const session: ModelApiSession = new ModelApiSession(
       sessionId,
       modelId,
       approvalMode,
       this.deps,
       () => {
-        this.persist(session)
+        void this.persist(session)
         this.announce(session)
       },
+      () => this.persistStrict(session),
       () => {
         this.sessions.delete(sessionId)
       },
+      false,
+      undefined,
+      undefined,
+      hooks,
+      hookStartSource,
+      isSideChat,
     )
     this.sessions.set(sessionId, session)
     return session
+  }
+
+  private async sessionHooks(): Promise<readonly HookDefinition[]> {
+    try {
+      return (await this.deps.loadHooks?.()) ?? []
+    } catch (error: unknown) {
+      this.deps.log.warn(`Model API hooks could not load: ${describe(error)}`)
+      return []
+    }
   }
 
   /**
@@ -2822,11 +5833,13 @@ export class ModelApiHost implements AgentHost {
    * last wrote.
    */
   private async storedSession(sessionId: string): Promise<StoredSession> {
+    const accountId = await this.requireAccountId()
     const { store } = this.deps
     if (store !== undefined && this.stored.has(sessionId)) {
       await this.saving
       const stored = await store.load(sessionId)
-      if (stored !== undefined) {
+      await this.requireAccountId()
+      if (stored?.accountId === accountId) {
         return stored
       }
     }
@@ -2834,21 +5847,38 @@ export class ModelApiHost implements AgentHost {
   }
 
   /** The live session, or the stored one brought back into this window. */
-  private async revive(sessionId: string): Promise<ModelApiSession> {
+  private async revive(sessionId: string, isSideChatRequired = false): Promise<ModelApiSession> {
     const live = this.sessions.get(sessionId)
     if (live !== undefined) {
+      if (isSideChatRequired && live.record().sideChat !== true) {
+        throw new Error(UI_TEXT.sideChatSessionOnly)
+      }
       live.retain()
       return live
     }
     const stored = await this.storedSession(sessionId)
+    if (isSideChatRequired && stored.sideChat !== true) {
+      throw new Error(UI_TEXT.sideChatSessionOnly)
+    }
     // Another surface may have brought it back while the file was read.
     const revived = this.sessions.get(sessionId)
     if (revived !== undefined) {
+      if (isSideChatRequired && revived.record().sideChat !== true) {
+        throw new Error(UI_TEXT.sideChatSessionOnly)
+      }
       revived.retain()
       return revived
     }
-    const session = this.create(stored.modelId, stored.approvalMode, sessionId)
+    const session = this.create(
+      stored.modelId,
+      stored.sideChat === true ? 'denyUnmatched' : stored.approvalMode,
+      sessionId,
+      stored.sideChat === true ? [] : await this.sessionHooks(),
+      'resume',
+      stored.sideChat === true,
+    )
     session.adopt(stored)
+    await session.startHooks()
     return session
   }
 
@@ -2861,15 +5891,30 @@ export class ModelApiHost implements AgentHost {
     }
   }
 
+  /**
+   * The MCP servers start with a conversation, as Muse Code starts them with
+   * its session (M50), so they are ready by the first message; that turn
+   * waits for any still starting.
+   */
+  private async startMcpServers(): Promise<void> {
+    try {
+      await this.deps.mcpServers?.start()
+    } catch (error: unknown) {
+      this.deps.log.warn(`The MCP servers could not be started: ${describe(error)}`)
+    }
+  }
+
   /** Reads the store once; this window's sessions then include the stored ones. */
   public async load(): Promise<void> {
+    const accountId = await this.requireAccountId()
     const { store } = this.deps
     if (store === undefined) {
       return
     }
     const sessions = await store.list()
+    await this.requireAccountId()
     for (const stored of sessions) {
-      if (stored.workspaceRoot === this.deps.workspaceRoot) {
+      if (stored.workspaceRoot === this.deps.workspaceRoot && stored.accountId === accountId) {
         this.stored.set(stored.sessionId, stored)
       }
     }
@@ -2899,16 +5944,39 @@ export class ModelApiHost implements AgentHost {
       }))
   }
 
-  public startSession(options: StartSessionOptions): Promise<AgentSession> {
+  public async startSession(options: StartSessionOptions): Promise<AgentSession> {
     if (!(APPROVAL_MODES as readonly string[]).includes(options.approvalMode)) {
-      return Promise.reject(new Error(`unknown approval mode ${options.approvalMode}`))
+      throw new Error(`unknown approval mode ${options.approvalMode}`)
     }
-    const session = this.create(options.modelId, options.approvalMode as ApprovalMode)
+    const hooks = options.sideChat === true ? [] : await this.sessionHooks()
+    await this.requireAccountId()
+    const session = this.create(
+      options.modelId,
+      options.sideChat === true ? 'denyUnmatched' : (options.approvalMode as ApprovalMode),
+      this.deps.newId(),
+      hooks,
+      'startup',
+      options.sideChat === true,
+    )
+    try {
+      await session.startHooks()
+      await this.requireAccountId()
+    } catch (error: unknown) {
+      session.dispose()
+      throw error
+    }
     this.announce(session)
-    return Promise.resolve(session)
+    void this.startMcpServers()
+    return session
   }
 
-  public listSessions(options: ListSessionsOptions): Promise<SessionPage> {
+  /** The MCP servers' live state, for the MCP servers view (M50). */
+  public mcpSnapshot(): McpPoolSnapshot | undefined {
+    return this.deps.mcpServers?.snapshot()
+  }
+
+  public async listSessions(options: ListSessionsOptions): Promise<SessionPage> {
+    await this.requireAccountId()
     const records = Array.from(this.sessions.values(), (session) => session.record())
     for (const [sessionId, stored] of this.stored) {
       if (!this.sessions.has(sessionId)) {
@@ -2922,37 +5990,104 @@ export class ModelApiHost implements AgentHost {
           Date.parse(b.lastActivityAt ?? b.updatedAt) - Date.parse(a.lastActivityAt ?? a.updatedAt),
       )
       .slice(0, options.limit)
-    return Promise.resolve({ sessions, nextCursor: undefined })
+    return { sessions, nextCursor: undefined }
   }
 
-  /** The stored transcript; this backend spawns no subagents, so this serves the History dialog's peers only. */
+  /** A conversation or one of its private child transcripts (M48). */
   public async readSession(sessionId: string): Promise<SessionHistoryOutcome> {
-    const stored = await this.storedSession(sessionId)
+    await this.requireAccountId()
+    const live = this.sessions.get(sessionId)
+    if (live !== undefined) {
+      return live.history()
+    }
+    for (const parent of this.sessions.values()) {
+      const child = parent.childHistory(sessionId)
+      if (child !== undefined) {
+        return child
+      }
+    }
+    let source: StoredSession
+    if (this.stored.has(sessionId)) {
+      source = await this.storedSession(sessionId)
+    } else {
+      const childMarker = `:${SUBAGENT_ID_PREFIX}`
+      const separator = sessionId.lastIndexOf(childMarker)
+      const parentId = separator === -1 ? sessionId : sessionId.slice(0, separator)
+      const stored = await this.storedSession(parentId)
+      const child = stored.children?.find((entry) => entry.session.sessionId === sessionId)
+      if (child === undefined) {
+        throw new Error(`session ${sessionId} is not held by this window`)
+      }
+      source = child.session
+    }
     return {
       mode: 'inline',
-      items: stored.transcript.map((entry) => entry.item),
-      name: stored.name,
-      todos: stored.todos,
-      goal: stored.goal === undefined ? null : toSessionGoal(stored.goal),
+      sideChat: source.sideChat === true,
+      items: source.transcript.map((entry) => entry.item),
+      name: source.name,
+      todos: source.todos,
+      goal: source.goal === undefined ? null : toSessionGoal(source.goal),
     }
   }
 
-  public async resumeSession(sessionId: string, _modelId: string): Promise<LoadedSession> {
-    return this.loaded(await this.revive(sessionId))
+  public async resumeSession(
+    sessionId: string,
+    _modelId: string,
+    _mcpServers?: Readonly<Record<string, SessionMcpHttpServer>>,
+    options?: { readonly requireSideChat?: boolean },
+  ): Promise<LoadedSession> {
+    await this.requireAccountId()
+    const session = await this.revive(sessionId, options?.requireSideChat === true)
+    try {
+      await this.requireAccountId()
+    } catch (error: unknown) {
+      session.dispose()
+      throw error
+    }
+    const loaded = this.loaded(session)
+    void this.startMcpServers()
+    return loaded
   }
 
   public async forkSession(
     sessionId: string,
     modelId: string,
     lastTurnId?: string,
+    options?: { readonly sideChat?: boolean },
   ): Promise<LoadedSession> {
+    await this.requireAccountId()
     // Copying needs no hold on a live source; a stored one is revived only for the copy.
     const live = this.sessions.get(sessionId)
     const source = live ?? (await this.revive(sessionId))
-    const fork = this.create(modelId, source.approvalMode)
+    const isSideChat = options?.sideChat === true || source.record().sideChat === true
+    let hooks: readonly HookDefinition[]
+    try {
+      hooks = isSideChat ? [] : await this.sessionHooks()
+      await this.requireAccountId()
+    } catch (error: unknown) {
+      if (live === undefined) {
+        source.dispose()
+      }
+      throw error
+    }
+    const fork = this.create(
+      modelId,
+      isSideChat ? 'denyUnmatched' : source.approvalMode,
+      this.deps.newId(),
+      hooks,
+      'fork',
+      isSideChat,
+    )
     try {
       source.copyInto(fork, lastTurnId)
-      this.persist(fork)
+      await fork.startHooks()
+      await this.requireAccountId()
+      if (isSideChat) {
+        await this.persist(fork, true)
+      } else {
+        void this.persist(fork)
+      }
+      await this.requireAccountId()
     } catch (error: unknown) {
       fork.dispose()
       throw error
@@ -2991,10 +6126,29 @@ export class ModelApiHost implements AgentHost {
   }
 
   public async close(): Promise<void> {
+    const ending = new AbortController()
+    const deadline = setTimeout(() => {
+      ending.abort()
+    }, HOOK_SESSION_END_TIMEOUT_MS)
+    try {
+      for (const session of this.sessions.values()) {
+        if (ending.signal.aborted) {
+          break
+        }
+        try {
+          await session.endHooks(ending.signal)
+        } catch (error: unknown) {
+          this.deps.log.warn(`Model API SessionEnd hook failed: ${describe(error)}`)
+        }
+      }
+    } finally {
+      clearTimeout(deadline)
+    }
     // Disposing removes the entry; a Map iterator tolerates that.
     for (const session of this.sessions.values()) {
       session.disposeAll()
     }
-    await this.saving
+    // The MCP servers go with the host (M50): a stdio server's process tree is killed.
+    await Promise.all([this.saving, this.deps.mcpServers?.close()])
   }
 }

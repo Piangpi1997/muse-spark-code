@@ -8,7 +8,8 @@ security notes for contributors are in `PLAN.md` §9.
 ## What the extension sends, and to whom
 
 - **Your prompts, attachments and mentioned files.** Everything you type into
-  the panel, every image you paste or drop, the contents of files you
+  the panel, every image or PDF you attach or drop, text files you explicitly
+  pick for attachment in a trusted, indexed workspace, the contents of files you
   `@`-mention, the open file or selection when the "attach open file" setting
   is on, and the outputs of the tools the agent runs (file contents,
   command output, Problems-panel diagnostics) are sent to Meta so the model
@@ -24,19 +25,64 @@ security notes for contributors are in `PLAN.md` §9.
   to Meta with the credential from its own `muse login`. What the CLI sends
   beyond your messages (its system prompt, its own telemetry, if any) is
   governed by Meta's Muse Code terms, not by this extension.
+  A picked text file is sent as named text. Muse Code retains a readable
+  `[Muse Spark Code attached text files: …]` annotation in the message's
+  display text so the extension can mark its file card after History resume;
+  the annotation contains file names only, no file contents. Native Muse Code
+  clients may show this line.
 - **Through the Meta Model API** (when you paste a key), the extension calls
   `https://api.meta.ai/v1` directly with your key. Each turn re-sends the
   conversation so far, because requests are made with `store: false`; Meta's
-  Model API terms govern retention on their side.
+  Model API terms govern retention on their side. Meta caches the start of
+  each request (the instructions, tools and conversation so far) to answer
+  the next one faster; the extension asks for Meta's shorter `in_memory`
+  retention by default. You may request up to 24 hours with the
+  machine-scoped `museSpark.modelApiPromptCacheRetention` setting, a hint
+  Meta may cut short. A repository cannot raise your retention choice. Each
+  request also carries a cache key: a digest of the instructions and tools
+  it starts with, which says nothing the request does not, and no session
+  or user id. PDF bytes travel inline in
+  the request, without a persistent Files API upload. When older media would
+  exceed Meta's 50-image and PDF-page budget or the extension's 48-million-
+  character combined encoded-media cap, the request names what is left out;
+  the panel announces this, and local history still keeps the original bytes.
+  Media read by a tool in a stopped or failed turn is removed from later
+  replay; the next request gets a path-only explanation instead of its bytes.
+- **MCP servers on the Model API backend.** In a trusted workspace, the
+  extension starts the servers configured in Muse Code's settings when a
+  conversation starts. A local server runs as a child process; a remote
+  server receives MCP requests at the URL in its settings entry, including
+  configured headers. The model can pass arguments drawn from your prompt
+  and workspace context to a server tool. The tool's text and supported
+  images return to Meta in the conversation. Approval mode controls which
+  calls need your consent; a server marked required can stop a turn if it
+  cannot start. These servers do not run in Restricted Mode. The extension
+  does not pass your Model API key to a server. A remote server's error body
+  and authentication challenge parameters are not copied into the model's
+  tool error or the extension log; those may echo a configured credential.
+  On Windows, the hidden local-server helper receives launch details in a
+  private environment value; it removes that value and gives the server
+  only the allowed environment and its configured variables. A random
+  nonce travels over a separate local control pipe to prove this window
+  still owns the launch; neither that nonce nor the pipe enters server
+  requests or its environment.
 - **Workspace rules, skills and memory.** In a trusted workspace the agent
   reads `AGENTS.md` (or `CLAUDE.md`), the skills under `.agents/skills` and
-  `~/.config/muse/skills`, and `.agents/memory/MEMORY.md`, as the README
-  describes. On the Model API backend the rules text, the skill catalogue
-  (ids and descriptions) and the memory index go to Meta with every request
-  as part of the instructions, and a skill's full text when it is loaded or
-  invoked. On the Muse Code CLI backend the CLI reads and sends them under
-  Meta's Muse Code terms. Nothing of this is read while VS Code has the
-  folder in Restricted Mode.
+  `~/.config/muse/skills`, and Muse Code's memory (the project's
+  `.agents/memory`, and your own notes under `~/.local/share/muse/memory`),
+  as the README describes. On the Model API backend the rules text, the
+  skill catalogue (ids and descriptions) and the memory snapshot (each
+  scope's `MEMORY.md` and its notes' names, your personal scopes included)
+  go to Meta with every request as part of the instructions, a skill's full
+  text when it is loaded or invoked, and a note's text when the model reads
+  it with `read_memory`. What the model saves with `add_memory` is written
+  on your machine, in the same files Muse Code uses. On the Muse Code CLI
+  backend the CLI reads and sends them under Meta's Muse Code terms. The
+  Model API backend reads none of this while VS Code has the folder in
+  Restricted Mode; Muse Code's documentation says it still reads a
+  repository's committed project memory then.
+- **The Memory view** (M49) reads and writes only those notes on your
+  machine; it sends nothing anywhere. A note it deletes goes to your trash.
 - **Environment facts (Model API backend).** The instructions sent with
   every request name the workspace's absolute path, the operating system
   and shell, and today's date. In a trusted workspace that is a git
@@ -91,11 +137,16 @@ security notes for contributors are in `PLAN.md` §9.
     is needed.
 
 The extension itself has **no telemetry**, no analytics, no crash reporting
-and no server of its own. It never contacts any host other than Meta's (and,
-on macOS, Apple's for dictation as described above), and only when you send
-a message, sign in, dictate, or open a panel while signed in (it lists the
-models then, so the model pill is filled in; that request carries no
-message).
+and no hosted server of its own. It contacts Meta when you send a message,
+sign in, dictate, use a paid feature, or open a panel while signed in (to list
+models; that request carries no message). On the Model API backend it also
+contacts remote MCP servers you configured when a conversation starts or uses
+their tools. On macOS, dictation may contact Apple as described above. Behind
+a proxy, those requests go through the proxy VS Code is set to use under its
+`http.*` settings. **Muse Spark: Diagnostics** runs `muse config status`,
+which reads Muse Code's managed configuration on this machine and contacts no
+one. The public-issue report includes only recognized source and generation
+fields, never raw configuration or failed-command output.
 
 ## Credentials
 
@@ -120,7 +171,8 @@ message).
   `storageUri` VS Code assigns; outside the repository, under your user
   profile). A file holds the messages, the tool calls and their outputs,
   the edit patches, the task list, the model and the settings of that
-  conversation; never the API key. Archiving a conversation in the
+  conversation, including attached image and PDF bytes; never the API key.
+  Archiving a conversation in the
   History dialog hides it; deleting the directory removes them all.
 - Settings (`museSpark.*`), the archived-session list and the "last session"
   memory per panel are stored by VS Code's settings and state APIs.

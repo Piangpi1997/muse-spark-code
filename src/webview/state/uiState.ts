@@ -20,6 +20,7 @@ import {
   type DictationUiStatus,
   type EffortLevel,
   HIDDEN_ITEM_KINDS,
+  MAX_ATTACHMENTS_PER_MESSAGE,
   MILLISECONDS_PER_SECOND,
   type PermissionMode,
   type TaskRequest,
@@ -45,6 +46,7 @@ import type {
   SkillOption,
 } from '../../shared/protocol'
 import { EMPTY_PAID_TALLY, type PaidState } from '../../shared/paid'
+import type { ScheduleView } from '../../shared/schedule'
 import type { SessionRow } from '../../shared/sessions'
 import type { AccountFacts, SubscriptionUsage, UsageInsights } from '../../shared/usage'
 import { goalStatusLabel, toolLabel } from '../toolPresentation'
@@ -125,6 +127,7 @@ export interface PendingRestore {
 
 export interface UiState {
   readonly phase: 'connecting' | 'ready'
+  readonly isSideChat: boolean
   readonly emptyStateHint: string
   readonly composerPlaceholder: string
   readonly settings: SettingsSnapshot | undefined
@@ -169,6 +172,12 @@ export interface UiState {
     readonly backend: BackendKind | undefined
     /** The sign-in paths the gate offers; undefined means both. */
     readonly methods: readonly SignInMethod[] | undefined
+    readonly verificationUrl?: string | undefined
+    readonly userCode?: string | undefined
+    readonly installCommand?: string | undefined
+    readonly hasCli?: boolean | undefined
+    readonly hasCliSession?: boolean | undefined
+    readonly installState?: 'running' | 'failed' | undefined
   }
   readonly model:
     { readonly modelId: string; readonly contextLimit: number | undefined } | undefined
@@ -179,11 +188,17 @@ export interface UiState {
   readonly isThinkingEnabled: boolean
   readonly permissionMode: PermissionMode
   readonly attachments: readonly AttachmentSummary[]
+  /** Invalidates browser reads when the composer changes conversations or clears. */
+  readonly attachmentEpoch: number
+  /** Recent host replies to browser attachment attempts, bounded to outstanding capacity. */
+  readonly attachmentSettlements: readonly string[]
   readonly mentionResults: MentionResults | undefined
   readonly transcript: readonly TranscriptEntry[]
   readonly activeTurnId: string | undefined
   /** The last turn the host reported finished (M25): a late `turnAccepted` for it starts nothing. */
   readonly lastCompletedTurnId: string | undefined
+  /** Promoted-steer turn corrections received before their local card is accepted. */
+  readonly pendingReplayTurns: Readonly<Record<string, string>>
   readonly usage: UsageSummary | undefined
   readonly context: ContextSummary | undefined
   /** undefined until the host answered `readUsage` for this window. */
@@ -219,6 +234,8 @@ export interface UiState {
   readonly todos: readonly TodoItem[]
   /** The session goal (M45, PLAN.md D38): the strip above the composer while there is one. */
   readonly goal: SessionGoal | undefined
+  /** Extension-owned Model API schedules for this session (M52). */
+  readonly schedules: readonly ScheduleView[]
   /** Fetched output pages keyed by `${itemId}:${outputRef}`. */
   readonly outputPages: Readonly<Record<string, OutputPage>>
   /** Pictures loaded for tool rows (M43), keyed by `toolImageKey`; never saved. */
@@ -271,6 +288,8 @@ export type UiAction =
   | { readonly type: 'referenceSet'; readonly reference: ChatReference }
   | { readonly type: 'referenceCleared' }
   | { readonly type: 'attachmentRemoved'; readonly id: string }
+  /** Invalidate unfinished browser encodes before a session replacement waits on the host. */
+  | { readonly type: 'sessionChangeRequested' }
   /** The panel's own New Conversation; the host echoes it back (M25). */
   | { readonly type: 'conversationCleared' }
   /** The × on the composer banner (M14). */
@@ -296,6 +315,7 @@ export type UiAction =
 
 export const initialUiState: UiState = {
   phase: 'connecting',
+  isSideChat: false,
   emptyStateHint: '',
   composerPlaceholder: '',
   settings: undefined,
@@ -319,10 +339,13 @@ export const initialUiState: UiState = {
   isThinkingEnabled: true,
   permissionMode: 'manual',
   attachments: [],
+  attachmentEpoch: 0,
+  attachmentSettlements: [],
   mentionResults: undefined,
   transcript: [],
   activeTurnId: undefined,
   lastCompletedTurnId: undefined,
+  pendingReplayTurns: {},
   usage: undefined,
   context: undefined,
   usageReport: undefined,
@@ -338,6 +361,7 @@ export const initialUiState: UiState = {
   paid: { features: [], tally: EMPTY_PAID_TALLY, isKeyStored: false },
   todos: [],
   goal: undefined,
+  schedules: [],
   outputPages: {},
   toolImages: {},
   localSequence: 0,
@@ -358,14 +382,26 @@ const REJECTED = 'rejected'
 const CANCELLED = 'cancelled'
 const USER_MESSAGE_KIND = 'userMessage'
 const SUBAGENT_KIND = 'subagent'
-// A refusal that is about the image's size or count (M25), or a read that
-// failed (M39), not its type: the banner says so instead of "Unsupported
-// file type". Read per refusal, so the reasons are the installed table's.
+// Show known localized attachment refusals verbatim; an unknown host reason
+// keeps the generic file-type guidance. Read at runtime for the installed language.
 function isStatedRefusal(reason: string): boolean {
   return [
     UI_TEXT.attachmentTooLarge,
+    UI_TEXT.attachmentUnsupported,
     UI_TEXT.attachmentLimit,
     UI_TEXT.attachmentUnreadable,
+    UI_TEXT.documentTooLarge,
+    UI_TEXT.documentsOverBudget,
+    UI_TEXT.mediaTotalTooLarge,
+    UI_TEXT.pdfNeedsModelApi,
+    UI_TEXT.invalidPdf,
+    UI_TEXT.textFileTooLarge,
+    UI_TEXT.textFilesOverBudget,
+    UI_TEXT.textFilesOverModelApiBudget,
+    UI_TEXT.textFileInvalid,
+    UI_TEXT.textFilePrivate,
+    UI_TEXT.binaryFileUnsupported,
+    UI_TEXT.commandTooLarge,
   ].includes(reason)
 }
 
@@ -374,11 +410,26 @@ function own<T>(record: Readonly<Record<string, T>>, key: string): T | undefined
   return Object.hasOwn(record, key) ? record[key] : undefined
 }
 
+function settledAttachmentRequest(
+  ids: readonly string[],
+  requestId: string | undefined,
+): readonly string[] {
+  return requestId === undefined ? ids : [...ids, requestId].slice(-MAX_ATTACHMENTS_PER_MESSAGE * 2)
+}
+
 /** The record without `key`. */
 function without<T>(record: Readonly<Record<string, T>>, key: string): Readonly<Record<string, T>> {
   return Object.hasOwn(record, key)
     ? Object.fromEntries(Object.entries(record).filter(([name]) => name !== key))
     : record
+}
+
+/** Keep only corrections that could still belong to pending user cards. */
+function boundedReplayTurns(
+  record: Readonly<Record<string, string>>,
+  pendingCount: number,
+): Readonly<Record<string, string>> {
+  return pendingCount === 0 ? {} : Object.fromEntries(Object.entries(record).slice(-pendingCount))
 }
 
 /** Queue a sentence for the live region; nothing to say leaves the state alone. */
@@ -696,6 +747,7 @@ function subagentEntry(item: ItemSnapshot, seq: number): SubagentEntry {
     role: item.role,
     objective: item.objective,
     status: item.status,
+    paid: item.paid,
     controlStatus: item.controlStatus,
     subagentId: item.subagentId,
     childSessionId: item.childSessionId,
@@ -828,6 +880,7 @@ function mergeItem(entry: TranscriptEntry, item: ItemSnapshot, at: number): Tran
       const fresh = subagentEntry(item, entry.seq)
       return {
         ...entry,
+        paid: fresh.paid ?? entry.paid,
         role: fresh.role ?? entry.role,
         objective: fresh.objective ?? entry.objective,
         status: fresh.status,
@@ -940,7 +993,8 @@ function replayedUserEntry(item: ItemSnapshot, seq: number): TranscriptEntry {
     status: 'sent',
     attachments: (item.attachments ?? []).map((attachment, index) => ({
       id: `${item.itemId}:${String(index)}`,
-      name: attachment.mediaType,
+      name: attachment.name ?? attachment.mediaType,
+      mediaType: attachment.mediaType,
       ...(attachment.width !== undefined && { width: attachment.width }),
       ...(attachment.height !== undefined && { height: attachment.height }),
     })),
@@ -1048,15 +1102,17 @@ function stampCompletion(entry: TranscriptEntry, seq: number): TranscriptEntry {
 /**
  * The subagent whose child session a turn belongs to (M18). Seen live
  * 2026-09-23: a child's own items (its reply, its tool calls) reach the
- * parent stream with `turnId` equal to the child session id, so they are
- * the agent's transcript, not the conversation's.
+ * parent stream with `turnId` equal to the child session id. Model API
+ * children (M48) prefix each of their turn ids with their child session id.
  */
 function childOwnerOf(state: UiState, turnId: string | undefined): SubagentEntry | undefined {
   return turnId === undefined
     ? undefined
     : state.transcript.find(
         (entry): entry is SubagentEntry =>
-          entry.kind === SUBAGENT_KIND && entry.childSessionId === turnId,
+          entry.kind === SUBAGENT_KIND &&
+          entry.childSessionId !== undefined &&
+          (entry.childSessionId === turnId || turnId.startsWith(`${entry.childSessionId}:`)),
       )
 }
 
@@ -1280,6 +1336,39 @@ function applyAgentEvent(state: UiState, event: AgentEvent, at: number): UiState
     case 'turnCompleted': {
       return completeTurn(state, event, at)
     }
+    case 'userMessageTurnChanged': {
+      const card = state.transcript.findLast(
+        (entry) =>
+          entry.kind === 'user' && (entry.replayItemId ?? entry.id) === event.userMessageId,
+      )
+      if (card?.kind === 'user') {
+        let activeTurnId = state.activeTurnId
+        if (card.turnId !== undefined && activeTurnId === card.turnId) {
+          activeTurnId = event.turnId === state.lastCompletedTurnId ? undefined : event.turnId
+        }
+        return {
+          ...state,
+          activeTurnId,
+          transcript: updateEntry(state.transcript, card.id, (entry) =>
+            entry.kind === 'user' ? { ...entry, turnId: event.turnId } : entry,
+          ),
+        }
+      }
+      const pendingCount = state.transcript.filter(
+        (entry) => entry.kind === 'user' && entry.status === 'pending',
+      ).length
+      if (pendingCount === 0) {
+        return state
+      }
+      const pending = {
+        ...without(state.pendingReplayTurns, event.userMessageId),
+        [event.userMessageId]: event.turnId,
+      }
+      return {
+        ...state,
+        pendingReplayTurns: boundedReplayTurns(pending, pendingCount),
+      }
+    }
     case 'turnRetry': {
       const seconds = Math.round(event.retryDelayMs / MILLISECONDS_PER_SECOND)
       return withNotice(
@@ -1439,6 +1528,9 @@ function applyAgentEvent(state: UiState, event: AgentEvent, at: number): UiState
         goalAnnouncement(state.goal, goal),
       )
     }
+    case 'schedulesChanged': {
+      return { ...state, schedules: event.jobs }
+    }
     case 'effortChanged':
     case 'approvalModeChanged':
     case 'skillsChanged': {
@@ -1469,11 +1561,14 @@ function applyAgentEvent(state: UiState, event: AgentEvent, at: number): UiState
 function clearedConversation(state: UiState): UiState {
   return {
     ...state,
+    attachmentEpoch: state.attachmentEpoch + 1,
+    attachmentSettlements: [],
     pendingGoalCommand: undefined,
     goalEdit: undefined,
     childTranscripts: {},
     childOwners: {},
     strayItems: {},
+    pendingReplayTurns: {},
     unsentAttachments: {},
     attachmentsToRelease: [],
     banner: undefined,
@@ -1489,8 +1584,31 @@ function clearedConversation(state: UiState): UiState {
     context: undefined,
     todos: [],
     goal: undefined,
+    schedules: [],
     outputPages: {},
     toolImages: {},
+  }
+}
+
+/** Credentials changed: no prior-account rows may survive in any panel cache. */
+function clearedAccountView(state: UiState): UiState {
+  return {
+    ...clearedConversation(state),
+    auth: initialUiState.auth,
+    canEditSessions: initialUiState.canEditSessions,
+    sessions: [],
+    archivedIds: [],
+    model: undefined,
+    models: [],
+    skills: undefined,
+    usageReport: undefined,
+    editorContext: undefined,
+    dismissedEditorPath: undefined,
+    mentionResults: undefined,
+    pendingInsert: undefined,
+    announcement: undefined,
+    pendingRestore: undefined,
+    pendingClearEchoes: 0,
   }
 }
 
@@ -1548,7 +1666,12 @@ function reconcile(
   at: number,
 ): UiState {
   const restore = state.pendingRestore
-  const live: UiState = { ...state, pendingRestore: undefined, activeTurnId: message.activeTurnId }
+  const live: UiState = {
+    ...state,
+    attachmentEpoch: Math.max(state.attachmentEpoch, message.attachmentEpoch ?? 0),
+    pendingRestore: undefined,
+    activeTurnId: message.activeTurnId,
+  }
   if (restore === undefined) {
     return live
   }
@@ -1572,6 +1695,7 @@ function applyHostMessage(state: UiState, message: HostToWebviewMessage, at: num
     case 'init': {
       return {
         ...state,
+        isSideChat: message.sideChat === true,
         phase: 'ready',
         emptyStateHint: message.emptyStateHint,
         composerPlaceholder: message.composerPlaceholder,
@@ -1588,6 +1712,9 @@ function applyHostMessage(state: UiState, message: HostToWebviewMessage, at: num
       return { ...state, focusRequests: state.focusRequests + 1 }
     }
     case 'conversationCleared': {
+      if (message.accountBoundary === true) {
+        return clearedAccountView(state)
+      }
       // The echo of a clear this panel already made is spent, not applied
       // again: a message sent right after it must survive (M25).
       return state.pendingClearEchoes > 0
@@ -1600,6 +1727,9 @@ function applyHostMessage(state: UiState, message: HostToWebviewMessage, at: num
     case 'insertText': {
       return withInsert(state, message.text)
     }
+    case 'restoreDraft': {
+      return { ...state, draft: message.text, focusRequests: state.focusRequests + 1 }
+    }
     case 'editorContext': {
       // A dismissal holds only while the same file stays active.
       const isSameFile = message.context?.relativePath === state.dismissedEditorPath
@@ -1610,19 +1740,54 @@ function applyHostMessage(state: UiState, message: HostToWebviewMessage, at: num
       }
     }
     case 'authState': {
+      // A CLI device sign-in started while the Model API session is live
+      // (M55) sends several `signingIn` updates (the code arrives in a later
+      // one); each keeps that session, which a cancel or failure returns to
+      // (the review of PR #43). Its success on Muse Code is the boundary.
+      const isModelApiHeld =
+        state.auth.backend === 'modelApi' &&
+        (state.auth.status === 'signedIn' || state.auth.status === 'signingIn')
+      const isTransientCliSignIn =
+        message.status === 'signingIn' && message.backend === 'modelApi' && isModelApiHeld
+      const isOtherBackend =
+        state.auth.backend !== undefined &&
+        message.backend !== state.auth.backend &&
+        (state.auth.status === 'signedIn' || isModelApiHeld)
+      const isAccountBoundary =
+        !isTransientCliSignIn && (message.status !== 'signedIn' || isOtherBackend)
+      const current = isAccountBoundary ? clearedAccountView(state) : state
       return {
-        ...state,
+        ...current,
+        // Account-bound prompts disappear on sign-out or backend switch.
+        // A CLI sign-in attempt can be transient while the Model API key and
+        // session stay live; keep its list until auth actually changes.
+        schedules:
+          message.backend === 'modelApi' &&
+          (message.status === 'signedIn' ||
+            (message.status === 'signingIn' && current.auth.backend === 'modelApi'))
+            ? current.schedules
+            : [],
+        // No account identity accompanies authState: discard prior-account
+        // usage even if the backend name stays the same.
+        usageReport: undefined,
         auth: {
           status: message.status,
           detail: message.detail,
           backend: message.backend,
           methods: message.methods,
+          verificationUrl: message.verificationUrl,
+          userCode: message.userCode,
+          installCommand: message.installCommand,
+          hasCli: message.hasCli,
+          hasCliSession: message.hasCliSession,
+          installState: message.installState,
         },
       }
     }
     case 'sessionInfo': {
       return {
         ...state,
+        isSideChat: message.sideChat ?? state.isSideChat,
         model: { modelId: message.modelId, contextLimit: message.contextLimit },
         sessionId: message.sessionId,
         canEditSessions: message.canEditSessions ?? true,
@@ -1728,6 +1893,9 @@ function applyHostMessage(state: UiState, message: HostToWebviewMessage, at: num
       return announce(
         {
           ...state,
+          attachmentEpoch: isSameSession ? state.attachmentEpoch : state.attachmentEpoch + 1,
+          attachmentSettlements: isSameSession ? state.attachmentSettlements : [],
+          isSideChat: message.sideChat ?? state.isSideChat,
           sessionId: message.sessionId,
           restoredSessionId: undefined,
           title: message.name,
@@ -1737,8 +1905,10 @@ function applyHostMessage(state: UiState, message: HostToWebviewMessage, at: num
           goal,
           ...editor,
           pendingGoalCommand: isSameSession ? state.pendingGoalCommand : undefined,
+          schedules: isSameSession ? state.schedules : [],
           activeTurnId: message.activeTurnId,
           lastCompletedTurnId: undefined,
+          pendingReplayTurns: {},
           usage: isSameSession ? state.usage : undefined,
           context: isSameSession ? state.context : undefined,
           outputPages: {},
@@ -1753,14 +1923,34 @@ function applyHostMessage(state: UiState, message: HostToWebviewMessage, at: num
     case 'turnAccepted': {
       // A fast turn can finish before its acceptance arrives (M25); the
       // acceptance then marks the card sent and starts nothing.
-      const isFinished = message.turnId === state.lastCompletedTurnId
+      const turnId =
+        (message.userMessageId === undefined
+          ? undefined
+          : own(state.pendingReplayTurns, message.userMessageId)) ?? message.turnId
+      const isFinished = turnId === state.lastCompletedTurnId
+      const pending =
+        message.userMessageId === undefined
+          ? state.pendingReplayTurns
+          : without(state.pendingReplayTurns, message.userMessageId)
+      const pendingCount = state.transcript.filter(
+        (entry) =>
+          entry.kind === 'user' && entry.status === 'pending' && entry.id !== message.localId,
+      ).length
       return {
         ...state,
-        activeTurnId: isFinished ? state.activeTurnId : message.turnId,
-        strayItems: without(state.strayItems, message.turnId),
+        activeTurnId: isFinished ? state.activeTurnId : turnId,
+        strayItems: without(state.strayItems, turnId),
+        pendingReplayTurns: boundedReplayTurns(pending, pendingCount),
         unsentAttachments: without(state.unsentAttachments, message.localId),
         transcript: updateEntry(state.transcript, message.localId, (entry) =>
-          entry.kind === 'user' ? { ...entry, status: 'sent', turnId: message.turnId } : entry,
+          entry.kind === 'user'
+            ? {
+                ...entry,
+                status: 'sent',
+                turnId,
+                ...(message.userMessageId !== undefined && { replayItemId: message.userMessageId }),
+              }
+            : entry,
         ),
       }
     }
@@ -1834,15 +2024,33 @@ function applyHostMessage(state: UiState, message: HostToWebviewMessage, at: num
     }
     case 'attachmentAdded': {
       const others = state.attachments.filter((entry) => entry.id !== message.attachment.id)
-      return { ...state, attachments: [...others, message.attachment] }
+      return {
+        ...state,
+        attachments: [...others, message.attachment],
+        attachmentSettlements: settledAttachmentRequest(
+          state.attachmentSettlements,
+          message.requestId,
+        ),
+      }
     }
     case 'attachmentRejected': {
       // The composer banner (M14), as Claude Code shows it; the reason the
       // host gave is read out.
-      return withBanner(state, message.name, message.reason)
+      return {
+        ...withBanner(state, message.name, message.reason),
+        attachmentSettlements: settledAttachmentRequest(
+          state.attachmentSettlements,
+          message.requestId,
+        ),
+      }
     }
     case 'attachmentsCleared': {
-      return { ...state, attachments: [] }
+      return {
+        ...state,
+        attachments: [],
+        attachmentEpoch: state.attachmentEpoch + 1,
+        attachmentSettlements: [],
+      }
     }
     case 'notice': {
       // Warnings and errors are read out; informational notices stay visual.
@@ -2048,6 +2256,9 @@ export function uiReducer(state: UiState, action: UiAction): UiState {
     case 'attachmentRefused': {
       return withBanner(state, action.name, action.reason)
     }
+    case 'sessionChangeRequested': {
+      return { ...state, attachmentEpoch: state.attachmentEpoch + 1, attachmentSettlements: [] }
+    }
     case 'attachmentsReleased': {
       return {
         ...state,
@@ -2103,8 +2314,9 @@ export type ForkCut =
 
 /**
  * The cut point for forking before the given user card: the last turn of
- * an earlier user message, or a fresh conversation when it is the first.
- * Undefined when the id is not a sent user card.
+ * an earlier distinct turn, or a fresh conversation when it is the first.
+ * A later message steered into the first turn has no completed-turn boundary.
+ * Undefined when the id is not a sent user card or has no safe cut.
  */
 export function forkCutBefore(
   transcript: readonly TranscriptEntry[],
@@ -2115,12 +2327,18 @@ export function forkCutBefore(
   if (target?.kind !== 'user' || target.status !== 'sent') {
     return undefined
   }
-  const earlier = transcript
-    .slice(0, index)
-    .findLast((entry) => entry.kind === 'user' && entry.turnId !== undefined)
-  return earlier?.kind === 'user' && earlier.turnId !== undefined
-    ? { type: 'afterTurn', lastTurnId: earlier.turnId }
-    : { type: 'fresh' }
+  const preceding = transcript.slice(0, index)
+  const earlier = preceding.findLast(
+    (entry) =>
+      entry.kind === 'user' && entry.turnId !== undefined && entry.turnId !== target.turnId,
+  )
+  const hasEarlierTurn = preceding.some(
+    (entry) => entry.kind === 'user' && entry.turnId !== undefined,
+  )
+  if (earlier?.kind === 'user' && earlier.turnId !== undefined) {
+    return { type: 'afterTurn', lastTurnId: earlier.turnId }
+  }
+  return hasEarlierTurn ? undefined : { type: 'fresh' }
 }
 
 /**

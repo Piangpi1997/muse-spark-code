@@ -7,16 +7,336 @@ happened, not what was planned; superseded entries are kept.
 
 ## [Unreleased]
 
+Model API conversations now carry a one-way key digest in local storage.
+History, reads, resume and fork refuse another key's sessions. Replacing the
+active Model API key stops its old host before storing the new key and starts
+a fresh conversation. History clears on account change and drops old list
+replies. Replacing a secondary key while Muse Code is active keeps its CLI
+conversation; an extension-paid image awaiting approval or retry refuses if
+that key changes, before a request can use the replacement key.
+Older sessions without ownership metadata stay on disk but cannot be reopened.
+
+Authentication changes now clear prior-account transcript, output and agent
+views and file chips while keeping unsent draft text. Held reads, History events and resumed
+sessions from a stopped host cannot refill those views. Selecting a cached
+host after a secondary-key change leaves the running Muse Code session under
+its manager's control. Installer discovery in `auto` mode retires an active
+Model API session before switching to the signed-in CLI.
+Session events and rename replies arriving while an account stop waits for
+turn cancellation can no longer refill the cleared panel or title.
+A missed-update history read begun before account stop likewise cannot replay
+old content or its failure notice after sign-out; a new account's own reload
+can proceed while the old read is pending.
+Reloading the panel during the account-stop cancellation wait now receives
+an empty session, preventing an old saved transcript from reappearing.
+A saved conversation stays hidden while the panel connects or checks sign-in:
+its title, transcript, goal and tasks appear only after the host confirms the
+same live session and a signed-in account. An account-boundary message gates
+the panel and clears prior usage, model and skill lists before the next auth
+reply, while keeping the unsent local draft.
+Session actions now use backend admission as well as the visible sign-in
+status. Held output and rewind reads, side forks, goal and subagent commands,
+compaction and paid scheduled-run confirmation stop at the account boundary;
+paged patch reads stay on their originating session.
+
+Model API steering now counts named text files from the active turn and all
+accepted steers against the same 768 KiB allowance, including steers already
+drained into replay. An over-budget steer is refused before its card or file
+bytes join the next request.
+
+Successful Model API `read_file` PDFs and images keep their media reservation
+after moving into replay. Steering during a post-tool hook cannot displace an
+unread file before its first completed model request.
+Browser PDF/image encodes started before History resume, fork or conversation
+rewind are discarded when that session change begins. The host also refuses
+late upload messages during backend lookup and before replacement history
+arrives. Accepted file chips and draft text remain available; a reloaded panel
+retains its upload epoch. A stale saved epoch cannot lower the host guard;
+host-driven session restore raises the guard and syncs the panel before new
+uploads.
+
+Pasted and dropped PDFs now receive the PDF byte limit after a 1 KiB header
+check, even when named `.png` or `.txt`. Real images above 10 MiB still stop
+before full-file encoding; pending checks cannot attach to a cleared
+conversation. Ordinary clipboard text keeps native paste behavior, private
+file names are refused, and the combined media budget remains enforced.
+
+Native picker limits now follow a detected PDF header within the first 1 KiB,
+including a PDF named `.png` or `.txt`. A valid PDF up to 32 MB can attach on
+the Model API backend; Muse Code names its PDF backend refusal. Ordinary
+images and text keep their smaller limits, and an invalid `.pdf` keeps its
+existing refusal. Unindexed text stays a path mention.
+
+Indexed UTF-8 picker reads now recheck their selected canonical file when
+loading bytes, and tool-row image previews keep their checked-path proof
+through the VS Code adapter. A workspace junction swap now refuses these
+reads before outside-workspace bytes become an attachment or preview.
+Native PDF and image picker paths retain their existing local selection policy.
+
+Muse Code now refuses a combination of text attachments whose serialized
+message would exceed its frame limit, before retaining the last file chip.
+Escaped text and existing images count; removing a file frees room. Model API
+uses the separate context allowance below.
+Muse Code also rechecks retained attachment size before send or steer after a
+backend switch, so a Model API image too large for its frame gets an immediate
+remove-attachment reason.
+
+Model API text attachments now have a 768 KiB combined UTF-8 content and
+file-name wrapper allowance. A large single file may be refused before it
+becomes a chip, leaving context room for the prompt, replay and output.
+
+Indirect PDF page-tree `/Count` and `/Type` references now reserve the full
+50 image slots instead of trusting an object number or an unlinked visible
+decoy. A signed indirect `/Type` also reserves all 50. Valid 50-page
+strict-reader fixtures cover each form.
+
+Model API host file reads now verify the opened file's identity and checked
+canonical path before exposing bytes. Atomic tool writes recheck the approved
+target and their temporary file before rename, refusing observed parent
+junction swaps instead of reading or writing an outside-workspace file. Paid
+image output reservations also recheck their opened file before fill and
+release cleanup. The guard uses a trusted confinement proof, leaving raw
+memory-file paths and macOS `/var` aliases to their existing policy.
+
+After a completed Model API request omits older PDF or image bytes to fit its
+media budget, saved replay now adopts the fitted text-only version. History
+retains attachment metadata, and failed requests keep prior replay bytes.
+Image rewind refuses missing bytes before clearing or forking, using the
+History card's image count even if the webview reports zero. Model API sends
+and steers reject aggregate named text over its allowance before retaining a
+turn or issuing HTTP, including chips admitted under Muse Code before a
+backend switch.
+
+Model API tool batches now reserve visual media returned by tools alongside
+queued `read_file` images and PDF pages. A later tool result that would hide
+an earlier undelivered image fails explicitly, including multiple images in
+one result. A completed model request releases its reservation; Stop or a
+failed delivery removes undelivered image bytes from saved replay.
+Steered images and PDFs share the first-delivery reservation: if steering
+arrives first, excess tool media fails; if a tool result is already pending,
+an over-budget steer is refused for this turn so the composer can send it as
+a later turn.
+
+Attachment refusal banners now show known localized PDF, media-budget,
+backend, text and private-file reasons instead of generic image-only
+unsupported-file guidance. Unknown reasons keep that generic fallback.
+
+Model API `read_file` now reserves PDF page slots as well as encoded bytes
+for a batch of visual reads. A second small PDF that would exceed the
+50-image/page request limit fails its tool row before success or replay; an
+unknown-page PDF reserves all 50 slots. The earlier accepted file stays in
+the next model request and saved replay.
+
+A send waiting for autosave, editor context or a backend lookup now stops if
+its session is replaced. A late turn acknowledgement cannot clear attachment
+chips or mark the new conversation as accepted. Owned recovery from a
+not-loaded session still retries normally. Disposed Model API sessions reject
+new sends and steering before a paid request can start.
+
+M55 account changes now carry an admission generation through host selection
+and session opening. A message held before sign-out cannot resume under a
+new sign-in to the same backend; its draft and attachments stay available.
+Overlapping sign-outs from two panels share one operation, so an earlier
+caller cannot reopen paid admission while another stop is pending. Replacing
+a Model API key also gates new host selection until the key write and
+backend restart settle.
+Model and skill choices are now cleared when a session ends and loaded again
+for the next account or backend. A late model or skill list from the old
+session cannot replace the new session's choices.
+
 Three paid extras of Meta's Model API, off until you turn them on, and loud
 while they are (PLAN.md D30, D34).
 
 ### Added
 
+- **M53 review fixes (pending final gates).** A steered user message now cuts
+  conversation rewind at an earlier distinct turn; an unsafe cut is hidden.
+  Image restoration names the selected user card. A Muse Code side panel's
+  History and reload stay bound to its own side fork. Live Model API cards keep
+  their UI IDs while carrying the backend replay ID, so an image can be
+  restored before a History reload. Promoted steers correct their turn on
+  either event order without restarting a completed turn.
+
+- **Optional branch CI.** The cross-platform CI can be run manually on a
+  pushed branch when a pull request is not being opened. It uses the same
+  shared build as pull requests. The normal path uses local and VM gates as
+  the filter, then records the exact tested tree, independent review,
+  staged-change secret scan and the pull request's seven job conclusions.
+  See `CONTRIBUTING.md`.
+- **Subagents on the Model API backend** (M48, PLAN.md D45). Child sessions
+  run in parallel with bounded capacity, their own transcript, the existing
+  tool approvals and workspace rules, and usage counted with the parent.
+  The Agent map can steer, stop, read and reopen them. Stopping a queued child
+  now discards notes it never saw, so a later reopen cannot run canceled work.
+  A panel joining while a child's tool approval waits sees that pending card.
+  Child tokens charge the goal active when their turn began, without charging
+  a later replacement goal.
+  Model API subagents now require a machine-scoped paid setting and accepted
+  model rates. Every new child task asks for one-use consent in all modes,
+  including Bypass; Plan refuses it. Each consent allows at most four actual
+  response requests, counting retries and tool rounds. The child row and
+  Account & usage show paid attempts and reported token usage; attempts
+  without usage retain unknown cost, and child cost is a subset of the
+  conversation total.
+  Muse Code's `subagent/readResult` and `subagent/reopen` controls remain
+  deferred until an accepted-command capture establishes their behavior.
+  Muse Code's two uncaptured owner verbs remain a later follow-up. M48's
+  local and hosted quality gates passed before its PR #35 merge.
+
+- **Model API hooks, initial M51 increment (certification pending).** The
+  machine-scoped `modelApiHooks` setting enables all 17 documented hook event
+  names at the Model API backend's supported boundaries, from managed, user
+  and trusted-project hook files. Commands get
+  JSON on stdin, a cleared environment without the Model API key, time and
+  output caps, and process-tree cancellation. Unsupported events and handlers
+  are reported and skipped; complete Muse event-specific output parity remains
+  open. Windows
+  managed PATH grants retain only absolute entries even when the variable
+  uses mixed case. Captured PreLLMCall hooks can veto a Model API request
+  before HTTPS. Successful PostLLMCall hooks see bounded summaries; a
+  post-call veto stops tools and follow-up requests without claiming Muse's
+  full hook parity; an isolated Muse echo capture ended its run as failed
+  without another request. The M45 Stop and goal-budget checks still fence
+  buffered replies and keep accepted steering when hooks run.
+  Untrusted regular-expression matchers now compile under the same V8
+  deadline as matching, so pattern compilation cannot stall the host thread.
+  The Model API Hooks picker now shows the machine opt-in state and opens its
+  setting. MCP and IDE tools reach tool hooks through bounded argument/result
+  previews; media and credential fields stay out of hook stdin while the
+  original MCP result still reaches the model. A required MCP server loss
+  cannot be hidden by a post-tool hook stop.
+  Model-call hook text previews also remove pasted media data URLs before
+  shortening user text, instructions, tool descriptions or assistant output.
+  Hook stdin is bounded again at the host adapter before process launch;
+  the payload stays off command lines. A `PreToolUse` hook's request for
+  approval now reaches memory tools in Bypass and Edit automatically; its
+  card requires a human, while Plan still refuses writes.
+
+- **Model API scheduled prompts** (M52). `/loop` stores an interval or local
+  five-field cron prompt in the current conversation; the panel lists due
+  jobs and cancels them. Every due run waits for a machine-scoped paid gate
+  and a separate prompt-and-token-price confirmation. Jobs are scoped to the
+  workspace, conversation and stored key; an atomic receipt prevents two
+  windows or a restart from replaying one admitted occurrence. A model,
+  conversation, prompt or paid-gate change while the price dialog is open
+  expires that approval without sending a request; cancellation during the
+  dialog does too. The scheduled turn keeps its confirmed model and key
+  digest in memory through admission and retries; a changed key is refused
+  before HTTP. Stop during the key read sends no request or paid count, and
+  a slow job read cannot show another key's prompts after an account switch.
+  The paid row and tally appear only when the first request starts. Muse Code's
+  native cron remains available through its model tools; MSP offers no direct
+  scheduler controls. Sign-out or a backend switch clears account-bound
+  prompts from the panel immediately. Replacing the Model API key also clears
+  the old account's prompts before the backend restarts; a temporary CLI
+  sign-in attempt keeps the still-active Model API list.
+  A seven-day cadence with no fire before expiry is refused; an already due
+  prompt can be claimed only before expiry. Feature enable shows both verified
+  token tiers, and each run quotes its selected model's exact tier, including
+  the contributor cached-input rate; an unknown model cannot gain consent.
+
+- **Conversation rewind and side chats** (M53, PLAN.md D46). A sent message
+  can branch before itself and return its prompt to the composer. Model API
+  images return when replay still holds them; otherwise the panel warns.
+  Side chat opens a separate Plan-mode fork without stopping the main tab.
+  On the Model API backend, its stored side marker survives reopen, keeps
+  Plan and the cleared goal, suppresses hooks, and refuses external MCP tools
+  even when a server marks them read only. A failed fork save opens no panel.
+  Scheduled prompt creation, cancellation and runs are refused in core before
+  storage, claim or paid use, including after a side fork is reopened.
+  Rewind and side-chat clicks carry their source session, so a late request
+  is ignored if that tab has moved to another session. Closing a
+  side chat returns focus to its original tab while that tab remains open.
+  Conversation rewind waits for the selected turn to finish so pending steered
+  images cannot be mistaken for saved replay.
+  Its locked Plan mode leaves `Shift+Tab` available for keyboard navigation.
+  Rewind now checks the exact completed user card before restoring images;
+  compaction cuts use a stored boundary even when later replay has gaps.
+  A side panel can resume only its own fork.
+  Muse Code's Windows 1.3.0 fork limitation still hides these actions.
+
+- **PDF input on the Model API backend** (M54, PLAN.md D47). Pick, paste or
+  drop a PDF up to 32 MB; its name appears in the composer and sent history.
+  The Model API agent can also read workspace PDFs and images through
+  `read_file`. The request stays within Meta's shared 50 image and PDF-page
+  budget and a local 48-million-character combined encoded-media limit;
+  excess new attachments are refused, and omitted older replay media is
+  announced while its local history remains. Excess `read_file` media in one
+  tool round gets a failed tool result before the host retains it. Muse Code's
+  MSP 1.3.0 has no file input part, so PDF attachments
+  give a clear refusal there. A picked UTF-8 text file in a trusted, indexed
+  workspace becomes a named text attachment on both backends, subject to its
+  1 MiB per-file read cap and each backend's aggregate allowance; excluded
+  and outside files stay path mentions, and private files are refused. The
+  PDF page budget reads the page tree's own count even
+  when nested metadata has another count, preventing an oversized request.
+  A document with too many page-tree markers gets the conservative full
+  50-slot reservation, keeping host inspection bounded. Escaped PDF object
+  stream, encryption or page-tree names, comments obscuring page-tree
+  tokens, or a missing/out-of-range page count also reserve 50 slots.
+  Workspace PDF, image and
+  text tool reads check size and read through one bounded file handle, so a
+  growing or replaced file cannot bypass the host byte cap.
+  Picked files use that bounded reader too; text, image and PDF `read_file`
+  calls read the checked canonical target when a link is retargeted after
+  workspace confinement. Model API `write_file` and `edit_file` now read and
+  write that checked target as well, while retaining their requested paths
+  on cards and checking unsaved changes under both path names. An indexed text
+  attachment also reads its checked target. Write and paid image approvals
+  bind that target and the image source bytes before the card; changed links
+  are refused before a protected write or paid request.
+  Conversation rewind is hidden for each PDF and named text file card; a
+  direct request must match its served card and fork cut before clear or
+  fork. Earlier text-only cards in the same turn remain rewindable. Muse Code
+  queues picked text-file messages during a running turn and retains a
+  readable file-name annotation for History resume. Image-only rewind remains
+  available.
+  Stop removes tool-read media from future replay if its turn ends early.
+
+- **In-panel Muse Code setup** (M55). When the CLI is missing, the sign-in
+  screen displays Meta's platform-specific installer command in a modal before
+  asking to run it in a visible terminal, then checks for the new binary. The
+  Account & usage dialog offers the same setup while the Model API stays
+  signed in, and lets a Muse Code user add or replace the Model API key
+  without restarting the CLI session or making a paid call. Sign-in controls
+  remain visible above a saved transcript. Muse Code's
+  device-code sign-in shows its approval code and browser link in the panel,
+  with cancel and timeout cleanup, including while its temporary host is
+  still starting. A credential write at the cancel or timeout boundary still
+  completes sign-in. The Model API key path still uses VS Code
+  SecretStorage.
+  A cancelled or failed CLI sign-in restores an active Model API session;
+  a late device code after Cancel is ignored. Installer terminal launch
+  failures are distinct from discovery timeouts, and a late installer watcher
+  cannot restore credentials cleared by sign-out. Sign-out also invalidates
+  an open Model API key prompt and waits for an accepted SecretStorage write
+  and backend restart before clearing the key and ending sessions, so late
+  completion cannot sign back in or leave a backend active. If the CLI logout
+  terminal cannot open, the extension still closes its host. A credential-free
+  local logout hold keeps old CLI or environment credentials from silently
+  signing it back in after refresh or window restart; the panel explains how
+  to finish logout without exposing the key. Host selection checks that
+  AuthService still admits the chosen backend before and after reading raw
+  credentials. A host that finishes opening after admission is revoked is
+  closed, and a held refresh rereads facts before publishing auth. If the
+  hold cannot be saved, sign-out still closes the host and reports an
+  actionable error. Sign-out gates session actions and starts host shutdown
+  before waiting on state or key storage; a failed SecretStorage deletion
+  still leaves the host stopped and the panel gated. An old CLI credential
+  file can be replaced by an explicit browser approval only after a new
+  file modification is verified, while `META_API_KEY` still blocks recovery.
+  Installer timeout or terminal failure during sign-out now keeps the account
+  gated even if an old credential remains, and a browser sign-in click paused
+  on SecretStorage cannot start its device flow after a newer sign-out.
+
+
 - **Image edits** (M44, PLAN.md D37). With image generation on, the model
   can also change one workspace image, or combine up to four, by a prompt,
   into a new PNG (`edit_image`, Meta's `/images/edits`, $0.01 per image).
   The card names the images it starts from; everything that could fail is
-  checked before anything is asked or billed.
+  checked before anything is asked or billed. Image-edit sources now read
+  their checked canonical targets if a workspace link retargets. New image
+  output is reserved at its checked target before any paid request.
 - **Images and Muse Voice on the Muse Code backend** (M44). While a Model
   API key is stored, the extension's own `ide` tool server offers Muse Code
   an image and an image-edit tool, and the microphone can use Muse Voice:
@@ -84,6 +404,37 @@ while they are (PLAN.md D30, D34).
   the Model API backend made, shows in its row. Every other tool in Muse
   Code's list has a name, an MCP tool reads "tool (server)", and any other
   result is indented JSON. All built from a live capture of Muse Code 1.3.0.
+  Tool-row pictures now use the checked workspace target and a bounded,
+  single-handle read, so a changing link or growing file cannot bypass the
+  10 MiB preview limit.
+- **MCP servers on the Model API backend** (M50, PLAN.md D42). The window
+  runs the MCP servers of Muse Code's settings file itself, local (stdio)
+  and remote (streamable HTTP), with a client of its own: their tools are
+  offered as `mcp__<server>__<tool>`, their schemas fitted to Meta's limits,
+  and their text and pictures passed to the model. A call asks like a
+  command in Manual and Auto (a tool its server marks read-only runs in
+  Auto, as in Muse Code) and Plan refuses all but read-only tools, which
+  ask; "always allow in this session" works per tool. None runs in
+  Restricted Mode; a local server sees only a short list of VS Code's
+  environment variables plus its own; `${VAR}`, timeouts and tool filters
+  from the entry are honoured. **MCP servers…** in the palette now shows,
+  on this backend, whether each server is connected and with how many
+  tools, or why it is not running; a server that fails is a warning, and a
+  required one stops the message with the fix. The extension's own
+  diagnostics tool (`getDiagnostics`) is offered on this backend too.
+  Remote error bodies and authentication challenge parameters stay out of
+  tool errors and logs; status and authentication scheme remain visible.
+  Server startup runs at most four connections at once to avoid a process burst.
+  On Windows, a hidden helper starts each stdio server suspended, assigns
+  it to a job after a private owner handshake, then runs it with binary
+  stdin, stdout and stderr passed through unchanged. Stop, server exit and
+  extension-process exit close the
+  job and end its descendants; without the helper, stdio fails closed.
+  Finite detached-child and withheld-handshake drills failed when their
+  guards were removed and passed when restored. On macOS and Linux, close also signals the
+  original process group when its MCP parent has exited. A server's final
+  response is now read before its drained stdio closes the connection, even
+  when the process itself exited first.
 - **Web search** (M33). With `museSpark.modelApiWebSearch` on, the model can
   search the web on the Model API backend ($2.50 per 1,000 searches). Each
   search is a row marked paid with its query and results, and a reply lists
@@ -108,6 +459,56 @@ while they are (PLAN.md D30, D34).
   and Account & usage tallies this window's searches, images and seconds of
   audio with their estimated cost.
 - **A languages badge** in the README.
+- **Memory, on both backends** (M49, PLAN.md D41). Muse Code keeps Markdown
+  notes in three scopes: yours for this project (the default, outside the
+  repository), the project's (`.agents/memory`, shared with the
+  repository) and yours for every project. Both backends now read and write
+  the same notes, found on disk and in a live capture of Muse Code 1.3.0.
+  - **Memory…** in the palette (`/memory`, **Muse Spark: Memory**) lists
+    up to 500 notes per scope with their scopes and summaries; open one to read or
+    edit it, create one, or delete one to the trash after a confirmation.
+    The scope's `MEMORY.md` index gains a created note's line and loses a
+    deleted note's lines.
+  - **The Model API backend** has Muse Code's `read_memory`, `add_memory`
+    and `edit_memory`, with its arguments, refusals and JSON results, so
+    their rows read the same on both backends; at the start of a
+    conversation the model gets each scope's `MEMORY.md` and its notes'
+    names, as Muse Code gives them. A new note gets its index line. Writes
+    ask in Manual, run in Auto and Edit automatically, and are refused in
+    Plan; a refused path asks nothing. Not offered in Restricted Mode.
+     Linked scope folders below the workspace or data home are refused, so
+     they cannot expose notes outside their intended roots.
+  - Updates to an existing note replace it atomically but do not take Muse
+    Code's native memory lock; simultaneous writers can still lose an update.
+
+- **Enterprise networks** (M56, PLAN.md D43).
+  - `museSpark.sandboxNetwork` (machine-scoped) passes Muse Code's
+    `--sandbox-network`: `proxy-only` (each new destination asks),
+    `restricted` (no network for commands) or `enabled`; `default` leaves
+    Muse Code's own default or an administrator's managed configuration.
+    It applies while the shell sandbox is on, and changing it restarts the
+    host.
+  - **Muse Spark: Diagnostics** states the network posture (whether a proxy
+    is set, never its address; VS Code's proxy and certificate settings;
+    where Muse Code's proxy comes from; `NODE_EXTRA_CA_CERTS`,
+    `SSL_CERT_FILE`) and prints `muse config status`, Muse Code's managed
+    configuration's recognized source and generation fields. Unrecognized
+    lines and failed-command output are withheld.
+  - A Model API request that never reached Meta says why and what to check:
+    an untrusted certificate (a network that inspects HTTPS), a proxy that
+    wants credentials or refused the tunnel, or no route, with Node's own
+    detail beside it; it read "fetch failed". Quoted credential fields in
+    that detail are redacted in full, including spaces.
+  - A permission mode above Muse Code's ceiling (its default permission
+    profile, or a managed policy) is refused with a sentence saying so and
+    what to choose instead.
+- **Prompt caching as Meta documents it** (M56). The Model API backend's
+  `prompt_cache_key` names the prefix every request starts with (model,
+  instructions, tools) instead of the session, so conversations in a
+  workspace share their cached start, and `prompt_cache_retention` asks for
+  Meta's shorter `in_memory` default. The machine-scoped
+  `museSpark.modelApiPromptCacheRetention` setting lets the user choose 24
+  hours at the same cached-input price; a repository cannot extend it.
 - **Groundwork for editors other than VS Code** (M60, M61, PLAN.md D60).
   The owner's IDE compatibility plan is filed in `docs/ide-compatibility.md`.
   A new gate, `npm run check:host-api`, keeps a record of what the
@@ -139,7 +540,9 @@ while they are (PLAN.md D30, D34).
   which editors have been tried is tracked in
   `docs/ide-compatibility/hosts.md` (Zed, Emacs
   with agent-shell, Neovim with CodeCompanion and JupyterLab with Jupyter
-  AI so far).
+  AI so far). On the Model API backend, a trusted folder gets Muse Code's
+  memory tools as the panel does; subagents, which are paid, are not
+  offered, and the package carries the C# of the shell tool's Windows job.
 - **Open VSX and npm publishing** in the release workflow. A tag also
   publishes the VSIX to Open VSX, for VS Code forks that install from
   there, and the agent to npm, each only when its token is set in the
@@ -156,6 +559,25 @@ while they are (PLAN.md D30, D34).
 
 ### Changed
 
+- **The Windows job helpers' C# ships beside the host bundle** (M55, M56;
+  PLAN.md D6). The shell job type, the MCP launcher and the Win32 half they
+  share are `.cs` files under `native/windows/`, read and compiled when a
+  helper is first needed, instead of strings in `dist/extension.js`, which
+  stays under its 600 KiB budget. A helper built from the earlier source is
+  rebuilt once.
+- **One hosted CI run per reviewed tree.** Pull requests still run the seven
+  cross-platform jobs. Protected `main` merges no longer launch the same jobs
+  again on an identical tree; manual branch dispatch remains available for
+  diagnostics without an open pull request.
+- **Windows unit test scheduling (M50).** Vitest runs test files one at a time
+  on Windows so concurrent MCP job-helper launches cannot starve the hosted
+  runner past the MCP startup deadline. Test selection, coverage, and deadlines
+  are unchanged.
+- **The Model API backend saves memory with the memory tools** (M49). It
+  used to be told to write `.agents/memory` with the file tools, which as
+  protected writes asked every time. The personal scopes, left out before
+  (PLAN.md D13), are now read and written too, and a memory note must be
+  UTF-8, as Muse Code requires.
 - **VS Code 1.99 or newer** (was 1.125; M62, PLAN.md A8), so editors built
   on VS Code 1.99 or later can install the extension. The extension uses
   no VS Code API newer than 1.85, checked against every published
@@ -166,10 +588,52 @@ while they are (PLAN.md D30, D34).
   in the browser), where the 1.125 floor was refused; and in the latest
   Cursor, Devin Desktop (formerly Windsurf), Kiro and Positron, which
   install it and pass the integration tests. On 1.99 and 1.100 Muse Voice
-  says it is unavailable, as their Node has no WebSocket.
+  says it is unavailable, as their Node has no WebSocket. VS Code routes an
+  extension's WebSocket through its proxy support only from 1.112, so on
+  1.101 to 1.111 Muse Voice's socket goes to Meta without it; **Muse Spark:
+  Diagnostics** now says whether this editor routes the extension's `fetch`
+  and WebSocket at all, instead of reading only the settings, and the
+  README's Proxies and certificates section says what to use. The Model
+  API's requests are routed on every supported version.
 
 ### Fixed
 
+- **Bounded paste and drop admission (M54).** The composer checks the shared
+  encoded-media limit against existing and pending files before reading a
+  pasted or dropped PDF. Host replies settle only their own request ID;
+  identical filenames cannot release another file's reservation. New
+  Conversation cancels deferred browser reads and host admissions from the
+  old conversation, including native file and mention pickers still waiting
+  on a dialog, path check or file read.
+- **Localized file-read rows (M54).** Model API PDF and image `read_file`
+  transcript rows use the installed panel language and grouped page counts,
+  byte sizes and image dimensions. The function result sent to the model
+  remains English. Invalid PDF or image bytes, missing visual files and file
+  read errors now show localized failure rows and reasons too, while their
+  model-facing error text stays English.
+- **Delivered file-read media survives a later Stop (M54).** A PDF or image
+  already sent in a completed Model API request stays in future replay when
+  a later tool round in the same turn stops or fails. Only media still waiting
+  for its first successful delivery becomes a path-only note.
+- **Account & usage reset timing (M53 follow-up).** The open modal updates
+  its countdown each minute and stops treating an expired report as current.
+  It uses Muse Code's reported account-level percentages and reset timestamps
+  without guessing model or plan multipliers. Sign-out and authentication
+  changes clear visible usage; the old global snapshot is no longer read and
+  is removed during activation when storage permits. An empty CLI read also
+  clears a same-host snapshot. A late
+  read cannot replace a newer report or restore a stopped host's usage.
+- **Windows MCP stdio startup (M50).** A compiled C# job executable now starts
+  each configured server directly. PowerShell only compiles it once, avoiding
+  per-server startup delay while retaining binary pipes, job containment and
+  owner confirmation. Preparation checks cached executables before use and
+  fails closed if one is corrupt.
+- **M50 MCP server lifecycle and names.** Closing the Model API host now
+  waits for servers still starting and launches no later startup batch. A
+  required server that stops during a reply or tool call fails the active
+  turn before more work runs. Configured server names that normalize to the
+  extension's reserved `ide` name are refused, avoiding duplicate function
+  names and unreachable tools.
 - **M46 session cleanup and resumed shell shortcut.** Releasing the last
   surface of a Muse Code session now asks the CLI to stop its background
   tasks; another surface holding that session leaves them running. Restored
@@ -246,6 +710,16 @@ while they are (PLAN.md D30, D34).
   goal command on a fresh panel does not create an empty conversation.
 - **Pre-commit resource pressure.** Staged lint and format tasks now run
   serially, keeping every check while limiting concurrent child processes.
+- **A new memory note cannot overwrite a racing writer** (M49). The Model
+  API memory tool and Memory view now create a missing note exclusively;
+  a name taken after the initial read is refused and its bytes remain.
+- **New memory notes are published whole** (M49). A hidden, synced stage is
+  hard-linked into a free note name, then removed. Readers never see partial
+  new bytes; a filesystem without hard links refuses the create. Existing
+  note and index updates still lack Muse Code's native cross-process lock.
+- **Memory index links for unusual filenames** (M49). Paths with spaces,
+  parentheses, brackets or percent signs are encoded in `MEMORY.md` and
+  decoded when a line is found or removed, so one note keeps one index line.
 - **A resumed Muse Code conversation shows its task list** (M45). A resume
   asked for inline history, which carries no task list; it now asks for the
   folded snapshot, which carries the task list and the goal.
@@ -255,6 +729,14 @@ while they are (PLAN.md D30, D34).
   once Account & usage had been opened in that panel (M47). Opening the map
   now reads the setting itself. A map with background tasks also no longer
   says it is empty merely because it has no subagent row.
+- **Muse Code behind a proxy lost the IDE tools** (M56). With `http.proxy`
+  set and `http.noProxy` empty, Muse Code sent its requests to the
+  extension's loopback `ide` server (diagnostics, images) to the proxy,
+  which cannot reach them. Loopback is now always in Muse Code's `NO_PROXY`
+  whenever it has a proxy, VS Code's or its own.
+- **Malformed VS Code proxy settings** (M56). A wrong-typed `http.proxy` or
+  `http.noProxy` value is ignored before Muse Code's child environment is
+  built; Diagnostics reports the same validated setting state.
 - **A command Muse Code moved to the background read "Interrupted"** when
   its turn ended (M43). It now shows what it printed, says it is still
   running, and is listed among the background tasks.

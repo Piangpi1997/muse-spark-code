@@ -52,11 +52,19 @@ body {
   margin: 0;
   font-size: var(--vscode-font-size);
   font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.header {
+  flex-wrap: wrap;
+  gap: 4px;
 }
 
 .header-actions {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
+  justify-content: flex-end;
   gap: 2px;
 }
 
@@ -145,6 +153,19 @@ body {
   text-align: center;
 }
 
+.gate-with-transcript {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  align-self: stretch;
+  max-width: none;
+  max-height: 55vh;
+  padding: var(--ms-gap);
+  overflow: auto;
+  border-bottom: 1px solid var(--vscode-panel-border);
+  background: var(--vscode-editor-background);
+}
+
 .gate-title {
   margin: 0;
   font-size: 1.2em;
@@ -180,6 +201,24 @@ body {
   margin: 0 0 var(--ms-gap);
   color: var(--vscode-descriptionForeground);
   font-size: 0.85em;
+}
+
+.gate-install-confirm {
+  display: grid;
+  gap: var(--ms-gap);
+  min-width: 0;
+  padding: var(--ms-gap);
+  border: 1px solid var(--vscode-focusBorder);
+}
+
+.gate-install-confirm p {
+  margin: 0;
+}
+
+.gate-install-command,
+.gate-device-code {
+  overflow-wrap: anywhere;
+  user-select: text;
 }
 
 .button-primary,
@@ -360,6 +399,24 @@ body {
   .mode-button > span {
     display: none;
   }
+
+  /* Keep the paid warning visible without covering Commands in a sidebar. */
+  .composer .paid-badge {
+    max-width: 44px;
+    padding-inline: 4px;
+  }
+
+  .composer-toolbar {
+    flex-wrap: wrap;
+  }
+
+  .composer-toolbar-group:first-child {
+    flex-basis: 100%;
+  }
+
+  .composer-toolbar-group:last-child {
+    margin-inline-start: auto;
+  }
 }
 
 /* --- controls (base) --- */
@@ -383,13 +440,13 @@ body {
   cursor: pointer;
 }
 
-/* The pill hugs its text (Claude Code sizing) instead of the control
-   height. Block layout, not flex: `text-overflow` only clips inline
-   content, and a centred flex row would clip both ends when squeezed. */
+/* Block layout lets the model label ellipsize when squeezed. The minimum
+   height preserves its touch target beside a paid badge in narrow panels. */
 .pill {
   display: inline-block;
   flex: 0 1 auto;
   min-width: 3em;
+  min-height: var(--ms-control-size);
   height: auto;
   overflow: hidden;
   padding: 1px 8px;
@@ -1403,6 +1460,64 @@ body {
   flex: 1 1 200px;
 }
 
+/* Session-scoped Model API schedules (M52): wrap on narrow sidebars. */
+.local-schedules {
+  margin: 0 var(--ms-gap) 4px;
+  padding: 6px var(--ms-gap);
+  max-height: 35vh;
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: var(--ms-radius);
+  background: var(--vscode-editorWidget-background);
+  font-size: 0.9em;
+  overflow-y: auto;
+}
+
+.local-schedules-head,
+.local-schedule-facts,
+.local-schedule-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+}
+
+.local-schedules-head span,
+.local-schedule-facts {
+  color: var(--vscode-descriptionForeground);
+}
+
+.local-schedules-list {
+  display: grid;
+  gap: 6px;
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.local-schedule {
+  min-width: 0;
+  padding-top: 6px;
+  border-top: 1px solid var(--vscode-panel-border);
+}
+
+.local-schedule-prompt,
+.local-schedule-facts {
+  overflow-wrap: anywhere;
+}
+
+.local-schedule-prompt {
+  font-weight: 600;
+}
+
+.local-schedule-actions {
+  margin-top: 4px;
+}
+
+.local-schedule-actions .tool-more {
+  min-width: 24px;
+  min-height: 24px;
+}
+
 /* --- context indicator --- */
 
 .context-label {
@@ -1829,6 +1944,17 @@ body {
   margin: 0;
 }
 
+.usage-setup {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ms-gap);
+  min-width: 0;
+}
+
+.usage-setup p {
+  margin: 0;
+}
+
 .usage-facts dt {
   color: var(--vscode-descriptionForeground);
 }
@@ -1838,6 +1964,13 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.usage-facts .usage-paid-child {
+  overflow: visible;
+  overflow-wrap: anywhere;
+  text-overflow: clip;
+  white-space: normal;
 }
 
 .usage-heading {

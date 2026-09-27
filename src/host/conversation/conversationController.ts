@@ -6,6 +6,7 @@
 import path from 'node:path'
 import { Buffer } from 'node:buffer'
 import { AttachmentStore } from '../../core/attachments'
+import { isProtectedPath } from '../../core/backends/modelapi/permissions'
 import {
   type AgentHost,
   type AgentSession,
@@ -32,6 +33,7 @@ import {
   type ShellSandboxPosture,
 } from '../../core/backends/musecode/sandbox'
 import { chatReferenceText } from '../../core/chatReference'
+import { textFileDisplay } from '../../shared/textFileDisplay'
 import { type EditorContext, editorContextText } from '../../core/editorContext'
 import type { ToolImageResult } from '../../core/toolImages'
 import type { DictationHandle, DictationSetup, DictationStatus } from '../../core/voice/dictation'
@@ -49,6 +51,12 @@ import {
   type GoalCommandVerb,
   IDE_MCP_SERVER_NAME,
   IMAGE_EXTENSIONS,
+  MAX_DOCUMENT_BYTES,
+  MAX_IMAGE_BYTES,
+  MAX_TEXT_ATTACHMENT_BYTES,
+  PDF_EXTENSION,
+  PRIVATE_ATTACHMENT_EXTENSIONS,
+  PRIVATE_ATTACHMENT_NAMES,
   MENTION_RESULT_LIMIT,
   MSP_REQUESTED_CAPABILITIES,
   OUTPUT_DOCUMENT_MAX_PAGES,
@@ -64,6 +72,8 @@ import {
   SESSION_RESTORE_WINDOW_MS,
   SHELL_TOOLS,
   type SubagentAction,
+  TEXT_ATTACHMENT_EXTENSIONS,
+  UNSUPPORTED_BINARY_ATTACHMENT_EXTENSIONS,
   UI_TEXT,
   USER_SHELL_ITEM_KIND,
   USER_SHELL_SANDBOX_FAILURE_MARKER,
@@ -71,6 +81,7 @@ import {
 import { effortForThinking, effortLevelsFor, isEffortLevel } from '../../shared/effort'
 import type { AgentEvent, ApprovalChoice, ItemSnapshot } from '../../shared/agentEvents'
 import { fill, plural } from '../../shared/l10n/text'
+import type { ScheduleCadence, ScheduledPrompt } from '../../shared/schedule'
 import { formatMention, parseSkillInvocation } from '../../shared/mentions'
 import { approvalModeFor } from '../../shared/permissionModes'
 import type {
@@ -110,13 +121,17 @@ class HostWatch {
     this.current = { host, unsubscribe: subscribe(host) }
   }
 
+  public isWatching(host: AgentHost): boolean {
+    return this.current?.host === host
+  }
+
   public forget(): void {
+    this.current?.unsubscribe()
     this.current = undefined
   }
 
   public dispose(): void {
-    this.current?.unsubscribe()
-    this.current = undefined
+    this.forget()
   }
 }
 
@@ -130,7 +145,16 @@ export interface PickedFile {
 export interface FileAccess {
   /** Native open dialog; resolves to [] when cancelled. */
   showOpenDialog(): Promise<readonly PickedFile[]>
-  readFile(fsPath: string): Promise<Uint8Array>
+  /** Reads no file that is already over the attachment limit. */
+  readFile(
+    fsPath: string,
+    maxBytes: number,
+    expectedCanonicalPath?: string,
+  ): Promise<{ readonly bytes: Uint8Array | undefined; readonly isPdf: boolean }>
+  /** Indexed relative path and the same checked target for reading; undefined on an escape. */
+  canonicalRelativePath(
+    fsPath: string,
+  ): Promise<{ readonly canonical: string; readonly checkedAbsolute: string } | undefined>
   /** QuickPick over the mention index; resolves to the chosen relative path. */
   pickMentionFile(): Promise<string | undefined>
   /** Relative path for a dropped `file:` URI; undefined outside the workspace. */
@@ -164,12 +188,6 @@ export interface SessionMemory {
   setLastSession(last: LastSession | undefined): Promise<void>
 }
 
-/** Where the last subscription window lives between sessions (extension global state). */
-export interface UsageCache {
-  read(): SubscriptionUsage | undefined
-  write(usage: SubscriptionUsage): Promise<void>
-}
-
 export interface ConversationDeps {
   readonly surface: ChatSurface
   readonly auth: AuthPort
@@ -180,6 +198,7 @@ export interface ConversationDeps {
   /** False until the approval cards ship (M4); see shared/permissionModes.ts. */
   readonly hasApprovalUi: boolean
   readonly openExternal: (url: string) => void
+  readonly openSideChat?: (sessionId: string) => void
   readonly mentions: MentionSearch
   readonly files: FileAccess
   /** The `allowDangerouslySkipPermissions` setting: whether Bypass is offered. */
@@ -222,8 +241,6 @@ export interface ConversationDeps {
   readonly openFile: (path: string, range: LineRange | undefined) => Promise<void>
   /** The picture a tool row names, from the workspace (M43, `loadToolImage`). */
   readonly readToolImage: (path: string) => Promise<ToolImageResult>
-  /** The subscription window the CLI last reported, kept across sessions (M16). */
-  readonly usageCache: UsageCache
   /** The IDE tool server for `session/start`, when it is listening. */
   readonly ideMcpEndpoint: () => Promise<SessionMcpHttpServer | undefined>
   readonly newAttachmentId: () => string
@@ -254,6 +271,9 @@ export interface ConversationDeps {
    * running here (M46): the keybinding's context key follows.
    */
   readonly onForegroundTasksChanged: () => void
+  /** A separate yes for each due Model API turn, naming prompt and token price (M52). */
+  readonly confirmScheduledRun?: (job: ScheduledPrompt, modelId: string) => Promise<boolean>
+  readonly isScheduledPaidOn?: () => boolean
   readonly now: () => number
   readonly log: Logger
 }
@@ -277,6 +297,11 @@ const sessionSurfaces = new WeakMap<AgentSession, Set<ConversationController>>()
 const APPROVED_DECISION = 'approved'
 const [IDE_MCP_CAPABILITY] = MSP_REQUESTED_CAPABILITIES
 const HISTORY_MODE_NONE = 'none'
+const REWIND_HISTORY_MODES: ReadonlySet<string> = new Set([
+  'inline',
+  'snapshot',
+  'anchoredSnapshot',
+])
 const NOT_LOADED_STATUS = 'notLoaded'
 // Events that mark a hidden surface unread (Claude Code's dot): the turn is
 // done, or the agent is waiting on a decision or an answer.
@@ -285,12 +310,48 @@ const ATTENTION_EVENTS: ReadonlySet<AgentEvent['type']> = new Set([
   'approvalRequested',
   'questionRequested',
 ])
+/** Session/model actions must stop as soon as sign-out is announced in any panel. */
+const AUTH_REQUIRED_SESSION_ACTIONS: ReadonlySet<ConversationMessage['type']> = new Set([
+  'readOutput',
+  'readToolImage',
+  'openOutput',
+  'openEditDiff',
+  'rewindCode',
+  'exportConversation',
+  'decideApproval',
+  'answerQuestion',
+  'clarifyQuestion',
+  'moveToBackground',
+  'rewindConversation',
+  'openSideChat',
+  'setModel',
+  'setEffort',
+  'setThinking',
+  'setPermissionMode',
+  'compact',
+  'goalCommand',
+  'scheduleCreate',
+  'scheduleList',
+  'scheduleCancel',
+  'scheduleRun',
+  'listSkills',
+  'listSessions',
+  'readChildSession',
+  'subagentControl',
+  'subagentMessage',
+  'resumeSession',
+  'setSessionArchived',
+  'forkSession',
+  'renameSession',
+  'readUsage',
+  'setPaidFeature',
+])
 const QUEUED_DISPOSITION = 'queued'
 const TOOL_CALL_KIND = 'toolCall'
+const SUBAGENT_ITEM_KIND = 'subagent'
 const IN_PROGRESS_STATUS = 'inProgress'
 // The unsaved files a warning names before it counts the rest (D27).
 const UNSAVED_FILES_NAMED = 3
-const STEERED_DISPOSITION = 'steered'
 // How a notice the user saw reads in the log (M39).
 const NOTICE_PREFIX = 'Shown in the panel: '
 
@@ -409,18 +470,50 @@ export class ConversationController {
   private skills: readonly SkillOption[] | undefined
   private skillsRefresh: Promise<void> | undefined
   private readonly attachments: AttachmentStore
+  /** A clear or session replacement invalidates pending browser file admission. */
+  private attachmentGeneration = 0
+  /** External session drops invalidate in-flight sends; owned not-loaded recovery does not. */
+  private sendInvalidationEpoch = 0
+  /** Distinguishes an account stop from an ordinary same-account session switch. */
+  private accountStopEpoch = 0
+  /** A reloaded panel cannot see the old session while its cancel is pending. */
+  private accountStopsInFlight = 0
+  /** The latest composer generation seen on this surface's file messages. */
+  private webviewAttachmentEpoch = 0
+
+  /** User cards whose file bytes rewind cannot restore across every backend/history path. */
+  private readonly fileMessageIds = new Set<string>()
+  /** Fresh cards use local IDs until Muse Code serves their durable user item IDs. */
+  private readonly acceptedUserCards = new Map<
+    string,
+    { readonly turnId: string; readonly text: string }
+  >()
   private modelId: string
   private permissionMode: PermissionMode
+  private isSideChat: boolean
+  /** Muse Code does not persist a side marker: this panel may resume only its own fork. */
+  private readonly sideSessionIds = new Set<string>()
   private effort: EffortLevel = DEFAULT_EFFORT
   private isThinkingEnabled = true
   private activeTurnId: string | undefined
+  /**
+   * Child sessions this surface has rows for. Their turns reach the parent
+   * stream (M48) but never take the parent turn's steering, Stop or Ctrl+B.
+   */
+  private readonly childSessionIds = new Set<string>()
   private hasWarnedSandbox = false
   /** The contributor model the user said yes to (once per conversation). */
   private confirmedContributor: string | undefined
   /** The workspace's stored sessions once the dialog asked for them (M6). */
   private sessionRecords: Map<string, SessionRecord> | undefined
   private readonly listWatch = new HostWatch()
+  private historyWatchEpoch = 0
   private readonly usageWatch = new HostWatch()
+  /** Usage belongs to one live host; a restarted host may use another account. */
+  private usageHost: AgentHost | undefined
+  private latestUsage: SubscriptionUsage | undefined
+  private usageEventRevision = 0
+  private usageReadSequence = 0
   /** The dictation driver, created on the first press (M9). */
   private dictation: DictationHandle | undefined
   private dictationStatus: DictationStatus = 'idle'
@@ -446,6 +539,8 @@ export class ConversationController {
   private resumeTarget: { readonly sessionId: string; readonly kind: BackendKind } | undefined
   /** A session start in flight, shared by concurrent callers. */
   private sessionOpening: Promise<AgentSession> | undefined
+  /** A replaced opening cannot clear a newer opening's shared slot. */
+  private sessionOpeningGeneration = -1
   /** The surface closed: nothing started after this is kept. */
   private isDisposed = false
   /**
@@ -478,7 +573,12 @@ export class ConversationController {
 
   public constructor(private readonly deps: ConversationDeps) {
     this.modelId = deps.modelId
-    this.permissionMode = deps.initialPermissionMode
+    this.isSideChat = deps.surface.isSideChat === true
+    const restoredSideId = this.isSideChat ? deps.surface.takeRestoredSessionId() : undefined
+    if (restoredSideId !== undefined) {
+      this.sideSessionIds.add(restoredSideId)
+    }
+    this.permissionMode = this.isSideChat ? 'plan' : deps.initialPermissionMode
     if (this.permissionMode === BYPASS_MODE && !deps.isBypassAllowed()) {
       // The initial-mode setting alone cannot switch approvals off; the
       // explicit allow setting must be on too, as in Claude Code.
@@ -554,11 +654,12 @@ export class ConversationController {
     return this.models?.find((model) => model.modelId === modelId)?.contextLimit
   }
 
-  private postSessionInfo(modelId: string): void {
+  private postSessionInfo(modelId: string, shouldResetSideChat = false): void {
     const contextLimit = this.contextLimitFor(modelId)
     this.post({
       type: 'sessionInfo',
       modelId,
+      ...((this.isSideChat || shouldResetSideChat) && { sideChat: this.isSideChat }),
       ...(contextLimit !== undefined && { contextLimit }),
       ...(this.session !== undefined && { sessionId: this.session.sessionId }),
       // Said only where it is so (D26): the panel then offers neither.
@@ -570,9 +671,15 @@ export class ConversationController {
     if (this.sessionRecords === undefined) {
       return
     }
+    const sessions: ReturnType<typeof toSessionRow>[] = []
+    for (const record of this.sessionRecords.values()) {
+      if (!this.deps.surface.isSideChat || this.sideSessionIds.has(record.sessionId)) {
+        sessions.push(toSessionRow(record))
+      }
+    }
     this.post({
       type: 'sessionList',
-      sessions: Array.from(this.sessionRecords.values(), (record) => toSessionRow(record)),
+      sessions,
       archivedIds: [...this.deps.sessions.archivedIds()],
     })
   }
@@ -621,13 +728,37 @@ export class ConversationController {
    * the caller says the host is already gone or has been told (PLAN.md D25):
    * a dropped turn would otherwise run on, unwatched and billed.
    */
-  private dropSession(isTurnCancelled = true): void {
+  private dropSession(isTurnCancelled = true, isOwnedRecovery = false): void {
+    this.attachmentGeneration += 1
+    this.sessionOpening = undefined
+    const didHaveModels = this.models !== undefined
+    const didHaveSkills = this.skills !== undefined
+    this.models = undefined
+    this.modelListing = undefined
+    this.skills = undefined
+    this.skillsRefresh = undefined
+    if (!this.isDisposed) {
+      if (didHaveModels) {
+        this.post({ type: 'modelList', models: [] })
+      }
+      if (didHaveSkills) {
+        this.post({ type: 'skillList', skills: [] })
+      }
+    }
+    if (!isOwnedRecovery) {
+      this.sendInvalidationEpoch += 1
+    }
     const { session } = this
     if (isTurnCancelled && session !== undefined && this.activeTurnId !== undefined) {
       void this.cancelQuietly(session)
     }
     this.unsubscribe?.()
     this.unsubscribe = undefined
+    // A key replacement may sign straight back in on the same Model API
+    // backend. Clear the old account's prompt names before that async restart.
+    if (session?.schedules !== undefined && !this.isDisposed) {
+      this.forward({ type: 'schedulesChanged', jobs: [] })
+    }
     this.closedWatch?.()
     this.closedWatch = undefined
     if (session !== undefined) {
@@ -640,6 +771,9 @@ export class ConversationController {
     session?.dispose()
     this.session = undefined
     this.activeTurnId = undefined
+    this.fileMessageIds.clear()
+    this.acceptedUserCards.clear()
+    this.childSessionIds.clear()
     this.finishedTurns.clear()
     this.forgetForegroundShells()
     this.pendingShellApprovals.clear()
@@ -754,9 +888,9 @@ export class ConversationController {
    * Live delivery dropped events (MSP `view/gap`, D26): the transcript is
    * re-read whole, once more if another gap arrived during the read.
    */
-  private async reloadAfterGaps(): Promise<void> {
+  private async reloadAfterGaps(generation: number): Promise<void> {
     let handled = -1
-    while (handled !== this.gapCount) {
+    while (generation === this.sendInvalidationEpoch && handled !== this.gapCount) {
       handled = this.gapCount
       // The panel's session now: a gap is only ever heard from the attached one.
       const { session } = this
@@ -766,26 +900,49 @@ export class ConversationController {
       const goalEventsAtStart = this.goalEventCount
       try {
         const host = await this.deps.ensureHost()
-        const history = await host.readSession(session.sessionId, { recoverGoal: true })
-        if (this.session === session) {
-          this.postHistory(
-            session.sessionId,
-            history,
-            this.activeTurnId,
-            goalEventsAtStart === this.goalEventCount,
-          )
-          this.notice('info', UI_TEXT.viewGapReloaded)
+        if (generation !== this.sendInvalidationEpoch || this.session !== session) {
+          break
         }
+        const history = await host.readSession(session.sessionId, { recoverGoal: true })
+        if (generation !== this.sendInvalidationEpoch || this.session !== session) {
+          break
+        }
+        this.postHistory(
+          session.sessionId,
+          history,
+          this.activeTurnId,
+          goalEventsAtStart === this.goalEventCount,
+        )
+        this.notice('info', UI_TEXT.viewGapReloaded)
       } catch (error: unknown) {
-        this.notice('warning', `${UI_TEXT.viewGapReloadFailed}: ${describe(error)}`)
+        if (generation === this.sendInvalidationEpoch && this.session === session) {
+          this.notice('warning', `${UI_TEXT.viewGapReloadFailed}: ${describe(error)}`)
+        }
       }
     }
-    this.gapReload = undefined
   }
 
   private onViewGap(): void {
     this.gapCount += 1
-    this.gapReload ??= this.reloadAfterGaps()
+    if (this.gapReload !== undefined) {
+      return
+    }
+    const reload = this.reloadAfterGaps(this.sendInvalidationEpoch)
+    this.gapReload = reload
+    void reload.finally(() => {
+      if (this.gapReload === reload) {
+        this.gapReload = undefined
+      }
+    })
+  }
+
+  private noteFileCard(item: ItemSnapshot): void {
+    if (
+      item.kind === 'userMessage' &&
+      item.attachments?.some((attachment) => attachment.type === 'file')
+    ) {
+      this.fileMessageIds.add(item.itemId)
+    }
   }
 
   private onEvent(event: AgentEvent): void {
@@ -823,9 +980,34 @@ export class ConversationController {
   }
 
   /** The controller's own bookkeeping for an event the webview was sent. */
+  /**
+   * A turn of a known child session (M48): its row names the session id, and
+   * a Model API child's turn ids prefix it, as the panel already reads them.
+   */
+  private isChildTurn(turnId: string): boolean {
+    for (const childSessionId of this.childSessionIds) {
+      if (turnId === childSessionId || turnId.startsWith(`${childSessionId}:`)) {
+        return true
+      }
+    }
+    return false
+  }
+
+  /** Remember a subagent row's child session, live or from a loaded history. */
+  private noteSubagentRow(item: ItemSnapshot): void {
+    if (item.kind === SUBAGENT_ITEM_KIND && item.childSessionId !== undefined) {
+      this.childSessionIds.add(item.childSessionId)
+    }
+  }
+
   private track(event: AgentEvent): void {
     switch (event.type) {
       case 'turnStarted': {
+        // A child's own turn reaches the parent stream; the running parent
+        // turn keeps the steering, Stop and Ctrl+B (the review of PR #35).
+        if (this.isChildTurn(event.turnId)) {
+          break
+        }
         this.activeTurnId = event.turnId
         this.turnClocks.set(event.turnId, { startedAt: this.deps.now(), firstOutputAt: undefined })
         this.deps.log.info(
@@ -891,16 +1073,20 @@ export class ConversationController {
         break
       }
       case 'itemStarted': {
+        this.noteFileCard(event.item)
         this.noteForegroundShell(event.item)
+        this.noteSubagentRow(event.item)
         break
       }
       case 'itemUpdated':
       case 'itemCompleted': {
+        this.noteFileCard(event.item)
         if (event.type === 'itemCompleted' || event.item.status !== IN_PROGRESS_STATUS) {
           this.pendingShellApprovals.delete(event.item.itemId)
           this.pausedForegroundShells.delete(event.item.itemId)
         }
         this.noteForegroundShell(event.item)
+        this.noteSubagentRow(event.item)
         this.noteSandboxFailure(event.item.failureReason)
         // A `!` command says it in its output (captured 2026-09-25, M46).
         if (event.item.kind === USER_SHELL_ITEM_KIND) {
@@ -1211,7 +1397,7 @@ export class ConversationController {
       this.post({ type: 'userShellRefused', command: trimmed, reason: UI_TEXT.userShellRestricted })
       return
     }
-    if (this.deps.auth.current.status !== 'signedIn') {
+    if (!this.isAuthAdmitted()) {
       this.post({ type: 'userShellRefused', command: trimmed, reason: UI_TEXT.notSignedInReason })
       return
     }
@@ -1220,13 +1406,25 @@ export class ConversationController {
       this.post({ type: 'userShellRefused', command: trimmed, reason: UI_TEXT.noWorkspaceReason })
       return
     }
+    const generation = this.sendInvalidationEpoch
     try {
       const session = await this.ensureSession(workspaceRoot)
+      if (!this.isCurrentSessionAction(session, generation)) {
+        return
+      }
       const host = await this.deps.ensureHost()
+      if (!this.isCurrentSessionAction(session, generation)) {
+        return
+      }
       this.deps.log.info(`Running a command the user typed (${String(trimmed.length)} characters)`)
       await this.runResuming(host, session, (current) => current.runUserShell(trimmed))
-      this.noteActivity()
+      if (generation === this.sendInvalidationEpoch && this.isAuthAdmitted()) {
+        this.noteActivity()
+      }
     } catch (error: unknown) {
+      if (generation !== this.sendInvalidationEpoch || !this.isAuthAdmitted()) {
+        return
+      }
       const reason = `${UI_TEXT.userShellFailed}: ${describe(error)}`
       this.deps.log.warn(reason)
       this.post({ type: 'userShellRefused', command: trimmed, reason })
@@ -1236,16 +1434,25 @@ export class ConversationController {
   private async readOutput(
     message: Extract<ConversationMessage, { type: 'readOutput' }>,
   ): Promise<void> {
-    if (this.session === undefined) {
+    const session = this.session
+    if (session === undefined) {
       return
     }
+    const generation = this.sendInvalidationEpoch
     try {
-      const page = await this.session.readOutput({
+      const page = await session.readOutput({
         itemId: message.itemId,
         outputRef: message.outputRef,
         offsetBytes: message.offsetBytes,
         lengthBytes: OUTPUT_PAGE_BYTES,
       })
+      if (
+        this.isDisposed ||
+        generation !== this.sendInvalidationEpoch ||
+        this.session !== session
+      ) {
+        return
+      }
       this.post({
         type: 'outputPage',
         itemId: message.itemId,
@@ -1256,17 +1463,23 @@ export class ConversationController {
         eof: page.eof,
       })
     } catch (error: unknown) {
-      this.notice('error', `${UI_TEXT.outputLoadFailed}: ${describe(error)}`)
+      if (generation === this.sendInvalidationEpoch && this.session === session) {
+        this.notice('error', `${UI_TEXT.outputLoadFailed}: ${describe(error)}`)
+      }
     }
   }
 
   /** A tool row's picture (M43): the file as a data URI, or why it cannot be shown. */
   private async readToolImage(itemId: string, imagePath: string): Promise<void> {
+    const generation = this.sendInvalidationEpoch
     let result: ToolImageResult
     try {
       result = await this.deps.readToolImage(imagePath)
     } catch (error: unknown) {
       result = { ok: false, reason: describe(error) }
+    }
+    if (generation !== this.sendInvalidationEpoch) {
+      return
     }
     if (!result.ok) {
       this.deps.log.info(`tool image ${imagePath} not shown: ${result.reason}`)
@@ -1312,36 +1525,57 @@ export class ConversationController {
   private async openOutput(
     message: Extract<ConversationMessage, { type: 'openOutput' }>,
   ): Promise<void> {
+    const session = this.session
+    const generation = this.sendInvalidationEpoch
+    if (!this.isCurrentSessionAction(session, generation)) {
+      return
+    }
     const tabId = message.itemId.slice(-OUTPUT_TAB_ID_LENGTH)
     const title = fill(UI_TEXT.toolOutputTitle, { tool: message.label, id: tabId })
     try {
       const stored =
         message.outputRef === undefined
           ? undefined
-          : await this.fetchPatch(message.itemId, message.outputRef, OUTPUT_DOCUMENT_MAX_PAGES)
+          : await this.fetchPatch(
+              session,
+              generation,
+              message.itemId,
+              message.outputRef,
+              OUTPUT_DOCUMENT_MAX_PAGES,
+            )
+      if (!this.isCurrentSessionAction(session, generation)) {
+        return
+      }
       await this.deps.openDocument(title, stored ?? message.text)
     } catch (error: unknown) {
-      this.notice('error', `${UI_TEXT.openOutputFailed}: ${describe(error)}`)
+      if (this.isCurrentSessionAction(session, generation)) {
+        this.notice('error', `${UI_TEXT.openOutputFailed}: ${describe(error)}`)
+      }
     }
   }
 
   private async fetchPatch(
+    session: AgentSession,
+    generation: number,
     itemId: string,
     outputRef: string,
     maxPages = PATCH_DOCUMENT_MAX_PAGES,
   ): Promise<string | undefined> {
-    if (this.session === undefined) {
-      return undefined
-    }
     let content = ''
     let offsetBytes = 0
     for (let page = 0; page < maxPages; page += 1) {
-      const chunk = await this.session.readOutput({
+      if (!this.isCurrentSessionAction(session, generation)) {
+        return undefined
+      }
+      const chunk = await session.readOutput({
         itemId,
         outputRef,
         offsetBytes,
         lengthBytes: OUTPUT_PAGE_BYTES,
       })
+      if (!this.isCurrentSessionAction(session, generation)) {
+        return undefined
+      }
       content += chunk.content
       if (chunk.eof) {
         return content
@@ -1357,10 +1591,16 @@ export class ConversationController {
       this.notice('info', UI_TEXT.rewindNothing)
       return
     }
+    const generation = this.sendInvalidationEpoch
     for (const edit of edits) {
+      if (generation !== this.sendInvalidationEpoch || this.accountStopsInFlight > 0) {
+        return
+      }
       await this.reviewEdit('revert', edit.itemId, edit.outputRef)
     }
-    this.notice('info', plural(UI_TEXT.rewindDone, edits.length))
+    if (generation === this.sendInvalidationEpoch && this.accountStopsInFlight === 0) {
+      this.notice('info', plural(UI_TEXT.rewindDone, edits.length))
+    }
   }
 
   private async reviewEdit(
@@ -1368,17 +1608,27 @@ export class ConversationController {
     itemId: string,
     outputRef: string,
   ): Promise<void> {
+    const session = this.session
+    const generation = this.sendInvalidationEpoch
+    if (!this.isCurrentSessionAction(session, generation)) {
+      return
+    }
     try {
-      const patch = await this.fetchPatch(itemId, outputRef)
-      if (patch === undefined) {
+      const patch = await this.fetchPatch(session, generation, itemId, outputRef)
+      if (patch === undefined || !this.isCurrentSessionAction(session, generation)) {
         return
       }
       const notices = await this.deps.editReview[action](itemId, patch)
+      if (!this.isCurrentSessionAction(session, generation)) {
+        return
+      }
       for (const notice of notices) {
         this.notice(notice.level, notice.text)
       }
     } catch (error: unknown) {
-      this.notice('error', `${UI_TEXT.editReviewFailed}: ${describe(error)}`)
+      if (this.isCurrentSessionAction(session, generation)) {
+        this.notice('error', `${UI_TEXT.editReviewFailed}: ${describe(error)}`)
+      }
     }
   }
 
@@ -1387,16 +1637,22 @@ export class ConversationController {
     if (this.models !== undefined) {
       return
     }
-    this.modelListing ??= this.listModels(host)
+    const listing = this.modelListing ?? this.listModels(host, this.attachmentGeneration)
+    this.modelListing = listing
     try {
-      await this.modelListing
+      await listing
     } finally {
-      this.modelListing = undefined
+      if (this.modelListing === listing) {
+        this.modelListing = undefined
+      }
     }
   }
 
-  private async listModels(host: AgentHost): Promise<void> {
+  private async listModels(host: AgentHost, generation: number): Promise<void> {
     const listed = await host.listModels()
+    if (this.isDisposed || this.attachmentGeneration !== generation) {
+      return
+    }
     const models = this.deps.isConfidentialWorkspace()
       ? listed.filter((model) => !isContributorModel(model.modelId))
       : listed
@@ -1418,9 +1674,12 @@ export class ConversationController {
     }
   }
 
-  private async loadSkills(session: AgentSession): Promise<void> {
+  private async loadSkills(session: AgentSession, generation: number): Promise<void> {
     try {
       const skills = await session.listSkills()
+      if (this.session !== session || this.attachmentGeneration !== generation || this.isDisposed) {
+        return
+      }
       this.skills = skills.map((skill) => ({
         selector: skill.selector,
         displayName: skill.displayName,
@@ -1428,18 +1687,29 @@ export class ConversationController {
         ...(skill.argumentHint !== undefined && { argumentHint: skill.argumentHint }),
       }))
     } catch (error: unknown) {
+      if (this.session !== session || this.attachmentGeneration !== generation || this.isDisposed) {
+        return
+      }
       this.deps.log.warn(`skill/list failed: ${describe(error)}`)
       this.skills = []
-    } finally {
-      this.skillsRefresh = undefined
     }
     this.postSkills()
   }
 
   /** Re-list the skills; concurrent callers share the in-flight request. */
-  private refreshSkills(session: AgentSession): Promise<void> {
-    this.skillsRefresh ??= this.loadSkills(session)
-    return this.skillsRefresh
+  private async refreshSkills(session: AgentSession): Promise<void> {
+    if (this.session !== session) {
+      return
+    }
+    const loading = this.skillsRefresh ?? this.loadSkills(session, this.attachmentGeneration)
+    this.skillsRefresh = loading
+    try {
+      await loading
+    } finally {
+      if (this.skillsRefresh === loading) {
+        this.skillsRefresh = undefined
+      }
+    }
   }
 
   /** The IDE tool server config for a new or resumed session, when granted. */
@@ -1453,12 +1723,22 @@ export class ConversationController {
     return ideEndpoint === undefined ? undefined : { [IDE_MCP_SERVER_NAME]: ideEndpoint }
   }
 
+  private sideResumeOptions(host: AgentHost): { readonly requireSideChat: true } | undefined {
+    return this.deps.surface.isSideChat === true && host.info.kind === 'modelApi'
+      ? { requireSideChat: true }
+      : undefined
+  }
+
   /** Take a session as this surface's: events, composer state, skills. */
   private async attach(
     host: AgentHost,
     session: AgentSession,
     origin: SessionOrigin,
   ): Promise<void> {
+    const generation = this.attachmentGeneration
+    if (origin === 'started' && this.deps.surface.isSideChat === true) {
+      this.sideSessionIds.add(session.sessionId)
+    }
     this.deps.log.info(
       `Session ${session.sessionId} ${origin} on the ${host.info.kind} backend, model ${session.modelId}`,
     )
@@ -1468,11 +1748,22 @@ export class ConversationController {
     surfaces.add(this)
     sessionSurfaces.set(session, surfaces)
     this.canEditSessions = host.info.canEditSessions
+    const eventGeneration = this.sendInvalidationEpoch
     this.unsubscribe = session.onEvent((event) => {
+      if (
+        this.isDisposed ||
+        this.session !== session ||
+        eventGeneration !== this.sendInvalidationEpoch
+      ) {
+        return
+      }
       this.onEvent(event)
     })
     // The host closing this very session is heard here (D25), not only in History.
     this.closedWatch = host.onSessionListEvent((event) => {
+      if (eventGeneration !== this.sendInvalidationEpoch) {
+        return
+      }
       if (
         event.type === 'closed' &&
         event.sessionId === session.sessionId &&
@@ -1484,7 +1775,15 @@ export class ConversationController {
     this.postSessionInfo(this.modelId)
     this.noteActivity()
     await this.applyEffort(session)
+    if (this.session !== session || this.attachmentGeneration !== generation || this.isDisposed) {
+      return
+    }
     void this.refreshSkills(session)
+    if (session.schedules !== undefined) {
+      void session.schedules.list().catch((error: unknown) => {
+        this.deps.log.warn(`Scheduled prompts could not be loaded: ${describe(error)}`)
+      })
+    }
   }
 
   /**
@@ -1496,40 +1795,58 @@ export class ConversationController {
     if (this.session !== undefined) {
       return Promise.resolve(this.session)
     }
-    this.sessionOpening ??= this.openSessionOnce(workspaceRoot)
+    if (this.sessionOpening === undefined) {
+      const generation = this.attachmentGeneration
+      this.sessionOpeningGeneration = generation
+      this.sessionOpening = this.openSessionOnce(workspaceRoot, generation)
+    }
     return this.sessionOpening
   }
 
   /** `openSession`, forgetting the shared start once it settles. */
-  private async openSessionOnce(workspaceRoot: string): Promise<AgentSession> {
+  private async openSessionOnce(workspaceRoot: string, generation: number): Promise<AgentSession> {
     try {
-      return await this.openSession(workspaceRoot)
+      return await this.openSession(workspaceRoot, generation)
     } finally {
-      this.sessionOpening = undefined
+      if (this.sessionOpeningGeneration === generation) {
+        this.sessionOpening = undefined
+      }
     }
   }
 
-  private async openSession(workspaceRoot: string): Promise<AgentSession> {
+  private requireCurrentOpening(generation: number): void {
+    if (this.isDisposed || this.attachmentGeneration !== generation) {
+      throw new Error(this.isDisposed ? UI_TEXT.surfaceClosed : UI_TEXT.turnStoppedByRestart)
+    }
+  }
+
+  private async openSession(workspaceRoot: string, generation: number): Promise<AgentSession> {
     const host = await this.deps.ensureHost()
+    this.requireCurrentOpening(generation)
     await this.ensureModels(host)
-    const resumed = await this.resumeAfterRestart(host)
+    this.requireCurrentOpening(generation)
+    const resumed = await this.resumeAfterRestart(host, generation)
+    this.requireCurrentOpening(generation)
     if (resumed !== undefined) {
       return resumed
     }
     const mcpServers = await this.mcpServersFor(host)
+    this.requireCurrentOpening(generation)
     const session = await host.startSession({
       workspaceRoot,
       modelId: this.modelId,
       approvalMode: approvalModeFor(this.permissionMode, this.deps.hasApprovalUi),
+      ...(this.isSideChat && { sideChat: true }),
       ...(mcpServers !== undefined && { mcpServers }),
     })
-    if (this.isDisposed) {
+    if (this.isDisposed || this.attachmentGeneration !== generation) {
       // The surface closed while the session was starting: nobody would listen.
       session.dispose()
-      throw new Error(UI_TEXT.surfaceClosed)
+      this.requireCurrentOpening(generation)
     }
     this.modelId = session.modelId
     await this.attach(host, session, 'started')
+    this.requireCurrentOpening(generation)
     if (host.info.kind === 'modelApi') {
       this.notice('info', UI_TEXT.modelApiBackendNotice)
     } else {
@@ -1545,7 +1862,10 @@ export class ConversationController {
    * replayed. If the session cannot be resumed the user is told and a new
    * one starts.
    */
-  private async resumeAfterRestart(host: AgentHost): Promise<AgentSession | undefined> {
+  private async resumeAfterRestart(
+    host: AgentHost,
+    generation: number,
+  ): Promise<AgentSession | undefined> {
     const target = this.resumeTarget
     this.resumeTarget = undefined
     if (target?.kind !== host.info.kind) {
@@ -1557,17 +1877,29 @@ export class ConversationController {
         target.sessionId,
         this.modelId,
         await this.mcpServersFor(host),
+        this.sideResumeOptions(host),
       )
     } catch (error: unknown) {
       this.notice('warning', `${UI_TEXT.sessionNotContinued}: ${describe(error)}`)
       return undefined
     }
-    if (this.isDisposed) {
+    if (!this.canLoadIntoSurface(host, loaded)) {
       loaded.session.dispose()
-      throw new Error(UI_TEXT.surfaceClosed)
+      this.notice('warning', UI_TEXT.sideChatSessionOnly)
+      return undefined
+    }
+    this.isSideChat = loaded.record.sideChat === true || this.deps.surface.isSideChat === true
+    if (this.isSideChat) {
+      this.permissionMode = 'plan'
+      this.postComposerState()
+    }
+    if (this.isDisposed || this.attachmentGeneration !== generation) {
+      loaded.session.dispose()
+      this.requireCurrentOpening(generation)
     }
     this.activeTurnId = loaded.activeTurnId
     await this.attach(host, loaded.session, 'continued after a restart')
+    this.requireCurrentOpening(generation)
     try {
       await loaded.session.setApprovalMode(
         approvalModeFor(this.permissionMode, this.deps.hasApprovalUi),
@@ -1579,9 +1911,31 @@ export class ConversationController {
     return loaded.session
   }
 
+  /** The backend's admission closes before its visible auth label changes. */
+  private isAuthAdmitted(): boolean {
+    return (
+      this.deps.auth.current.status === 'signedIn' &&
+      this.deps.auth.backend !== undefined &&
+      this.accountStopsInFlight === 0
+    )
+  }
+
   /** Why a user action cannot run now (signed out / no folder), posted as asked. */
+  private isCurrentSessionAction(
+    session: AgentSession | undefined,
+    generation: number,
+  ): session is AgentSession {
+    return (
+      session !== undefined &&
+      !this.isDisposed &&
+      this.isAuthAdmitted() &&
+      this.sendInvalidationEpoch === generation &&
+      this.session === session
+    )
+  }
+
   private refuseAction(localId?: string): string | undefined {
-    const isSignedIn = this.deps.auth.current.status === 'signedIn'
+    const isSignedIn = this.isAuthAdmitted()
     const reason = isSignedIn ? undefined : UI_TEXT.notSignedInReason
     if (reason === undefined && this.deps.workspaceRoot !== undefined) {
       return undefined
@@ -1598,20 +1952,28 @@ export class ConversationController {
 
   /** The session for a user action, or undefined (with the reason posted). */
   private async sessionForAction(localId?: string): Promise<AgentSession | undefined> {
+    const generation = this.sendInvalidationEpoch
     const refusal = this.refuseAction(localId)
     if (refusal !== undefined || this.deps.workspaceRoot === undefined) {
       return undefined
     }
     const session = await this.ensureSession(this.deps.workspaceRoot)
-    return session
+    return this.isCurrentSessionAction(session, generation) ? session : undefined
   }
 
   // --- Session history (M6) ---
 
   /** Follow `session/listChanged` / `session/closed` on the current host. */
   private watchList(host: AgentHost): void {
+    if (!this.listWatch.isWatching(host)) {
+      this.historyWatchEpoch += 1
+    }
+    const epoch = this.historyWatchEpoch
     this.listWatch.ensure(host, (watched) =>
       watched.onSessionListEvent((event) => {
+        if (epoch !== this.historyWatchEpoch || !this.listWatch.isWatching(watched)) {
+          return
+        }
         this.onListEvent(event)
       }),
     )
@@ -1641,8 +2003,12 @@ export class ConversationController {
       this.notice('warning', UI_TEXT.noWorkspaceReason)
       return
     }
+    const generation = this.sendInvalidationEpoch
     try {
       const host = await this.deps.ensureHost()
+      if (generation !== this.sendInvalidationEpoch || this.isDisposed) {
+        return
+      }
       this.watchList(host)
       const records: SessionRecord[] = []
       let cursor: string | undefined
@@ -1652,6 +2018,9 @@ export class ConversationController {
           limit: SESSION_LIST_LIMIT,
           ...(cursor !== undefined && { cursor }),
         })
+        if (generation !== this.sendInvalidationEpoch) {
+          return
+        }
         records.push(...result.sessions)
         cursor = result.nextCursor
         if (cursor === undefined) {
@@ -1661,7 +2030,9 @@ export class ConversationController {
       this.sessionRecords = new Map(records.map((record) => [record.sessionId, record]))
       this.postSessionList()
     } catch (error: unknown) {
-      this.notice('error', `${UI_TEXT.historyUnavailable}: ${describe(error)}`)
+      if (generation === this.sendInvalidationEpoch) {
+        this.notice('error', `${UI_TEXT.historyUnavailable}: ${describe(error)}`)
+      }
     }
   }
 
@@ -1672,10 +2043,15 @@ export class ConversationController {
     activeTurnId: string | undefined,
     shouldIncludeGoal = true,
   ): void {
+    for (const item of history.items) {
+      this.noteSubagentRow(item)
+      this.noteFileCard(item)
+    }
     this.restoreForegroundShells(history.items, activeTurnId)
     this.post({
       type: 'historyLoaded',
       sessionId,
+      ...(history.sideChat !== undefined && { sideChat: history.sideChat }),
       items: [...history.items],
       ...(history.name !== undefined && { name: history.name }),
       todos: [...history.todos],
@@ -1684,6 +2060,15 @@ export class ConversationController {
       // A turn still running keeps its Stop and its steering (D26).
       ...(activeTurnId !== undefined && { activeTurnId }),
     })
+  }
+
+  /** A side panel may only load its own fork; Model API also checks its durable marker. */
+  private canLoadIntoSurface(host: AgentHost, loaded: LoadedSession): boolean {
+    return (
+      this.deps.surface.isSideChat !== true ||
+      (this.sideSessionIds.has(loaded.session.sessionId) &&
+        (host.info.kind !== 'modelApi' || loaded.record.sideChat === true))
+    )
   }
 
   /**
@@ -1697,16 +2082,44 @@ export class ConversationController {
     loaded: LoadedSession,
     notice: string,
     origin: SessionOrigin,
-  ): Promise<void> {
+  ): Promise<boolean> {
+    if (
+      origin === 'forked' &&
+      this.deps.surface.isSideChat === true &&
+      this.session !== undefined &&
+      this.sideSessionIds.has(this.session.sessionId) &&
+      (host.info.kind !== 'modelApi' || loaded.record.sideChat === true)
+    ) {
+      this.sideSessionIds.add(loaded.session.sessionId)
+    }
+    if (!this.canLoadIntoSurface(host, loaded)) {
+      loaded.session.dispose()
+      throw new Error(UI_TEXT.sideChatSessionOnly)
+    }
     this.dropSession()
+    const generation = this.sendInvalidationEpoch
+    this.isSideChat = loaded.record.sideChat === true || this.deps.surface.isSideChat === true
+    if (this.isSideChat) {
+      this.permissionMode = 'plan'
+      this.postComposerState()
+    }
     const models = await host.listModels(loaded.session.sessionId)
+    if (generation !== this.sendInvalidationEpoch) {
+      loaded.session.dispose()
+      return false
+    }
     const active = models.find((model) => model.isActive)
     if (active !== undefined) {
       this.modelId = active.modelId
     }
     // A session saved on a contributor-tier model gets the same yes (or the
     // confidential-workspace block) as choosing one (D24).
-    if (!(await this.allowsModel(this.modelId))) {
+    const isModelAllowed = await this.allowsModel(this.modelId)
+    if (this.isDisposed || generation !== this.sendInvalidationEpoch) {
+      loaded.session.dispose()
+      return false
+    }
+    if (!isModelAllowed) {
       const fallback =
         models.find((model) => model.isDefault && !isContributorModel(model.modelId)) ??
         models.find((model) => !isContributorModel(model.modelId))
@@ -1718,6 +2131,10 @@ export class ConversationController {
         loaded.session.dispose()
         throw error
       }
+      if (generation !== this.sendInvalidationEpoch) {
+        loaded.session.dispose()
+        return false
+      }
       this.modelId = fallbackId
       this.notice('info', fill(UI_TEXT.contributorResumeFallbackTo, { model: fallbackId }))
     }
@@ -1727,38 +2144,73 @@ export class ConversationController {
     if (loaded.history.mode === HISTORY_MODE_NONE) {
       this.notice('warning', UI_TEXT.historyNotServed)
     }
-    if (this.isDisposed) {
-      loaded.session.dispose()
-      return
-    }
     // Before attaching: the events held for this surface may end that turn (D26).
     this.activeTurnId = loaded.activeTurnId
     await this.attach(host, loaded.session, origin)
+    if (generation !== this.sendInvalidationEpoch) {
+      return false
+    }
     const target = approvalModeFor(this.permissionMode, this.deps.hasApprovalUi)
     try {
       await loaded.session.setApprovalMode(target)
     } catch (error: unknown) {
-      this.notice('warning', `${UI_TEXT.permissionModeNotApplied}: ${describe(error)}`)
+      if (generation === this.sendInvalidationEpoch) {
+        this.notice('warning', `${UI_TEXT.permissionModeNotApplied}: ${describe(error)}`)
+      }
     }
+    return generation === this.sendInvalidationEpoch && !this.isDisposed
   }
 
   private async resumeSession(sessionId: string): Promise<void> {
+    if (this.deps.surface.isSideChat === true && !this.sideSessionIds.has(sessionId)) {
+      this.notice('warning', UI_TEXT.sideChatSessionOnly)
+      return
+    }
     if (this.refuseAction() !== undefined || this.session?.sessionId === sessionId) {
       return
     }
+    const generation = this.sendInvalidationEpoch
     try {
       const host = await this.deps.ensureHost()
+      if (generation !== this.sendInvalidationEpoch) {
+        return
+      }
       await this.ensureModels(host)
+      if (generation !== this.sendInvalidationEpoch) {
+        return
+      }
       this.watchList(host)
       const loaded = await host.resumeSession(
         sessionId,
         this.modelId,
         await this.mcpServersFor(host),
+        this.sideResumeOptions(host),
       )
+      if (generation !== this.sendInvalidationEpoch || this.isDisposed) {
+        loaded.session.dispose()
+        return
+      }
       await this.adopt(host, loaded, UI_TEXT.resumedNotice, 'resumed')
     } catch (error: unknown) {
-      this.notice('error', `${UI_TEXT.resumeFailed}: ${describe(error)}`)
+      if (generation === this.sendInvalidationEpoch) {
+        this.notice('error', `${UI_TEXT.resumeFailed}: ${describe(error)}`)
+      }
     }
+  }
+
+  private async editableHostFor(
+    session: AgentSession,
+    generation: number,
+  ): Promise<AgentHost | undefined> {
+    const host = await this.deps.ensureHost()
+    if (generation !== this.sendInvalidationEpoch || this.session !== session) {
+      return undefined
+    }
+    if (!host.info.canEditSessions) {
+      this.notice('info', UI_TEXT.sessionEditsUnsupported)
+      return undefined
+    }
+    return host
   }
 
   private async forkSession(lastTurnId: string | undefined): Promise<void> {
@@ -1766,16 +2218,192 @@ export class ConversationController {
       this.notice('info', UI_TEXT.sessionRequired)
       return
     }
+    const generation = this.sendInvalidationEpoch
+    const session = this.session
     try {
-      const host = await this.deps.ensureHost()
-      if (!host.info.canEditSessions) {
-        this.notice('info', UI_TEXT.sessionEditsUnsupported)
+      const host = await this.editableHostFor(session, generation)
+      if (host === undefined) {
         return
       }
-      const loaded = await host.forkSession(this.session.sessionId, this.modelId, lastTurnId)
+      const loaded = await host.forkSession(session.sessionId, this.modelId, lastTurnId)
+      if (generation !== this.sendInvalidationEpoch || this.session !== session) {
+        loaded.session.dispose()
+        return
+      }
       await this.adopt(host, loaded, UI_TEXT.forkedNotice, 'forked')
     } catch (error: unknown) {
-      this.notice('error', `${UI_TEXT.forkFailed}: ${describe(error)}`)
+      if (generation === this.sendInvalidationEpoch) {
+        this.notice('error', `${UI_TEXT.forkFailed}: ${describe(error)}`)
+      }
+    }
+  }
+
+  /** Resolve a still-current session before a fork-based panel action (M53). */
+  private async forkableSource(
+    sourceSessionId: string,
+    generation: number,
+  ): Promise<{ readonly source: AgentSession; readonly host: AgentHost } | undefined> {
+    const source = this.session
+    if (!this.isCurrentSessionAction(source, generation) || source.sessionId !== sourceSessionId) {
+      return undefined
+    }
+    const host = await this.deps.ensureHost()
+    if (!this.isCurrentSessionAction(source, generation)) {
+      return undefined
+    }
+    if (!host.info.canEditSessions) {
+      this.notice('info', UI_TEXT.sessionEditsUnsupported)
+      return undefined
+    }
+    return { source, host }
+  }
+
+  /** Branch before a user turn, then put its prompt back in the composer (M53). */
+  private async rewindConversation(
+    message: Extract<ConversationMessage, { type: 'rewindConversation' }>,
+  ): Promise<void> {
+    if (message.turnId === this.activeTurnId) {
+      return
+    }
+    const generation = this.sendInvalidationEpoch
+    try {
+      const forkable = await this.forkableSource(message.sourceSessionId, generation)
+      if (forkable === undefined) {
+        return
+      }
+      const { source, host } = forkable
+      if (message.turnId === this.activeTurnId) {
+        return
+      }
+      // Model API replay may hold PDF bytes, but a named text file is stored
+      // only as model-facing text. Muse Code echoes file metadata without
+      // bytes. Never clear/fork on a file card while its chips cannot be
+      // restored exactly in both paths.
+      if (this.fileMessageIds.has(message.itemId)) {
+        this.notice('warning', UI_TEXT.attachmentUnreadable)
+        return
+      }
+      const history = await host.readSession(source.sessionId)
+      if (
+        !this.isCurrentSessionAction(source, generation) ||
+        message.turnId === this.activeTurnId
+      ) {
+        return
+      }
+      // A webview request may be forged or stale. Bind every field and the
+      // fork cut to one served user card before discarding any conversation.
+      const users = history.items.filter((item) => item.kind === 'userMessage')
+      let selectedIndex = users.findIndex((item) => item.itemId === message.itemId)
+      if (selectedIndex < 0) {
+        const accepted = this.acceptedUserCards.get(message.itemId)
+        const candidates =
+          accepted === undefined
+            ? []
+            : users.filter((item) => item.turnId === accepted.turnId && item.text === accepted.text)
+        const candidate = candidates[0]
+        if (candidate !== undefined && candidates.length === 1) {
+          selectedIndex = users.indexOf(candidate)
+        }
+      }
+      const selected = users[selectedIndex]
+      const preceding = selectedIndex < 0 ? [] : users.slice(0, selectedIndex)
+      const earlierDistinct = preceding.findLast(
+        (item) => item.turnId !== undefined && item.turnId !== selected?.turnId,
+      )
+      const hasEarlierTurn = preceding.some((item) => item.turnId !== undefined)
+      if (selected === undefined || !REWIND_HISTORY_MODES.has(history.mode)) {
+        this.notice('warning', UI_TEXT.attachmentUnreadable)
+        return
+      }
+      if (
+        selected.turnId !== message.turnId ||
+        (selected.text ?? '') !== message.text ||
+        (hasEarlierTurn && earlierDistinct === undefined) ||
+        earlierDistinct?.turnId !== message.lastTurnId ||
+        selected.attachments?.some((attachment) => attachment.type === 'file')
+      ) {
+        this.notice('warning', UI_TEXT.attachmentUnreadable)
+        return
+      }
+      const images = source.sentImages?.(message.turnId, message.itemId) ?? []
+      const recordedImageCount =
+        selected.attachments?.filter((attachment) => attachment.type === 'image').length ?? 0
+      if (images.length < Math.max(recordedImageCount, message.imageCount)) {
+        this.notice('warning', UI_TEXT.rewindImagesUnavailable)
+        return
+      }
+      if (message.lastTurnId === undefined) {
+        this.clear()
+      } else {
+        const loaded = await host.forkSession(source.sessionId, this.modelId, message.lastTurnId)
+        if (!this.isCurrentSessionAction(source, generation)) {
+          loaded.session.dispose()
+          return
+        }
+        if (!(await this.adopt(host, loaded, UI_TEXT.forkedNotice, 'forked'))) {
+          return
+        }
+        this.attachments.clear()
+        this.post({ type: 'attachmentsCleared' })
+      }
+      for (const image of images) {
+        const added = this.attachments.add(image.mediaType, Buffer.from(image.base64Data, 'base64'))
+        if (added.ok) {
+          this.post({ type: 'attachmentAdded', attachment: added.attachment })
+        }
+      }
+      this.post({ type: 'restoreDraft', text: message.text })
+    } catch (error: unknown) {
+      if (generation === this.sendInvalidationEpoch && this.accountStopsInFlight === 0) {
+        this.notice('error', `${UI_TEXT.rewindConversationFailed}: ${describe(error)}`)
+      }
+    }
+  }
+
+  /** A separate Plan-mode fork, leaving this surface attached (M53). */
+  private async openSideChat(sourceSessionId: string): Promise<void> {
+    if (this.deps.openSideChat === undefined) {
+      return
+    }
+    const generation = this.sendInvalidationEpoch
+    try {
+      const forkable = await this.forkableSource(sourceSessionId, generation)
+      if (forkable === undefined) {
+        return
+      }
+      const { source, host } = forkable
+      const loaded = await host.forkSession(source.sessionId, this.modelId, undefined, {
+        sideChat: true,
+      })
+      try {
+        if (!this.isCurrentSessionAction(source, generation)) {
+          return
+        }
+        if (loaded.record.sideChat !== true) {
+          await loaded.session.setApprovalMode('denyUnmatched')
+          if (!this.isCurrentSessionAction(source, generation)) {
+            return
+          }
+          try {
+            // Muse Code's fork keeps the parent's goal until cleared.
+            await loaded.session.controlGoal({ verb: 'clear' })
+          } catch (error: unknown) {
+            if (!(error instanceof GoalRefusedError && error.refusal === 'noGoal')) {
+              throw error
+            }
+          }
+        }
+        if (!this.isCurrentSessionAction(source, generation)) {
+          return
+        }
+        this.deps.openSideChat(loaded.session.sessionId)
+      } finally {
+        loaded.session.dispose()
+      }
+    } catch (error: unknown) {
+      if (generation === this.sendInvalidationEpoch && this.accountStopsInFlight === 0) {
+        this.notice('error', `${UI_TEXT.sideChatFailed}: ${describe(error)}`)
+      }
     }
   }
 
@@ -1785,19 +2413,24 @@ export class ConversationController {
     if (trimmed === '' || session === undefined) {
       return
     }
+    const generation = this.sendInvalidationEpoch
     try {
-      const host = await this.deps.ensureHost()
-      if (!host.info.canEditSessions) {
-        this.notice('info', UI_TEXT.sessionEditsUnsupported)
+      const host = await this.editableHostFor(session, generation)
+      if (host === undefined) {
         return
       }
       const canonical = await session.rename(trimmed)
+      if (generation !== this.sendInvalidationEpoch || this.session !== session) {
+        return
+      }
       if (canonical !== undefined) {
         this.setTitle(canonical)
         this.post({ type: 'agentEvent', event: { type: 'sessionNamed', name: canonical } })
       }
     } catch (error: unknown) {
-      this.notice('error', `${UI_TEXT.renameFailed}: ${describe(error)}`)
+      if (generation === this.sendInvalidationEpoch && this.session === session) {
+        this.notice('error', `${UI_TEXT.renameFailed}: ${describe(error)}`)
+      }
     }
   }
 
@@ -1831,16 +2464,24 @@ export class ConversationController {
     session: AgentSession,
     parts: readonly TurnPart[],
     displayText: string | undefined,
+    shouldQueueForDisplayText: boolean,
+    isCurrent: () => boolean,
   ): Promise<TurnSubmission> {
-    if (this.activeTurnId !== undefined) {
+    if (!isCurrent()) {
+      throw new Error(UI_TEXT.turnStoppedByRestart)
+    }
+    if (!shouldQueueForDisplayText && this.activeTurnId !== undefined) {
       try {
-        return {
-          turnId: await session.steer(this.activeTurnId, parts),
-          disposition: STEERED_DISPOSITION,
-        }
+        return await session.steer(this.activeTurnId, parts)
       } catch (error: unknown) {
+        if (!isCurrent()) {
+          throw new Error(UI_TEXT.turnStoppedByRestart, { cause: error })
+        }
         this.deps.log.warn(`turn/steer failed (${describe(error)}); submitting as a new turn`)
       }
+    }
+    if (!isCurrent()) {
+      throw new Error(UI_TEXT.turnStoppedByRestart)
     }
     return await session.sendTurn(parts, displayText)
   }
@@ -1907,11 +2548,26 @@ export class ConversationController {
     reference: ChatReference | undefined,
   ): Promise<void> {
     try {
+      const sendEpoch = this.sendInvalidationEpoch
       const session = await this.sessionForAction(localId)
       if (session === undefined) {
         return
       }
+      let expectedGeneration = this.attachmentGeneration
+      let submittedSession = session
+      const requireCurrent = (current: AgentSession): void => {
+        if (
+          this.isDisposed ||
+          this.sendInvalidationEpoch !== sendEpoch ||
+          this.session !== current ||
+          this.attachmentGeneration !== expectedGeneration
+        ) {
+          throw new Error(UI_TEXT.turnStoppedByRestart)
+        }
+      }
+      requireCurrent(session)
       await this.autosave()
+      requireCurrent(session)
       const typed = this.buildParts(text, attachmentIds)
       if (typed.length === 0) {
         this.post({
@@ -1929,29 +2585,75 @@ export class ConversationController {
       const context = await this.contextPart(
         isEditorContextIncluded ? this.deps.editorContext() : undefined,
       )
+      requireCurrent(session)
       // The CLI backend also gets the choice-steering note (M14); the Model
       // API backend carries it in its system prompt.
       const host = await this.deps.ensureHost()
+      requireCurrent(session)
+      if (this.sessionKind !== host.info.kind) {
+        throw new Error(UI_TEXT.turnStoppedByRestart)
+      }
       const note: readonly TurnPart[] =
         host.info.kind === 'museCode' ? [{ type: 'text', text: CHOICE_STEERING_NOTE }] : []
       const parts = [...typed, ...referenced, ...(context === undefined ? [] : [context]), ...note]
-      // With extra parts the durable transcript keeps the typed text only.
-      const displayText = parts.length === typed.length ? undefined : text
-      const submission = await this.runResuming(host, session, (current) =>
-        this.submit(current, parts, displayText),
-      )
+      // MSP stores no text-file attachment metadata: keep each name in the
+      // durable card while the full content travels only to the model (M54).
+      const textFileNames = typed.flatMap((part) => (part.type === 'textFile' ? [part.name] : []))
+      const contextText = parts.length === typed.length ? undefined : text
+      let displayText = contextText
+      if (textFileNames.length > 0) {
+        displayText =
+          host.info.kind === 'museCode'
+            ? textFileDisplay(text, textFileNames)
+            : [text, ...textFileNames].filter((line) => line !== '').join('\n')
+      }
+      const submission = await this.runResuming(host, session, (current) => {
+        // runResuming may replace a not-loaded session itself; that recovery
+        // owns the new generation. An unrelated restart still fails admission.
+        if (current !== session) {
+          expectedGeneration = this.attachmentGeneration
+        }
+        requireCurrent(current)
+        submittedSession = current
+        return this.submit(
+          current,
+          parts,
+          displayText,
+          host.info.kind === 'museCode' && textFileNames.length > 0,
+          () =>
+            !this.isDisposed &&
+            this.sendInvalidationEpoch === sendEpoch &&
+            this.session === current &&
+            this.attachmentGeneration === expectedGeneration,
+        )
+      })
+      requireCurrent(submittedSession)
       // The images go only once the host has the message (D26).
       this.attachments.release(attachmentIds)
       if (this.isDisposed) {
         return
       }
       const { turnId } = submission
+      this.acceptedUserCards.set(localId, { turnId, text })
+      if (submission.userMessageId !== undefined) {
+        this.acceptedUserCards.set(submission.userMessageId, { turnId, text })
+      }
+      if (typed.some((part) => part.type === 'file' || part.type === 'textFile')) {
+        this.fileMessageIds.add(submission.userMessageId ?? localId)
+      }
       // A queued turn is not the running one, and an ack that lands after its
       // own turn completed must not mark it running again (D26).
       if (submission.disposition !== QUEUED_DISPOSITION && !this.finishedTurns.has(turnId)) {
         this.activeTurnId = turnId
       }
-      this.post({ type: 'turnAccepted', localId, turnId })
+      this.post({
+        type: 'turnAccepted',
+        localId,
+        turnId,
+        ...(submission.userMessageId !== undefined && {
+          userMessageId: submission.userMessageId,
+        }),
+      })
       this.noteActivity()
     } catch (error: unknown) {
       const reason = describe(error)
@@ -1971,6 +2673,7 @@ export class ConversationController {
     session: AgentSession,
     run: (current: AgentSession) => Promise<T>,
   ): Promise<T> {
+    const generation = this.sendInvalidationEpoch
     try {
       return await run(session)
     } catch (error: unknown) {
@@ -1979,12 +2682,12 @@ export class ConversationController {
       }
       // A late refusal from an old session must not replace the session
       // the user opened while that command was in flight.
-      if (this.session?.sessionId !== session.sessionId) {
+      if (!this.isCurrentSessionAction(session, generation)) {
         throw error
       }
       this.deps.log.info(`Session ${error.sessionId} was not loaded; resuming it`)
       this.resumeTarget = { sessionId: error.sessionId, kind: host.info.kind }
-      this.dropSession(false)
+      this.dropSession(false, true)
       const resumed = await this.ensureSession(this.deps.workspaceRoot)
       return await run(resumed)
     }
@@ -2001,6 +2704,7 @@ export class ConversationController {
     verb: GoalCommandVerb,
     objective: string | undefined,
   ): Promise<void> {
+    const generation = this.sendInvalidationEpoch
     const result = (isAccepted: boolean) => {
       this.post({ type: 'goalCommandResult', requestId, accepted: isAccepted })
     }
@@ -2023,16 +2727,27 @@ export class ConversationController {
     let targetSessionId: string | undefined
     try {
       const session = await this.sessionForAction()
-      if (session === undefined) {
+      if (!this.isCurrentSessionAction(session, generation)) {
         result(false)
         return
       }
       targetSessionId = session.sessionId
       const host = await this.deps.ensureHost()
+      if (
+        this.accountStopEpoch > generation ||
+        this.accountStopsInFlight > 0 ||
+        this.deps.auth.backend === undefined
+      ) {
+        return
+      }
       const outcome = await this.runResuming(host, session, (current) =>
         current.controlGoal(command),
       )
-      if (this.session?.sessionId !== targetSessionId) {
+      if (
+        generation !== this.sendInvalidationEpoch ||
+        !this.isAuthAdmitted() ||
+        this.session?.sessionId !== targetSessionId
+      ) {
         return
       }
       this.deps.log.info(
@@ -2042,7 +2757,11 @@ export class ConversationController {
       this.noteActivity()
       result(true)
     } catch (error: unknown) {
-      if (targetSessionId !== undefined && this.session?.sessionId !== targetSessionId) {
+      if (
+        generation !== this.sendInvalidationEpoch ||
+        this.accountStopsInFlight > 0 ||
+        (targetSessionId !== undefined && this.session?.sessionId !== targetSessionId)
+      ) {
         return
       }
       if (error instanceof GoalRefusedError) {
@@ -2053,6 +2772,132 @@ export class ConversationController {
       }
       this.notice('error', `${UI_TEXT.goalCommandFailed}: ${describe(error)}`)
       result(false)
+    }
+  }
+
+  private async scheduleSession(): Promise<AgentSession | undefined> {
+    const generation = this.sendInvalidationEpoch
+    const session = await this.sessionForAction()
+    if (!this.isCurrentSessionAction(session, generation)) {
+      return undefined
+    }
+    if (session.schedules === undefined) {
+      this.notice('warning', UI_TEXT.scheduleModelApiOnly)
+    }
+    return session.schedules === undefined ? undefined : session
+  }
+
+  private async createSchedule(cadence: ScheduleCadence, prompt: string): Promise<void> {
+    try {
+      const session = await this.scheduleSession()
+      const job = await session?.schedules?.create(cadence, prompt)
+      if (job !== undefined) {
+        this.say('info', fill(UI_TEXT.scheduleCreated, { id: job.id }))
+      }
+    } catch (error: unknown) {
+      this.notice('error', `${UI_TEXT.scheduleCommandFailed}: ${describe(error)}`)
+    }
+  }
+
+  private async listSchedules(): Promise<void> {
+    try {
+      const session = await this.scheduleSession()
+      const jobs = await session?.schedules?.list()
+      if (jobs?.length === 0) {
+        this.say('info', UI_TEXT.scheduleNone)
+      }
+    } catch (error: unknown) {
+      this.notice('error', `${UI_TEXT.scheduleCommandFailed}: ${describe(error)}`)
+    }
+  }
+
+  private async cancelSchedule(id: string): Promise<void> {
+    try {
+      const session = await this.scheduleSession()
+      if (session?.schedules === undefined) {
+        return
+      }
+      const isRemoved = await session.schedules.cancel(id)
+      this.say(
+        isRemoved ? 'info' : 'warning',
+        fill(isRemoved ? UI_TEXT.scheduleCancelled : UI_TEXT.scheduleUnknown, { id }),
+      )
+    } catch (error: unknown) {
+      this.notice('error', `${UI_TEXT.scheduleCommandFailed}: ${describe(error)}`)
+    }
+  }
+
+  private scheduleRunChanged(): void {
+    this.notice(
+      'warning',
+      this.deps.isScheduledPaidOn?.() === true
+        ? UI_TEXT.scheduleConfirmationExpired
+        : UI_TEXT.schedulePaidOff,
+    )
+  }
+
+  private async runSchedule(id: string, occurrenceMs: number): Promise<void> {
+    const generation = this.sendInvalidationEpoch
+    try {
+      const session = await this.scheduleSession()
+      if (!this.isCurrentSessionAction(session, generation) || session.schedules === undefined) {
+        return
+      }
+      if (this.deps.isScheduledPaidOn?.() !== true) {
+        this.notice('warning', UI_TEXT.schedulePaidOff)
+        return
+      }
+      const jobs = await session.schedules.list()
+      if (!this.isCurrentSessionAction(session, generation)) {
+        return
+      }
+      const job = jobs.find((entry) => entry.id === id)
+      if (job?.nextFireAtMs !== occurrenceMs || occurrenceMs > this.deps.now()) {
+        this.notice('warning', UI_TEXT.scheduleNotDue)
+        return
+      }
+      if (this.deps.confirmScheduledRun === undefined) {
+        return
+      }
+      const confirmed = {
+        sessionId: session.sessionId,
+        modelId: session.modelId,
+        backend: this.deps.auth.current.backend,
+        prompt: job.prompt,
+      }
+      if (!(await this.deps.confirmScheduledRun(job, confirmed.modelId))) {
+        return
+      }
+      const isContextChanged = () =>
+        !this.isCurrentSessionAction(session, generation) ||
+        session.sessionId !== confirmed.sessionId ||
+        this.sessionKind !== 'modelApi' ||
+        this.deps.auth.current.backend !== confirmed.backend ||
+        session.modelId !== confirmed.modelId ||
+        this.deps.isScheduledPaidOn?.() !== true
+      if (isContextChanged()) {
+        if (generation === this.sendInvalidationEpoch && this.accountStopsInFlight === 0) {
+          this.scheduleRunChanged()
+        }
+        return
+      }
+      const currentJobs = await session.schedules.list()
+      const current = currentJobs.find((entry) => entry.id === id)
+      if (
+        isContextChanged() ||
+        current?.nextFireAtMs !== occurrenceMs ||
+        current.prompt !== confirmed.prompt
+      ) {
+        if (generation === this.sendInvalidationEpoch && this.accountStopsInFlight === 0) {
+          this.scheduleRunChanged()
+        }
+        return
+      }
+      await session.schedules.run(id, occurrenceMs, confirmed)
+    } catch (error: unknown) {
+      if (generation === this.sendInvalidationEpoch && this.accountStopsInFlight === 0) {
+        this.notice('error', `${UI_TEXT.scheduleCommandFailed}: ${describe(error)}`)
+      }
     }
   }
 
@@ -2131,6 +2976,11 @@ export class ConversationController {
   }
 
   private async setPermissionMode(mode: PermissionMode): Promise<void> {
+    if (mode !== 'plan' && this.isSideChat) {
+      this.notice('info', UI_TEXT.sideChatPlanOnly)
+      this.postComposerState()
+      return
+    }
     if (mode === BYPASS_MODE && !(await this.mayBypass())) {
       this.postComposerState()
       return
@@ -2152,8 +3002,16 @@ export class ConversationController {
     this.postComposerState()
   }
 
+  /** A pending browser encode belongs to the session before this replacement request. */
+  private beginBrowserSessionChange(attachmentEpoch?: number): void {
+    this.webviewAttachmentEpoch = Math.max(this.webviewAttachmentEpoch + 1, attachmentEpoch ?? 0)
+  }
+
   private clear(): void {
+    this.webviewAttachmentEpoch += 1
+    const wasSideChat = this.isSideChat
     this.dropSession()
+    this.isSideChat = this.deps.surface.isSideChat === true
     // A new conversation is new: the session a restart or crash left to
     // resume is not picked up by its first message (D25).
     this.resumeTarget = undefined
@@ -2164,18 +3022,22 @@ export class ConversationController {
     this.setTitle(undefined)
     // No session any more: the webview forgets the id it keeps for the
     // reload serializer (D15).
-    this.postSessionInfo(this.modelId)
+    this.postSessionInfo(this.modelId, wasSideChat && !this.isSideChat)
     void this.deps.sessions.setLastSession(undefined)
     this.post({ type: 'attachmentsCleared' })
   }
 
   private async compact(): Promise<void> {
+    const generation = this.sendInvalidationEpoch
     const session = await this.sessionForAction()
-    if (session === undefined) {
+    if (!this.isCurrentSessionAction(session, generation)) {
       return
     }
     try {
       const outcome = await session.compact()
+      if (!this.isCurrentSessionAction(session, generation)) {
+        return
+      }
       if (outcome.status === NOOP_STATUS) {
         this.notice(
           'info',
@@ -2185,6 +3047,9 @@ export class ConversationController {
         this.notice('info', UI_TEXT.compactionStoppedNotice)
       }
     } catch (error: unknown) {
+      if (!this.isCurrentSessionAction(session, generation)) {
+        return
+      }
       const reason = describe(error)
       if (reason.includes(MISSING_RUN_REASON)) {
         this.notice('info', UI_TEXT.nothingToCompact)
@@ -2215,12 +3080,61 @@ export class ConversationController {
     }
   }
 
-  private addImage(name: string, bytes: Uint8Array): void {
-    const result = this.attachments.add(name, bytes)
+  private async addAttachment(
+    name: string,
+    bytes: Uint8Array,
+    canAcceptText = false,
+    requestId?: string,
+    requestEpoch?: number,
+    expectedGeneration?: number,
+  ): Promise<void> {
+    const generation = expectedGeneration ?? this.attachmentGeneration
+    if (!this.isCurrentAttachmentGeneration(generation)) {
+      return
+    }
+    let host: AgentHost
+    try {
+      host = await this.deps.ensureHost()
+    } catch (error: unknown) {
+      if (
+        this.isDisposed ||
+        generation !== this.attachmentGeneration ||
+        (requestEpoch !== undefined && requestEpoch !== this.webviewAttachmentEpoch)
+      ) {
+        return
+      }
+      if (requestId === undefined) {
+        throw error
+      }
+      this.post({
+        type: 'attachmentRejected',
+        name,
+        reason: UI_TEXT.attachmentUnreadable,
+        requestId,
+      })
+      return
+    }
+    if (
+      this.isDisposed ||
+      generation !== this.attachmentGeneration ||
+      (requestEpoch !== undefined && requestEpoch !== this.webviewAttachmentEpoch)
+    ) {
+      return
+    }
+    const result = this.attachments.add(name, bytes, host.info.kind === 'modelApi', canAcceptText)
     if (result.ok) {
-      this.post({ type: 'attachmentAdded', attachment: result.attachment })
+      this.post({
+        type: 'attachmentAdded',
+        attachment: result.attachment,
+        ...(requestId !== undefined && { requestId }),
+      })
     } else {
-      this.post({ type: 'attachmentRejected', name, reason: result.reason })
+      this.post({
+        type: 'attachmentRejected',
+        name,
+        reason: result.reason,
+        ...(requestId !== undefined && { requestId }),
+      })
     }
   }
 
@@ -2228,21 +3142,196 @@ export class ConversationController {
     this.post({ type: 'insertText', text: `${formatMention(relativePath)} ` })
   }
 
+  private isCurrentAttachmentGeneration(generation: number): boolean {
+    return !this.isDisposed && generation === this.attachmentGeneration
+  }
+
+  /** Text bytes need a trusted, indexed, canonical workspace path; path mentions stay available. */
+  private async textFileDisposition(
+    file: PickedFile,
+    generation: number,
+  ): Promise<
+    | { readonly kind: 'attach'; readonly checkedAbsolute: string }
+    | { readonly kind: 'mention' }
+    | { readonly kind: 'refuse' }
+    | { readonly kind: 'stale' }
+  > {
+    if (!this.isCurrentAttachmentGeneration(generation)) {
+      return { kind: 'stale' }
+    }
+    if (!this.deps.isWorkspaceTrusted()) {
+      return { kind: 'mention' }
+    }
+    let checked: Awaited<ReturnType<FileAccess['canonicalRelativePath']>>
+    try {
+      checked = await this.deps.files.canonicalRelativePath(file.fsPath)
+    } catch (error: unknown) {
+      if (!this.isCurrentAttachmentGeneration(generation)) {
+        return { kind: 'stale' }
+      }
+      this.deps.log.warn(`text attachment path check failed: ${describe(error)}`)
+      return { kind: 'mention' }
+    }
+    if (!this.isCurrentAttachmentGeneration(generation)) {
+      return { kind: 'stale' }
+    }
+    if (checked === undefined) {
+      return { kind: 'mention' }
+    }
+    const { canonical } = checked
+    const segments = canonical.toLowerCase().split('/')
+    const name = segments.at(-1) ?? ''
+    if (
+      isProtectedPath(canonical) ||
+      name.startsWith('.env.') ||
+      PRIVATE_ATTACHMENT_NAMES.has(name) ||
+      PRIVATE_ATTACHMENT_EXTENSIONS.has(path.extname(name))
+    ) {
+      this.post({ type: 'attachmentRejected', name: file.name, reason: UI_TEXT.textFilePrivate })
+      return { kind: 'refuse' }
+    }
+    let isIndexed: boolean
+    try {
+      isIndexed = await this.deps.mentions.contains(canonical)
+    } catch (error: unknown) {
+      if (!this.isCurrentAttachmentGeneration(generation)) {
+        return { kind: 'stale' }
+      }
+      throw error
+    }
+    if (!this.isCurrentAttachmentGeneration(generation)) {
+      return { kind: 'stale' }
+    }
+    return isIndexed
+      ? { kind: 'attach', checkedAbsolute: checked.checkedAbsolute }
+      : { kind: 'mention' }
+  }
+
   private async pickFile(): Promise<void> {
-    const picked = await this.deps.files.showOpenDialog()
+    const generation = this.attachmentGeneration
+    let picked: readonly PickedFile[]
+    try {
+      picked = await this.deps.files.showOpenDialog()
+    } catch (error: unknown) {
+      if (!this.isCurrentAttachmentGeneration(generation)) {
+        return
+      }
+      throw error
+    }
+    if (!this.isCurrentAttachmentGeneration(generation)) {
+      return
+    }
     for (const file of picked) {
+      if (!this.isCurrentAttachmentGeneration(generation)) {
+        return
+      }
       const extension = path.extname(file.name).toLowerCase()
-      if (Object.hasOwn(IMAGE_EXTENSIONS, extension)) {
-        this.addImage(file.name, await this.deps.files.readFile(file.fsPath))
+      const lowerName = file.name.toLowerCase()
+      if (
+        lowerName.startsWith('.env.') ||
+        PRIVATE_ATTACHMENT_NAMES.has(lowerName) ||
+        PRIVATE_ATTACHMENT_EXTENSIONS.has(extension)
+      ) {
+        this.post({ type: 'attachmentRejected', name: file.name, reason: UI_TEXT.textFilePrivate })
+        continue
+      }
+      const isTextFile = TEXT_ATTACHMENT_EXTENSIONS.has(extension)
+      let pathToRead = file.fsPath
+      let shouldMentionUnlessPdf = false
+      if (isTextFile) {
+        const disposition = await this.textFileDisposition(file, generation)
+        if (disposition.kind === 'stale') {
+          return
+        }
+        if (disposition.kind === 'refuse') {
+          continue
+        }
+        if (disposition.kind === 'mention') {
+          shouldMentionUnlessPdf = true
+        } else {
+          pathToRead = disposition.checkedAbsolute
+        }
+      }
+      if (isTextFile || extension === PDF_EXTENSION || Object.hasOwn(IMAGE_EXTENSIONS, extension)) {
+        let maxBytes = MAX_IMAGE_BYTES
+        if (isTextFile) {
+          maxBytes = MAX_TEXT_ATTACHMENT_BYTES
+        } else if (extension === PDF_EXTENSION) {
+          maxBytes = MAX_DOCUMENT_BYTES
+        }
+        let read: Awaited<ReturnType<FileAccess['readFile']>>
+        try {
+          if (shouldMentionUnlessPdf) {
+            read = await this.deps.files.readFile(pathToRead, 0)
+          } else if (isTextFile) {
+            read = await this.deps.files.readFile(pathToRead, maxBytes, pathToRead)
+          } else {
+            read = await this.deps.files.readFile(pathToRead, maxBytes)
+          }
+        } catch (error: unknown) {
+          if (!this.isCurrentAttachmentGeneration(generation)) {
+            return
+          }
+          this.deps.log.warn(`attachment read failed: ${describe(error)}`)
+          this.post({
+            type: 'attachmentRejected',
+            name: file.name,
+            reason: UI_TEXT.attachmentUnreadable,
+          })
+          continue
+        }
+        if (!this.isCurrentAttachmentGeneration(generation)) {
+          return
+        }
+        if (shouldMentionUnlessPdf && !read.isPdf) {
+          this.insertMention(file.relativePath ?? file.fsPath.replaceAll('\\', '/'))
+          continue
+        }
+        const limit = read.isPdf ? MAX_DOCUMENT_BYTES : maxBytes
+        if (read.bytes === undefined || read.bytes.byteLength > limit) {
+          const otherTooLarge = isTextFile ? UI_TEXT.textFileTooLarge : UI_TEXT.attachmentTooLarge
+          this.post({
+            type: 'attachmentRejected',
+            name: file.name,
+            reason:
+              extension === PDF_EXTENSION || read.isPdf ? UI_TEXT.documentTooLarge : otherTooLarge,
+          })
+        } else {
+          await this.addAttachment(
+            file.name,
+            read.bytes,
+            isTextFile,
+            undefined,
+            undefined,
+            generation,
+          )
+        }
       } else {
-        this.insertMention(file.relativePath ?? file.fsPath.replaceAll('\\', '/'))
+        if (UNSUPPORTED_BINARY_ATTACHMENT_EXTENSIONS.has(extension)) {
+          this.post({
+            type: 'attachmentRejected',
+            name: file.name,
+            reason: UI_TEXT.binaryFileUnsupported,
+          })
+        } else {
+          this.insertMention(file.relativePath ?? file.fsPath.replaceAll('\\', '/'))
+        }
       }
     }
   }
 
   private async pickMentionFile(): Promise<void> {
-    const relativePath = await this.deps.files.pickMentionFile()
-    if (relativePath !== undefined) {
+    const generation = this.attachmentGeneration
+    let relativePath: string | undefined
+    try {
+      relativePath = await this.deps.files.pickMentionFile()
+    } catch (error: unknown) {
+      if (!this.isCurrentAttachmentGeneration(generation)) {
+        return
+      }
+      throw error
+    }
+    if (relativePath !== undefined && this.isCurrentAttachmentGeneration(generation)) {
       this.insertMention(relativePath)
     }
   }
@@ -2280,12 +3369,30 @@ export class ConversationController {
   private async readUsage(): Promise<void> {
     try {
       const host = await this.deps.ensureHost()
+      if (this.usageHost !== host) {
+        this.usageHost = host
+        this.latestUsage = undefined
+      }
+      const readSequence = ++this.usageReadSequence
+      const eventRevision = this.usageEventRevision
       this.usageWatch.ensure(host, (watched) =>
         watched.onUsageChanged((usage) => {
+          if (this.usageHost === watched) {
+            this.usageEventRevision += 1
+          }
           void this.postUsage(watched, usage)
         }),
       )
-      await this.postUsage(host, await host.readUsage())
+      const subscription = await host.readUsage()
+      if (this.usageHost !== host || this.usageReadSequence !== readSequence) {
+        return
+      }
+      // An empty read can mean account switched within the same CLI host;
+      // only clear observations that preceded this read, not newer events.
+      if (subscription === undefined && this.usageEventRevision !== eventRevision) {
+        return
+      }
+      await this.postUsage(host, subscription)
     } catch (error: unknown) {
       this.notice('error', `${UI_TEXT.usageUnavailable}: ${describe(error)}`)
     }
@@ -2295,17 +3402,24 @@ export class ConversationController {
     host: AgentHost,
     subscription: SubscriptionUsage | undefined,
   ): Promise<void> {
+    if (!this.canPostUsage(host)) {
+      return
+    }
+    if (
+      subscription !== undefined &&
+      this.latestUsage !== undefined &&
+      subscription.observedAtMs < this.latestUsage.observedAtMs
+    ) {
+      return
+    }
+    this.latestUsage = subscription
+    const shown = subscription
     const account = await this.deps.accountFacts(host.info.kind)
     const insights = host.info.kind === 'museCode' ? await this.deps.usageInsights() : undefined
-    // The CLI reports a window only after it has seen a reply (M8, re-probed
-    // 2026-09-22: `usage/read` is empty after a host and even a session
-    // start). Until then the dialog shows the last window it ever reported,
-    // dated by its own `observedAtMs` (M16).
-    if (subscription !== undefined) {
-      await this.deps.usageCache.write(subscription)
+    // An older read or a stopped host must not replace a newer observation.
+    if (!this.canPostUsage(host) || this.latestUsage !== shown) {
+      return
     }
-    const shown =
-      subscription ?? (host.info.kind === 'museCode' ? this.deps.usageCache.read() : undefined)
     this.post({
       type: 'usageReport',
       backend: host.info.kind,
@@ -2315,15 +3429,25 @@ export class ConversationController {
     })
   }
 
+  private canPostUsage(host: AgentHost): boolean {
+    return (
+      !this.isDisposed && this.usageHost === host && this.deps.auth.current.status === 'signedIn'
+    )
+  }
+
   /** An owner command on a subagent from the Agent map (M18); the CLI's item updates carry the outcome. */
   private async controlSubagent(subagentId: string, action: SubagentAction): Promise<void> {
-    if (this.session === undefined) {
+    const session = this.session
+    const generation = this.sendInvalidationEpoch
+    if (!this.isCurrentSessionAction(session, generation)) {
       return
     }
     try {
-      await this.session.controlSubagent(subagentId, action)
+      await session.controlSubagent(subagentId, action)
     } catch (error: unknown) {
-      this.notice('error', `${UI_TEXT.agentControlFailed}: ${describe(error)}`)
+      if (this.isCurrentSessionAction(session, generation)) {
+        this.notice('error', `${UI_TEXT.agentControlFailed}: ${describe(error)}`)
+      }
     }
   }
 
@@ -2332,13 +3456,17 @@ export class ConversationController {
     body: string,
     isFollowup: boolean,
   ): Promise<void> {
-    if (this.session === undefined || body.trim() === '') {
+    const session = this.session
+    const generation = this.sendInvalidationEpoch
+    if (!this.isCurrentSessionAction(session, generation) || body.trim() === '') {
       return
     }
     try {
-      await this.session.messageSubagent(subagentId, body.trim(), isFollowup)
+      await session.messageSubagent(subagentId, body.trim(), isFollowup)
     } catch (error: unknown) {
-      this.notice('error', `${UI_TEXT.agentControlFailed}: ${describe(error)}`)
+      if (this.isCurrentSessionAction(session, generation)) {
+        this.notice('error', `${UI_TEXT.agentControlFailed}: ${describe(error)}`)
+      }
     }
   }
 
@@ -2376,9 +3504,16 @@ export class ConversationController {
 
   /** The Agent map asked for a subagent's own transcript (M14). */
   private async readChildSession(sessionId: string): Promise<void> {
+    const generation = this.sendInvalidationEpoch
     try {
       const host = await this.deps.ensureHost()
+      if (generation !== this.sendInvalidationEpoch) {
+        return
+      }
       const history = await host.readSession(sessionId)
+      if (generation !== this.sendInvalidationEpoch || this.isDisposed) {
+        return
+      }
       this.post({
         type: 'childTranscript',
         sessionId,
@@ -2386,7 +3521,9 @@ export class ConversationController {
         items: [...history.items],
       })
     } catch (error: unknown) {
-      this.notice('warning', `${UI_TEXT.agentTranscriptFailed}: ${describe(error)}`)
+      if (generation === this.sendInvalidationEpoch) {
+        this.notice('warning', `${UI_TEXT.agentTranscriptFailed}: ${describe(error)}`)
+      }
     }
   }
 
@@ -2508,6 +3645,10 @@ export class ConversationController {
 
   /** One message from the webview, routed; `handle` catches what it throws. */
   private async dispatch(message: ConversationMessage): Promise<void> {
+    if (!this.isAuthAdmitted() && AUTH_REQUIRED_SESSION_ACTIONS.has(message.type)) {
+      this.notice('warning', UI_TEXT.notSignedInReason)
+      return
+    }
     switch (message.type) {
       case 'sendMessage': {
         await this.send(
@@ -2526,6 +3667,14 @@ export class ConversationController {
       case 'signIn': {
         await this.deps.auth.signIn(message.method)
         void this.warmModels()
+        break
+      }
+      case 'installMuseCode': {
+        await this.deps.auth.installMuseCode()
+        break
+      }
+      case 'cancelSignIn': {
+        this.deps.auth.cancelSignIn()
         break
       }
       case 'signOut': {
@@ -2610,6 +3759,15 @@ export class ConversationController {
         await this.rewindCode(message.edits)
         break
       }
+      case 'rewindConversation': {
+        this.beginBrowserSessionChange(message.attachmentEpoch)
+        await this.rewindConversation(message)
+        break
+      }
+      case 'openSideChat': {
+        await this.openSideChat(message.sourceSessionId)
+        break
+      }
       case 'setModel': {
         await this.setModel(message.modelId)
         break
@@ -2628,6 +3786,12 @@ export class ConversationController {
       }
       case 'clearConversation': {
         this.clear()
+        if (message.attachmentEpoch !== undefined) {
+          this.webviewAttachmentEpoch = Math.max(
+            this.webviewAttachmentEpoch,
+            message.attachmentEpoch,
+          )
+        }
         break
       }
       case 'compact': {
@@ -2636,6 +3800,22 @@ export class ConversationController {
       }
       case 'goalCommand': {
         await this.controlGoal(message.requestId, message.verb, message.objective)
+        break
+      }
+      case 'scheduleCreate': {
+        await this.createSchedule(message.cadence, message.prompt)
+        break
+      }
+      case 'scheduleList': {
+        await this.listSchedules()
+        break
+      }
+      case 'scheduleCancel': {
+        await this.cancelSchedule(message.id)
+        break
+      }
+      case 'scheduleRun': {
+        await this.runSchedule(message.id, message.occurrenceMs)
         break
       }
       case 'exportConversation': {
@@ -2659,7 +3839,19 @@ export class ConversationController {
         break
       }
       case 'attachImageData': {
-        this.addImage(message.name, new Uint8Array(Buffer.from(message.base64, 'base64')))
+        if (message.attachmentEpoch !== undefined) {
+          if (message.attachmentEpoch < this.webviewAttachmentEpoch) {
+            break
+          }
+          this.webviewAttachmentEpoch = message.attachmentEpoch
+        }
+        await this.addAttachment(
+          message.name,
+          new Uint8Array(Buffer.from(message.base64, 'base64')),
+          false,
+          message.requestId,
+          message.attachmentEpoch,
+        )
         break
       }
       case 'removeAttachment': {
@@ -2691,6 +3883,7 @@ export class ConversationController {
         break
       }
       case 'resumeSession': {
+        this.beginBrowserSessionChange(message.attachmentEpoch)
         await this.resumeSession(message.sessionId)
         break
       }
@@ -2699,6 +3892,7 @@ export class ConversationController {
         break
       }
       case 'forkSession': {
+        this.beginBrowserSessionChange(message.attachmentEpoch)
         await this.forkSession(message.lastTurnId)
         break
       }
@@ -2721,14 +3915,36 @@ export class ConversationController {
     }
   }
 
-  public surfaceReady(): void {
-    // First, so a reloaded webview keeps the conversation it saved only when
-    // that session is still the live one here, with its running turn (M25, D28).
+  private postSurfaceState(): void {
     this.post({
       type: 'surfaceState',
+      attachmentEpoch: this.webviewAttachmentEpoch,
       ...(this.session !== undefined && { sessionId: this.session.sessionId }),
       ...(this.activeTurnId !== undefined && { activeTurnId: this.activeTurnId }),
     })
+  }
+
+  public surfaceReady(attachmentEpoch?: number): void {
+    if (attachmentEpoch !== undefined) {
+      // Saved webview state may lag an in-flight session change.
+      this.webviewAttachmentEpoch = Math.max(this.webviewAttachmentEpoch, attachmentEpoch)
+    }
+    if (this.accountStopsInFlight > 0) {
+      this.post({ type: 'surfaceState', attachmentEpoch: this.webviewAttachmentEpoch })
+      this.post({ type: 'conversationCleared', accountBoundary: true })
+      const auth = this.deps.auth.toMessage()
+      this.post(
+        auth.type === 'authState' && auth.status === 'signedIn'
+          ? { type: 'authState', status: 'checking' }
+          : auth,
+      )
+      this.postComposerState()
+      this.postDictationState()
+      return
+    }
+    // First, so a reloaded webview keeps the conversation it saved only when
+    // that session is still the live one here, with its running turn (M25, D28).
+    this.postSurfaceState()
     this.post(this.deps.auth.toMessage())
     this.postComposerState()
     this.postDictationState()
@@ -2780,6 +3996,8 @@ export class ConversationController {
       await this.deps.sessions.setLastSession(undefined)
       return
     }
+    this.beginBrowserSessionChange()
+    this.postSurfaceState()
     await this.resumeSession(last.sessionId)
   }
 
@@ -2795,6 +4013,8 @@ export class ConversationController {
     ) {
       return
     }
+    this.beginBrowserSessionChange()
+    this.postSurfaceState()
     await this.resumeSession(sessionId)
   }
 
@@ -2869,19 +4089,53 @@ export class ConversationController {
    * out, shutdown), the session is resumed by the next message.
    */
   public async backendStopping(isConversationEnding: boolean): Promise<void> {
-    const { session } = this
-    if (session !== undefined && this.activeTurnId !== undefined) {
-      try {
-        await session.cancel()
-      } catch (error: unknown) {
-        this.deps.log.warn(`turn/cancel before the restart failed: ${describe(error)}`)
-      }
-      this.endTurnLocally('cancelled', UI_TEXT.turnStoppedByRestart)
+    if (isConversationEnding) {
+      this.accountStopsInFlight += 1
     }
-    this.rememberForResume(isConversationEnding ? undefined : session)
-    this.dropSession(false)
-    this.listWatch.forget()
-    this.usageWatch.forget()
+    try {
+      // Invalidate a pending send before a running turn's cancel can await.
+      this.sendInvalidationEpoch += 1
+      if (isConversationEnding) {
+        this.accountStopEpoch = this.sendInvalidationEpoch
+      }
+      this.gapReload = undefined
+      this.unsubscribe?.()
+      this.unsubscribe = undefined
+      this.closedWatch?.()
+      this.closedWatch = undefined
+      this.historyWatchEpoch += 1
+      if (isConversationEnding) {
+        this.attachmentGeneration += 1
+        this.webviewAttachmentEpoch += 1
+        this.attachments.clear()
+        this.post({ type: 'conversationCleared', accountBoundary: true })
+        this.post({ type: 'attachmentsCleared' })
+      }
+      this.sessionRecords = new Map()
+      this.postSessionList()
+      if (isConversationEnding) {
+        this.sideSessionIds.clear()
+      }
+      const { session } = this
+      if (session !== undefined && this.activeTurnId !== undefined) {
+        try {
+          await session.cancel()
+        } catch (error: unknown) {
+          this.deps.log.warn(`turn/cancel before the restart failed: ${describe(error)}`)
+        }
+        this.endTurnLocally('cancelled', UI_TEXT.turnStoppedByRestart)
+      }
+      this.rememberForResume(isConversationEnding ? undefined : session)
+      this.dropSession(false)
+      this.listWatch.forget()
+      this.usageWatch.forget()
+      this.usageHost = undefined
+      this.latestUsage = undefined
+    } finally {
+      if (isConversationEnding) {
+        this.accountStopsInFlight -= 1
+      }
+    }
   }
 
   /**
@@ -2893,12 +4147,15 @@ export class ConversationController {
     if (exit.isExpected) {
       return
     }
+    this.historyWatchEpoch += 1
     const didHaveSession = this.session !== undefined
     this.rememberForResume(this.session)
     this.endTurnLocally('failed', `${UI_TEXT.hostExited} (${exit.description})`)
     this.dropSession(false)
     this.listWatch.forget()
     this.usageWatch.forget()
+    this.usageHost = undefined
+    this.latestUsage = undefined
     if (exit.isPersistent) {
       this.deps.auth.markBackendError(`${UI_TEXT.hostExited} (${exit.description})`)
     } else if (didHaveSession) {
@@ -2911,12 +4168,15 @@ export class ConversationController {
 
   public dispose(): void {
     this.isDisposed = true
+    this.historyWatchEpoch += 1
     clearTimeout(this.deltaTimer)
     this.deltaTimer = undefined
     this.pendingDelta = undefined
     this.dropSession()
     this.listWatch.dispose()
     this.usageWatch.dispose()
+    this.usageHost = undefined
+    this.latestUsage = undefined
     this.dictation?.dispose()
     this.dictation = undefined
     this.retiredDictation?.dispose()

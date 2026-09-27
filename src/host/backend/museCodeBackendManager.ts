@@ -23,8 +23,10 @@ import {
   type LaunchResolution,
   type MuseLaunch,
   resolveMuseLaunch,
+  withLoopbackBypass,
 } from '../../core/backends/musecode/launch'
 import {
+  isSandboxNetworkApplied,
   resolveShellSandbox,
   serveArguments,
   type ShellSandboxPosture,
@@ -38,6 +40,12 @@ import {
   MSP_REQUESTED_CAPABILITIES,
   MUSE_VERSION_FILE,
   type EnvironmentVariable,
+  MUSE_CERTIFICATE_VARIABLES,
+  NO_PROXY_SEPARATOR,
+  NO_PROXY_SPELLINGS,
+  NO_PROXY_VARIABLE,
+  PROXY_VARIABLE_SPELLINGS,
+  type SandboxNetworkMode,
   type ShellSandboxMode,
 } from '../../shared/constants'
 import type { Logger } from '../logger'
@@ -56,6 +64,8 @@ export interface BackendManagerDeps {
   readonly workspaceRoot: string | undefined
   /** `museSpark.shellSandbox`; read at each spawn (a host keeps its posture). */
   readonly getShellSandbox: () => ShellSandboxMode
+  /** `museSpark.sandboxNetwork`; read at each spawn, like the sandbox (M56). */
+  readonly getSandboxNetwork: () => SandboxNetworkMode
   /** `%USERPROFILE%`; undefined off Windows. */
   readonly userProfileDir: string | undefined
   /** `vscode.workspace.isTrusted`; read at each spawn (PLAN.md D13). */
@@ -69,12 +79,8 @@ export interface BackendManagerDeps {
 const [IDE_MCP_CAPABILITY] = MSP_REQUESTED_CAPABILITIES
 const XDG_CONFIG_HOME = 'XDG_CONFIG_HOME'
 const META_API_KEY = 'META_API_KEY'
+// The variables VS Code's `http.proxy` is handed over as.
 const PROXY_VARIABLES = ['HTTPS_PROXY', 'HTTP_PROXY'] as const
-// POSIX tools read the lower-case spellings too; any of them means "configured".
-const PROXY_SPELLINGS = ['HTTPS_PROXY', 'HTTP_PROXY', 'https_proxy', 'http_proxy'] as const
-const NO_PROXY_VARIABLE = 'NO_PROXY'
-const NO_PROXY_SPELLINGS = [NO_PROXY_VARIABLE, 'no_proxy'] as const
-const NO_PROXY_SEPARATOR = ','
 
 // A path that is not there, as opposed to one that is there and unreadable.
 const MISSING_CODES: ReadonlySet<string> = new Set(['ENOENT', 'ENOTDIR'])
@@ -112,15 +118,13 @@ export class MuseCodeBackendManager {
 
   public constructor(private readonly deps: BackendManagerDeps) {}
 
-  /** `http.proxy` as HTTPS_PROXY / HTTP_PROXY (and `http.noProxy` as NO_PROXY) when unset. */
-  private proxyVariables(): readonly EnvironmentVariable[] {
-    const { proxy, noProxy } = this.deps.getProxySettings()
-    if (proxy === '') {
-      return []
-    }
-    // What the CLI would see without VS Code's proxy: the inherited
-    // environment and `museSpark.environmentVariables`, in either case on
-    // POSIX, so a lowercase `https_proxy` set either way is never contradicted.
+  /**
+   * Whether any of `names` is set, non-empty, in what the CLI would see
+   * without VS Code's proxy: the inherited environment and
+   * `museSpark.environmentVariables`, in either case on POSIX, so a
+   * lowercase `https_proxy` set either way is never contradicted.
+   */
+  private isOwnVariableSet(names: readonly string[]): boolean {
     const own = buildChildEnvironment({
       platform: process.platform,
       baseEnv: process.env,
@@ -128,13 +132,17 @@ export class MuseCodeBackendManager {
       systemRoot: process.env['SystemRoot'],
       programFiles: process.env['ProgramFiles'],
     })
-    const isSet = (names: readonly string[]) =>
-      names.some((name) => (environmentValue(own, process.platform, name) ?? '') !== '')
-    if (isSet(PROXY_SPELLINGS)) {
+    return names.some((name) => (environmentValue(own, process.platform, name) ?? '') !== '')
+  }
+
+  /** `http.proxy` as HTTPS_PROXY / HTTP_PROXY (and `http.noProxy` as NO_PROXY) when unset. */
+  private proxyVariables(): readonly EnvironmentVariable[] {
+    const { proxy, noProxy } = this.deps.getProxySettings()
+    if (proxy === '' || this.isOwnVariableSet(PROXY_VARIABLE_SPELLINGS)) {
       return []
     }
     const variables: EnvironmentVariable[] = PROXY_VARIABLES.map((name) => ({ name, value: proxy }))
-    if (noProxy.length > 0 && !isSet(NO_PROXY_SPELLINGS)) {
+    if (noProxy.length > 0 && !this.isOwnVariableSet(NO_PROXY_SPELLINGS)) {
       variables.push({ name: NO_PROXY_VARIABLE, value: noProxy.join(NO_PROXY_SEPARATOR) })
     }
     return variables
@@ -150,6 +158,12 @@ export class MuseCodeBackendManager {
     this.deps.log.info(
       `Shell sandbox ${posture.isSandboxed ? 'on' : 'off'} (${posture.reason}) for this host`,
     )
+    const network = this.deps.getSandboxNetwork()
+    if (network !== 'default' && !isSandboxNetworkApplied(network, posture)) {
+      this.deps.log.warn(
+        `museSpark.sandboxNetwork is ${network}, but the shell sandbox is off for this host, so commands have the network you have`,
+      )
+    }
     const env = this.childEnvironment()
     // The CLI's own credential pays (its login or its own key); the key the
     // panel stores is for the Model API backend and is never passed here.
@@ -245,16 +259,38 @@ export class MuseCodeBackendManager {
   /**
    * The environment `muse serve` runs in: the extension host's, the
    * Windows PowerShell module path, VS Code's proxy when none is set, and
-   * `museSpark.environmentVariables` on top.
+   * `museSpark.environmentVariables` on top; with any proxy, loopback
+   * bypasses it so Muse Code reaches the extension's `ide` server (M56).
    */
   public childEnvironment(): NodeJS.ProcessEnv {
-    return buildChildEnvironment({
-      platform: process.platform,
-      baseEnv: process.env,
-      extraVariables: [...this.proxyVariables(), ...this.deps.getEnvironmentVariables()],
-      systemRoot: process.env['SystemRoot'],
-      programFiles: process.env['ProgramFiles'],
-    })
+    return withLoopbackBypass(
+      buildChildEnvironment({
+        platform: process.platform,
+        baseEnv: process.env,
+        extraVariables: [...this.proxyVariables(), ...this.deps.getEnvironmentVariables()],
+        systemRoot: process.env['SystemRoot'],
+        programFiles: process.env['ProgramFiles'],
+      }),
+      process.platform,
+    )
+  }
+
+  /**
+   * Where `muse serve` gets its proxy, for the Diagnostics report (M56):
+   * its own environment (inherited or `environmentVariables`), VS Code's
+   * `http.proxy`, or nowhere. Muse Code reads the proxy variables only; a
+   * proxy VS Code finds in the system settings or a PAC file does not reach it.
+   */
+  public proxySource(): 'environment' | 'vscode' | 'none' {
+    if (this.isOwnVariableSet(PROXY_VARIABLE_SPELLINGS)) {
+      return 'environment'
+    }
+    return this.deps.getProxySettings().proxy === '' ? 'none' : 'vscode'
+  }
+
+  /** SSL_CERT_FILE or SSL_CERT_DIR is set for `muse serve`: they replace the system store (M56). */
+  public hasCertificateOverride(): boolean {
+    return this.isOwnVariableSet(MUSE_CERTIFICATE_VARIABLES)
   }
 
   /** The sandbox posture the next spawn installs (PLAN.md D12). */
@@ -277,7 +313,11 @@ export class MuseCodeBackendManager {
     const env = process.env
     const pathValue = environmentValue(env, process.platform, 'PATH') ?? ''
     const configuredPath = this.deps.getConfiguredBinaryPath()
-    const serveArgs = serveArguments(this.shellSandboxPosture(), this.deps.isWorkspaceTrusted())
+    const serveArgs = serveArguments(
+      this.shellSandboxPosture(),
+      this.deps.isWorkspaceTrusted(),
+      this.deps.getSandboxNetwork(),
+    )
     const key = JSON.stringify([configuredPath, pathValue, serveArgs])
     const cached = this.launchCache
     if (

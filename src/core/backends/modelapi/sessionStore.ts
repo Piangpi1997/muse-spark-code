@@ -26,6 +26,8 @@ import {
 export interface StoredReplayItem {
   readonly turnId: string
   readonly item: InputItem
+  /** The transcript user card that supplied this exact replay message (M53). */
+  readonly userMessageId?: string
   /** Identifies a background task's terminal model note across fork cuts. */
   readonly backgroundTaskId?: string
 }
@@ -42,10 +44,31 @@ export interface StoredUsage {
   readonly reasoningTokens: number
 }
 
+export interface StoredChild {
+  readonly id: string
+  readonly role: string
+  readonly objective: string
+  readonly itemId: string
+  readonly parentTurnId: string
+  readonly startedAt: number
+  readonly state: 'queued' | 'running' | 'interrupted' | 'result_ready' | 'closed'
+  readonly result?: {
+    readonly summary: string
+    readonly text?: string
+    readonly errorKind?: string
+  }
+  readonly terminal?: string
+  readonly pendingMessages: readonly string[]
+  readonly session: StoredSession
+}
+
 /** One session on disk. Optional fields are absent, never null. */
 export interface StoredSession {
   readonly version: typeof STORED_SESSION_VERSION
   readonly sessionId: string
+  /** SHA-256 digest of the owning Model API key; absent on legacy files. */
+  readonly accountId?: string
+  readonly sideChat?: boolean
   readonly workspaceRoot: string
   readonly modelId: string
   readonly approvalMode: ApprovalMode
@@ -54,6 +77,8 @@ export interface StoredSession {
   readonly createdAt: string
   readonly lastActivityAt: string
   readonly turnIds: readonly string[]
+  /** Last completed turn covered by the accepted compaction summary (M53). */
+  readonly compactedThroughTurnId?: string
   readonly forkedFrom?: string
   readonly firstPrompt?: string
   readonly todos: readonly TodoItem[]
@@ -64,6 +89,11 @@ export interface StoredSession {
   /** Patch documents by output reference (`tool_patch-<itemId>`). */
   readonly outputs: Readonly<Record<string, string>>
   readonly usage: StoredUsage
+  /** Children are nested in the parent's file; they do not appear in History. */
+  readonly children?: readonly StoredChild[]
+  /** Completed children whose results have not entered the next model request. */
+  readonly pendingChildResults?: readonly string[]
+  readonly spawnCommands?: Readonly<Record<string, string>>
 }
 
 /**
@@ -73,6 +103,8 @@ export interface StoredSession {
  */
 export interface StoredSessionHeader {
   readonly sessionId: string
+  readonly accountId?: string
+  readonly sideChat?: boolean
   readonly workspaceRoot: string
   readonly name?: string
   readonly createdAt: string
@@ -95,6 +127,8 @@ export interface SessionStore {
 export function headerOf(stored: StoredSession): StoredSessionHeader {
   return {
     sessionId: stored.sessionId,
+    ...(stored.accountId !== undefined && { accountId: stored.accountId }),
+    ...(stored.sideChat === true && { sideChat: true }),
     workspaceRoot: stored.workspaceRoot,
     ...(stored.name !== undefined && { name: stored.name }),
     createdAt: stored.createdAt,
@@ -111,17 +145,26 @@ const inputImagePartSchema = z.object({
   image_url: z.string(),
   detail: z.literal('auto'),
 })
+// A PDF the conversation carries (M54): replayed as it went, so its bytes stay with the session.
+const inputFilePartSchema = z.object({
+  type: z.literal('input_file'),
+  filename: z.string(),
+  file_data: z.string(),
+})
 const outputTextPartSchema = z.object({ type: z.literal('output_text'), text: z.string() })
 const inputMessageSchema = z.object({
   type: z.literal('message'),
   role: z.enum(['user', 'assistant', 'developer']),
   phase: z.optional(z.enum(MESSAGE_PHASES)),
-  content: z.array(z.union([inputTextPartSchema, inputImagePartSchema, outputTextPartSchema])),
+  content: z.array(
+    z.union([inputTextPartSchema, inputImagePartSchema, inputFilePartSchema, outputTextPartSchema]),
+  ),
 })
 const functionCallOutputSchema = z.object({
   type: z.literal('function_call_output'),
   call_id: z.string(),
-  output: z.string(),
+  // Content parts when an MCP tool returned pictures (M50).
+  output: z.union([z.string(), z.array(z.union([inputTextPartSchema, inputImagePartSchema]))]),
 })
 const webSearchCallReplaySchema = z.object({
   type: z.literal('web_search_call'),
@@ -137,9 +180,12 @@ const storedInputItemSchema = z.union([
   webSearchCallReplaySchema,
 ])
 
-export const storedSessionSchema = z.object({
+const storedSessionFields = {
   version: z.literal(STORED_SESSION_VERSION),
   sessionId: z.string(),
+  // Legacy sessions remain readable for retention, but are never admitted.
+  accountId: z.optional(z.string().check(z.regex(/^[a-f0-9]{64}$/))),
+  sideChat: z.optional(z.boolean()),
   workspaceRoot: z.string(),
   modelId: z.string(),
   approvalMode: z.enum(APPROVAL_MODES),
@@ -148,6 +194,7 @@ export const storedSessionSchema = z.object({
   createdAt: z.string(),
   lastActivityAt: z.string(),
   turnIds: z.array(z.string()),
+  compactedThroughTurnId: z.optional(z.string()),
   forkedFrom: z.optional(z.string()),
   firstPrompt: z.optional(z.string()),
   todos: z.array(todoItemSchema),
@@ -157,6 +204,7 @@ export const storedSessionSchema = z.object({
     z.object({
       turnId: z.string(),
       item: storedInputItemSchema,
+      userMessageId: z.optional(z.string()),
       backgroundTaskId: z.optional(z.string()),
     }),
   ),
@@ -168,6 +216,35 @@ export const storedSessionSchema = z.object({
     cachedTokens: z.number(),
     reasoningTokens: z.number(),
   }),
+} as const
+
+export const storedSessionSchema = z.object({
+  ...storedSessionFields,
+  children: z.optional(
+    z.array(
+      z.object({
+        id: z.string(),
+        role: z.string(),
+        objective: z.string(),
+        itemId: z.string(),
+        parentTurnId: z.string(),
+        startedAt: z.number(),
+        state: z.enum(['queued', 'running', 'interrupted', 'result_ready', 'closed']),
+        result: z.optional(
+          z.object({
+            summary: z.string(),
+            text: z.optional(z.string()),
+            errorKind: z.optional(z.string()),
+          }),
+        ),
+        terminal: z.optional(z.string()),
+        pendingMessages: z.array(z.string()),
+        session: z.object(storedSessionFields),
+      }),
+    ),
+  ),
+  pendingChildResults: z.optional(z.array(z.string())),
+  spawnCommands: z.optional(z.record(z.string(), z.string())),
 })
 
 export type StoredSessionParse =
@@ -181,20 +258,60 @@ export function parseStoredSession(raw: unknown): StoredSessionParse {
     return { ok: false, reason: z.prettifyError(result.error) }
   }
   // Optional fields are absent in a StoredSession, never undefined.
-  const { name, forkedFrom, firstPrompt, goal, ...rest } = result.data
-  const replay = rest.replay.map(({ backgroundTaskId, ...entry }) => ({
+  const {
+    accountId,
+    name,
+    forkedFrom,
+    firstPrompt,
+    compactedThroughTurnId,
+    goal,
+    sideChat,
+    children,
+    pendingChildResults,
+    spawnCommands,
+    ...rest
+  } = result.data
+  const replay = rest.replay.map(({ backgroundTaskId, userMessageId, ...entry }) => ({
     ...entry,
+    ...(userMessageId !== undefined && { userMessageId }),
     ...(backgroundTaskId !== undefined && { backgroundTaskId }),
   }))
+  const restoredChildren: StoredChild[] = []
+  const storedChildren = children ?? []
+  for (const child of storedChildren) {
+    const parsedChild = parseStoredSession(child.session)
+    if (!parsedChild.ok) {
+      return parsedChild
+    }
+    const { result: childResult, terminal, session: _session, ...childRest } = child
+    restoredChildren.push({
+      ...childRest,
+      session: parsedChild.session,
+      ...(childResult !== undefined && {
+        result: {
+          summary: childResult.summary,
+          ...(childResult.text !== undefined && { text: childResult.text }),
+          ...(childResult.errorKind !== undefined && { errorKind: childResult.errorKind }),
+        },
+      }),
+      ...(terminal !== undefined && { terminal }),
+    })
+  }
   return {
     ok: true,
     session: {
       ...rest,
+      ...(accountId !== undefined && { accountId }),
       replay,
       ...(name !== undefined && { name }),
       ...(forkedFrom !== undefined && { forkedFrom }),
       ...(firstPrompt !== undefined && { firstPrompt }),
+      ...(compactedThroughTurnId !== undefined && { compactedThroughTurnId }),
       ...(goal !== undefined && { goal }),
+      ...(sideChat === true && { sideChat: true }),
+      ...(children !== undefined && { children: restoredChildren }),
+      ...(pendingChildResults !== undefined && { pendingChildResults }),
+      ...(spawnCommands !== undefined && { spawnCommands }),
     },
   }
 }
@@ -205,6 +322,7 @@ const IDLE = 'idle'
 export function recordOf(stored: StoredSessionHeader): SessionRecord {
   return {
     sessionId: stored.sessionId,
+    ...(stored.sideChat === true && { sideChat: true }),
     ...(stored.name !== undefined && { name: stored.name }),
     ...(stored.firstPrompt !== undefined && {
       title: stored.firstPrompt,

@@ -1,5 +1,11 @@
-import { describe, expect, it, vi } from 'vitest'
-import type { SessionMcpHttpServer } from '../../src/core/agent/agentBackend'
+import { Buffer } from 'node:buffer'
+import { randomUUID } from 'node:crypto'
+import { mkdtempSync } from 'node:fs'
+import { mkdir, rename, symlink, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
+import { afterAll, describe, expect, it, vi } from 'vitest'
+import type { AgentHost, SessionMcpHttpServer } from '../../src/core/agent/agentBackend'
 import { ModelApiHost, type ModelApiHostDeps } from '../../src/core/backends/modelapi/ModelApiHost'
 import { MuseCodeHost } from '../../src/core/backends/musecode/MuseCodeHost'
 import type { ShellSandboxPosture } from '../../src/core/backends/musecode/sandbox'
@@ -14,13 +20,27 @@ import {
   type SessionMemory,
 } from '../../src/host/conversation/conversationController'
 import type { DictationListener, DictationSetup } from '../../src/core/voice/dictation'
-import { CHOICE_STEERING_NOTE, type GoalCommandVerb, UI_TEXT } from '../../src/shared/constants'
+import {
+  CHOICE_STEERING_NOTE,
+  MAX_DOCUMENT_BYTES,
+  MAX_IMAGE_BYTES,
+  type GoalCommandVerb,
+  UI_TEXT,
+} from '../../src/shared/constants'
 import type { HostAction, LineRange, MentionItem } from '../../src/shared/protocol'
 import type { SubscriptionUsage } from '../../src/shared/usage'
 import { FakeLogOutputChannel, fakeSurface } from './helpers/fakes'
-import { fakeModelApi, fakeModelApiClient } from './helpers/fakeModelApi'
+import { FAKE_MODEL_API_ACCOUNT_ID, fakeModelApi, fakeModelApiClient } from './helpers/fakeModelApi'
+import { disabledPaidFeatures } from './helpers/fakePaidFeatures'
 import { memoryContextIo } from './helpers/fakeContextIo'
 import { heldShellToolIo, memoryToolIo, type MemoryToolIo, noopToolIo } from './helpers/fakeToolIo'
+import { createFileScheduleStore } from '../../src/host/backend/fileScheduleStore'
+import { readPickedFile } from '../../src/host/backend/toolIo'
+import { canonicalPath } from '../../src/host/canonicalPath'
+import { confineWorkspacePath } from '../../src/core/backends/modelapi/tools'
+import { removeFolder } from './helpers/temporaryFolders'
+import { memorySessionStore } from './helpers/fakeSessionStore'
+import { pdfFixture } from './helpers/pdfFixture'
 import {
   fakeInitializeResult,
   fakeMspHost,
@@ -39,6 +59,7 @@ import {
 interface FakeAuth {
   readonly service: AuthPort
   readonly calls: string[]
+  isAdmitted: boolean
   snapshot: AuthSnapshot
 }
 
@@ -46,16 +67,29 @@ function fakeAuth(status: AuthSnapshot['status'] = 'signedIn'): FakeAuth {
   const calls: string[] = []
   const state: FakeAuth = {
     calls,
+    isAdmitted: true,
     snapshot: { status, detail: undefined },
     // AuthPort is exactly the member set the controller touches.
     service: {
       get current() {
         return state.snapshot
       },
+      get backend() {
+        return state.snapshot.status === 'signedIn' && state.isAdmitted
+          ? (state.snapshot.backend ?? 'museCode')
+          : undefined
+      },
       toMessage: () => ({ type: 'authState', status: state.snapshot.status }),
       signIn: (method: string) => {
         calls.push(`signIn:${method}`)
         return Promise.resolve(state.snapshot)
+      },
+      installMuseCode: () => {
+        calls.push('installMuseCode')
+        return Promise.resolve(state.snapshot)
+      },
+      cancelSignIn: () => {
+        calls.push('cancelSignIn')
       },
       signOut: () => {
         calls.push('signOut')
@@ -84,6 +118,13 @@ const PNG = Uint8Array.from([
   0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52, 0, 0, 0, 2,
   0, 0, 0, 3,
 ])
+
+async function writeTwentyMiBPdf(file: string): Promise<Buffer> {
+  const small = Buffer.from(pdfFixture(1))
+  const bytes = Buffer.concat([small, Buffer.alloc(MAX_IMAGE_BYTES * 2 - small.length, 0x20)])
+  await writeFile(file, bytes)
+  return bytes
+}
 
 const NOW = Date.parse('2026-09-22T12:00:00Z')
 /** The choice-steering note every CLI turn carries (M14), hidden by displayText. */
@@ -123,6 +164,18 @@ function attachPng(t: { controller: ConversationController }): Promise<void> {
   })
 }
 
+function pickedTextFixture() {
+  const t = setup({ indexed: ['a.ts'] })
+  t.setPicked([{ name: 'a.ts', fsPath: '/ws/a.ts', relativePath: 'a.ts' }])
+  return t
+}
+
+async function heldPickerAt(t: ReturnType<typeof setup>, stage: () => void) {
+  const picking = t.controller.handle({ type: 'pickFile' })
+  await vi.waitFor(stage)
+  return { picking }
+}
+
 function setup(
   options: {
     status?: AuthSnapshot['status']
@@ -143,8 +196,6 @@ function setup(
     /** How long the IDE tool server takes to answer (a retried start, D25). */
     ideMcpStartMs?: number
     grantedCapabilities?: readonly string[]
-    /** The window a previous session left in the cache (M16). */
-    cachedUsage?: SubscriptionUsage
     shellSandbox?: ShellSandboxPosture
     /** Contributor-tier guard (M7). */
     isConfidentialWorkspace?: boolean
@@ -171,6 +222,12 @@ function setup(
     readToolImage?: ConversationDeps['readToolImage']
     /** VS Code's workspace trust (M46: Restricted Mode runs no `!` command). */
     isWorkspaceTrusted?: boolean
+    isSideChat?: boolean
+    /** The side panel's original fork ID, including after window reload. */
+    sideSessionId?: string
+    openSideChat?: (sessionId: string) => void
+    /** Hold a host lookup after the action captured its source session. */
+    hostGate?: { current: Promise<undefined> | undefined; onWait?: () => void }
   } = {},
 ) {
   const handle = fakeMspHost()
@@ -260,7 +317,8 @@ function setup(
     log,
   )
   const auth = fakeAuth(options.status)
-  const surface = fakeSurface('s')
+  const surface = fakeSurface('s', options.isSideChat)
+  surface.takeRestoredSessionId.mockReturnValue(options.sideSessionId)
   const openExternal = vi.fn<(url: string) => void>()
   const hostActions: HostAction[] = []
   let picked: PickedFile[] = []
@@ -278,7 +336,6 @@ function setup(
   const reviews: [string, string, string][] = []
   const opened: [string, string][] = []
   const openedFiles: [string, LineRange | undefined][] = []
-  let cachedUsage: SubscriptionUsage | undefined = options.cachedUsage
   const contributorPrompts: string[] = []
   let remoteBypassPrompts = 0
   // What "Export conversation…" handed the save dialog (M30).
@@ -318,6 +375,11 @@ function setup(
     usageInsights: () => Promise.resolve(options.usageInsights),
     ensureHost: async () => {
       await options.beforeEnsureHost?.()
+      const gate = options.hostGate?.current
+      if (gate !== undefined) {
+        options.hostGate?.onWait?.()
+        await gate
+      }
       return host
     },
     workspaceRoot: 'workspaceRoot' in options ? options.workspaceRoot : '/ws',
@@ -325,6 +387,7 @@ function setup(
     initialPermissionMode: options.initialPermissionMode ?? 'manual',
     hasApprovalUi: options.hasApprovalUi ?? false,
     openExternal,
+    ...(options.openSideChat !== undefined && { openSideChat: options.openSideChat }),
     mentions: {
       search: (query: string, limit: number) => {
         const items: MentionItem[] = [
@@ -339,7 +402,15 @@ function setup(
     files: {
       showOpenDialog: () => Promise.resolve(picked),
       readFile: (fsPath: string) =>
-        fsPath.endsWith('.png') ? Promise.resolve(PNG) : Promise.resolve(Uint8Array.from([1])),
+        fsPath.endsWith('.png')
+          ? Promise.resolve({ bytes: PNG, isPdf: false })
+          : Promise.resolve({ bytes: new TextEncoder().encode('example text'), isPdf: false }),
+      canonicalRelativePath: (fsPath: string) =>
+        Promise.resolve(
+          fsPath.startsWith('/ws/')
+            ? { canonical: fsPath.slice('/ws/'.length), checkedAbsolute: fsPath }
+            : undefined,
+        ),
       pickMentionFile: () => Promise.resolve(mentionChoice),
       toRelativePath: (uri: string) =>
         uri.startsWith('file:///ws/') ? uri.slice('file:///ws/'.length) : undefined,
@@ -401,13 +472,6 @@ function setup(
     },
     readToolImage:
       options.readToolImage ?? (() => Promise.resolve({ ok: false, reason: 'no image here' })),
-    usageCache: {
-      read: () => cachedUsage,
-      write: (usage) => {
-        cachedUsage = usage
-        return Promise.resolve()
-      },
-    },
     ideMcpEndpoint: () =>
       new Promise((resolve) => {
         // A server still (re)starting answers later (D25); the session waits.
@@ -466,7 +530,6 @@ function setup(
     inserted,
     opened,
     openedFiles,
-    cachedUsage: () => cachedUsage,
     onSandboxUnavailable,
     saveAll,
     unsaved,
@@ -483,12 +546,29 @@ function setup(
 }
 
 describe('ConversationController.surfaceReady', () => {
+  it('does not restore an old account session while cancellation is pending', async () => {
+    const t = setup()
+    await t.send('old', 'Account A turn')
+    const { stopping, request } = await holdTurnCancel(t)
+    t.surface.posted.length = 0
+    t.controller.surfaceReady(0)
+    expect(t.surface.posted).toContainEqual({ type: 'surfaceState', attachmentEpoch: 1 })
+    expect(t.surface.posted).not.toContainEqual(
+      expect.objectContaining({ type: 'surfaceState', sessionId: 's1' }),
+    )
+    expect(t.surface.posted).not.toContainEqual(
+      expect.objectContaining({ type: 'sessionInfo', sessionId: 's1' }),
+    )
+    answerHeldCancel(t, request)
+    await stopping
+  })
+
   it('replays auth and composer state, then models, session, skills and attachments', async () => {
     const t = setup()
     t.controller.surfaceReady()
     expect(t.surface.posted).toEqual([
       // M25: first, the live session and turn a reloaded webview checks its saved state against.
-      { type: 'surfaceState' },
+      { type: 'surfaceState', attachmentEpoch: 0 },
       { type: 'authState', status: 'signedIn' },
       composerState,
       {
@@ -504,7 +584,7 @@ describe('ConversationController.surfaceReady', () => {
     t.surface.posted.length = 0
     t.controller.surfaceReady()
     expect(t.surface.posted).toEqual([
-      { type: 'surfaceState', sessionId: 's1', activeTurnId: 't1' },
+      { type: 'surfaceState', attachmentEpoch: 0, sessionId: 's1', activeTurnId: 't1' },
       { type: 'authState', status: 'signedIn' },
       composerState,
       {
@@ -961,7 +1041,8 @@ describe('ConversationController: composer controls', () => {
     await t.controller.handle({ type: 'clearConversation' })
     expect(t.host.sessionCount).toBe(0)
     // M25: the webview drops its transcript too, however the clear came (a keybinding too).
-    expect(t.surface.posted[0]).toEqual({ type: 'conversationCleared' })
+    expect(t.surface.posted).toContainEqual({ type: 'modelList', models: [] })
+    expect(t.surface.posted).toContainEqual({ type: 'conversationCleared' })
     expect(t.surface.posted.at(-1)).toEqual({ type: 'attachmentsCleared' })
     await t.controller.handle({ type: 'compact' })
     expect(t.server.requestsFor('session/start')).toHaveLength(2)
@@ -995,6 +1076,7 @@ describe('ConversationController: context', () => {
 
   it('attaches picked images and mentions other picked files', async () => {
     const t = setup()
+    const read = vi.spyOn(t.deps.files, 'readFile')
     t.setPicked([
       { name: 'shot.png', fsPath: '/tmp/shot.png', relativePath: undefined },
       { name: 'notes.md', fsPath: '/ws/docs/notes.md', relativePath: 'docs/notes.md' },
@@ -1003,6 +1085,7 @@ describe('ConversationController: context', () => {
       { name: 'x#1.md', fsPath: '/ws/my docs/x#1.md', relativePath: 'my docs/x#1.md' },
     ])
     await t.controller.handle({ type: 'pickFile' })
+    expect(read).toHaveBeenCalledWith('/tmp/shot.png', expect.any(Number))
     expect(t.surface.posted).toEqual([
       {
         type: 'attachmentAdded',
@@ -1023,6 +1106,255 @@ describe('ConversationController: context', () => {
     ])
   })
 
+  it('attaches an indexed UTF-8 file as named text, while refusing a private file', async () => {
+    const t = setup()
+    t.setPicked([{ name: 'a.ts', fsPath: '/ws/src/a.ts', relativePath: 'src/a.ts' }])
+    await t.controller.handle({ type: 'pickFile' })
+    expect(t.surface.posted).toMatchObject([
+      { type: 'attachmentAdded', attachment: { name: 'a.ts', mediaType: 'text/plain' } },
+    ])
+    await t.send('text-file', 'Explain this', ['att-1'])
+    expect(t.server.requestsFor('turn/start')[0]?.params).toMatchObject({
+      input: [
+        { type: 'text', text: 'Explain this' },
+        { type: 'text', text: expect.stringContaining('Attached text file "a.ts"') },
+        NOTE,
+      ],
+      displayText: 'Explain this\n[Muse Spark Code attached text files: ["a.ts"]]',
+    })
+    const privateFile = setup({ indexed: ['credentials.json'] })
+    privateFile.setPicked([
+      {
+        name: 'credentials.json',
+        fsPath: '/ws/credentials.json',
+        relativePath: 'credentials.json',
+      },
+    ])
+    await privateFile.controller.handle({ type: 'pickFile' })
+    expect(privateFile.surface.posted).toEqual([
+      {
+        type: 'attachmentRejected',
+        name: 'credentials.json',
+        reason: UI_TEXT.textFilePrivate,
+      },
+    ])
+  })
+
+  it('queues a Muse text-file card while a turn runs so its display annotation is durable', async () => {
+    const t = setup({ indexed: ['notes.txt'] })
+    await t.send('first', 'Working')
+    t.server.notify('turn/started', { sessionId: 's1', turnId: 't1' })
+    await settle()
+    t.setPicked([{ name: 'notes.txt', fsPath: '/ws/notes.txt', relativePath: 'notes.txt' }])
+    await t.controller.handle({ type: 'pickFile' })
+    t.server.handle('turn/start', (params) => ({
+      turnId: 't2',
+      status: 'accepted',
+      disposition: 'queued',
+      commandId: params['commandId'],
+    }))
+    await t.send('file-local', 'Read the note', ['att-1'])
+    expect(t.server.requestsFor('turn/steer')).toHaveLength(0)
+    expect(t.server.requestsFor('turn/start')).toHaveLength(2)
+    expect(t.server.requestsFor('turn/start')[1]?.params).toMatchObject({
+      displayText: 'Read the note\n[Muse Spark Code attached text files: ["notes.txt"]]',
+    })
+  })
+
+  it('reads an indexed text attachment from the checked target after its alias retargets', async () => {
+    const t = setup({ indexed: ['allowed.txt'] })
+    vi.spyOn(t.deps.files, 'canonicalRelativePath').mockResolvedValue({
+      canonical: 'allowed.txt',
+      checkedAbsolute: '/ws/allowed.txt',
+    })
+    const read = vi.spyOn(t.deps.files, 'readFile').mockImplementation((fsPath) =>
+      Promise.resolve({
+        bytes: new TextEncoder().encode(
+          fsPath === '/ws/picked.txt' ? 'PRIVATE_MARKER' : 'SAFE_MARKER',
+        ),
+        isPdf: false,
+      }),
+    )
+    t.setPicked([{ name: 'picked.txt', fsPath: '/ws/picked.txt', relativePath: 'picked.txt' }])
+    await t.controller.handle({ type: 'pickFile' })
+    expect(read).toHaveBeenCalledWith('/ws/allowed.txt', expect.any(Number), '/ws/allowed.txt')
+    await t.send('text-file', 'Explain this', ['att-1'])
+    const turn = t.server.requestsFor('turn/start')[0]
+    if (turn?.params === undefined) {
+      throw new Error('expected text attachment turn')
+    }
+    const input = JSON.stringify(turn.params['input'])
+    expect(input).toContain('SAFE_MARKER')
+    expect(input).not.toContain('PRIVATE_MARKER')
+  })
+
+  it('refuses an indexed text picker read after its checked parent becomes a junction', async () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'muse-picked-proof-'))
+    try {
+      const workspace = path.join(root, 'ws')
+      const allowed = path.join(workspace, 'allowed')
+      const outside = path.join(root, 'outside')
+      const picked = path.join(allowed, 'note.txt')
+      await mkdir(allowed, { recursive: true })
+      await mkdir(outside)
+      await writeFile(picked, 'safe text')
+      await writeFile(path.join(outside, 'note.txt'), 'private sentinel')
+      const t = setup({ workspaceRoot: workspace, indexed: ['allowed/note.txt'] })
+      vi.spyOn(t.deps.files, 'canonicalRelativePath').mockImplementation(async (fsPath) => {
+        const result = await confineWorkspacePath(workspace, fsPath, process.platform, {
+          realPath: canonicalPath,
+        })
+        return result.ok
+          ? { canonical: result.canonical, checkedAbsolute: result.checkedAbsolute }
+          : undefined
+      })
+      vi.spyOn(t.deps.mentions, 'contains').mockImplementation(async () => {
+        await rename(allowed, path.join(workspace, 'moved'))
+        await symlink(outside, allowed, process.platform === 'win32' ? 'junction' : 'dir')
+        return true
+      })
+      vi.spyOn(t.deps.files, 'readFile').mockImplementation(readPickedFile)
+      t.setPicked([{ name: 'note.txt', fsPath: picked, relativePath: 'allowed/note.txt' }])
+      await t.controller.handle({ type: 'pickFile' })
+      expect(t.surface.posted).toEqual([
+        { type: 'attachmentRejected', name: 'note.txt', reason: UI_TEXT.attachmentUnreadable },
+      ])
+    } finally {
+      await removeFolder(root)
+    }
+  })
+
+  it.each(['modelApi', 'museCode'] as const)(
+    'sniffs a 20 MiB PDF named like an image before %s picker admission',
+    async (backend) => {
+      const root = mkdtempSync(path.join(tmpdir(), 'muse-picked-pdf-image-name-'))
+      try {
+        const file = path.join(root, 'report.png')
+        const largePdf = await writeTwentyMiBPdf(file)
+        const t = setup()
+        const controller = backend === 'modelApi' ? modelApiController(t).controller : t.controller
+        vi.spyOn(t.deps.files, 'readFile').mockImplementation(readPickedFile)
+        t.setPicked([{ name: 'report.png', fsPath: file, relativePath: undefined }])
+        await controller.handle({ type: 'pickFile' })
+        expect(t.surface.posted).toContainEqual(
+          backend === 'modelApi'
+            ? expect.objectContaining({
+                type: 'attachmentAdded',
+                attachment: expect.objectContaining({
+                  mediaType: 'application/pdf',
+                  sizeBytes: largePdf.length,
+                }),
+              })
+            : { type: 'attachmentRejected', name: 'report.png', reason: UI_TEXT.pdfNeedsModelApi },
+        )
+      } finally {
+        await removeFolder(root)
+      }
+    },
+  )
+
+  it('keeps indexed text proof and detects a PDF named like text before the 1 MiB cap', async () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'muse-picked-pdf-text-name-'))
+    try {
+      const file = path.join(root, 'report.txt')
+      await writeTwentyMiBPdf(file)
+      const t = setup({ workspaceRoot: root, indexed: ['report.txt'] })
+      const { controller } = modelApiController(t, { workspaceRoot: root })
+      vi.spyOn(t.deps.files, 'canonicalRelativePath').mockImplementation(async (fsPath) => {
+        const result = await confineWorkspacePath(root, fsPath, process.platform, {
+          realPath: canonicalPath,
+        })
+        return result.ok
+          ? { canonical: result.canonical, checkedAbsolute: result.checkedAbsolute }
+          : undefined
+      })
+      const read = vi.spyOn(t.deps.files, 'readFile').mockImplementation(readPickedFile)
+      t.setPicked([{ name: 'report.txt', fsPath: file, relativePath: 'report.txt' }])
+      await controller.handle({ type: 'pickFile' })
+      const checkedFile = await canonicalPath(file)
+      expect(read).toHaveBeenCalledWith(checkedFile, expect.any(Number), checkedFile)
+      expect(t.surface.posted).toContainEqual(
+        expect.objectContaining({
+          type: 'attachmentAdded',
+          attachment: expect.objectContaining({ mediaType: 'application/pdf' }),
+        }),
+      )
+    } finally {
+      await removeFolder(root)
+    }
+  })
+
+  it.each(['modelApi', 'museCode'] as const)(
+    'applies PDF policy to an unindexed outside-workspace .txt on %s',
+    async (backend) => {
+      const root = mkdtempSync(path.join(tmpdir(), 'muse-picked-pdf-outside-text-'))
+      try {
+        const file = path.join(root, 'report.txt')
+        await writeTwentyMiBPdf(file)
+        const t = setup({ indexed: [] })
+        const controller = backend === 'modelApi' ? modelApiController(t).controller : t.controller
+        const read = vi.spyOn(t.deps.files, 'readFile').mockImplementation(readPickedFile)
+        t.setPicked([{ name: 'report.txt', fsPath: file, relativePath: undefined }])
+        await controller.handle({ type: 'pickFile' })
+        expect(read).toHaveBeenCalledWith(file, 0)
+        expect(t.surface.posted).toContainEqual(
+          backend === 'modelApi'
+            ? expect.objectContaining({
+                type: 'attachmentAdded',
+                attachment: expect.objectContaining({ mediaType: 'application/pdf' }),
+              })
+            : { type: 'attachmentRejected', name: 'report.txt', reason: UI_TEXT.pdfNeedsModelApi },
+        )
+      } finally {
+        await removeFolder(root)
+      }
+    },
+  )
+
+  it('preserves the .pdf filename cap and invalid-PDF refusal for non-PDF bytes', async () => {
+    const t = setup()
+    const { controller } = modelApiController(t)
+    const read = vi.spyOn(t.deps.files, 'readFile').mockResolvedValue({
+      bytes: new Uint8Array(MAX_IMAGE_BYTES + 1),
+      isPdf: false,
+    })
+    t.setPicked([{ name: 'report.pdf', fsPath: '/tmp/report.pdf', relativePath: undefined }])
+    await controller.handle({ type: 'pickFile' })
+    expect(read).toHaveBeenCalledWith('/tmp/report.pdf', MAX_DOCUMENT_BYTES)
+    expect(t.surface.posted).toContainEqual({
+      type: 'attachmentRejected',
+      name: 'report.pdf',
+      reason: UI_TEXT.invalidPdf,
+    })
+    read.mockResolvedValue({ bytes: undefined, isPdf: false })
+    await controller.handle({ type: 'pickFile' })
+    expect(t.surface.posted.at(-1)).toEqual({
+      type: 'attachmentRejected',
+      name: 'report.pdf',
+      reason: UI_TEXT.documentTooLarge,
+    })
+  })
+
+  it('keeps untrusted ordinary text as a mention after a header-only PDF probe', async () => {
+    const t = setup({ isWorkspaceTrusted: false, indexed: ['src/a.ts'] })
+    const read = vi.spyOn(t.deps.files, 'readFile')
+    t.setPicked([{ name: 'a.ts', fsPath: '/ws/src/a.ts', relativePath: 'src/a.ts' }])
+    await t.controller.handle({ type: 'pickFile' })
+    expect(t.surface.posted).toEqual([{ type: 'insertText', text: '@src/a.ts ' }])
+    expect(read).toHaveBeenCalledWith('/ws/src/a.ts', 0)
+  })
+
+  it('refuses a picked binary type without reading its bytes', async () => {
+    const t = setup()
+    const read = vi.spyOn(t.deps.files, 'readFile')
+    t.setPicked([{ name: 'draft.docx', fsPath: '/ws/draft.docx', relativePath: 'draft.docx' }])
+    await t.controller.handle({ type: 'pickFile' })
+    expect(t.surface.posted).toEqual([
+      { type: 'attachmentRejected', name: 'draft.docx', reason: UI_TEXT.binaryFileUnsupported },
+    ])
+    expect(read).not.toHaveBeenCalled()
+  })
+
   it('rejects unsupported image data with the reason', async () => {
     const t = setup()
     await t.controller.handle({
@@ -1038,6 +1370,393 @@ describe('ConversationController: context', () => {
         reason: 'Only PNG, JPEG, GIF and WebP images can be attached.',
       },
     ])
+  })
+
+  it('does not add a pasted image after its host lookup outlives New Conversation', async () => {
+    const gate = Promise.withResolvers<undefined>()
+    let shouldHold = false
+    const t = setup({ beforeEnsureHost: () => (shouldHold ? gate.promise : Promise.resolve()) })
+    shouldHold = true
+    const attaching = t.controller.handle({
+      type: 'attachImageData',
+      name: 'old.png',
+      mediaType: 'image/png',
+      base64: Buffer.from(PNG).toString('base64'),
+      requestId: 'old-paste',
+    })
+    await Promise.resolve()
+    await t.controller.handle({ type: 'clearConversation' })
+    gate.resolve(undefined)
+    await attaching
+    expect(t.surface.posted).not.toContainEqual(
+      expect.objectContaining({ type: 'attachmentAdded', requestId: 'old-paste' }),
+    )
+  })
+
+  it('ignores an old composer generation delivered after New Conversation', async () => {
+    const t = setup()
+    await t.controller.handle({ type: 'clearConversation', attachmentEpoch: 1 })
+    await t.controller.handle({
+      type: 'attachImageData',
+      name: 'late.png',
+      mediaType: 'image/png',
+      base64: Buffer.from(PNG).toString('base64'),
+      requestId: 'late-paste',
+      attachmentEpoch: 0,
+    })
+    expect(t.surface.posted).not.toContainEqual(
+      expect.objectContaining({ type: 'attachmentAdded', requestId: 'late-paste' }),
+    )
+  })
+
+  it.each(['resumeSession', 'forkSession'] as const)(
+    'rejects an old browser upload while %s waits for the backend',
+    async (action) => {
+      const gate = Promise.withResolvers<undefined>()
+      let shouldHoldNextLookup = false
+      const t = withHistory({
+        beforeEnsureHost: () => {
+          if (shouldHoldNextLookup) {
+            shouldHoldNextLookup = false
+            return gate.promise
+          }
+          return Promise.resolve()
+        },
+      })
+      await completeFirstTurn(t)
+      shouldHoldNextLookup = true
+      const changing = t.controller.handle(
+        action === 'resumeSession'
+          ? { type: action, sessionId: 'old', attachmentEpoch: 1 }
+          : { type: action, lastTurnId: 't1', attachmentEpoch: 1 },
+      )
+      await Promise.resolve()
+      await t.controller.handle({
+        type: 'attachImageData',
+        name: 'stale.png',
+        mediaType: 'image/png',
+        base64: Buffer.from(PNG).toString('base64'),
+        requestId: 'stale-upload',
+        attachmentEpoch: 0,
+      })
+      gate.resolve(undefined)
+      await changing
+      expect(t.surface.posted).not.toContainEqual(
+        expect.objectContaining({ type: 'attachmentAdded', requestId: 'stale-upload' }),
+      )
+    },
+  )
+
+  it('rejects a late browser upload after fork drops the source but before History loads', async () => {
+    const t = withHistory()
+    await completeFirstTurn(t)
+    const held = holdNextModelList(t)
+    const changing = t.controller.handle({
+      type: 'forkSession',
+      lastTurnId: 't1',
+      attachmentEpoch: 1,
+    })
+    await held.waitBeforeHistory()
+    await t.controller.handle({
+      type: 'attachImageData',
+      name: 'late.png',
+      mediaType: 'image/png',
+      base64: Buffer.from(PNG).toString('base64'),
+      requestId: 'late-upload',
+      attachmentEpoch: 0,
+    })
+    held.release()
+    await changing
+    expect(t.surface.posted).not.toContainEqual(
+      expect.objectContaining({ type: 'attachmentAdded', requestId: 'late-upload' }),
+    )
+    await t.controller.handle({
+      type: 'attachImageData',
+      name: 'fresh.png',
+      mediaType: 'image/png',
+      base64: Buffer.from(PNG).toString('base64'),
+      requestId: 'fresh-upload',
+      attachmentEpoch: 1,
+    })
+    expect(t.surface.posted).toContainEqual(
+      expect.objectContaining({ type: 'attachmentAdded', requestId: 'fresh-upload' }),
+    )
+  })
+
+  it('uses a restored panel epoch before accepting browser uploads', async () => {
+    const t = setup()
+    t.controller.surfaceReady(4)
+    await t.controller.handle({
+      type: 'attachImageData',
+      name: 'previous.png',
+      mediaType: 'image/png',
+      base64: Buffer.from(PNG).toString('base64'),
+      requestId: 'previous-upload',
+      attachmentEpoch: 3,
+    })
+    expect(t.surface.posted).not.toContainEqual(
+      expect.objectContaining({ type: 'attachmentAdded', requestId: 'previous-upload' }),
+    )
+    await t.controller.handle({
+      type: 'attachImageData',
+      name: 'current.png',
+      mediaType: 'image/png',
+      base64: Buffer.from(PNG).toString('base64'),
+      requestId: 'current-upload',
+      attachmentEpoch: 4,
+    })
+    expect(t.surface.posted).toContainEqual(
+      expect.objectContaining({ type: 'attachmentAdded', requestId: 'current-upload' }),
+    )
+  })
+
+  it.each(['resumeSession', 'forkSession'] as const)(
+    'does not lower the upload guard for stale ready during %s',
+    async (action) => {
+      const uploadGate = Promise.withResolvers<undefined>()
+      const actionGate = Promise.withResolvers<undefined>()
+      let shouldHoldLookups = false
+      let heldLookups = 0
+      const t = withHistory({
+        beforeEnsureHost: () => {
+          if (!shouldHoldLookups) {
+            return Promise.resolve()
+          }
+          heldLookups += 1
+          return heldLookups === 1 ? uploadGate.promise : actionGate.promise
+        },
+      })
+      await completeFirstTurn(t)
+      shouldHoldLookups = true
+      const uploading = t.controller.handle({
+        type: 'attachImageData',
+        name: 'held-old.png',
+        mediaType: 'image/png',
+        base64: Buffer.from(PNG).toString('base64'),
+        requestId: 'held-old-upload',
+        attachmentEpoch: 0,
+      })
+      await vi.waitFor(() => {
+        expect(heldLookups).toBe(1)
+      })
+      const changing = t.controller.handle(
+        action === 'resumeSession'
+          ? { type: action, sessionId: 'old', attachmentEpoch: 1 }
+          : { type: action, lastTurnId: 't1', attachmentEpoch: 1 },
+      )
+      await vi.waitFor(() => {
+        expect(heldLookups).toBe(2)
+      })
+      t.controller.surfaceReady(0)
+      uploadGate.resolve(undefined)
+      await uploading
+      actionGate.resolve(undefined)
+      await changing
+      expect(t.surface.posted).not.toContainEqual(
+        expect.objectContaining({ type: 'attachmentAdded', requestId: 'held-old-upload' }),
+      )
+      expect(t.surface.posted).toContainEqual(
+        expect.objectContaining({ type: 'surfaceState', attachmentEpoch: 1 }),
+      )
+      shouldHoldLookups = false
+      await t.controller.handle({
+        type: 'attachImageData',
+        name: 'fresh-after-ready.png',
+        mediaType: 'image/png',
+        base64: Buffer.from(PNG).toString('base64'),
+        requestId: 'fresh-after-ready',
+        attachmentEpoch: 1,
+      })
+      expect(t.surface.posted).toContainEqual(
+        expect.objectContaining({ type: 'attachmentAdded', requestId: 'fresh-after-ready' }),
+      )
+    },
+  )
+
+  it.each(['restoreSession', 'restoreRecentSession'] as const)(
+    'rejects an old browser upload after host-driven %s drops the session',
+    async (action) => {
+      const t = withHistory({ isRestorable: true, lastSession: { sessionId: 'old', at: NOW } })
+      t.controller.surfaceReady(0)
+      await settle()
+      const held = holdNextModelList(t)
+      const restoring =
+        action === 'restoreSession'
+          ? t.controller.restoreSession('old')
+          : t.controller.restoreRecentSession()
+      await held.waitBeforeHistory()
+      await t.controller.handle({
+        type: 'attachImageData',
+        name: 'pre-restore.png',
+        mediaType: 'image/png',
+        base64: Buffer.from(PNG).toString('base64'),
+        requestId: 'pre-restore',
+        attachmentEpoch: 0,
+      })
+      held.release()
+      await restoring
+      expect(t.surface.posted).not.toContainEqual(
+        expect.objectContaining({ type: 'attachmentAdded', requestId: 'pre-restore' }),
+      )
+      expect(t.surface.posted).toContainEqual(
+        expect.objectContaining({ type: 'surfaceState', attachmentEpoch: 1 }),
+      )
+      await t.controller.handle({
+        type: 'attachImageData',
+        name: 'post-restore.png',
+        mediaType: 'image/png',
+        base64: Buffer.from(PNG).toString('base64'),
+        requestId: 'post-restore',
+        attachmentEpoch: 1,
+      })
+      expect(t.surface.posted).toContainEqual(
+        expect.objectContaining({ type: 'attachmentAdded', requestId: 'post-restore' }),
+      )
+    },
+  )
+
+  it('syncs the upload epoch when host-driven restore fails before History', async () => {
+    const t = withHistory()
+    t.controller.surfaceReady(0)
+    await settle()
+    t.server.handle('session/resume', () => {
+      throw new Error('offline')
+    })
+    await t.controller.restoreSession('old')
+    expect(t.surface.posted).toContainEqual(
+      expect.objectContaining({ type: 'surfaceState', attachmentEpoch: 1 }),
+    )
+    expect(t.surface.posted.some((message) => message.type === 'historyLoaded')).toBe(false)
+    await t.controller.handle({
+      type: 'attachImageData',
+      name: 'after-failed-restore.png',
+      mediaType: 'image/png',
+      base64: Buffer.from(PNG).toString('base64'),
+      requestId: 'after-failed-restore',
+      attachmentEpoch: 1,
+    })
+    expect(t.surface.posted).toContainEqual(
+      expect.objectContaining({ type: 'attachmentAdded', requestId: 'after-failed-restore' }),
+    )
+  })
+
+  it('settles a browser file request when the backend cannot be reached', async () => {
+    const t = setup({ beforeEnsureHost: () => Promise.reject(new Error('offline')) })
+    await t.controller.handle({
+      type: 'attachImageData',
+      name: 'offline.png',
+      mediaType: 'image/png',
+      base64: Buffer.from(PNG).toString('base64'),
+      requestId: 'offline-paste',
+    })
+    expect(t.surface.posted).toContainEqual({
+      type: 'attachmentRejected',
+      name: 'offline.png',
+      reason: UI_TEXT.attachmentUnreadable,
+      requestId: 'offline-paste',
+    })
+  })
+
+  it.each(['clearConversation', 'signOut'] as const)(
+    'does not attach a native-picked file from a dialog that outlived %s',
+    async (action) => {
+      const t = setup()
+      const dialog = Promise.withResolvers<readonly PickedFile[]>()
+      vi.spyOn(t.deps.files, 'showOpenDialog').mockReturnValue(dialog.promise)
+      const picking = t.controller.handle({ type: 'pickFile' })
+      await t.controller.handle({ type: action })
+      dialog.resolve([
+        { name: 'old.png', fsPath: '/ws/old.png', relativePath: 'old.png' },
+        { name: '.env', fsPath: '/ws/.env', relativePath: '.env' },
+      ])
+      await picking
+      expect(t.surface.posted).not.toContainEqual(
+        expect.objectContaining({
+          type: 'attachmentAdded',
+          attachment: expect.objectContaining({ name: 'old.png' }),
+        }),
+      )
+      expect(t.surface.posted).not.toContainEqual(
+        expect.objectContaining({ type: 'attachmentRejected', name: '.env' }),
+      )
+    },
+  )
+
+  it('does not attach a native-picked file read after clear', async () => {
+    const t = setup()
+    t.setPicked([{ name: 'old.png', fsPath: '/ws/old.png', relativePath: 'old.png' }])
+    const readGate = Promise.withResolvers<{
+      readonly bytes: Uint8Array
+      readonly isPdf: boolean
+    }>()
+    const read = vi.spyOn(t.deps.files, 'readFile').mockReturnValue(readGate.promise)
+    const picking = t.controller.handle({ type: 'pickFile' })
+    await vi.waitFor(() => {
+      expect(read).toHaveBeenCalledOnce()
+    })
+    await t.controller.handle({ type: 'clearConversation' })
+    readGate.resolve({ bytes: PNG, isPdf: false })
+    await picking
+    expect(t.surface.posted).not.toContainEqual(
+      expect.objectContaining({
+        type: 'attachmentAdded',
+        attachment: expect.objectContaining({ name: 'old.png' }),
+      }),
+    )
+  })
+
+  it('does not continue a text picker after canonical validation outlives clear', async () => {
+    const t = pickedTextFixture()
+    const gate = Promise.withResolvers<{ canonical: string; checkedAbsolute: string }>()
+    const check = vi.spyOn(t.deps.files, 'canonicalRelativePath').mockReturnValue(gate.promise)
+    const { picking } = await heldPickerAt(t, () => {
+      expect(check).toHaveBeenCalledOnce()
+    })
+    await t.controller.handle({ type: 'clearConversation' })
+    gate.resolve({ canonical: 'a.ts', checkedAbsolute: '/ws/a.ts' })
+    await picking
+    expect(t.surface.posted).not.toContainEqual(
+      expect.objectContaining({ type: 'attachmentAdded' }),
+    )
+    expect(t.surface.posted).not.toContainEqual(expect.objectContaining({ type: 'insertText' }))
+  })
+
+  it('does not insert a stale path mention after the index lookup outlives clear', async () => {
+    const t = pickedTextFixture()
+    const gate = Promise.withResolvers<boolean>()
+    const check = vi.spyOn(t.deps.mentions, 'contains').mockReturnValue(gate.promise)
+    const { picking } = await heldPickerAt(t, () => {
+      expect(check).toHaveBeenCalledOnce()
+    })
+    await t.controller.handle({ type: 'clearConversation' })
+    gate.resolve(false)
+    await picking
+    expect(t.surface.posted).not.toContainEqual(expect.objectContaining({ type: 'insertText' }))
+  })
+
+  it('does not insert a native mention choice after New Conversation', async () => {
+    const t = setup()
+    const gate = Promise.withResolvers<string>()
+    vi.spyOn(t.deps.files, 'pickMentionFile').mockReturnValue(gate.promise)
+    const picking = t.controller.handle({ type: 'pickMentionFile' })
+    await t.controller.handle({ type: 'clearConversation' })
+    gate.resolve('src/old.ts')
+    await picking
+    expect(t.surface.posted).not.toContainEqual(expect.objectContaining({ type: 'insertText' }))
+  })
+
+  it('refuses a PDF on Muse Code before turn/start can receive an unsupported part', async () => {
+    const t = setup()
+    await t.controller.handle({
+      type: 'attachImageData',
+      name: 'report.pdf',
+      mediaType: 'application/pdf',
+      base64: Buffer.from('%PDF-1.4').toString('base64'),
+    })
+    expect(t.surface.posted).toEqual([
+      { type: 'attachmentRejected', name: 'report.pdf', reason: UI_TEXT.pdfNeedsModelApi },
+    ])
+    expect(t.server.requestsFor('turn/start')).toEqual([])
   })
 
   it('removes attachments and drops the parts from later sends', async () => {
@@ -1196,6 +1915,33 @@ describe('ConversationController: transcript actions (M4)', () => {
     // What the panel said is in the log too (M39).
     expect(t.log.error).toHaveBeenCalledWith(
       expect.stringMatching(/^Shown in the panel: .*missing/),
+    )
+  })
+
+  it('does not publish a held output page after account host stop', async () => {
+    const t = setup()
+    await t.send('a', 'Start A')
+    t.server.silence('item/readOutput')
+    const reading = t.controller.handle({
+      type: 'readOutput',
+      itemId: 'private-a',
+      outputRef: 'a',
+      offsetBytes: 0,
+    })
+    await vi.waitFor(() => {
+      expect(t.server.requestsFor('item/readOutput')).toHaveLength(1)
+    })
+    const request = t.server.requestsFor('item/readOutput')[0]
+    if (request?.id === undefined) {
+      throw new Error('expected output request id')
+    }
+    await t.controller.backendStopping(true)
+    t.server.incoming.push(
+      `${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { content: 'A secret', encoding: 'utf8', mediaType: 'text/plain', offsetBytes: 0, byteLen: 8, eof: true } })}\n`,
+    )
+    await reading
+    expect(t.surface.posted).not.toContainEqual(
+      expect.objectContaining({ type: 'outputPage', content: 'A secret' }),
     )
   })
 
@@ -1548,10 +2294,18 @@ describe('ConversationController: other messages', () => {
   it('delegates sign-in, sign-out, retry and external links', async () => {
     const t = setup()
     await t.controller.handle({ type: 'signIn', method: 'apiKey' })
+    await t.controller.handle({ type: 'installMuseCode' })
+    await t.controller.handle({ type: 'cancelSignIn' })
     await t.controller.handle({ type: 'signOut' })
     await t.controller.handle({ type: 'retryBackend' })
     await t.controller.handle({ type: 'openExternal', url: 'https://example.invalid/' })
-    expect(t.auth.calls).toEqual(['signIn:apiKey', 'signOut', 'refresh'])
+    expect(t.auth.calls).toEqual([
+      'signIn:apiKey',
+      'installMuseCode',
+      'cancelSignIn',
+      'signOut',
+      'refresh',
+    ])
     expect(t.openExternal).toHaveBeenCalledWith('https://example.invalid/')
   })
 
@@ -1667,11 +2421,98 @@ function envelope(session: Record<string, unknown>, mode = 'inline') {
   }
 }
 
+async function holdTurnCancel(t: ReturnType<typeof setup>) {
+  t.server.silence('turn/cancel')
+  const stopping = t.controller.backendStopping(true)
+  await vi.waitFor(() => {
+    expect(t.server.requestsFor('turn/cancel')).toHaveLength(1)
+  })
+  const request = t.server.requestsFor('turn/cancel')[0]
+  if (request?.id === undefined) {
+    throw new Error('expected held turn/cancel')
+  }
+  return { stopping, request }
+}
+
+function answerHeldCancel(
+  t: ReturnType<typeof setup>,
+  request: { id?: number | string; params?: Record<string, unknown> },
+): void {
+  if (request.id === undefined) {
+    throw new Error('expected held turn/cancel id')
+  }
+  t.server.incoming.push(
+    `${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { status: 'accepted', commandId: request.params?.['commandId'] } })}\n`,
+  )
+}
+
+async function holdViewGapRead(t: ReturnType<typeof setup>) {
+  t.server.handle('view/page', () => ({ events: [], nextCursor: null }))
+  t.server.silence('session/read')
+  t.server.notify('view/gap', { sessionId: 's1', after: 'v1', next: 'v2' })
+  return await waitForHeldSessionRead(t)
+}
+
+async function waitForHeldSessionRead(t: ReturnType<typeof setup>) {
+  await vi.waitFor(() => {
+    expect(t.server.requestsFor('session/read')).toHaveLength(1)
+  })
+  const read = t.server.requestsFor('session/read')[0]
+  if (read?.id === undefined) {
+    throw new Error('expected held session/read')
+  }
+  return read
+}
+
+function gapHistory(text: string) {
+  const base = envelope({ ...storedSession, sessionId: 's1' })
+  return {
+    ...base,
+    history: {
+      ...base.history,
+      items: [{ itemId: text, kind: 'agentMessage', status: 'completed', text }],
+    },
+  }
+}
+
+function accountBoundaryIndex(t: ReturnType<typeof setup>): number {
+  const index = t.surface.posted.findIndex(
+    (message) => message.type === 'conversationCleared' && message.accountBoundary === true,
+  )
+  expect(index).toBeGreaterThanOrEqual(0)
+  return index
+}
+
 /** The first readUsage answer of a host that has observed no window yet. */
 async function firstUsageReport(t: ReturnType<typeof setup>) {
   t.server.handle('usage/read', () => ({}))
   await t.controller.handle({ type: 'readUsage' })
   return t.surface.posted.at(-1)
+}
+
+async function observeUsage(t: ReturnType<typeof setup>, usage: SubscriptionUsage): Promise<void> {
+  await firstUsageReport(t)
+  t.server.notify('usage/changed', usage)
+  await settle()
+  expect(t.surface.posted.at(-1)).toMatchObject({ subscription: usage })
+}
+
+async function expectEmptyUsageRead(t: ReturnType<typeof setup>): Promise<void> {
+  t.server.handle('usage/read', () => ({}))
+  await t.controller.handle({ type: 'readUsage' })
+  expect(t.surface.posted.at(-1)).not.toHaveProperty('subscription')
+}
+
+async function pendingUsageRead(t: ReturnType<typeof setup>) {
+  await firstUsageReport(t)
+  t.server.silence('usage/read')
+  const read = t.controller.handle({ type: 'readUsage' })
+  await settle()
+  const request = t.server.requestsFor('usage/read').at(-1)
+  if (request?.id === undefined) {
+    throw new Error('usage/read was not sent')
+  }
+  return { read, requestId: request.id }
 }
 
 function withHistory(
@@ -1691,15 +2532,145 @@ function withHistory(
       ...sessionOverrides,
     }),
   )
+  t.server.handle('session/read', (params) =>
+    envelope({
+      ...storedSession,
+      sessionId: params['sessionId'],
+      status: 'idle',
+      ...sessionOverrides,
+    }),
+  )
   t.server.handle('session/fork', () =>
     envelope({ ...storedSession, sessionId: 'forked', forkedFrom: { sessionId: 'old' } }),
   )
+  t.server.handle('goal/clear', goalRefusal('missing_goal'))
   t.server.handle('session/rename', (params) => ({
     commandId: params['commandId'],
     status: 'accepted',
     name: `${String(params['name'])} (canonical)`,
   }))
   return t
+}
+
+/** Serve the same trusted user items for resume and a later rewind validation. */
+function serveHistoryItems(
+  t: ReturnType<typeof withHistory>,
+  items: readonly Record<string, unknown>[],
+  mode: 'inline' | 'anchoredSnapshot' = 'inline',
+): void {
+  const loaded = (params: Record<string, unknown>) => ({
+    ...envelope({ ...storedSession, sessionId: params['sessionId'], status: 'idle' }),
+    history:
+      mode === 'inline'
+        ? { mode, items: [...items], snapshot: null }
+        : { mode, items: null, snapshot: { state: { items: [...items] } } },
+  })
+  t.server.handle('session/resume', loaded)
+  t.server.handle('session/read', loaded)
+}
+
+function historyUserItem(itemId: string, turnId: string, text: string) {
+  return { itemId, kind: 'userMessage', status: 'completed', turnId, text }
+}
+
+async function requestRewind(
+  t: ReturnType<typeof withHistory>,
+  card: {
+    readonly itemId: string
+    readonly turnId: string
+    readonly text: string
+    readonly lastTurnId?: string
+    readonly imageCount?: number
+    readonly sourceSessionId?: string
+  },
+): Promise<void> {
+  await t.controller.handle({
+    type: 'rewindConversation',
+    sourceSessionId: card.sourceSessionId ?? 'old',
+    itemId: card.itemId,
+    turnId: card.turnId,
+    text: card.text,
+    imageCount: card.imageCount ?? 0,
+    ...(card.lastTurnId !== undefined && { lastTurnId: card.lastTurnId }),
+  })
+}
+
+async function expectForkBeforeCardAfterT1(
+  t: ReturnType<typeof withHistory>,
+  card: { readonly itemId: string; readonly turnId: string; readonly text: string },
+): Promise<void> {
+  await t.controller.handle({ type: 'resumeSession', sessionId: 'old' })
+  t.surface.posted.length = 0
+  await requestRewind(t, { ...card, lastTurnId: 't1' })
+  expect(t.server.requestsFor('session/fork')[0]?.params).toMatchObject({
+    sessionId: 'old',
+    cutPoint: { lastTurnId: 't1' },
+  })
+  expect(t.surface.posted).toContainEqual({ type: 'restoreDraft', text: card.text })
+}
+
+function expectFileRewindRefused(t: ReturnType<typeof setup>): void {
+  expect(t.surface.posted).not.toContainEqual({ type: 'conversationCleared' })
+  expect(t.surface.posted).not.toContainEqual({ type: 'restoreDraft', text: 'Inspect this file' })
+  expect(t.surface.posted).toContainEqual({
+    type: 'notice',
+    level: 'warning',
+    text: UI_TEXT.attachmentUnreadable,
+  })
+}
+
+function latestAcceptedModelTurn(t: ReturnType<typeof setup>) {
+  const accepted = t.surface.posted.findLast((message) => message.type === 'turnAccepted')
+  const info = t.surface.posted.findLast((message) => message.type === 'sessionInfo')
+  if (accepted?.type !== 'turnAccepted' || info?.type !== 'sessionInfo') {
+    throw new Error('expected live turn acceptance')
+  }
+  return { accepted, info }
+}
+
+async function sendPickedAttachmentTurn(
+  t: ReturnType<typeof setup>,
+  controller: ConversationController,
+  attachmentId: string,
+  localId: string,
+  text: string,
+): Promise<void> {
+  await controller.handle({
+    type: 'sendMessage',
+    localId,
+    text,
+    attachmentIds: [attachmentId],
+  })
+  await vi.waitFor(() => {
+    expect(agentEvents(t).some((event) => event.type === 'turnCompleted')).toBe(true)
+  })
+}
+
+/** One completed source turn for fork and side-chat tests (M53). */
+async function completeFirstTurn(t: ReturnType<typeof withHistory>): Promise<void> {
+  await t.send('l1', 'first')
+  t.finishTurn()
+  await settle()
+}
+
+function holdNextModelList(t: ReturnType<typeof withHistory>) {
+  const gate = Promise.withResolvers<undefined>()
+  const listModels = t.host.listModels.bind(t.host)
+  const listing = vi.spyOn(t.host, 'listModels').mockImplementationOnce(async (sessionId) => {
+    await gate.promise
+    return await listModels(sessionId)
+  })
+  return {
+    waitBeforeHistory: async () => {
+      await vi.waitFor(() => {
+        expect(listing).toHaveBeenCalled()
+      })
+      expect(t.surface.posted.some((message) => message.type === 'historyLoaded')).toBe(false)
+    },
+    release: () => {
+      gate.resolve(undefined)
+    },
+  }
 }
 
 const historyLoaded = {
@@ -1789,6 +2760,167 @@ describe('ConversationController: account & usage (M8)', () => {
 })
 
 describe('ConversationController: session history (M6)', () => {
+  it('clears old account History rows when authentication ends its host', async () => {
+    const t = withHistory()
+    await t.controller.handle({ type: 'listSessions' })
+    expect(t.surface.posted.findLast((message) => message.type === 'sessionList')).toMatchObject({
+      sessions: [expect.objectContaining({ sessionId: 'old' }), expect.anything()],
+    })
+    await t.controller.backendStopping(true)
+    expect(t.surface.posted.findLast((message) => message.type === 'sessionList')).toMatchObject({
+      sessions: [],
+    })
+  })
+
+  it('does not restore the prior account image chip after ending its host', async () => {
+    const t = setup()
+    await attachPng(t)
+    await t.controller.backendStopping(true)
+    t.surface.posted.length = 0
+    t.controller.surfaceReady()
+    expect(t.surface.posted).not.toContainEqual(
+      expect.objectContaining({ type: 'attachmentAdded' }),
+    )
+  })
+
+  it('unsubscribes old host list events at account stop', async () => {
+    const t = withHistory()
+    await t.controller.handle({ type: 'listSessions' })
+    await t.controller.backendStopping(true)
+    const before = t.surface.posted.filter((message) => message.type === 'sessionList').length
+    t.server.notify('session/listChanged', {
+      session: { ...storedSession, sessionId: 'old-account-secret', title: 'A private title' },
+    })
+    await settle()
+    expect(t.surface.posted.filter((message) => message.type === 'sessionList')).toHaveLength(
+      before,
+    )
+  })
+
+  it('drops an old account History response that arrives after host stop', async () => {
+    const t = withHistory()
+    t.server.silence('session/list')
+    const listing = t.controller.handle({ type: 'listSessions' })
+    await vi.waitFor(() => {
+      expect(t.server.requestsFor('session/list')).toHaveLength(1)
+    })
+    const request = t.server.requestsFor('session/list')[0]
+    if (request?.id === undefined) {
+      throw new Error('expected a session/list request id')
+    }
+    await t.controller.backendStopping(true)
+    t.server.incoming.push(
+      `${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { sessions: [storedSession], nextCursor: null } })}\n`,
+    )
+    await listing
+    expect(t.surface.posted.findLast((message) => message.type === 'sessionList')).toMatchObject({
+      sessions: [],
+    })
+  })
+
+  it('drops a resumed old account session whose answer arrives after host stop', async () => {
+    const t = withHistory()
+    t.server.silence('session/resume')
+    const resuming = t.controller.handle({ type: 'resumeSession', sessionId: 'old' })
+    await vi.waitFor(() => {
+      expect(t.server.requestsFor('session/resume')).toHaveLength(1)
+    })
+    const request = t.server.requestsFor('session/resume')[0]
+    if (request?.id === undefined) {
+      throw new Error('expected resume request id')
+    }
+    await t.controller.backendStopping(true)
+    t.server.incoming.push(
+      `${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: envelope({ ...storedSession, sessionId: 'old', name: 'A private session' }) })}\n`,
+    )
+    await resuming
+    expect(t.surface.posted).not.toContainEqual(
+      expect.objectContaining({ type: 'historyLoaded', sessionId: 'old' }),
+    )
+  })
+
+  it('does not restore an old rewind draft after account stop begins', async () => {
+    const t = withHistory()
+    await t.send('first', 'First A turn')
+    t.finishTurn()
+    await settle()
+    t.server.handle('turn/start', (params) => ({
+      turnId: 't2',
+      status: 'accepted',
+      disposition: 'started',
+      startedNewTurn: true,
+      commandId: params['commandId'],
+    }))
+    await t.send('current', 'Current A turn')
+    t.server.silence('session/read')
+    const rewinding = t.controller.handle({
+      type: 'rewindConversation',
+      sourceSessionId: 's1',
+      itemId: 'u1',
+      turnId: 't1',
+      text: 'Old prompt',
+      imageCount: 0,
+    })
+    const read = await waitForHeldSessionRead(t)
+    const { stopping, request } = await holdTurnCancel(t)
+    const boundary = accountBoundaryIndex(t)
+    t.server.incoming.push(
+      `${JSON.stringify({ jsonrpc: '2.0', id: read.id, result: envelope({ ...storedSession, sessionId: 's1' }) })}\n`,
+    )
+    await rewinding
+    expect(t.surface.posted.slice(boundary + 1)).not.toContainEqual({
+      type: 'restoreDraft',
+      text: 'Old prompt',
+    })
+    answerHeldCancel(t, request)
+    await stopping
+  })
+
+  it('does not open an old side fork returned after account stop', async () => {
+    const opened = vi.fn<(sessionId: string) => void>()
+    const t = withHistory({ openSideChat: opened })
+    await t.send('old', 'A prompt')
+    t.server.silence('session/fork')
+    const opening = t.controller.handle({ type: 'openSideChat', sourceSessionId: 's1' })
+    await vi.waitFor(() => {
+      expect(t.server.requestsFor('session/fork')).toHaveLength(1)
+    })
+    const fork = t.server.requestsFor('session/fork')[0]
+    if (fork?.id === undefined) {
+      throw new Error('expected held side fork')
+    }
+    const { stopping, request } = await holdTurnCancel(t)
+    t.server.incoming.push(
+      `${JSON.stringify({ jsonrpc: '2.0', id: fork.id, result: envelope({ ...storedSession, sessionId: 'side-a', sideChat: true }) })}\n`,
+    )
+    await opening
+    expect(opened).not.toHaveBeenCalled()
+    answerHeldCancel(t, request)
+    await stopping
+  })
+
+  it('drops an old adoption held while listing its session models', async () => {
+    const t = withHistory()
+    const listing = t.host.listModels.bind(t.host)
+    const entered = Promise.withResolvers<undefined>()
+    const release = Promise.withResolvers<undefined>()
+    vi.spyOn(t.host, 'listModels').mockImplementation(async (sessionId) => {
+      if (sessionId !== undefined) {
+        entered.resolve(undefined)
+        await release.promise
+      }
+      return await listing(sessionId)
+    })
+    const resuming = t.controller.handle({ type: 'resumeSession', sessionId: 'old' })
+    await entered.promise
+    await t.controller.backendStopping(true)
+    release.resolve(undefined)
+    await resuming
+    expect(t.surface.posted).not.toContainEqual(
+      expect.objectContaining({ type: 'historyLoaded', sessionId: 'old' }),
+    )
+  })
+
   it('lists the workspace sessions page by page and posts rows with the archived ids', async () => {
     const t = withHistory({ archivedIds: ['page2'] })
     await t.controller.handle({ type: 'listSessions' })
@@ -1862,6 +2994,7 @@ describe('ConversationController: session history (M6)', () => {
     })
     expect(t.surface.posted).toEqual([
       modelList,
+      { type: 'modelList', models: [] },
       { ...historyLoaded },
       { type: 'notice', level: 'info', text: 'Resumed Old prompt' },
       { type: 'sessionInfo', modelId: 'muse-spark-1.2', sessionId: 'old' },
@@ -1933,7 +3066,8 @@ describe('ConversationController: session history (M6)', () => {
       sessionId: 's1',
       cutPoint: { lastTurnId: 't1' },
     })
-    expect(t.surface.posted[0]).toEqual({ ...historyLoaded, sessionId: 'forked' })
+    expect(t.surface.posted).toContainEqual({ type: 'modelList', models: [] })
+    expect(t.surface.posted).toContainEqual({ ...historyLoaded, sessionId: 'forked' })
     expect(t.surface.posted).toContainEqual({
       type: 'notice',
       level: 'info',
@@ -1950,6 +3084,498 @@ describe('ConversationController: session history (M6)', () => {
       type: 'notice',
       level: 'error',
       text: 'Could not fork the conversation: invalid fork boundary: WriteFailed',
+    })
+  })
+
+  it('rewinds by forking before the chosen turn and restores its draft; the first turn clears (M53)', async () => {
+    const t = withHistory()
+    const first = historyUserItem('u1', 't1', 'first')
+    const second = { ...first, itemId: 'u2', turnId: 't2', text: 'second' }
+    const loaded = (sessionId: string, items: readonly (typeof first)[]) => ({
+      ...envelope({ ...storedSession, sessionId, status: 'idle' }),
+      history: { mode: 'inline', items: [...items], snapshot: null },
+    })
+    t.server.handle('session/resume', () => loaded('old', [first, second]))
+    t.server.handle('session/read', (params) =>
+      params['sessionId'] === 'forked' ? loaded('forked', [first]) : loaded('old', [first, second]),
+    )
+    t.server.handle('session/fork', () => loaded('forked', [first]))
+    await expectForkBeforeCardAfterT1(t, { itemId: 'u2', turnId: 't2', text: 'second' })
+    t.surface.posted.length = 0
+    await requestRewind(t, {
+      sourceSessionId: 'forked',
+      itemId: 'u1',
+      turnId: 't1',
+      text: 'first',
+      imageCount: 1,
+    })
+    expect(t.surface.posted).not.toContainEqual({ type: 'conversationCleared' })
+    expect(t.surface.posted).not.toContainEqual({ type: 'restoreDraft', text: 'first' })
+    expect(t.surface.posted).toContainEqual({
+      type: 'notice',
+      level: 'warning',
+      text: UI_TEXT.rewindImagesUnavailable,
+    })
+  })
+
+  it('refuses a History image rewind with missing replay bytes even when the caller claims zero images', async () => {
+    const t = withHistory()
+    serveHistoryItems(t, [
+      {
+        ...historyUserItem('image-card', 't1', 'Look at this'),
+        attachments: [{ type: 'image', mediaType: 'image/png' }],
+      },
+    ])
+    await t.controller.handle({ type: 'resumeSession', sessionId: 'old' })
+    t.surface.posted.length = 0
+    await requestRewind(t, {
+      itemId: 'image-card',
+      turnId: 't1',
+      text: 'Look at this',
+      imageCount: 0,
+    })
+    expect(t.server.requestsFor('session/fork')).toHaveLength(0)
+    expect(
+      t.surface.posted.filter((message) =>
+        ['conversationCleared', 'restoreDraft', 'notice'].includes(message.type),
+      ),
+    ).toEqual([{ type: 'notice', level: 'warning', text: UI_TEXT.rewindImagesUnavailable }])
+  })
+
+  it.each([
+    { name: 'report.pdf', mediaType: 'application/pdf' },
+    { name: 'notes.txt', mediaType: 'text/plain' },
+  ])(
+    'refuses a forged rewind of a History file card before clearing: $name',
+    async ({ name, mediaType }) => {
+      const t = withHistory()
+      t.server.handle('session/resume', (params) => ({
+        ...envelope({ ...storedSession, sessionId: params['sessionId'], status: 'idle' }),
+        history: {
+          mode: 'inline',
+          items: [
+            {
+              itemId: 'file-card',
+              kind: 'userMessage',
+              status: 'completed',
+              turnId: 't1',
+              text: 'Inspect this file',
+              attachments: [{ type: 'file', mediaType, name, sizeBytes: 9 }],
+            },
+          ],
+          snapshot: null,
+        },
+      }))
+      await t.controller.handle({ type: 'resumeSession', sessionId: 'old' })
+      t.surface.posted.length = 0
+      await t.controller.handle({
+        type: 'rewindConversation',
+        sourceSessionId: 'old',
+        itemId: 'file-card',
+        turnId: 't1',
+        text: 'Inspect this file',
+        imageCount: 1,
+      })
+      expect(t.server.requestsFor('session/fork')).toHaveLength(0)
+      expectFileRewindRefused(t)
+    },
+  )
+
+  it('allows the earlier text card when a later file steer shares its turn', async () => {
+    const t = withHistory()
+    serveHistoryItems(t, [
+      historyUserItem('plain-card', 't1', 'First'),
+      {
+        ...historyUserItem('file-card', 't1', 'Then this file'),
+        attachments: [{ type: 'file', mediaType: 'text/plain', name: 'notes.txt' }],
+      },
+    ])
+    await t.controller.handle({ type: 'resumeSession', sessionId: 'old' })
+    t.surface.posted.length = 0
+    await requestRewind(t, {
+      itemId: 'file-card',
+      turnId: 't1',
+      text: 'Then this file',
+    })
+    expectFileRewindRefused(t)
+    t.surface.posted.length = 0
+    await requestRewind(t, {
+      itemId: 'plain-card',
+      turnId: 't1',
+      text: 'Then this file',
+    })
+    expect(t.surface.posted).not.toContainEqual({ type: 'conversationCleared' })
+    expect(t.surface.posted).toContainEqual({
+      type: 'notice',
+      level: 'warning',
+      text: UI_TEXT.attachmentUnreadable,
+    })
+    t.surface.posted.length = 0
+    await requestRewind(t, {
+      itemId: 'plain-card',
+      turnId: 't1',
+      lastTurnId: 'not-the-prior-turn',
+      text: 'First',
+    })
+    expect(t.server.requestsFor('session/fork')).toHaveLength(0)
+    expect(t.surface.posted).not.toContainEqual({ type: 'conversationCleared' })
+    t.surface.posted.length = 0
+    await requestRewind(t, {
+      itemId: 'plain-card',
+      turnId: 't1',
+      text: 'First',
+    })
+    expect(t.surface.posted).toContainEqual({ type: 'conversationCleared' })
+    expect(t.surface.posted).toContainEqual({ type: 'restoreDraft', text: 'First' })
+  })
+
+  it('rewinds a plain steer after the last preceding distinct turn', async () => {
+    const t = withHistory()
+    serveHistoryItems(t, [
+      historyUserItem('u1', 't1', 'first'),
+      historyUserItem('u2', 't2', 'second'),
+      historyUserItem('u3', 't2', 'steered'),
+    ])
+    await expectForkBeforeCardAfterT1(t, { itemId: 'u3', turnId: 't2', text: 'steered' })
+  })
+
+  it('rewinds a card served from an anchored snapshot with an exact prior cut', async () => {
+    const t = withHistory()
+    serveHistoryItems(
+      t,
+      [historyUserItem('u1', 't1', 'first'), historyUserItem('u2', 't2', 'second')],
+      'anchoredSnapshot',
+    )
+    await expectForkBeforeCardAfterT1(t, { itemId: 'u2', turnId: 't2', text: 'second' })
+  })
+
+  it('refuses a Muse text-file History card restored from its display marker', async () => {
+    const t = withHistory()
+    serveHistoryItems(t, [
+      {
+        ...historyUserItem(
+          'muse-file-card',
+          't1',
+          'Attached text file "notes.txt":\n\nprivate contents',
+        ),
+        displayText: 'Inspect this\n[Muse Spark Code attached text files: ["notes.txt"]]',
+      },
+    ])
+    await t.controller.handle({ type: 'resumeSession', sessionId: 'old' })
+    expect(t.surface.posted).toContainEqual(
+      expect.objectContaining({
+        type: 'historyLoaded',
+        items: [
+          expect.objectContaining({
+            text: 'Inspect this\n[Muse Spark Code attached text files: ["notes.txt"]]',
+            attachments: [{ type: 'file', mediaType: 'text/plain', name: 'notes.txt' }],
+          }),
+        ],
+      }),
+    )
+    t.surface.posted.length = 0
+    await requestRewind(t, {
+      itemId: 'muse-file-card',
+      turnId: 't1',
+      text: 'Inspect this\n[Muse Spark Code attached text files: ["notes.txt"]]',
+    })
+    expectFileRewindRefused(t)
+  })
+
+  it.each([
+    { name: 'report.pdf', bytes: pdfFixture(1) },
+    { name: 'notes.txt', bytes: new TextEncoder().encode('A picked note') },
+  ])(
+    'refuses a forged rewind of a fresh file card before clearing: $name',
+    async ({ name, bytes }) => {
+      const t = setup({ indexed: ['notes.txt'] })
+      const { api, controller } = modelApiController(t)
+      vi.spyOn(t.deps.files, 'readFile').mockResolvedValue({
+        bytes,
+        isPdf: name === 'report.pdf',
+      })
+      t.setPicked([{ name, fsPath: `/ws/${name}`, relativePath: name }])
+      await controller.handle({ type: 'pickFile' })
+      const attachment = t.surface.posted.findLast((message) => message.type === 'attachmentAdded')
+      if (attachment?.type !== 'attachmentAdded') {
+        throw new Error('expected picked file')
+      }
+      api.script({ text: 'File read' })
+      await sendPickedAttachmentTurn(
+        t,
+        controller,
+        attachment.attachment.id,
+        'file-local',
+        'Inspect this file',
+      )
+      const { accepted, info } = latestAcceptedModelTurn(t)
+      t.surface.posted.length = 0
+      await controller.handle({
+        type: 'rewindConversation',
+        sourceSessionId: info.sessionId ?? '',
+        itemId: accepted.userMessageId ?? '',
+        turnId: accepted.turnId,
+        text: 'Inspect this file',
+        imageCount: 1,
+      })
+      expectFileRewindRefused(t)
+    },
+  )
+
+  it('restores a completed live Model API image before History reload (M53)', async () => {
+    const t = setup()
+    const { api, controller } = modelApiController(t, {
+      newId: (() => {
+        let nextId = 0
+        return () => `id${String(++nextId)}`
+      })(),
+    })
+    await attachPng({ controller })
+    const attachment = t.surface.posted.findLast((message) => message.type === 'attachmentAdded')
+    if (attachment?.type !== 'attachmentAdded') {
+      throw new Error('expected attachment')
+    }
+    api.script({ text: 'I saw the image' })
+    await sendPickedAttachmentTurn(
+      t,
+      controller,
+      attachment.attachment.id,
+      'live-card',
+      'look at this',
+    )
+    const { accepted, info } = latestAcceptedModelTurn(t)
+    expect(accepted.userMessageId).toEqual(expect.any(String))
+    const attachmentCount = t.surface.posted.filter(
+      (message) => message.type === 'attachmentAdded',
+    ).length
+    await controller.handle({
+      type: 'rewindConversation',
+      sourceSessionId: info.sessionId ?? '',
+      itemId: accepted.userMessageId ?? '',
+      turnId: accepted.turnId,
+      text: 'look at this',
+      imageCount: 1,
+    })
+    expect(t.surface.posted.filter((message) => message.type === 'attachmentAdded')).toHaveLength(
+      attachmentCount + 1,
+    )
+    expect(t.surface.posted).not.toContainEqual({
+      type: 'notice',
+      level: 'warning',
+      text: UI_TEXT.rewindImagesUnavailable,
+    })
+  })
+
+  it('ignores a rewind sent for a session no longer on this surface (M53)', async () => {
+    const t = withHistory()
+    await t.send('l1', 'first')
+    t.finishTurn()
+    await settle()
+    t.surface.posted.length = 0
+    await t.controller.handle({
+      type: 'rewindConversation',
+      sourceSessionId: 'another-session',
+      itemId: 'u1',
+      turnId: 't1',
+      text: 'stale draft',
+      imageCount: 0,
+    })
+    expect(t.server.requestsFor('session/fork')).toHaveLength(0)
+    expect(t.surface.posted).not.toContainEqual({ type: 'conversationCleared' })
+    expect(t.surface.posted).not.toContainEqual({ type: 'restoreDraft', text: 'stale draft' })
+  })
+
+  it('refuses a forged rewind of the active turn before steered image replay settles (M53)', async () => {
+    const t = withHistory()
+    await t.send('l1', 'running')
+    await t.controller.handle({
+      type: 'rewindConversation',
+      sourceSessionId: 's1',
+      itemId: 'steered-user-card',
+      turnId: 't1',
+      lastTurnId: 'older',
+      text: 'steered with image',
+      imageCount: 1,
+    })
+    expect(t.server.requestsFor('session/fork')).toHaveLength(0)
+    expect(t.surface.posted).not.toContainEqual({
+      type: 'restoreDraft',
+      text: 'steered with image',
+    })
+  })
+
+  it('does not rewind another session if the surface clears during host lookup (M53)', async () => {
+    const onWait = vi.fn()
+    const hostGate: { current: Promise<undefined> | undefined; onWait: () => void } = {
+      current: undefined,
+      onWait,
+    }
+    const t = withHistory({ hostGate })
+    await t.send('l1', 'first')
+    t.finishTurn()
+    await settle()
+    t.surface.posted.length = 0
+    const gate = Promise.withResolvers<undefined>()
+    hostGate.current = gate.promise
+    const rewinding = t.controller.handle({
+      type: 'rewindConversation',
+      sourceSessionId: 's1',
+      itemId: 'u1',
+      turnId: 't1',
+      text: 'old draft',
+      imageCount: 0,
+    })
+    await vi.waitFor(() => {
+      expect(onWait).toHaveBeenCalledOnce()
+    })
+    await t.controller.handle({ type: 'clearConversation' })
+    gate.resolve(undefined)
+    await rewinding
+    expect(
+      t.surface.posted.filter((message) => message.type === 'conversationCleared'),
+    ).toHaveLength(1)
+    expect(t.surface.posted).not.toContainEqual({ type: 'restoreDraft', text: 'old draft' })
+  })
+
+  it('opens a Plan-mode side fork without dropping the main session (M53)', async () => {
+    const opened = vi.fn<(sessionId: string) => void>()
+    const t = withHistory({ openSideChat: opened })
+    await completeFirstTurn(t)
+    await t.controller.handle({ type: 'openSideChat', sourceSessionId: 's1' })
+    expect(opened).toHaveBeenCalledWith('forked')
+    expect(t.server.requestsFor('session/setApprovalMode').at(-1)?.params).toMatchObject({
+      sessionId: 'forked',
+      mode: 'denyUnmatched',
+    })
+    expect(t.server.requestsFor('turn/cancel')).toHaveLength(0)
+    expect(t.surface.posted).toContainEqual(
+      expect.objectContaining({ type: 'sessionInfo', sessionId: 's1' }),
+    )
+    expect(t.surface.posted).not.toContainEqual({ type: 'conversationCleared' })
+  })
+
+  it('ignores a delayed side-chat click from the session this surface left (M53)', async () => {
+    const opened = vi.fn<(sessionId: string) => void>()
+    const t = withHistory({ openSideChat: opened })
+    await completeFirstTurn(t)
+    await t.controller.handle({ type: 'resumeSession', sessionId: 'old' })
+    await t.controller.handle({ type: 'openSideChat', sourceSessionId: 's1' })
+    expect(t.server.requestsFor('session/fork')).toHaveLength(0)
+    expect(opened).not.toHaveBeenCalled()
+  })
+
+  it('does not open a side fork after its source surface cleared during host lookup (M53)', async () => {
+    const onWait = vi.fn()
+    const hostGate: { current: Promise<undefined> | undefined; onWait: () => void } = {
+      current: undefined,
+      onWait,
+    }
+    const opened = vi.fn<(sessionId: string) => void>()
+    const t = withHistory({ hostGate, openSideChat: opened })
+    await t.send('l1', 'first')
+    t.finishTurn()
+    await settle()
+    const gate = Promise.withResolvers<undefined>()
+    hostGate.current = gate.promise
+    const opening = t.controller.handle({ type: 'openSideChat', sourceSessionId: 's1' })
+    await vi.waitFor(() => {
+      expect(onWait).toHaveBeenCalledOnce()
+    })
+    await t.controller.handle({ type: 'clearConversation' })
+    gate.resolve(undefined)
+    await opening
+    expect(t.server.requestsFor('session/fork')).toHaveLength(0)
+    expect(opened).not.toHaveBeenCalled()
+  })
+
+  it('keeps a side chat in Plan mode even when the panel asks to change it (M53)', async () => {
+    const t = setup({ isSideChat: true, initialPermissionMode: 'bypassPermissions' })
+    await t.controller.handle({ type: 'setPermissionMode', mode: 'auto' })
+    expect(t.surface.posted).toContainEqual({
+      type: 'notice',
+      level: 'info',
+      text: UI_TEXT.sideChatPlanOnly,
+    })
+    expect(t.surface.posted).toContainEqual({
+      type: 'composerState',
+      effort: 'high',
+      isThinkingEnabled: true,
+      permissionMode: 'plan',
+    })
+  })
+
+  it('restores a durable side session as Plan when ordinary History resumes it (M53)', async () => {
+    const t = setup()
+    const { host, controller } = modelApiController(t)
+    const side = await host.startSession({
+      workspaceRoot: '/ws',
+      modelId: 'muse-spark-1.3',
+      approvalMode: 'promptUnmatched',
+      sideChat: true,
+    })
+    await controller.handle({ type: 'resumeSession', sessionId: side.sessionId })
+    expect(t.surface.posted).toContainEqual(
+      expect.objectContaining({ type: 'historyLoaded', sessionId: side.sessionId, sideChat: true }),
+    )
+    expect(t.surface.posted).toContainEqual(
+      expect.objectContaining({ type: 'sessionInfo', sessionId: side.sessionId, sideChat: true }),
+    )
+    expect(t.surface.posted).toContainEqual(
+      expect.objectContaining({ type: 'composerState', permissionMode: 'plan' }),
+    )
+    await controller.handle({ type: 'setPermissionMode', mode: 'auto' })
+    expect(t.surface.posted).toContainEqual({
+      type: 'notice',
+      level: 'info',
+      text: UI_TEXT.sideChatPlanOnly,
+    })
+    await controller.handle({ type: 'clearConversation' })
+    expect(t.surface.posted.at(-2)).toMatchObject({ type: 'sessionInfo', sideChat: false })
+  })
+
+  it('refuses an ordinary Model API session in a side surface on restore or History selection (M53)', async () => {
+    const t = setup({ isSideChat: true })
+    const { host, controller } = modelApiController(t)
+    const ordinary = await host.startSession({
+      workspaceRoot: '/ws',
+      modelId: 'muse-spark-1.3',
+      approvalMode: 'promptUnmatched',
+    })
+    await controller.restoreSession(ordinary.sessionId)
+    await controller.handle({ type: 'resumeSession', sessionId: ordinary.sessionId })
+    expect(t.surface.posted.some((message) => message.type === 'historyLoaded')).toBe(false)
+  })
+
+  it('keeps a Muse Code side panel on its own fork across reload and History selection (M53)', async () => {
+    const t = withHistory({ isSideChat: true, sideSessionId: 'forked' })
+    await t.controller.restoreSession('forked')
+    expect(t.server.requestsFor('session/resume')).toHaveLength(1)
+    expect(t.surface.posted).toContainEqual(
+      expect.objectContaining({ type: 'sessionInfo', sessionId: 'forked', sideChat: true }),
+    )
+    t.server.handle('session/list', () => ({
+      sessions: [{ ...storedSession, sessionId: 'forked' }, storedSession],
+      nextCursor: null,
+    }))
+    await t.controller.handle({ type: 'listSessions' })
+    expect(t.surface.posted.at(-1)).toMatchObject({
+      type: 'sessionList',
+      sessions: [{ sessionId: 'forked' }],
+    })
+    t.surface.posted.length = 0
+    await t.controller.handle({ type: 'resumeSession', sessionId: 'old' })
+    expect(t.server.requestsFor('session/resume')).toHaveLength(1)
+    expect(
+      t.server
+        .requestsFor('session/setApprovalMode')
+        .some((request) => request.params?.['sessionId'] === 'old'),
+    ).toBe(false)
+    expect(t.server.requestsFor('goal/clear')).toHaveLength(0)
+    expect(t.surface.posted.some((message) => message.type === 'historyLoaded')).toBe(false)
+    expect(t.surface.posted).toContainEqual({
+      type: 'notice',
+      level: 'warning',
+      text: UI_TEXT.sideChatSessionOnly,
     })
   })
 
@@ -1985,6 +3611,28 @@ describe('ConversationController: session history (M6)', () => {
       level: 'error',
       text: 'Could not rename the conversation: UnsupportedPlatform',
     })
+  })
+
+  it('drops a rename reply held past account sign-out', async () => {
+    const t = withHistory()
+    await t.send('old', 'A prompt')
+    t.server.silence('session/rename')
+    const naming = t.controller.handle({ type: 'renameSession', name: 'A private title' })
+    await vi.waitFor(() => {
+      expect(t.server.requestsFor('session/rename')).toHaveLength(1)
+    })
+    const request = t.server.requestsFor('session/rename')[0]
+    if (request?.id === undefined) {
+      throw new Error('expected session/rename id')
+    }
+    await t.controller.backendStopping(true)
+    const boundary = accountBoundaryIndex(t)
+    t.server.incoming.push(
+      `${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { status: 'accepted', commandId: request.params?.['commandId'], name: 'A private title (canonical)' } })}\n`,
+    )
+    await naming
+    expect(JSON.stringify(t.surface.posted.slice(boundary + 1))).not.toContain('A private title')
+    expect(t.surface.setTitle).not.toHaveBeenCalledWith('A private title (canonical)')
   })
 
   it('archives and unarchives in workspace memory and re-posts the rows', async () => {
@@ -2058,6 +3706,27 @@ describe('ConversationController: session history (M6)', () => {
       level: 'warning',
       text: 'Could not read the agent’s transcript: unknown session',
     })
+  })
+
+  it('does not publish a held child transcript after account stop', async () => {
+    const t = withHistory()
+    t.server.silence('session/read')
+    const reading = t.controller.handle({ type: 'readChildSession', sessionId: 'child-a' })
+    await vi.waitFor(() => {
+      expect(t.server.requestsFor('session/read')).toHaveLength(1)
+    })
+    const request = t.server.requestsFor('session/read')[0]
+    if (request?.id === undefined) {
+      throw new Error('expected child read id')
+    }
+    await t.controller.backendStopping(true)
+    t.server.incoming.push(
+      `${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: envelope({ ...storedSession, sessionId: 'child-a', name: 'A private child' }) })}\n`,
+    )
+    await reading
+    expect(t.surface.posted).not.toContainEqual(
+      expect.objectContaining({ type: 'childTranscript', sessionId: 'child-a' }),
+    )
   })
 
   it('exports the conversation as Markdown or Muse Code’s session log (M30)', async () => {
@@ -2222,11 +3891,14 @@ describe('ConversationController: backends and tiers (M7)', () => {
         (message) => message.type === 'notice' && message.text.includes('sandbox'),
       ),
     ).toBe(false)
-    expect(t.surface.posted).toContainEqual({
-      type: 'turnAccepted',
-      localId: 'l1',
-      turnId: 'fixed',
-    })
+    expect(t.surface.posted).toContainEqual(
+      expect.objectContaining({
+        type: 'turnAccepted',
+        localId: 'l1',
+        turnId: 'fixed',
+        userMessageId: expect.any(String),
+      }),
+    )
   })
 })
 
@@ -2379,6 +4051,35 @@ describe('ConversationController (M15)', () => {
     ])
   })
 
+  it('does not open old stored output after account stop begins', async () => {
+    const t = setup()
+    await t.send('old', 'A prompt')
+    t.server.silence('item/readOutput')
+    const opening = t.controller.handle({
+      type: 'openOutput',
+      itemId: 'old-tool',
+      label: 'Read',
+      text: 'A inline copy',
+      outputRef: 'old-ref',
+    })
+    await vi.waitFor(() => {
+      expect(t.server.requestsFor('item/readOutput')).toHaveLength(1)
+    })
+    const read = t.server.requestsFor('item/readOutput')[0]
+    if (read?.id === undefined) {
+      throw new Error('expected held output read')
+    }
+    const { stopping, request } = await holdTurnCancel(t)
+    t.server.incoming.push(
+      `${JSON.stringify({ jsonrpc: '2.0', id: read.id, result: { content: 'A private patch', encoding: 'utf8', mediaType: 'text/plain', offsetBytes: 0, byteLen: 15, eof: true } })}\n`,
+    )
+    await opening
+    expect(JSON.stringify(t.opened)).not.toContain('A private patch')
+    expect(JSON.stringify(t.opened)).not.toContain('A inline copy')
+    answerHeldCancel(t, request)
+    await stopping
+  })
+
   it('reports an approval decision the CLI could not record as a warning, not a refusal', async () => {
     const t = setup()
     await t.send('l1', 'hi')
@@ -2400,7 +4101,7 @@ describe('ConversationController (M15)', () => {
   })
 })
 
-describe('ConversationController usage cache (M16)', () => {
+describe('ConversationController usage host boundaries (M53 follow-up)', () => {
   const stale: SubscriptionUsage = {
     observedAtMs: 1000,
     tier: 'tier-1',
@@ -2408,24 +4109,62 @@ describe('ConversationController usage cache (M16)', () => {
     weekly: { usedPercent: 5, resetsAtMs: 9000 },
   }
 
-  it('shows the last reported window while the CLI has none yet, then refreshes the cache', async () => {
-    const t = setup({ cachedUsage: stale })
-    expect(await firstUsageReport(t)).toMatchObject({
-      type: 'usageReport',
-      backend: 'museCode',
-      subscription: stale,
-    })
-    const fresh = { ...stale, observedAtMs: 2000 }
-    t.server.handle('usage/read', () => ({ usage: fresh }))
-    await t.controller.handle({ type: 'readUsage' })
-    expect(t.surface.posted.at(-1)).toMatchObject({ subscription: fresh })
-    expect(t.cachedUsage()).toEqual(fresh)
+  it('drops an old host observation before a new empty usage read', async () => {
+    const t = setup()
+    await observeUsage(t, stale)
+    await t.controller.backendStopping(true)
+    await expectEmptyUsageRead(t)
   })
 
   it('reports no window at all when nothing was ever cached', async () => {
     const t = setup()
     expect(await firstUsageReport(t)).not.toHaveProperty('subscription')
-    expect(t.cachedUsage()).toBeUndefined()
+  })
+
+  it('clears a same-host observation when a later read has no account usage', async () => {
+    const t = setup()
+    await observeUsage(t, stale)
+    await expectEmptyUsageRead(t)
+  })
+
+  it('keeps a newer event when an empty read started before that event', async () => {
+    const t = setup()
+    const { read, requestId } = await pendingUsageRead(t)
+    t.server.notify('usage/changed', stale)
+    await settle()
+    t.server.incoming.push(`${JSON.stringify({ jsonrpc: '2.0', id: requestId, result: {} })}\n`)
+    await read
+    expect(t.surface.posted.at(-1)).toMatchObject({ subscription: stale })
+  })
+
+  it('keeps a newer usage event when an older read finishes later', async () => {
+    const t = setup()
+    const older = { ...stale, observedAtMs: 2000 }
+    const newer = { ...stale, observedAtMs: 3000, weekly: { ...stale.weekly, usedPercent: 90 } }
+    const { read, requestId } = await pendingUsageRead(t)
+    t.server.notify('usage/changed', newer)
+    await settle()
+    t.server.incoming.push(
+      `${JSON.stringify({ jsonrpc: '2.0', id: requestId, result: { usage: older } })}\n`,
+    )
+    await read
+    const reports = t.surface.posted.filter((message) => message.type === 'usageReport')
+    expect(reports.at(-1)).toMatchObject({ subscription: newer })
+    expect(reports).not.toContainEqual(expect.objectContaining({ subscription: older }))
+  })
+
+  it('drops a delayed usage read from a host stopped by sign-out', async () => {
+    const t = setup()
+    const { read, requestId } = await pendingUsageRead(t)
+    const reportsBeforeStop = t.surface.posted.filter((message) => message.type === 'usageReport')
+    await t.controller.backendStopping(true)
+    t.server.incoming.push(
+      `${JSON.stringify({ jsonrpc: '2.0', id: requestId, result: { usage: stale } })}\n`,
+    )
+    await read
+    expect(t.surface.posted.filter((message) => message.type === 'usageReport')).toEqual(
+      reportsBeforeStop,
+    )
   })
 })
 
@@ -2491,7 +4230,21 @@ describe('ConversationController chat references (M17)', () => {
   })
 })
 
-describe('ConversationController subagent controls (M18)', () => {
+describe('ConversationController subagent controls (M18, M48)', () => {
+  it('refuses a paid child follow-up in another panel as sign-out begins', async () => {
+    const t = setup()
+    await t.send('l1', 'hi')
+    t.auth.snapshot = { status: 'error', detail: UI_TEXT.signOutPending }
+    t.server.handle('subagent/followupTask', () => ({ status: 'accepted' }))
+    await t.controller.handle({
+      type: 'subagentMessage',
+      subagentId: 'sub-1',
+      body: 'continue paid work',
+      isFollowup: true,
+    })
+    expect(t.server.requestsFor('subagent/followupTask')).toEqual([])
+  })
+
   it('relays owner controls and notes to the session and reports a refusal', async () => {
     const t = setup()
     await t.send('l1', 'hi')
@@ -2544,6 +4297,26 @@ describe('ConversationController subagent controls (M18)', () => {
     })
     expect(t.server.requestsFor('subagent/stop')).toEqual([])
   })
+
+  it('refuses forged uncaptured native reopen and readResult controls before MSP', async () => {
+    const t = setup()
+    await t.send('l1', 'hi')
+    t.server.handle('subagent/readResult', () => ({ status: 'accepted' }))
+    t.server.handle('subagent/reopen', () => ({ status: 'accepted' }))
+    await t.controller.handle({
+      type: 'subagentControl',
+      subagentId: 'sub-1',
+      action: 'readResult',
+    })
+    await t.controller.handle({ type: 'subagentControl', subagentId: 'sub-1', action: 'reopen' })
+    expect(t.server.requestsFor('subagent/readResult')).toEqual([])
+    expect(t.server.requestsFor('subagent/reopen')).toEqual([])
+    expect(t.surface.posted).toContainEqual({
+      type: 'notice',
+      level: 'error',
+      text: `${UI_TEXT.agentControlFailed}: subagent/readResult`,
+    })
+  })
 })
 
 /** The agent events a test surface was sent, in order. */
@@ -2577,8 +4350,10 @@ function modelApiController(
     personalSkillsRoot: undefined,
     isWorkspaceTrusted: () => true,
     describeEnvironment: () => Promise.resolve({ git: undefined }),
-    isPaidFeatureOn: () => false,
-    notePaidUse: () => undefined,
+    getAccountId: () => Promise.resolve(FAKE_MODEL_API_ACCOUNT_ID),
+    ...disabledPaidFeatures,
+    promptCacheRetention: () => 'in_memory',
+    memory: undefined,
   })
   const controller = new ConversationController({
     ...t.deps,
@@ -3029,6 +4804,416 @@ describe('ConversationController: permission hardening (D24)', () => {
 })
 
 describe('ConversationController: lifecycle (D25)', () => {
+  it('reloads model choices after a same-kind account change', async () => {
+    const t = setup()
+    await t.send('before', 'first')
+    await t.controller.backendStopping(true)
+    t.server.handle('model/list', () => ({
+      providerId: 'meta',
+      profileId: null,
+      source: 'catalog',
+      models: [
+        {
+          modelId: 'muse-spark-1.3',
+          displayLabel: 'New account model',
+          contextLimit: 1_007_997,
+          isDefault: true,
+        },
+      ],
+    }))
+    await t.send('after', 'second')
+    expect(t.server.requestsFor('model/list')).toHaveLength(2)
+    expect(t.surface.posted.findLast((message) => message.type === 'modelList')).toMatchObject({
+      models: [{ displayLabel: 'New account model' }],
+    })
+  })
+
+  it('ignores an old model catalogue that resolves after a new session starts', async () => {
+    const t = setup()
+    t.server.silence('model/list')
+    const oldSend = t.send('old-models', 'Old prompt')
+    await vi.waitFor(() => {
+      expect(t.server.requestsFor('model/list')).toHaveLength(1)
+    })
+    await t.controller.backendStopping(true)
+    const freshSend = t.send('fresh-models', 'Fresh prompt')
+    await vi.waitFor(() => {
+      expect(t.server.requestsFor('model/list')).toHaveLength(2)
+    })
+    const reads = t.server.requestsFor('model/list')
+    const respond = (index: number, label: string) => {
+      t.server.incoming.push(
+        `${JSON.stringify({
+          jsonrpc: '2.0',
+          id: reads[index]?.id,
+          result: {
+            providerId: 'meta',
+            profileId: null,
+            source: 'catalog',
+            models: [
+              {
+                modelId: 'muse-spark-1.3',
+                displayLabel: label,
+                contextLimit: 1_007_997,
+                isDefault: true,
+              },
+            ],
+          },
+        })}\n`,
+      )
+    }
+    respond(1, 'Fresh account model')
+    await freshSend
+    respond(0, 'Old account model')
+    await oldSend
+    await settle()
+    expect(t.surface.posted.findLast((message) => message.type === 'modelList')).toMatchObject({
+      models: [{ displayLabel: 'Fresh account model' }],
+    })
+    expect(t.surface.posted).not.toContainEqual(
+      expect.objectContaining({ type: 'turnAccepted', localId: 'old-models' }),
+    )
+  })
+
+  it('ignores an old skill list that resolves after a new session attaches', async () => {
+    const t = setup()
+    t.server.silence('skill/list')
+    await t.send('before', 'first')
+    await vi.waitFor(() => {
+      expect(t.server.requestsFor('skill/list')).toHaveLength(1)
+    })
+    const oldRead = t.server.requestsFor('skill/list')[0]
+    await t.controller.backendStopping(true)
+    await t.send('after', 'second')
+    await settle()
+    const reads = t.server.requestsFor('skill/list')
+    const newer = reads[1]
+    const respond = (id: number | string | undefined, selector: string) => {
+      t.server.incoming.push(
+        `${JSON.stringify({
+          jsonrpc: '2.0',
+          id,
+          result: {
+            skills: [
+              {
+                selector,
+                displayName: selector,
+                description: 'A skill',
+                argumentHint: '',
+                source: 'project',
+              },
+            ],
+          },
+        })}\n`,
+      )
+    }
+    if (newer !== undefined) {
+      respond(newer.id, 'new-account-skill')
+      await settle()
+    }
+    respond(oldRead?.id, 'old-private-skill')
+    await settle()
+    expect(reads).toHaveLength(2)
+    expect(t.surface.posted.findLast((message) => message.type === 'skillList')).toMatchObject({
+      skills: [{ selector: 'new-account-skill' }],
+    })
+  })
+
+  it('does not start old skill loading after attach effort crosses sign-out', async () => {
+    const t = setup()
+    t.server.silence('session/setReasoningEffort')
+    const oldSend = t.send('old-effort', 'Old prompt')
+    await vi.waitFor(() => {
+      expect(t.server.requestsFor('session/setReasoningEffort')).toHaveLength(1)
+    })
+    await t.controller.backendStopping(true)
+    const freshSend = t.send('fresh-effort', 'Fresh prompt')
+    await vi.waitFor(() => {
+      expect(t.server.requestsFor('session/setReasoningEffort')).toHaveLength(2)
+    })
+    const efforts = t.server.requestsFor('session/setReasoningEffort')
+    const respond = (index: number) => {
+      const request = efforts[index]
+      t.server.incoming.push(
+        `${JSON.stringify({
+          jsonrpc: '2.0',
+          id: request?.id,
+          result: { status: 'accepted', commandId: request?.params?.['commandId'] },
+        })}\n`,
+      )
+    }
+    respond(1)
+    await freshSend
+    await settle()
+    respond(0)
+    await oldSend
+    await settle()
+    expect(t.server.requestsFor('skill/list')).toHaveLength(1)
+    expect(t.surface.posted.findLast((message) => message.type === 'skillList')).toMatchObject({
+      skills: [{ selector: 'fix-bug' }],
+    })
+    expect(t.surface.posted).not.toContainEqual(
+      expect.objectContaining({ type: 'turnAccepted', localId: 'old-effort' }),
+    )
+  })
+
+  it('drops a send whose first session opening spans same-kind sign-out and sign-in', async () => {
+    const pendingHost = setupWithDeferredHost()
+    const t = pendingHost.t
+    await attachPng(t)
+    pendingHost.delay()
+    const oldSend = t.send('old-account', 'Private old prompt', ['att-1'])
+    await vi.waitFor(() => {
+      expect(pendingHost.isWaiting()).toBe(true)
+    })
+    t.auth.snapshot = { status: 'signedOut', detail: undefined }
+    await t.controller.backendStopping(true)
+    t.auth.snapshot = { status: 'signedIn', detail: undefined }
+    pendingHost.allowOtherRequests()
+    const freshSend = t.send('new-account', 'Fresh prompt')
+    pendingHost.release()
+    await Promise.all([oldSend, freshSend])
+    expect(t.surface.posted).not.toContainEqual(
+      expect.objectContaining({ type: 'turnAccepted', localId: 'old-account' }),
+    )
+    expect(t.surface.posted).toContainEqual(
+      expect.objectContaining({
+        type: 'sendFailed',
+        localId: 'old-account',
+        attachmentsKept: true,
+      }),
+    )
+    expect(t.surface.posted).toContainEqual(
+      expect.objectContaining({ type: 'turnAccepted', localId: 'new-account' }),
+    )
+    expect(t.server.requestsFor('turn/start')).toHaveLength(1)
+  })
+
+  it('does not charge a new Model API account for a send held before session opening', async () => {
+    const t = setup()
+    let nextId = 0
+    const { api, host: modelHost } = modelApiController(t, {
+      newId: () => `id${String(++nextId)}`,
+    })
+    const opening = Promise.withResolvers<AgentHost>()
+    let isHeld = false
+    const ensureHost = vi.fn(() =>
+      isHeld ? opening.promise : Promise.resolve<AgentHost>(modelHost),
+    )
+    const controller = new ConversationController({ ...t.deps, ensureHost })
+    await attachPng({ controller })
+    const added = t.surface.posted.findLast((message) => message.type === 'attachmentAdded')
+    if (added?.type !== 'attachmentAdded') {
+      throw new TypeError('expected image chip')
+    }
+    const priorLookups = ensureHost.mock.calls.length
+    isHeld = true
+    const oldSend = controller.handle({
+      type: 'sendMessage',
+      localId: 'old-key',
+      text: 'Private old prompt',
+      attachmentIds: [added.attachment.id],
+    })
+    await vi.waitFor(() => {
+      expect(ensureHost.mock.calls.length).toBeGreaterThan(priorLookups)
+    })
+    t.auth.snapshot = { status: 'signedOut', detail: undefined }
+    await controller.backendStopping(true)
+    t.auth.snapshot = { status: 'signedIn', detail: undefined }
+    isHeld = false
+    api.script({ text: 'Fresh reply' })
+    const freshSend = controller.handle({
+      type: 'sendMessage',
+      localId: 'new-key',
+      text: 'Fresh prompt',
+      attachmentIds: [],
+    })
+    opening.resolve(modelHost)
+    await Promise.all([oldSend, freshSend])
+    await vi.waitFor(() => {
+      expect(api.responseBodies()).toHaveLength(1)
+    })
+    const input = JSON.stringify(api.responseBodies()[0]?.['input'])
+    expect(input).toContain('Fresh prompt')
+    expect(input).not.toContain('Private old prompt')
+    expect(input).not.toContain(Buffer.from(PNG).toString('base64'))
+    expect(t.surface.posted).toContainEqual(
+      expect.objectContaining({ type: 'sendFailed', localId: 'old-key', attachmentsKept: true }),
+    )
+    expect(t.surface.posted).toContainEqual(
+      expect.objectContaining({ type: 'turnAccepted', localId: 'new-key' }),
+    )
+  })
+
+  it('ignores a turn ack from a dropped session and keeps its image chip', async () => {
+    const t = setup()
+    await attachPng(t)
+    t.server.silence('turn/start')
+    const pending = t.send('late-ack', 'Look here', ['att-1'])
+    await vi.waitFor(() => {
+      expect(t.server.requestsFor('turn/start')).toHaveLength(1)
+    })
+    const request = t.server.requestsFor('turn/start')[0]
+    await t.controller.backendStopping(false)
+    t.server.incoming.push(
+      `${JSON.stringify({
+        jsonrpc: '2.0',
+        id: request?.id,
+        result: {
+          turnId: 't1',
+          status: 'accepted',
+          commandId: request?.params?.['commandId'],
+        },
+      })}\n`,
+    )
+    await pending
+    expect(t.surface.posted).not.toContainEqual(
+      expect.objectContaining({ type: 'turnAccepted', localId: 'late-ack' }),
+    )
+    expect(t.surface.posted).toContainEqual(
+      expect.objectContaining({ type: 'sendFailed', localId: 'late-ack', attachmentsKept: true }),
+    )
+    const before = t.surface.posted.filter((message) => message.type === 'attachmentAdded').length
+    t.controller.surfaceReady()
+    expect(t.surface.posted.filter((message) => message.type === 'attachmentAdded')).toHaveLength(
+      before + 1,
+    )
+  })
+
+  it('does not submit an old Model API send after autosave spans a backend switch', async () => {
+    const t = setup({ isAutosaveEnabled: true })
+    const { api, host: modelHost } = modelApiController(t)
+    let selectedHost: AgentHost = modelHost
+    const controller = new ConversationController({
+      ...t.deps,
+      ensureHost: () => Promise.resolve(selectedHost),
+    })
+    await attachPng({ controller })
+    const added = t.surface.posted.findLast((message) => message.type === 'attachmentAdded')
+    if (added?.type !== 'attachmentAdded') {
+      throw new Error('expected image chip')
+    }
+    const saving = Promise.withResolvers<undefined>()
+    t.saveAll.mockImplementationOnce(() => saving.promise)
+    api.script({ text: 'stale paid answer' })
+    const pending = controller.handle({
+      type: 'sendMessage',
+      localId: 'old-paid-send',
+      text: 'Look at this image',
+      attachmentIds: [added.attachment.id],
+    })
+    await vi.waitFor(() => {
+      expect(t.saveAll).toHaveBeenCalledOnce()
+    })
+    await controller.backendStopping(false)
+    selectedHost = t.host
+    saving.resolve(undefined)
+    await pending
+    await settle()
+    expect(api.responseBodies()).toEqual([])
+    expect(t.surface.posted).not.toContainEqual(
+      expect.objectContaining({ type: 'turnAccepted', localId: 'old-paid-send' }),
+    )
+    expect(t.surface.posted).toContainEqual(
+      expect.objectContaining({
+        type: 'sendFailed',
+        localId: 'old-paid-send',
+        attachmentsKept: true,
+      }),
+    )
+    await controller.handle({
+      type: 'sendMessage',
+      localId: 'fresh-muse-send',
+      text: 'Look at this image',
+      attachmentIds: [added.attachment.id],
+    })
+    expect(t.server.requestsFor('turn/start')).toHaveLength(1)
+    expect(t.surface.posted).toContainEqual(
+      expect.objectContaining({ type: 'turnAccepted', localId: 'fresh-muse-send' }),
+    )
+  })
+
+  it('starts the next send on newly selected Muse Code after installer retirement', async () => {
+    const t = setup()
+    const { api, host: modelHost } = modelApiController(t)
+    let selectedHost: AgentHost = modelHost
+    const controller = new ConversationController({
+      ...t.deps,
+      ensureHost: () => Promise.resolve(selectedHost),
+    })
+    api.script({ text: 'A reply' })
+    await controller.handle({
+      type: 'sendMessage',
+      localId: 'model-a',
+      text: 'A prompt',
+      attachmentIds: [],
+    })
+    await vi.waitFor(() => {
+      expect(api.responseBodies()).toHaveLength(1)
+    })
+    await controller.backendStopping(true)
+    selectedHost = t.host
+    await controller.handle({
+      type: 'sendMessage',
+      localId: 'cli-b',
+      text: 'Fresh CLI prompt',
+      attachmentIds: [],
+    })
+    expect(t.server.requestsFor('session/start')).toHaveLength(1)
+    expect(t.server.requestsFor('turn/start')).toHaveLength(1)
+    expect(t.surface.posted).toContainEqual(
+      expect.objectContaining({ type: 'turnAccepted', localId: 'cli-b' }),
+    )
+  })
+
+  it('drops late private output while a sign-out waits for turn cancellation', async () => {
+    const t = setup()
+    await t.send('old', 'Start account A')
+    const { stopping, request } = await holdTurnCancel(t)
+    const boundary = accountBoundaryIndex(t)
+    t.server.notify('item/completed', {
+      sessionId: 's1',
+      item: {
+        itemId: 'private-a',
+        kind: 'agentMessage',
+        status: 'completed',
+        turnId: 't1',
+        text: 'Private old answer',
+      },
+    })
+    await settle()
+    expect(JSON.stringify(t.surface.posted.slice(boundary + 1))).not.toContain('Private old answer')
+    answerHeldCancel(t, request)
+    await stopping
+    expect(agentEvents(t)).toContainEqual(
+      expect.objectContaining({ type: 'turnCompleted', terminal: 'cancelled' }),
+    )
+  })
+
+  it('refuses new session and paid actions while auth admission is closed', async () => {
+    const t = setup()
+    await t.send('old', 'A prompt')
+    const requestCount = t.server.requests.length
+    t.auth.isAdmitted = false
+    expect(t.auth.snapshot.status).toBe('signedIn')
+    await t.controller.handle({ type: 'compact' })
+    await t.controller.handle({
+      type: 'goalCommand',
+      requestId: 'goal-a',
+      verb: 'set',
+      objective: 'Continue A',
+    })
+    await t.controller.handle({ type: 'subagentControl', subagentId: 'child-a', action: 'stop' })
+    await t.controller.handle({ type: 'runUserShell', command: 'echo old' })
+    await t.controller.handle({ type: 'scheduleRun', id: 'job-a', occurrenceMs: NOW })
+    expect(t.server.requests).toHaveLength(requestCount)
+    expect(t.surface.posted).toContainEqual({
+      type: 'notice',
+      level: 'warning',
+      text: UI_TEXT.notSignedInReason,
+    })
+  })
+
   it('cancels the running turn before a restart and resumes the session on the next message', async () => {
     const t = setup()
     await t.send('l1', 'hi')
@@ -3104,6 +5289,50 @@ describe('ConversationController: lifecycle (D25)', () => {
     await t.send('l2', 'again')
     expect(t.server.requestsFor('session/resume')[0]?.params).toMatchObject({ sessionId: 's1' })
     expect(t.surface.posted).toContainEqual({ type: 'turnAccepted', localId: 'l2', turnId: 't2' })
+  })
+
+  it('does not retry a stale send when backend stopping crosses recovery lookup', async () => {
+    const recovery = Promise.withResolvers<undefined>()
+    let isRecoveryHeld = false
+    const t = setup({
+      beforeEnsureHost: () => (isRecoveryHeld ? recovery.promise : Promise.resolve()),
+    })
+    await t.send('first', 'First turn')
+    t.finishTurn()
+    await settle()
+    await attachPng(t)
+    let starts = 0
+    t.server.handle('turn/start', (params) => {
+      starts += 1
+      if (starts === 1) {
+        isRecoveryHeld = true
+        throw Object.assign(new Error('not loaded'), { kind: 'sessionNotLoaded' })
+      }
+      return {
+        turnId: 'retried',
+        status: 'accepted',
+        commandId: params['commandId'],
+      }
+    })
+    t.server.handle('session/resume', () => envelope({ ...storedSession, sessionId: 's1' }))
+    const pending = t.send('stale-recovery', 'Look here', ['att-1'])
+    await vi.waitFor(() => {
+      expect(isRecoveryHeld).toBe(true)
+    })
+    await t.controller.backendStopping(false)
+    recovery.resolve(undefined)
+    await pending
+    expect(starts).toBe(1)
+    expect(t.surface.posted).not.toContainEqual(
+      expect.objectContaining({ type: 'turnAccepted', localId: 'stale-recovery' }),
+    )
+    expect(t.surface.posted).toContainEqual(
+      expect.objectContaining({
+        type: 'sendFailed',
+        localId: 'stale-recovery',
+        attachmentsKept: true,
+      }),
+    )
   })
 
   it('hears the host close this session and resumes it on the next message', async () => {
@@ -3184,6 +5413,16 @@ async function activeGoalForGap(t: ReturnType<typeof setup>): Promise<void> {
   t.server.handle('session/read', (params) => gapInlineHistory(String(params['sessionId'])))
 }
 
+/** A steer fake that only lets the running parent turn t1 be steered (M48). */
+function steerOnlyParentTurn(t: ReturnType<typeof setup>): void {
+  t.server.handle('turn/steer', (params) => {
+    if (params['expectedTurnId'] !== 't1') {
+      throw new Error(`turn ${String(params['expectedTurnId'])} is not running`)
+    }
+    return { turnId: 't1', status: 'accepted', commandId: params['commandId'] }
+  })
+}
+
 describe('ConversationController: protocol semantics (D26)', () => {
   const refusal = refusalOf
 
@@ -3238,6 +5477,67 @@ describe('ConversationController: protocol semantics (D26)', () => {
       sessionId: 's1',
       canEditSessions: false,
     })
+  })
+
+  it('drops a held view-gap history read while account stop waits for cancellation', async () => {
+    const t = setup()
+    await t.send('old', 'Account A turn')
+    const read = await holdViewGapRead(t)
+    const { stopping, request } = await holdTurnCancel(t)
+    const boundary = accountBoundaryIndex(t)
+    t.server.incoming.push(
+      `${JSON.stringify({ jsonrpc: '2.0', id: read.id, result: gapHistory('Private old gap answer') })}\n`,
+    )
+    await settle()
+    expect(JSON.stringify(t.surface.posted.slice(boundary + 1))).not.toContain(
+      'Private old gap answer',
+    )
+    answerHeldCancel(t, request)
+    await stopping
+  })
+
+  it('does not report an old view-gap read error after account stop', async () => {
+    const t = setup()
+    await t.send('old', 'Account A turn')
+    const read = await holdViewGapRead(t)
+    await t.controller.backendStopping(true)
+    t.server.incoming.push(
+      `${JSON.stringify({ jsonrpc: '2.0', id: read.id, error: { code: -32_000, message: 'old account log locked', data: { kind: 'commandRejected' } } })}\n`,
+    )
+    await settle()
+    expect(t.surface.posted).not.toContainEqual(
+      expect.objectContaining({
+        type: 'notice',
+        text: expect.stringContaining('old account log locked'),
+      }),
+    )
+  })
+
+  it('loads a new account gap while the old account gap read is still pending', async () => {
+    const t = setup()
+    await t.send('old', 'A prompt')
+    const oldRead = await holdViewGapRead(t)
+    await t.controller.backendStopping(true)
+    await t.send('new', 'B prompt')
+    t.server.notify('view/gap', { sessionId: 's1', after: 'v3', next: 'v4' })
+    await vi.waitFor(() => {
+      expect(t.server.requestsFor('session/read')).toHaveLength(2)
+    })
+    const newRead = t.server.requestsFor('session/read')[1]
+    if (newRead?.id === undefined) {
+      throw new Error('expected both held history reads')
+    }
+    t.server.incoming.push(
+      `${JSON.stringify({ jsonrpc: '2.0', id: newRead.id, result: gapHistory('B current history') })}\n`,
+    )
+    await vi.waitFor(() => {
+      expect(JSON.stringify(t.surface.posted)).toContain('B current history')
+    })
+    t.server.incoming.push(
+      `${JSON.stringify({ jsonrpc: '2.0', id: oldRead.id, result: gapHistory('A private history') })}\n`,
+    )
+    await settle()
+    expect(JSON.stringify(t.surface.posted)).not.toContain('A private history')
   })
 
   it('reloads the transcript after a delivery gap, once more for a gap during the read', async () => {
@@ -3413,6 +5713,69 @@ describe('ConversationController: protocol semantics (D26)', () => {
     expect(t.server.requestsFor('turn/steer')[0]?.params).toMatchObject({ expectedTurnId: 't1' })
   })
 
+  it('keeps steering the parent turn when a child turn starts mid-turn (M48)', async () => {
+    const t = setup()
+    steerOnlyParentTurn(t)
+    await t.send('l1', 'hi')
+    t.server.notify('turn/started', { sessionId: 's1', turnId: 't1' })
+    // The child's row names its session before the child's first turn (M48).
+    t.server.notify('item/started', {
+      sessionId: 's1',
+      item: {
+        itemId: 'sub-1',
+        kind: 'subagent',
+        status: 'inProgress',
+        turnId: 't1',
+        subagentId: 'sub-1',
+        childSessionId: 'child-1',
+        role: 'explorer',
+        objective: 'Map files',
+      },
+    })
+    // A Model API child's own turn reaches the parent stream (M48); it must
+    // not take the steering a correction aims at the running parent turn.
+    t.server.notify('turn/started', { sessionId: 's1', turnId: 'child-1:c1' })
+    await settle()
+    await t.send('l2', 'actually, that')
+    expect(t.server.requestsFor('turn/steer')[0]?.params).toMatchObject({ expectedTurnId: 't1' })
+    expect(t.server.requestsFor('turn/start')).toHaveLength(1)
+  })
+
+  it('still steers the parent when a resumed history named the child session (M48)', async () => {
+    const t = setup()
+    steerOnlyParentTurn(t)
+    t.server.handle('session/resume', () => ({
+      session: { ...storedSession, sessionId: 's1', status: 'running', activeTurnId: 't1' },
+      history: {
+        mode: 'inline',
+        items: [
+          ...storedItems,
+          {
+            itemId: 'sub-1',
+            kind: 'subagent',
+            status: 'inProgress',
+            turnId: 't1',
+            subagentId: 'sub-1',
+            childSessionId: 'child-1',
+            role: 'explorer',
+            objective: 'Map files',
+          },
+        ],
+        snapshot: null,
+      },
+      pendingRequests: [],
+      viewCursor: 'v',
+    }))
+    await t.controller.handle({ type: 'resumeSession', sessionId: 's1' })
+    await settle()
+    // A Muse Code child's items arrive under its own session id (M18); its
+    // turn must not take the steering either.
+    t.server.notify('turn/started', { sessionId: 's1', turnId: 'child-1' })
+    await settle()
+    await t.send('l1', 'correction')
+    expect(t.server.requestsFor('turn/steer')[0]?.params).toMatchObject({ expectedTurnId: 't1' })
+  })
+
   it('does not take a queued turn, or one already finished, for the running one', async () => {
     const queued = setup()
     queued.server.handle('turn/start', (params) => ({
@@ -3452,6 +5815,7 @@ describe('ConversationController: protocol semantics (D26)', () => {
     t.controller.surfaceReady()
     expect(t.surface.posted[0]).toEqual({
       type: 'surfaceState',
+      attachmentEpoch: 1,
       sessionId: 'old',
       activeTurnId: 'tr',
     })
@@ -3654,6 +6018,18 @@ describe('ConversationController: Muse Voice turned off mid-recording (the revie
 })
 
 describe('ConversationController: a tool row’s picture (M43)', () => {
+  it('drops a held old-account picture after backend stop', async () => {
+    const image = Promise.withResolvers<{ ok: true; dataUri: string }>()
+    const t = setup({ readToolImage: () => image.promise })
+    const reading = t.controller.handle({ type: 'readToolImage', itemId: 'a-image', path: 'a.png' })
+    await t.controller.backendStopping(true)
+    image.resolve({ ok: true, dataUri: 'data:image/png;base64,AA' })
+    await reading
+    expect(t.surface.posted).not.toContainEqual(
+      expect.objectContaining({ type: 'toolImage', itemId: 'a-image' }),
+    )
+  })
+
   it('answers with the picture as a data URI, or with why it cannot be shown', async () => {
     const asked: string[] = []
     const t = setup({
@@ -4216,5 +6592,221 @@ describe('ConversationController: explanations (M46)', () => {
     t.server.handle('userInput/clarify', refusalOf('userInputNotFound'))
     await t.controller.handle({ type: 'clarifyQuestion', userInputId: 'q3', text: 'red' })
     expect(t.surface.posted).toContainEqual({ type: 'promptDropped', userInputId: 'q3' })
+  })
+})
+
+const scheduleTestRoot = mkdtempSync(path.join(tmpdir(), 'muse-controller-schedules-'))
+afterAll(() => removeFolder(scheduleTestRoot))
+
+describe('ConversationController: scheduled prompts (M52)', () => {
+  it('creates without spending; an off gate and a declined per-run price keep a due job pending', async () => {
+    const clock = { now: NOW }
+    const t = setup({ clock, initialPermissionMode: 'bypassPermissions', isBypassAllowed: true })
+    const api = fakeModelApi()
+    let isPaidOn = false
+    const confirm = vi.fn(() => Promise.resolve(false))
+    const scheduleStore = createFileScheduleStore({
+      directory: path.join(scheduleTestRoot, 'confirm'),
+      now: () => clock.now,
+      log: t.log,
+    })
+    const modelHost = new ModelApiHost({
+      client: fakeModelApiClient(api, t.log),
+      workspaceRoot: '/ws',
+      platform: 'linux',
+      io: noopToolIo,
+      contextIo: memoryContextIo(new Map()),
+      newId: randomUUID,
+      now: () => clock.now,
+      log: t.log,
+      personalSkillsRoot: undefined,
+      isWorkspaceTrusted: () => true,
+      describeEnvironment: () => Promise.resolve({ git: undefined }),
+      promptCacheRetention: () => 'in_memory',
+      isPaidFeatureOn: () => isPaidOn,
+      notePaidUse: () => undefined,
+      confirmSubagentTask: () => Promise.resolve(false),
+      noteSubagentUsage: () => undefined,
+      memory: undefined,
+      store: memorySessionStore(),
+      scheduleStore,
+      getAccountId: () => Promise.resolve(FAKE_MODEL_API_ACCOUNT_ID),
+    })
+    const controller = new ConversationController({
+      ...t.deps,
+      ensureHost: () => Promise.resolve(modelHost),
+      isScheduledPaidOn: () => isPaidOn,
+      confirmScheduledRun: confirm,
+    })
+    const staleNotices = () =>
+      t.surface.posted.filter(
+        (message) =>
+          message.type === 'notice' && message.text === UI_TEXT.scheduleConfirmationExpired,
+      )
+    await controller.handle({
+      type: 'scheduleCreate',
+      cadence: { kind: 'interval', everyMs: 60_000 },
+      prompt: 'Review tests',
+    })
+    expect(api.responseBodies()).toEqual([])
+    const changed = t.surface.posted.findLast(
+      (message) => message.type === 'agentEvent' && message.event.type === 'schedulesChanged',
+    )
+    if (changed?.type !== 'agentEvent' || changed.event.type !== 'schedulesChanged') {
+      throw new Error('expected scheduled prompt state')
+    }
+    const job = changed.event.jobs[0]
+    if (job === undefined) {
+      throw new Error('expected created job')
+    }
+    clock.now = job.nextFireAtMs + 1
+    await controller.handle({ type: 'scheduleRun', id: job.id, occurrenceMs: job.nextFireAtMs })
+    expect(confirm).not.toHaveBeenCalled()
+    expect(api.responseBodies()).toEqual([])
+    isPaidOn = true
+    await controller.handle({ type: 'scheduleRun', id: job.id, occurrenceMs: job.nextFireAtMs })
+    expect(confirm).toHaveBeenCalledOnce()
+    expect(api.responseBodies()).toEqual([])
+    expect(staleNotices()).toHaveLength(0)
+    const sessions = await modelHost.listSessions({ workspaceRoot: '/ws', limit: 10 })
+    const sessionId = sessions.sessions[0]?.sessionId
+    if (sessionId === undefined) {
+      throw new Error('expected session')
+    }
+    const beforeRun = await scheduleStore.list(sessionId)
+    expect(beforeRun[0]?.fireCount).toBe(0)
+    const pendingConfirmation = Promise.withResolvers<boolean>()
+    confirm.mockImplementationOnce(() => pendingConfirmation.promise)
+    const pendingRun = controller.handle({
+      type: 'scheduleRun',
+      id: job.id,
+      occurrenceMs: job.nextFireAtMs,
+    })
+    await vi.waitFor(() => {
+      expect(confirm).toHaveBeenCalledTimes(2)
+    })
+    await controller.handle({ type: 'setModel', modelId: 'muse-spark-1.2' })
+    pendingConfirmation.resolve(true)
+    await pendingRun
+    expect(api.responseBodies()).toEqual([])
+    expect(staleNotices()).toHaveLength(1)
+    const afterModelChange = await scheduleStore.list(sessionId)
+    expect(afterModelChange[0]?.fireCount).toBe(0)
+    await controller.handle({ type: 'setModel', modelId: 'muse-spark-1.3' })
+    const revokedGateConfirmation = Promise.withResolvers<boolean>()
+    confirm.mockImplementationOnce(() => revokedGateConfirmation.promise)
+    const revokedGateRun = controller.handle({
+      type: 'scheduleRun',
+      id: job.id,
+      occurrenceMs: job.nextFireAtMs,
+    })
+    await vi.waitFor(() => {
+      expect(confirm).toHaveBeenCalledTimes(3)
+    })
+    isPaidOn = false
+    revokedGateConfirmation.resolve(true)
+    await revokedGateRun
+    expect(api.responseBodies()).toEqual([])
+    expect(t.surface.posted).toContainEqual({
+      type: 'notice',
+      level: 'warning',
+      text: UI_TEXT.schedulePaidOff,
+    })
+    expect(staleNotices()).toHaveLength(1)
+    const afterGateRevoked = await scheduleStore.list(sessionId)
+    expect(afterGateRevoked[0]?.fireCount).toBe(0)
+    isPaidOn = true
+    const [stored] = await scheduleStore.list(sessionId)
+    if (stored === undefined) {
+      throw new Error('expected stored schedule')
+    }
+    const changedPromptConfirmation = Promise.withResolvers<boolean>()
+    confirm.mockImplementationOnce(() => changedPromptConfirmation.promise)
+    const changedPromptRun = controller.handle({
+      type: 'scheduleRun',
+      id: job.id,
+      occurrenceMs: job.nextFireAtMs,
+    })
+    await vi.waitFor(() => {
+      expect(confirm).toHaveBeenCalledTimes(4)
+    })
+    const scheduleFile = path.join(scheduleTestRoot, 'confirm', `${job.id}.json`)
+    await writeFile(scheduleFile, JSON.stringify({ ...stored, prompt: 'Different prompt' }))
+    changedPromptConfirmation.resolve(true)
+    await changedPromptRun
+    expect(api.responseBodies()).toEqual([])
+    expect(staleNotices()).toHaveLength(2)
+    const afterPromptChange = await scheduleStore.list(sessionId)
+    expect(afterPromptChange[0]?.fireCount).toBe(0)
+    await writeFile(scheduleFile, JSON.stringify(stored))
+    confirm.mockResolvedValueOnce(true)
+    api.script({ text: 'Tests look good' })
+    await controller.handle({ type: 'scheduleRun', id: job.id, occurrenceMs: job.nextFireAtMs })
+    await vi.waitFor(() => {
+      expect(api.responseBodies()).toHaveLength(1)
+    })
+    const afterRun = await scheduleStore.list(sessionId)
+    expect(afterRun[0]?.fireCount).toBe(1)
+    const next = afterRun[0]
+    if (next === undefined) {
+      throw new Error('expected recurring schedule')
+    }
+    clock.now = next.nextFireAtMs + 1
+    const cancellingConfirmation = Promise.withResolvers<boolean>()
+    confirm.mockImplementationOnce(() => cancellingConfirmation.promise)
+    const cancelledRun = controller.handle({
+      type: 'scheduleRun',
+      id: job.id,
+      occurrenceMs: next.nextFireAtMs,
+    })
+    await vi.waitFor(() => {
+      expect(confirm).toHaveBeenCalledTimes(6)
+    })
+    await controller.handle({ type: 'scheduleCancel', id: job.id })
+    cancellingConfirmation.resolve(true)
+    await cancelledRun
+    expect(api.responseBodies()).toHaveLength(1)
+    expect(staleNotices()).toHaveLength(3)
+    expect(await scheduleStore.list(sessionId)).toEqual([])
+    // Replacing the Model API key restarts its host, then reports signedIn on
+    // the same backend. Clear the old account's prompts at that first drop.
+    await controller.handle({
+      type: 'scheduleCreate',
+      cadence: { kind: 'interval', everyMs: 60_000 },
+      prompt: 'Private old-account prompt',
+    })
+    const latestSchedules = () =>
+      t.surface.posted.findLast(
+        (message) => message.type === 'agentEvent' && message.event.type === 'schedulesChanged',
+      )
+    expect(latestSchedules()).toMatchObject({
+      event: { jobs: [expect.objectContaining({ prompt: 'Private old-account prompt' })] },
+    })
+    const [accountJob] = await scheduleStore.list(sessionId)
+    if (accountJob === undefined) {
+      throw new Error('expected account-bound scheduled job')
+    }
+    clock.now = accountJob.nextFireAtMs + 1
+    const admissionConfirmation = Promise.withResolvers<boolean>()
+    confirm.mockImplementationOnce(() => admissionConfirmation.promise)
+    const awaitingAdmission = controller.handle({
+      type: 'scheduleRun',
+      id: accountJob.id,
+      occurrenceMs: accountJob.nextFireAtMs,
+    })
+    await vi.waitFor(() => {
+      expect(confirm).toHaveBeenCalledTimes(7)
+    })
+    t.auth.isAdmitted = false
+    admissionConfirmation.resolve(true)
+    await awaitingAdmission
+    expect(api.responseBodies()).toHaveLength(1)
+    const stillPending = await scheduleStore.list(sessionId)
+    expect(stillPending[0]?.fireCount).toBe(0)
+    t.auth.isAdmitted = true
+    await controller.backendStopping(false)
+    expect(latestSchedules()).toMatchObject({ event: { jobs: [] } })
+    controller.dispose()
+    await modelHost.close()
   })
 })

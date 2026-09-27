@@ -67,6 +67,8 @@ export function isPng(bytes: Uint8Array): boolean {
 
 interface WorkspaceFile {
   readonly absolute: string
+  readonly checkedAbsolute: string
+  readonly canonical: string
   readonly relative: string
 }
 
@@ -114,7 +116,9 @@ async function targetOf(
   }
   const problem =
     imagePathProblem(resolved.relative) ??
-    ((await workspace.io.pathExists(resolved.absolute)) ? MODEL_TEXT.imagePathTaken : undefined)
+    ((await workspace.io.pathExists(resolved.checkedAbsolute))
+      ? MODEL_TEXT.imagePathTaken
+      : undefined)
   return problem === undefined ? resolved : { reason: problem }
 }
 
@@ -141,7 +145,11 @@ async function sourceOf(
   }
   let bytes: Uint8Array | undefined
   try {
-    bytes = await workspace.io.readBytes(resolved.absolute, MAX_IMAGE_BYTES)
+    bytes = await workspace.io.readBytes(
+      resolved.checkedAbsolute,
+      MAX_IMAGE_BYTES,
+      resolved.checkedAbsolute,
+    )
   } catch (error: unknown) {
     return { reason: error instanceof Error ? error.message : String(error) }
   }
@@ -207,6 +215,8 @@ export interface ImageRunDeps {
   readonly isStillOn: () => boolean
   /** Called once an image was returned: Meta bills it whether or not it can be saved. */
   readonly onBilled: () => void
+  /** Rechecked with the key read for each paid image attempt and retry. */
+  readonly admitAttempt?: (keyDigest: string | undefined) => void
 }
 
 function failure(reason: string): ToolOutcome {
@@ -222,7 +232,10 @@ export async function runImageCall(plan: ImagePlan, deps: ImageRunDeps): Promise
   // The file is taken first, so a path taken while the card was open costs nothing.
   let reservation: FileReservation
   try {
-    reservation = await deps.io.reserveFile(plan.target.absolute)
+    reservation = await deps.io.reserveFile(
+      plan.target.checkedAbsolute,
+      plan.target.checkedAbsolute,
+    )
   } catch {
     return failure(MODEL_TEXT.imagePathTaken)
   }
@@ -245,7 +258,7 @@ async function request(plan: ImagePlan, deps: ImageRunDeps): Promise<ImagesRespo
     output_format: IMAGE_OUTPUT_FORMAT,
   } as const
   return plan.kind === 'generate'
-    ? await deps.client.createImage(common, deps.signal)
+    ? await deps.client.createImage(common, deps.signal, deps.admitAttempt)
     : await deps.client.editImage(
         {
           ...common,
@@ -254,6 +267,7 @@ async function request(plan: ImagePlan, deps: ImageRunDeps): Promise<ImagesRespo
           })),
         },
         deps.signal,
+        deps.admitAttempt,
       )
 }
 

@@ -55,6 +55,18 @@ const full: StoredSession = {
       },
     },
     { turnId: 't1', item: { type: 'function_call_output', call_id: 'c1', output: 'ok' } },
+    // An MCP tool's picture (M50): the output as content parts.
+    {
+      turnId: 't1',
+      item: {
+        type: 'function_call_output',
+        call_id: 'c2',
+        output: [
+          { type: 'input_text', text: 'a dot' },
+          { type: 'input_image', image_url: 'data:image/png;base64,AAAA', detail: 'auto' },
+        ],
+      },
+    },
     {
       turnId: 't1',
       item: {
@@ -81,6 +93,13 @@ const full: StoredSession = {
 }
 
 describe('parseStoredSession', () => {
+  it('preserves a key digest while refusing a malformed owner', () => {
+    const owned = { ...full, accountId: 'a'.repeat(64) }
+    expect(parseStoredSession(owned)).toEqual({ ok: true, session: owned })
+    expect(headerOf(owned).accountId).toBe(owned.accountId)
+    expect(parseStoredSession({ ...full, accountId: 'raw-key' })).toMatchObject({ ok: false })
+  })
+
   it('accepts a full record unchanged after a JSON round trip', () => {
     const parsed = parseStoredSession(structuredClone(full))
     expect(parsed).toEqual({ ok: true, session: full })
@@ -92,6 +111,27 @@ describe('parseStoredSession', () => {
     expect(parsed).toEqual({ ok: true, session: older })
     expect(parsed.ok && 'goal' in parsed.session).toBe(false)
     expect(parseStoredSession({ ...full, goal: { objective: 'x' } })).toMatchObject({ ok: false })
+  })
+
+  it('keeps a side-session marker without changing older session files (M53)', () => {
+    const side: StoredSession = { ...full, sideChat: true, approvalMode: 'denyUnmatched' }
+    const parsed = parseStoredSession(structuredClone(side))
+    expect(parsed).toEqual({ ok: true, session: side })
+    expect(headerOf(side).sideChat).toBe(true)
+    expect(recordOf(headerOf(side)).sideChat).toBe(true)
+    expect(parseStoredSession(structuredClone(full))).toEqual({ ok: true, session: full })
+  })
+
+  it('preserves exact user-card and accepted-compaction links while reading older files (M53)', () => {
+    const linked: StoredSession = {
+      ...full,
+      compactedThroughTurnId: 't1',
+      replay: full.replay.map((entry, index) =>
+        index === 0 ? { ...entry, userMessageId: 'i1' } : entry,
+      ),
+    }
+    expect(parseStoredSession(structuredClone(linked))).toEqual({ ok: true, session: linked })
+    expect(parseStoredSession(structuredClone(full))).toEqual({ ok: true, session: full })
   })
 
   it('keeps a background completion note tied to its task across storage (M46)', () => {

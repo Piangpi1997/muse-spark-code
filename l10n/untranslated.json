@@ -17,6 +17,7 @@
       "hooksUserBlock",
       "hooksManagedKey",
       "worktreeBranchPlaceholder",
+      "memoryNamePlaceholder",
       "unreadMark",
       "linePrefix",
       "backendDetail",
@@ -33,7 +34,9 @@
       "goalItem",
       "composerShellMode",
       "onboardingShortcuts.shell",
-      "onboardingShortcuts.moveToBackground"
+      "onboardingShortcuts.moveToBackground",
+      "pdfLabel",
+      "loopItem"
     ],
     "cs": [
       "groupModel",

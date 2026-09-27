@@ -8,6 +8,8 @@ function renderSignIn(overrides: Partial<SignInProps> = {}) {
     status: 'signedOut',
     detail: undefined,
     onSignIn: vi.fn(),
+    onInstall: vi.fn(),
+    onCancelSignIn: vi.fn(),
     onRetry: vi.fn(),
     onOpenExternal: vi.fn(),
     ...overrides,
@@ -47,8 +49,45 @@ describe('SignIn', () => {
   })
 
   it('shows the waiting text while signing in, falling back to the default copy', () => {
-    renderSignIn({ status: 'signingIn' })
-    expect(screen.getByText('Waiting for the browser sign-in to finish…')).toBeInTheDocument()
+    const props = renderSignIn({ status: 'signingIn' })
+    expect(screen.getByText('Waiting for browser approval…')).toBeInTheDocument()
+    fireEvent.click(screen.getByText('Cancel sign-in'))
+    expect(props.onCancelSignIn).toHaveBeenCalledOnce()
+  })
+
+  it('shows the exact installer command before starting it', () => {
+    const props = renderSignIn({
+      status: 'noCli',
+      installCommand: 'irm https://dev.meta.ai/install.ps1 | iex',
+    })
+    fireEvent.click(screen.getByText('Install Muse Code'))
+    expect(screen.getByRole('dialog', { name: 'Install Muse Code' })).toHaveAttribute(
+      'aria-modal',
+      'true',
+    )
+    expect(screen.getByText('irm https://dev.meta.ai/install.ps1 | iex')).toBeInTheDocument()
+    expect(props.onInstall).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByText('Cancel'))
+    expect(screen.queryByRole('dialog', { name: 'Install Muse Code' })).toBeNull()
+    expect(props.onInstall).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByText('Install Muse Code'))
+    fireEvent.click(screen.getByText('Run installer'))
+    expect(props.onInstall).toHaveBeenCalledOnce()
+  })
+
+  it('shows the device code and cancel action in the panel', () => {
+    const props = renderSignIn({
+      status: 'signingIn',
+      verificationUrl: 'https://auth.meta.com/oauth/device/?code=example',
+      userCode: 'ABCD-EFGH',
+    })
+    expect(screen.getByText('ABCD-EFGH')).toBeInTheDocument()
+    fireEvent.click(screen.getByText('Open sign-in page'))
+    expect(props.onOpenExternal).toHaveBeenCalledWith(
+      'https://auth.meta.com/oauth/device/?code=example',
+    )
+    fireEvent.click(screen.getByText('Cancel sign-in'))
+    expect(props.onCancelSignIn).toHaveBeenCalledOnce()
   })
 
   it('offers only the paths the host lists, and the key path beside the install guidance', () => {
