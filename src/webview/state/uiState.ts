@@ -1740,15 +1740,21 @@ function applyHostMessage(state: UiState, message: HostToWebviewMessage, at: num
       }
     }
     case 'authState': {
+      // A CLI device sign-in started while the Model API session is live
+      // (M55) sends several `signingIn` updates (the code arrives in a later
+      // one); each keeps that session, which a cancel or failure returns to
+      // (the review of PR #43). Its success on Muse Code is the boundary.
+      const isModelApiHeld =
+        state.auth.backend === 'modelApi' &&
+        (state.auth.status === 'signedIn' || state.auth.status === 'signingIn')
       const isTransientCliSignIn =
-        message.status === 'signingIn' &&
-        message.backend === 'modelApi' &&
-        state.auth.status === 'signedIn' &&
-        state.auth.backend === 'modelApi'
+        message.status === 'signingIn' && message.backend === 'modelApi' && isModelApiHeld
+      const isOtherBackend =
+        state.auth.backend !== undefined &&
+        message.backend !== state.auth.backend &&
+        (state.auth.status === 'signedIn' || isModelApiHeld)
       const isAccountBoundary =
-        !isTransientCliSignIn &&
-        (message.status !== 'signedIn' ||
-          (state.auth.status === 'signedIn' && message.backend !== state.auth.backend))
+        !isTransientCliSignIn && (message.status !== 'signedIn' || isOtherBackend)
       const current = isAccountBoundary ? clearedAccountView(state) : state
       return {
         ...current,

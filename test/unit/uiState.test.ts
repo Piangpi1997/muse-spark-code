@@ -2625,6 +2625,34 @@ describe('uiReducer: the session goal (M45)', () => {
     )
     expect(signingIn.schedules).toEqual([job])
     expect(signingIn.usageReport).toBeUndefined()
+    // The device code arrives in a later update: still the same live Model
+    // API session, kept for a cancel to return to (the review of PR #43).
+    const withCode = uiReducer(
+      signingIn,
+      host({
+        type: 'authState',
+        status: 'signingIn',
+        backend: 'modelApi',
+        verificationUrl: 'https://example.test/device',
+        userCode: 'ABCD-1234',
+      }),
+    )
+    expect(withCode.sessionId).toBe('s1')
+    expect(withCode.schedules).toEqual([job])
+    expect(withCode.auth.userCode).toBe('ABCD-1234')
+    const cancelled = uiReducer(
+      withCode,
+      host({ type: 'authState', status: 'signedIn', backend: 'modelApi' }),
+    )
+    expect(cancelled.sessionId).toBe('s1')
+    expect(cancelled.schedules).toEqual([job])
+    // Success moves the window to Muse Code: that is the account boundary.
+    const onMuseCode = uiReducer(
+      withCode,
+      host({ type: 'authState', status: 'signedIn', backend: 'museCode' }),
+    )
+    expect(onMuseCode.sessionId).toBeUndefined()
+    expect(onMuseCode.schedules).toEqual([])
     const signedOut = uiReducer(
       same,
       host({ type: 'authState', status: 'signedOut', backend: 'modelApi' }),
