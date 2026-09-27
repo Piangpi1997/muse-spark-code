@@ -4976,14 +4976,16 @@ cards keep the requested relative path, and unsaved-editor checks cover both
 the requested and canonical paths. Link-swap tests must prove the outside
 target is untouched and that an unavailable reservation sends no paid call.
 
-**Status 2026-09-27: M51–M53 merged; M54 code-tree gates passed, certification pending.** The
+**Status 2026-09-27: M51–M53 merged; M54 PR review fixes gated on two machines.** The
 isolated M54 worktree is based on `34002ab`; its pre-M46 50-path staged tree
 is pinned at `refs/codex-backups/m54-pre-m46-20260926`. Focused PDF and
 replay checks passed; the M47-base reconciliation passed 724 focused
 attachment, replay, workflow and backend tests, all five TypeScript projects,
 localization and lint. M48–M53 are now merged on main. The combined M54 code
-tree `307157a` passed full Windows VM and Mac gates; its docs receipt, final
-ordered ancestry and hosted PR gates remain open. A compressed
+tree `307157a` passed full Windows VM and Mac gates. PR #42 review found
+file-card identity and Muse History-resume gaps, so those gates are a
+checkpoint only. Corrected code tree `6b18a3e` passed full WIN-11-VM and Mac
+gates; its documentation receipt's local quality and hosted PR CI remain open. A compressed
 or encrypted page tree with
 unknown count still reserves all 50 image slots (D47).
 The raw page-tree inspector also has a fixed candidate limit: excessive
@@ -5002,6 +5004,21 @@ the executing tool must use that target and refuse if a workspace alias
 resolves elsewhere after the card. Paid image sources use the bytes and
 canonical paths approved before the card, with no new private-file read or
 HTTP request after an alias changes.
+File rewind refusal follows the user card's identity, not its turn: a file
+steered into a running turn must not block rewind of an earlier text-only
+card. Muse Code's durable `displayText` carries an extension-owned readable
+text-file annotation; the MSP snapshot mapper keeps the readable line and
+rebuilds a file chip on live events and History resume. A malformed
+annotation is treated as a file card and cannot enable a lossy rewind.
+Before a direct rewind clears or forks, the host checks the card ID, turn,
+text and previous distinct-turn cut against served user items; missing or
+mismatched evidence refuses the action.
+Muse Code `turn/steer` has no captured `displayText` field, so a text-file
+message sent while a turn runs is queued through `turn/start`, where MSP
+persists this annotation. Text-only steering remains as before. Native Muse
+clients and the extension may show the annotation because it is stored in
+MSP's display text. This preserves a user-authored identical line; a false
+file-chip match can only refuse rewind, never discard the prompt.
 After the M54 Stop replay fix, nine focused suites passed 531/531 and all
 five TypeScript projects passed on this tree. M54-on-M47 passed full Windows
 `npm run quality` on staged tree `9b01560` (see receipt below); that result
@@ -5025,7 +5042,7 @@ passed full local Windows quality before its commit `5487149`: 2,113 unit
 tests passed, build and audit clean, accessibility and security gates green.
 The M53 join now preserves PDF media in side-fork replay and refuses its
 scheduled paid controls in core; 614 focused tests passed. The final combined
-tree's receipt still needs local quality and hosted PR gates.
+tree's corrected VM and Mac gates passed; its final local and hosted PR gates remain open.
 
 - **Goal:** a user can send a PDF to the Model API backend from the picker,
   paste or drop, then see it in the sent card and restored history; the agent

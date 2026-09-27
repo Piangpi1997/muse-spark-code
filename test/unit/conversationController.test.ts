@@ -1059,7 +1059,7 @@ describe('ConversationController: context', () => {
         { type: 'text', text: expect.stringContaining('Attached text file "a.ts"') },
         NOTE,
       ],
-      displayText: 'Explain this\na.ts',
+      displayText: 'Explain this\n[Muse Spark Code attached text files: ["a.ts"]]',
     })
     const privateFile = setup({ indexed: ['credentials.json'] })
     privateFile.setPicked([
@@ -1077,6 +1077,27 @@ describe('ConversationController: context', () => {
         reason: UI_TEXT.textFilePrivate,
       },
     ])
+  })
+
+  it('queues a Muse text-file card while a turn runs so its display annotation is durable', async () => {
+    const t = setup({ indexed: ['notes.txt'] })
+    await t.send('first', 'Working')
+    t.server.notify('turn/started', { sessionId: 's1', turnId: 't1' })
+    await settle()
+    t.setPicked([{ name: 'notes.txt', fsPath: '/ws/notes.txt', relativePath: 'notes.txt' }])
+    await t.controller.handle({ type: 'pickFile' })
+    t.server.handle('turn/start', (params) => ({
+      turnId: 't2',
+      status: 'accepted',
+      disposition: 'queued',
+      commandId: params['commandId'],
+    }))
+    await t.send('file-local', 'Read the note', ['att-1'])
+    expect(t.server.requestsFor('turn/steer')).toHaveLength(0)
+    expect(t.server.requestsFor('turn/start')).toHaveLength(2)
+    expect(t.server.requestsFor('turn/start')[1]?.params).toMatchObject({
+      displayText: 'Read the note\n[Muse Spark Code attached text files: ["notes.txt"]]',
+    })
   })
 
   it('reads an indexed text attachment from the checked target after its alias retargets', async () => {
@@ -1832,6 +1853,14 @@ function withHistory(
       ...sessionOverrides,
     }),
   )
+  t.server.handle('session/read', (params) =>
+    envelope({
+      ...storedSession,
+      sessionId: params['sessionId'],
+      status: 'idle',
+      ...sessionOverrides,
+    }),
+  )
   t.server.handle('session/fork', () =>
     envelope({ ...storedSession, sessionId: 'forked', forkedFrom: { sessionId: 'old' } }),
   )
@@ -1842,6 +1871,63 @@ function withHistory(
     name: `${String(params['name'])} (canonical)`,
   }))
   return t
+}
+
+/** Serve the same trusted user items for resume and a later rewind validation. */
+function serveHistoryItems(
+  t: ReturnType<typeof withHistory>,
+  items: readonly Record<string, unknown>[],
+  mode: 'inline' | 'anchoredSnapshot' = 'inline',
+): void {
+  const loaded = (params: Record<string, unknown>) => ({
+    ...envelope({ ...storedSession, sessionId: params['sessionId'], status: 'idle' }),
+    history:
+      mode === 'inline'
+        ? { mode, items: [...items], snapshot: null }
+        : { mode, items: null, snapshot: { state: { items: [...items] } } },
+  })
+  t.server.handle('session/resume', loaded)
+  t.server.handle('session/read', loaded)
+}
+
+function historyUserItem(itemId: string, turnId: string, text: string) {
+  return { itemId, kind: 'userMessage', status: 'completed', turnId, text }
+}
+
+async function requestRewind(
+  t: ReturnType<typeof withHistory>,
+  card: {
+    readonly itemId: string
+    readonly turnId: string
+    readonly text: string
+    readonly lastTurnId?: string
+    readonly imageCount?: number
+    readonly sourceSessionId?: string
+  },
+): Promise<void> {
+  await t.controller.handle({
+    type: 'rewindConversation',
+    sourceSessionId: card.sourceSessionId ?? 'old',
+    itemId: card.itemId,
+    turnId: card.turnId,
+    text: card.text,
+    imageCount: card.imageCount ?? 0,
+    ...(card.lastTurnId !== undefined && { lastTurnId: card.lastTurnId }),
+  })
+}
+
+async function expectForkBeforeCardAfterT1(
+  t: ReturnType<typeof withHistory>,
+  card: { readonly itemId: string; readonly turnId: string; readonly text: string },
+): Promise<void> {
+  await t.controller.handle({ type: 'resumeSession', sessionId: 'old' })
+  t.surface.posted.length = 0
+  await requestRewind(t, { ...card, lastTurnId: 't1' })
+  expect(t.server.requestsFor('session/fork')[0]?.params).toMatchObject({
+    sessionId: 'old',
+    cutPoint: { lastTurnId: 't1' },
+  })
+  expect(t.surface.posted).toContainEqual({ type: 'restoreDraft', text: card.text })
 }
 
 function expectFileRewindRefused(t: ReturnType<typeof setup>): void {
@@ -2141,25 +2227,19 @@ describe('ConversationController: session history (M6)', () => {
 
   it('rewinds by forking before the chosen turn and restores its draft; the first turn clears (M53)', async () => {
     const t = withHistory()
-    await t.send('l1', 'first')
-    t.finishTurn()
-    await settle()
-    await t.controller.handle({
-      type: 'rewindConversation',
-      sourceSessionId: 's1',
-      itemId: 'u2',
-      turnId: 't2',
-      lastTurnId: 't1',
-      text: 'second',
-      imageCount: 0,
+    const first = historyUserItem('u1', 't1', 'first')
+    const second = { ...first, itemId: 'u2', turnId: 't2', text: 'second' }
+    const loaded = (sessionId: string, items: readonly (typeof first)[]) => ({
+      ...envelope({ ...storedSession, sessionId, status: 'idle' }),
+      history: { mode: 'inline', items: [...items], snapshot: null },
     })
-    expect(t.server.requestsFor('session/fork')[0]?.params).toMatchObject({
-      sessionId: 's1',
-      cutPoint: { lastTurnId: 't1' },
-    })
-    expect(t.surface.posted).toContainEqual({ type: 'restoreDraft', text: 'second' })
-    await t.controller.handle({
-      type: 'rewindConversation',
+    t.server.handle('session/resume', () => loaded('old', [first, second]))
+    t.server.handle('session/read', (params) =>
+      params['sessionId'] === 'forked' ? loaded('forked', [first]) : loaded('old', [first, second]),
+    )
+    t.server.handle('session/fork', () => loaded('forked', [first]))
+    await expectForkBeforeCardAfterT1(t, { itemId: 'u2', turnId: 't2', text: 'second' })
+    await requestRewind(t, {
       sourceSessionId: 'forked',
       itemId: 'u1',
       turnId: 't1',
@@ -2213,6 +2293,107 @@ describe('ConversationController: session history (M6)', () => {
       expectFileRewindRefused(t)
     },
   )
+
+  it('allows the earlier text card when a later file steer shares its turn', async () => {
+    const t = withHistory()
+    serveHistoryItems(t, [
+      historyUserItem('plain-card', 't1', 'First'),
+      {
+        ...historyUserItem('file-card', 't1', 'Then this file'),
+        attachments: [{ type: 'file', mediaType: 'text/plain', name: 'notes.txt' }],
+      },
+    ])
+    await t.controller.handle({ type: 'resumeSession', sessionId: 'old' })
+    t.surface.posted.length = 0
+    await requestRewind(t, {
+      itemId: 'file-card',
+      turnId: 't1',
+      text: 'Then this file',
+    })
+    expectFileRewindRefused(t)
+    t.surface.posted.length = 0
+    await requestRewind(t, {
+      itemId: 'plain-card',
+      turnId: 't1',
+      text: 'Then this file',
+    })
+    expect(t.surface.posted).not.toContainEqual({ type: 'conversationCleared' })
+    expect(t.surface.posted).toContainEqual({
+      type: 'notice',
+      level: 'warning',
+      text: UI_TEXT.attachmentUnreadable,
+    })
+    t.surface.posted.length = 0
+    await requestRewind(t, {
+      itemId: 'plain-card',
+      turnId: 't1',
+      lastTurnId: 'not-the-prior-turn',
+      text: 'First',
+    })
+    expect(t.server.requestsFor('session/fork')).toHaveLength(0)
+    expect(t.surface.posted).not.toContainEqual({ type: 'conversationCleared' })
+    t.surface.posted.length = 0
+    await requestRewind(t, {
+      itemId: 'plain-card',
+      turnId: 't1',
+      text: 'First',
+    })
+    expect(t.surface.posted).toContainEqual({ type: 'conversationCleared' })
+    expect(t.surface.posted).toContainEqual({ type: 'restoreDraft', text: 'First' })
+  })
+
+  it('rewinds a plain steer after the last preceding distinct turn', async () => {
+    const t = withHistory()
+    serveHistoryItems(t, [
+      historyUserItem('u1', 't1', 'first'),
+      historyUserItem('u2', 't2', 'second'),
+      historyUserItem('u3', 't2', 'steered'),
+    ])
+    await expectForkBeforeCardAfterT1(t, { itemId: 'u3', turnId: 't2', text: 'steered' })
+  })
+
+  it('rewinds a card served from an anchored snapshot with an exact prior cut', async () => {
+    const t = withHistory()
+    serveHistoryItems(
+      t,
+      [historyUserItem('u1', 't1', 'first'), historyUserItem('u2', 't2', 'second')],
+      'anchoredSnapshot',
+    )
+    await expectForkBeforeCardAfterT1(t, { itemId: 'u2', turnId: 't2', text: 'second' })
+  })
+
+  it('refuses a Muse text-file History card restored from its display marker', async () => {
+    const t = withHistory()
+    serveHistoryItems(t, [
+      {
+        ...historyUserItem(
+          'muse-file-card',
+          't1',
+          'Attached text file "notes.txt":\n\nprivate contents',
+        ),
+        displayText: 'Inspect this\n[Muse Spark Code attached text files: ["notes.txt"]]',
+      },
+    ])
+    await t.controller.handle({ type: 'resumeSession', sessionId: 'old' })
+    expect(t.surface.posted).toContainEqual(
+      expect.objectContaining({
+        type: 'historyLoaded',
+        items: [
+          expect.objectContaining({
+            text: 'Inspect this\n[Muse Spark Code attached text files: ["notes.txt"]]',
+            attachments: [{ type: 'file', mediaType: 'text/plain', name: 'notes.txt' }],
+          }),
+        ],
+      }),
+    )
+    t.surface.posted.length = 0
+    await requestRewind(t, {
+      itemId: 'muse-file-card',
+      turnId: 't1',
+      text: 'Inspect this\n[Muse Spark Code attached text files: ["notes.txt"]]',
+    })
+    expectFileRewindRefused(t)
+  })
 
   it.each([
     { name: 'report.pdf', bytes: pdfFixture(1) },

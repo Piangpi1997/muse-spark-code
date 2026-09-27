@@ -32,6 +32,7 @@ import {
   type ShellSandboxPosture,
 } from '../../core/backends/musecode/sandbox'
 import { chatReferenceText } from '../../core/chatReference'
+import { textFileDisplay } from '../../shared/textFileDisplay'
 import { type EditorContext, editorContextText } from '../../core/editorContext'
 import type { ToolImageResult } from '../../core/toolImages'
 import type { DictationHandle, DictationStatus } from '../../core/voice/dictation'
@@ -295,6 +296,11 @@ const APPROVED_DECISION = 'approved'
 const ONCE_SCOPE = 'once'
 const [IDE_MCP_CAPABILITY] = MSP_REQUESTED_CAPABILITIES
 const HISTORY_MODE_NONE = 'none'
+const REWIND_HISTORY_MODES: ReadonlySet<string> = new Set([
+  'inline',
+  'snapshot',
+  'anchoredSnapshot',
+])
 const NOT_LOADED_STATUS = 'notLoaded'
 // Events that mark a hidden surface unread (Claude Code's dot): the turn is
 // done, or the agent is waiting on a decision or an answer.
@@ -427,8 +433,13 @@ export class ConversationController {
   private skills: readonly SkillOption[] | undefined
   private skillsRefresh: Promise<void> | undefined
   private readonly attachments: AttachmentStore
-  /** A file chip names bytes rewind cannot restore across every backend/history path. */
-  private readonly fileTurnIds = new Set<string>()
+  /** User cards whose file bytes rewind cannot restore across every backend/history path. */
+  private readonly fileMessageIds = new Set<string>()
+  /** Fresh cards use local IDs until Muse Code serves their durable user item IDs. */
+  private readonly acceptedUserCards = new Map<
+    string,
+    { readonly turnId: string; readonly text: string }
+  >()
   private modelId: string
   private permissionMode: PermissionMode
   private isSideChat: boolean
@@ -690,7 +701,8 @@ export class ConversationController {
     session?.dispose()
     this.session = undefined
     this.activeTurnId = undefined
-    this.fileTurnIds.clear()
+    this.fileMessageIds.clear()
+    this.acceptedUserCards.clear()
     this.childSessionIds.clear()
     this.finishedTurns.clear()
     this.forgetForegroundShells()
@@ -859,10 +871,9 @@ export class ConversationController {
   private noteFileCard(item: ItemSnapshot): void {
     if (
       item.kind === 'userMessage' &&
-      item.turnId !== undefined &&
       item.attachments?.some((attachment) => attachment.type === 'file')
     ) {
-      this.fileTurnIds.add(item.turnId)
+      this.fileMessageIds.add(item.itemId)
     }
   }
 
@@ -1988,7 +1999,46 @@ export class ConversationController {
       // only as model-facing text. Muse Code echoes file metadata without
       // bytes. Never clear/fork on a file card while its chips cannot be
       // restored exactly in both paths.
-      if (this.fileTurnIds.has(message.turnId)) {
+      if (this.fileMessageIds.has(message.itemId)) {
+        this.notice('warning', UI_TEXT.attachmentUnreadable)
+        return
+      }
+      const history = await host.readSession(source.sessionId)
+      if (this.session !== source || message.turnId === this.activeTurnId) {
+        return
+      }
+      // A webview request may be forged or stale. Bind every field and the
+      // fork cut to one served user card before discarding any conversation.
+      const users = history.items.filter((item) => item.kind === 'userMessage')
+      let selectedIndex = users.findIndex((item) => item.itemId === message.itemId)
+      if (selectedIndex < 0) {
+        const accepted = this.acceptedUserCards.get(message.itemId)
+        const candidates =
+          accepted === undefined
+            ? []
+            : users.filter((item) => item.turnId === accepted.turnId && item.text === accepted.text)
+        const candidate = candidates[0]
+        if (candidate !== undefined && candidates.length === 1) {
+          selectedIndex = users.indexOf(candidate)
+        }
+      }
+      const selected = users[selectedIndex]
+      const preceding = selectedIndex < 0 ? [] : users.slice(0, selectedIndex)
+      const earlierDistinct = preceding.findLast(
+        (item) => item.turnId !== undefined && item.turnId !== selected?.turnId,
+      )
+      const hasEarlierTurn = preceding.some((item) => item.turnId !== undefined)
+      if (selected === undefined || !REWIND_HISTORY_MODES.has(history.mode)) {
+        this.notice('warning', UI_TEXT.attachmentUnreadable)
+        return
+      }
+      if (
+        selected.turnId !== message.turnId ||
+        (selected.text ?? '') !== message.text ||
+        (hasEarlierTurn && earlierDistinct === undefined) ||
+        earlierDistinct?.turnId !== message.lastTurnId ||
+        selected.attachments?.some((attachment) => attachment.type === 'file')
+      ) {
         this.notice('warning', UI_TEXT.attachmentUnreadable)
         return
       }
@@ -2110,8 +2160,9 @@ export class ConversationController {
     session: AgentSession,
     parts: readonly TurnPart[],
     displayText: string | undefined,
+    shouldQueueForDisplayText: boolean,
   ): Promise<TurnSubmission> {
-    if (this.activeTurnId !== undefined) {
+    if (!shouldQueueForDisplayText && this.activeTurnId !== undefined) {
       try {
         return await session.steer(this.activeTurnId, parts)
       } catch (error: unknown) {
@@ -2215,12 +2266,20 @@ export class ConversationController {
       // durable card while the full content travels only to the model (M54).
       const textFileNames = typed.flatMap((part) => (part.type === 'textFile' ? [part.name] : []))
       const contextText = parts.length === typed.length ? undefined : text
-      const displayText =
-        textFileNames.length > 0
-          ? [text, ...textFileNames].filter((line) => line !== '').join('\n')
-          : contextText
+      let displayText = contextText
+      if (textFileNames.length > 0) {
+        displayText =
+          host.info.kind === 'museCode'
+            ? textFileDisplay(text, textFileNames)
+            : [text, ...textFileNames].filter((line) => line !== '').join('\n')
+      }
       const submission = await this.runResuming(host, session, (current) =>
-        this.submit(current, parts, displayText),
+        this.submit(
+          current,
+          parts,
+          displayText,
+          host.info.kind === 'museCode' && textFileNames.length > 0,
+        ),
       )
       // The images go only once the host has the message (D26).
       this.attachments.release(attachmentIds)
@@ -2228,8 +2287,12 @@ export class ConversationController {
         return
       }
       const { turnId } = submission
+      this.acceptedUserCards.set(localId, { turnId, text })
+      if (submission.userMessageId !== undefined) {
+        this.acceptedUserCards.set(submission.userMessageId, { turnId, text })
+      }
       if (typed.some((part) => part.type === 'file' || part.type === 'textFile')) {
-        this.fileTurnIds.add(turnId)
+        this.fileMessageIds.add(submission.userMessageId ?? localId)
       }
       // A queued turn is not the running one, and an ack that lands after its
       // own turn completed must not mark it running again (D26).

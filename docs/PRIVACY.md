@@ -25,6 +25,11 @@ security notes for contributors are in `PLAN.md` §9.
   to Meta with the credential from its own `muse login`. What the CLI sends
   beyond your messages (its system prompt, its own telemetry, if any) is
   governed by Meta's Muse Code terms, not by this extension.
+  A picked text file is sent as named text. Muse Code retains a readable
+  `[Muse Spark Code attached text files: …]` annotation in the message's
+  display text so the extension can mark its file card after History resume;
+  the annotation contains file names only, no file contents. Native Muse Code
+  clients may show this line.
 - **Through the Meta Model API** (when you paste a key), the extension calls
   `https://api.meta.ai/v1` directly with your key. Each turn re-sends the
   conversation so far, because requests are made with `store: false`; Meta's

@@ -1075,6 +1075,25 @@ describe('App session history (M6)', () => {
     )
   })
 
+  it('keeps rewind on an earlier text card when a later file card shares its turn', () => {
+    renderReady()
+    loadHistory([
+      historyUser('plain-card', 't1', 'First'),
+      {
+        ...historyUser('file-card', 't1', 'Then this file'),
+        attachments: [{ type: 'file', mediaType: 'text/plain', name: 'notes.txt', sizeBytes: 9 }],
+      },
+    ])
+    const menus = screen.getAllByLabelText('Fork or rewind')
+    fireEvent.click(menus[0]!)
+    expect(
+      screen.getByRole('menuitem', { name: 'Rewind conversation to here' }),
+    ).toBeInTheDocument()
+    fireEvent.keyDown(screen.getByRole('menu'), { key: 'Escape' })
+    fireEvent.click(menus[1]!)
+    expect(screen.queryByRole('menuitem', { name: 'Rewind conversation to here' })).toBeNull()
+  })
+
   it('uses the backend replay ID for an image card rewound before History reload (M53)', () => {
     const postMessage = renderReady()
     loadHistory([historyUser('u1', 't1', 'first')])

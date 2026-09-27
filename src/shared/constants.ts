@@ -364,6 +364,8 @@ export const BASE64_INPUT_BLOCK_BYTES = 3
 export const BASE64_OUTPUT_BLOCK_CHARS = 4
 export const MAX_TEXT_ATTACHMENT_BYTES = 1024 * 1024
 export const TEXT_ATTACHMENT_MEDIA_TYPE = 'text/plain'
+/** A readable MSP display-text suffix carrying picked-file names for History replay. */
+export const TEXT_FILE_DISPLAY_MARKER = '\n[Muse Spark Code attached text files: '
 export const TEXT_ATTACHMENT_EXTENSIONS: ReadonlySet<string> = new Set([
   '.txt',
   '.md',

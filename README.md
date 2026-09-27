@@ -574,7 +574,8 @@ panel cannot present an authoritative native job list or direct cancel.
   through a setting). The box grows with your draft up to ten rows, then
   scrolls inside.
 - While a turn runs, `Enter` steers it and Stop cancels it; Stop also drops
-  messages still queued, which read "Not sent".
+  messages still queued, which read "Not sent". A picked text file on Muse
+  Code queues a new turn so its file annotation survives History resume.
 - The `+` button attaches images (PNG, JPEG, GIF, WebP), PDFs on the Model
   API backend, and UTF-8 text files up to 1 MB from trusted, indexed workspace
   paths. Text files travel with their names as text on both backends. Files
@@ -677,9 +678,11 @@ rewind button on any sent message (on hover):
   their branch point; if none exists, the conversation rewind choice is hidden.
   Wait for the selected turn to finish before rewinding its conversation.
   A just-sent Model API image can be restored before History is reopened.
-  Conversation rewind is hidden for PDF and named text file cards because their
-  bytes cannot be restored reliably on every backend and History path. A
-  request made outside the menu is refused before the conversation changes.
+  Conversation rewind is hidden for each PDF or named text file card because
+  its bytes cannot be restored reliably on every backend and History path;
+  an earlier text-only card in the same turn keeps its rewind choice. A
+  request made outside the menu is checked against the served card and cut
+  before the conversation changes.
 - **Rewind code to here** reverts every edit made after that message, the
   conversation's and its subagents', in the reverse of the order they
   landed. A file the edit created goes to the trash, unless you have added

@@ -144,8 +144,12 @@ while they are (PLAN.md D30, D34).
   attachment also reads its checked target. Write and paid image approvals
   bind that target and the image source bytes before the card; changed links
   are refused before a protected write or paid request.
-  Conversation rewind is hidden for PDF and named text file cards; a direct
-  request is refused before fork or clear. Image-only rewind remains available.
+  Conversation rewind is hidden for each PDF and named text file card; a
+  direct request must match its served card and fork cut before clear or
+  fork. Earlier text-only cards in the same turn remain rewindable. Muse Code
+  queues picked text-file messages during a running turn and retains a
+  readable file-name annotation for History resume. Image-only rewind remains
+  available.
   Stop removes tool-read media from future replay if its turn ends early.
 
 - **Image edits** (M44, PLAN.md D37). With image generation on, the model
