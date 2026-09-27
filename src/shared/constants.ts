@@ -166,6 +166,7 @@ export const SETTING_DEFAULTS = {
   modelApiWebSearch: false,
   modelApiImageGeneration: false,
   modelApiVoice: false,
+  modelApiScheduledPrompts: false,
   modelApiSubagents: false,
   // Hook commands are user code outside the agent sandbox (M51). A machine
   // setting must explicitly enable them on the Model API backend.
@@ -186,6 +187,7 @@ export const MACHINE_SCOPED_SETTINGS = [
   'modelApiWebSearch',
   'modelApiImageGeneration',
   'modelApiVoice',
+  'modelApiScheduledPrompts',
   'modelApiSubagents',
   'modelApiHooks',
 ] as const
@@ -239,7 +241,13 @@ export const HOOK_FORBIDDEN_ENV_NAMES: ReadonlySet<string> = new Set([
 // Each is off by default, confirmed with its price when turned on, named in
 // the composer's badge while on, shown per use and tallied (the owner's rule:
 // "opt in and loud"). They are used on the Model API backend only.
-export const PAID_FEATURES = ['webSearch', 'imageGeneration', 'voice', 'subagents'] as const
+export const PAID_FEATURES = [
+  'webSearch',
+  'imageGeneration',
+  'voice',
+  'subagents',
+  'scheduledPrompts',
+] as const
 // The paid features the Muse Code backend can use too, billed to a stored
 // Model API key (M44, PLAN.md D37): images through the `ide` server and
 // Muse Voice. Web search is not among them: Muse Code searches on the
@@ -251,6 +259,7 @@ export const PAID_FEATURE_SETTINGS = {
   webSearch: 'modelApiWebSearch',
   imageGeneration: 'modelApiImageGeneration',
   voice: 'modelApiVoice',
+  scheduledPrompts: 'modelApiScheduledPrompts',
   subagents: 'modelApiSubagents',
 } as const satisfies Readonly<Record<PaidFeature, keyof typeof SETTING_DEFAULTS>>
 // Meta's published prices (dev.meta.ai/docs/pricing-rate-limits, read
@@ -488,10 +497,12 @@ export const GOAL_TOOLS: ReadonlySet<string> = new Set([
   'update_goal',
   'report_progress',
 ])
+export const MODEL_API_SCHEDULED_TOOL = 'scheduled_prompt'
 export const SCHEDULE_TOOLS: ReadonlySet<string> = new Set([
   'cron_create',
   'cron_list',
   'cron_delete',
+  MODEL_API_SCHEDULED_TOOL,
 ])
 // The tools that make an image (M34, M44): their rows show the prompt and
 // the images an edit starts from.
@@ -519,6 +530,7 @@ export const GOAL_STATUS = {
 // `/goal <objective>` sets the goal from the prompt, as in Muse Code's TUI;
 // `/goal edit <objective>`, `/goal pause`, `/goal resume`, `/goal clear`.
 export const GOAL_SLASH_COMMAND = 'goal'
+export const LOOP_SLASH_COMMAND = 'loop'
 // A progress bar's range: MSP passes the percentage verbatim (over 100
 // included), and the strip clamps it for the bar only.
 export const GOAL_PERCENT_MAX = 100
@@ -837,6 +849,24 @@ export const ATOMIC_TEMPORARY_SUFFIX = '.tmp'
 export const ATOMIC_RENAME_ATTEMPTS = 5
 export const ATOMIC_RENAME_DELAY_MS = 25
 export const MILLISECONDS_PER_DAY = 24 * 60 * 60 * 1000
+// Model API schedules (M52): local jobs expire as Muse Code's do, and no
+// occurrence may run without a fresh paid-run confirmation.
+export const SCHEDULE_MIN_INTERVAL_MS = 60 * 1000
+export const SCHEDULE_DEFAULT_INTERVAL_MS = 10 * SCHEDULE_MIN_INTERVAL_MS
+export const SCHEDULE_MAX_INTERVAL_MS = 7 * MILLISECONDS_PER_DAY
+export const SCHEDULE_LIFETIME_MS = 7 * MILLISECONDS_PER_DAY
+export const SCHEDULE_MAX_PROMPT_CHARS = 4000
+export const SCHEDULE_POLL_INTERVAL_MS = 60 * 1000
+export const SCHEDULE_CLAIM_RETENTION_MS = 8 * MILLISECONDS_PER_DAY
+export const SCHEDULE_MAX_JOBS_PER_SESSION = 100
+export const MODEL_API_SCHEDULES_DIR = 'modelapi-schedules'
+export const CRON_FIELD_COUNT = 5
+export const CRON_FIELD_SEGMENT_LIMIT = 3
+export const CRON_MAX_MINUTE = 59
+export const CRON_MAX_HOUR = 23
+export const CRON_MAX_DAY = 31
+export const CRON_MAX_MONTH = 12
+export const CRON_MAX_WEEKDAY = 7
 
 // Item kinds the transcript never shows: our own echo and host-internal children.
 export const HIDDEN_ITEM_KINDS: ReadonlySet<string> = new Set(['userMessage', 'reminderChild'])

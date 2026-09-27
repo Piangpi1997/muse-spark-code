@@ -94,6 +94,32 @@ describe('parseHostToWebviewMessage', () => {
     settings: testSettings,
   }
 
+  it('requires the scheduled count in a paid subagent usage update', () => {
+    const state = {
+      features: ['subagents'],
+      tally: {
+        webSearches: 0,
+        images: 0,
+        voiceSeconds: 0,
+        subagentRequests: 2,
+        subagentUnknownRequests: 1,
+        subagentTokens: 1_100_000,
+        subagentCostUsd: 1.455,
+      },
+      isKeyStored: true,
+    }
+    const rejected = parseHostToWebviewMessage({ type: 'paidState', state })
+    expect(rejected.ok).toBe(false)
+    if (!rejected.ok) {
+      expect(rejected.error).toContain('scheduledRuns')
+    }
+    const complete = {
+      type: 'paidState',
+      state: { ...state, tally: { ...state.tally, scheduledRuns: 0 } },
+    }
+    expect(parseHostToWebviewMessage(complete)).toEqual({ ok: true, message: complete })
+  })
+
   it.each([
     ['init', init],
     ['settingsChanged', { type: 'settingsChanged', settings: testSettings }],

@@ -86,6 +86,8 @@ export const SCENARIOS = [
   'question-explain',
   'muse-workflow',
   'muse-workflow-map',
+  'schedules',
+  'schedules-narrow',
 ]
 const CONTENT_TYPES = {
   '.html': 'text/html; charset=utf-8',

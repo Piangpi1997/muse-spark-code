@@ -148,6 +148,16 @@ export interface RetryBudget {
   retriesUsed: number
 }
 
+/** In-memory identity of an explicitly confirmed scheduled Model API run. */
+export interface ConfirmedModelRequest {
+  readonly modelId: string
+  readonly keyDigest: string
+  /** The paid gate and session model must still match before every HTTP try. */
+  readonly isStillAllowed: () => boolean
+  /** Only after identity and gate checks, immediately before the first HTTP try. */
+  readonly onRequestStarted: () => void
+}
+
 /** A child task's synchronous final admission, after reading the actual key. */
 export type ResponseAttemptGuard = (keyDigest: string | undefined) => void
 
@@ -239,9 +249,11 @@ export class ModelApiClient {
     onRetry?: (notice: RetryNotice) => void,
     budget?: RetryBudget,
     admitAttempt?: ResponseAttemptGuard,
+    confirmed?: ConfirmedModelRequest,
   ): Promise<Response> {
     const isRateLimitOnly = init.retries === 'rateLimitOnly'
-    const fixedHeaders = admitAttempt === undefined ? await this.headers() : undefined
+    const fixedHeaders =
+      admitAttempt === undefined && confirmed === undefined ? await this.headers() : undefined
     const url = `${this.deps.baseUrl}${path}`
     const retry = async (attempt: number, delay: number, reason: string) => {
       if (budget !== undefined) {
@@ -273,9 +285,22 @@ export class ModelApiClient {
       if (isAborted(signal)) {
         throw new ModelApiError('cancelled', NETWORK_FAILURE_STATUS, undefined, undefined)
       }
+      if (
+        confirmed !== undefined &&
+        (credentials.keyDigest !== confirmed.keyDigest || !confirmed.isStillAllowed())
+      ) {
+        throw new Error(UI_TEXT.scheduleConfirmationExpired)
+      }
       // Local consent refusal is outside the transport retry catch: it never
       // becomes another billable attempt.
       admitAttempt?.(credentials.keyDigest)
+      if (isAborted(signal)) {
+        throw new ModelApiError('cancelled', NETWORK_FAILURE_STATUS, undefined, undefined)
+      }
+      if (confirmed !== undefined && !confirmed.isStillAllowed()) {
+        throw new Error(UI_TEXT.scheduleConfirmationExpired)
+      }
+      confirmed?.onRequestStarted()
       const headers = { ...credentials.values, Accept: init.accept }
       let response: Response
       try {
@@ -403,7 +428,14 @@ export class ModelApiClient {
     onRetry?: (notice: RetryNotice) => void,
     budget?: RetryBudget,
     admitAttempt?: ResponseAttemptGuard,
+    confirmed?: ConfirmedModelRequest,
   ): AsyncGenerator<StreamEvent> {
+    if (
+      confirmed !== undefined &&
+      (body.model !== confirmed.modelId || !confirmed.isStillAllowed())
+    ) {
+      throw new Error(UI_TEXT.scheduleConfirmationExpired)
+    }
     // Nothing from the server for this long, headers or a frame, ends the
     // turn (M39); the request is aborted too, which frees the connection.
     const idleMs = this.deps.streamIdleMs ?? MODEL_API_STREAM_IDLE_MS
@@ -430,6 +462,7 @@ export class ModelApiClient {
         onRetry,
         budget,
         admitAttempt,
+        confirmed,
       ),
     )
     if (response.body === null) {

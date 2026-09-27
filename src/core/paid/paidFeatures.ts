@@ -200,6 +200,10 @@ export class PaidUsage {
         this.tally = { ...tally, voiceSeconds: tally.voiceSeconds + units }
         break
       }
+      case 'scheduledPrompts': {
+        this.tally = { ...tally, scheduledRuns: tally.scheduledRuns + units }
+        break
+      }
       case 'subagents': {
         this.tally = {
           ...tally,

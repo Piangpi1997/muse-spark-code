@@ -1440,7 +1440,7 @@
           window.harnessBackend = 'modelApi'
           window.harnessPaid = {
             features: ['webSearch', 'imageGeneration'],
-            tally: { webSearches: 3, images: 1, voiceSeconds: 0 },
+            tally: { webSearches: 3, images: 1, voiceSeconds: 0, scheduledRuns: 0 },
             isKeyStored: true,
           }
           send({ type: 'authState', status: 'signedIn', backend: 'modelApi' })
@@ -1488,6 +1488,7 @@
               webSearches: 0,
               images: 0,
               voiceSeconds: 0,
+              scheduledRuns: 0,
               subagentRequests: 2,
               subagentUnknownRequests: 1,
               subagentTokens: 1100000,
@@ -1564,7 +1565,7 @@
           window.harnessBackend = 'modelApi'
           window.harnessPaid = {
             features: ['imageGeneration'],
-            tally: { webSearches: 0, images: 0, voiceSeconds: 0 },
+            tally: { webSearches: 0, images: 0, voiceSeconds: 0, scheduledRuns: 0 },
             isKeyStored: true,
           }
           send({ type: 'authState', status: 'signedIn', backend: 'modelApi' })
@@ -1619,7 +1620,7 @@
           window.harnessBackend = 'modelApi'
           window.harnessPaid = {
             features: ['imageGeneration'],
-            tally: { webSearches: 0, images: 2, voiceSeconds: 0 },
+            tally: { webSearches: 0, images: 2, voiceSeconds: 0, scheduledRuns: 0 },
             isKeyStored: true,
           }
           send({ type: 'authState', status: 'signedIn', backend: 'modelApi' })
@@ -1674,7 +1675,7 @@
         'paid-image-cli': () => {
           window.harnessPaid = {
             features: ['imageGeneration'],
-            tally: { webSearches: 0, images: 1, voiceSeconds: 0 },
+            tally: { webSearches: 0, images: 1, voiceSeconds: 0, scheduledRuns: 0 },
             isKeyStored: true,
           }
           send({ type: 'authState', status: 'signedIn', backend: 'museCode' })
@@ -1700,7 +1701,7 @@
           window.harnessBackend = 'modelApi'
           window.harnessPaid = {
             features: ['voice'],
-            tally: { webSearches: 0, images: 0, voiceSeconds: 42 },
+            tally: { webSearches: 0, images: 0, voiceSeconds: 42, scheduledRuns: 0 },
             isKeyStored: true,
           }
           send({ type: 'authState', status: 'signedIn', backend: 'modelApi' })
@@ -1711,7 +1712,7 @@
           window.harnessBackend = 'modelApi'
           window.harnessPaid = {
             features: ['voice'],
-            tally: { webSearches: 0, images: 0, voiceSeconds: 0 },
+            tally: { webSearches: 0, images: 0, voiceSeconds: 0, scheduledRuns: 0 },
             isKeyStored: true,
           }
           send({ type: 'authState', status: 'signedIn', backend: 'modelApi' })
@@ -2273,7 +2274,7 @@
             })
           })
         },
-        // --- M47: workflow runs: the captured one finished, a second running with its controls ---
+        // --- M47: workflow runs: the captured one finished, a second running read-only ---
         'muse-workflow': () => {
           window.harnessSilent = true
           setDraft('Use a workflow with one agent, labelled ping, that answers pong')
@@ -2361,6 +2362,40 @@
         'muse-workflow-map': () => {
           steps['muse-workflow']()
           later(600, () => document.querySelector('.agents-pill').click())
+        },
+        // --- M52: due and upcoming Model API schedules, including narrow view ---
+        schedules: () => {
+          window.harnessBackend = 'modelApi'
+          window.harnessPaid = {
+            features: ['scheduledPrompts'],
+            tally: { webSearches: 0, images: 0, voiceSeconds: 0, scheduledRuns: 1 },
+            isKeyStored: true,
+          }
+          send({ type: 'authState', status: 'signedIn', backend: 'modelApi' })
+          send({ type: 'paidState', state: window.harnessPaid })
+          event({
+            type: 'schedulesChanged',
+            jobs: [
+              {
+                id: 'schedule-due',
+                prompt: 'Review test failures in the current workspace',
+                cadence: { kind: 'interval', everyMs: 600000 },
+                nextFireAtMs: 0,
+                fireCount: 1,
+              },
+              {
+                id: 'schedule-next',
+                prompt: 'Summarize new bugs at the next weekday boundary',
+                cadence: { kind: 'cron', expression: '0 9 * * 1-5' },
+                nextFireAtMs: Date.now() + 86400000,
+                fireCount: 0,
+              },
+            ],
+          })
+        },
+        'schedules-narrow': () => {
+          document.body.style.maxWidth = '300px'
+          steps.schedules()
         },
         // --- M25: a refused image says why, and a link out of the workspace is refused ---
         'size-refused': () => {

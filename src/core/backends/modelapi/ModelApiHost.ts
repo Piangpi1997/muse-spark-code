@@ -44,12 +44,19 @@ import {
   MODEL_API_OUTPUT_ENCODING,
   MODEL_API_OUTPUT_MEDIA_TYPE,
   MODEL_API_SERVER_NAME,
+  MODEL_API_SCHEDULED_TOOL,
   MODEL_API_SUBAGENT_TOOLS,
   MODEL_API_TOOLS,
   MODEL_API_VERSION,
   MODEL_API_WEB_SEARCH_TOOL,
   MODEL_TEXT,
   OUTPUT_REF_PREFIX,
+  SCHEDULE_LIFETIME_MS,
+  SCHEDULE_MAX_INTERVAL_MS,
+  SCHEDULE_MAX_JOBS_PER_SESSION,
+  SCHEDULE_MAX_PROMPT_CHARS,
+  SCHEDULE_MIN_INTERVAL_MS,
+  SCHEDULE_POLL_INTERVAL_MS,
   type PaidFeature,
   QUESTION_OUTCOME_CLARIFIED,
   STORED_SESSION_VERSION,
@@ -78,6 +85,14 @@ import {
   type SubagentUsage,
 } from '../../../shared/paid'
 import type { SubscriptionUsage } from '../../../shared/usage'
+import {
+  scheduleCadenceSchema,
+  scheduleViewOf,
+  type ScheduleCadence,
+  type ScheduledPrompt,
+  type ScheduleRunConfirmation,
+  type ScheduleStore,
+} from '../../../shared/schedule'
 import {
   type AgentHost,
   type AgentSession,
@@ -114,6 +129,7 @@ import { textFileInput } from '../../textAttachment'
 import type { McpTool } from '../../mcp'
 import type { MemoryStore } from '../../memory/memoryStore'
 import {
+  type ConfirmedModelRequest,
   MissingApiKeyError,
   type ModelApiClient,
   ModelApiError,
@@ -141,6 +157,7 @@ import {
   toolMatcherNames,
 } from './hooks'
 import { postModelCallFields, preModelCallFields } from './modelCallHooks'
+import { nextScheduleFire } from './schedules'
 import { toolHookInput, toolHookOutput } from './toolHookPayload'
 import { type ImagePlan, prepareImageCall, runImageCall } from './imageGeneration'
 import { MediaBudget } from './mediaBudget'
@@ -250,6 +267,10 @@ export interface ModelApiHostDeps extends ModelApiPaidHooks {
   readonly notePaidUse: (feature: PaidFeature, units: number) => void
   /** A smaller replay cap for focused media-budget verification. */
   readonly mediaBudgetMaxEncodedChars?: number
+  /** Extension-owned, workspace-local schedules; absent without workspace storage. */
+  readonly scheduleStore?: ScheduleStore | undefined
+  /** A digest of the current SecretStorage key, never its plaintext. */
+  readonly getAccountId?: (() => Promise<string | undefined>) | undefined
   /** A fresh snapshot at each session start (M51); disabled means empty. */
   readonly loadHooks?: () => Promise<readonly HookDefinition[]>
   /** Machine hook opt-in is checked again for every dispatch. */
@@ -331,6 +352,8 @@ interface QueuedTurn {
   readonly turnId: string
   readonly parts: readonly TurnPart[]
   readonly displayText: string | undefined
+  /** In memory only: the model and key identity accepted for a scheduled run. */
+  readonly confirmedRequest?: ConfirmedModelRequest
   /**
    * Woken by a goal command (M45, PLAN.md D38): its prompt is the model's
    * cue, replayed but not a message of the user's, so the transcript shows
@@ -352,6 +375,7 @@ const GOAL_WAKING_VERBS: ReadonlySet<GoalCommandVerb> = new Set(['set', 'edit', 
 interface ActiveTurn {
   readonly turnId: string
   readonly abort: AbortController
+  readonly confirmedRequest?: ConfirmedModelRequest
   /** Steered input, appended before the next model call. */
   readonly steered: (readonly TurnPart[])[]
   modelFailure?: unknown
@@ -1140,11 +1164,22 @@ export class ModelApiSession implements AgentSession {
   private goalCommandRevision = 0
   /** Model calls since the goal last moved: the step probe's count (D38). */
   private goalSteps = 0
+  private scheduleTimer: ReturnType<typeof setInterval> | undefined
   private usage = { inputTokens: 0, outputTokens: 0, cachedTokens: 0, reasoningTokens: 0 }
   private firstPrompt: string | undefined
   private isDisposed = false
   /** The surfaces holding this session: closing one must not cancel another's turn. */
   private holders = 1
+  public readonly schedules?: {
+    create: (cadence: ScheduleCadence, prompt: string) => Promise<ScheduledPrompt>
+    list: () => Promise<readonly ScheduledPrompt[]>
+    cancel: (id: string) => Promise<boolean>
+    run: (
+      id: string,
+      occurrenceMs: number,
+      confirmed: ScheduleRunConfirmation,
+    ) => Promise<TurnSubmission>
+  }
   public modelId: string
   public name: string | undefined
   public createdAt: string
@@ -1159,6 +1194,7 @@ export class ModelApiSession implements AgentSession {
     approvalMode: ApprovalMode,
     private readonly deps: ModelApiHostDeps,
     private readonly onChanged: () => void,
+    private readonly onPersisted: () => Promise<void>,
     private readonly onDispose: () => void,
     private readonly isSubagent = false,
     private readonly parentSession?: ModelApiSession,
@@ -1183,6 +1219,18 @@ export class ModelApiSession implements AgentSession {
     })
     this.createdAt = new Date(deps.now()).toISOString()
     this.lastActivityAt = this.createdAt
+    if (
+      deps.store !== undefined &&
+      deps.scheduleStore !== undefined &&
+      deps.getAccountId !== undefined
+    ) {
+      this.schedules = {
+        create: (cadence, prompt) => this.createSchedule(cadence, prompt),
+        list: () => this.listSchedules(),
+        cancel: (id) => this.cancelSchedule(id),
+        run: (id, occurrenceMs, confirmed) => this.runSchedule(id, occurrenceMs, confirmed),
+      }
+    }
   }
 
   private emit(event: AgentEvent): void {
@@ -1891,12 +1939,13 @@ export class ModelApiSession implements AgentSession {
     turnId: string,
     signal: AbortSignal,
     step: number,
+    confirmedRequest?: ConfirmedModelRequest,
   ): Promise<StreamedCall> {
     const budget: RetryBudget = { retriesUsed: 0 }
     for (;;) {
       const open = new Map<string, OpenItem>()
       try {
-        return await this.streamAttempt(turnId, signal, open, budget, step)
+        return await this.streamAttempt(turnId, signal, open, budget, step, confirmedRequest)
       } catch (error: unknown) {
         // What a failed attempt showed stays in the history, the last one's
         // too (the review of PR #28); a Stop is the turn's own business.
@@ -1936,6 +1985,7 @@ export class ModelApiSession implements AgentSession {
     open: Map<string, OpenItem>,
     budget: RetryBudget,
     step: number,
+    confirmedRequest?: ConfirmedModelRequest,
   ): Promise<StreamedCall> {
     const requestId = this.deps.newId()
     const attempt = budget.retriesUsed + 1
@@ -1968,6 +2018,7 @@ export class ModelApiSession implements AgentSession {
       onRetry,
       budget,
       admitAttempt,
+      confirmedRequest,
     )
     for await (const event of responseStream) {
       final = this.applyStreamEvent(event, open, turnId, chargedGoalId) ?? final
@@ -2838,6 +2889,8 @@ export class ModelApiSession implements AgentSession {
       () => {
         this.touch()
       },
+      // A child snapshot lives in its parent's stored session.
+      () => this.onPersisted(),
       NO_CHILD_DISPOSAL,
       true,
       this,
@@ -3745,7 +3798,7 @@ export class ModelApiSession implements AgentSession {
       const wasBudgetLimited = this.goal?.status === GOAL_STATUS.budgetLimited
       let streamed: StreamedCall
       try {
-        streamed = await this.streamOnce(turn.turnId, signal, round)
+        streamed = await this.streamOnce(turn.turnId, signal, round, turn.confirmedRequest)
       } catch (error: unknown) {
         if (!isAbortRequested(signal)) {
           turn.modelFailure = error
@@ -3913,6 +3966,9 @@ export class ModelApiSession implements AgentSession {
       steered: [],
       modelFailure: undefined,
       goalWakePending: false,
+      ...(queued.confirmedRequest !== undefined && {
+        confirmedRequest: queued.confirmedRequest,
+      }),
     }
     this.active = turn
     this.status = RUNNING
@@ -4205,6 +4261,210 @@ export class ModelApiSession implements AgentSession {
     return { status: ACCEPTED, reason: undefined }
   }
 
+  /** Only a stored key's digest scopes a job; a changed key sees no old jobs. */
+  private async scheduleAccountId(): Promise<string> {
+    const id = await this.deps.getAccountId?.()
+    if (id === undefined) {
+      throw new Error(UI_TEXT.scheduleAccountMissing)
+    }
+    return id
+  }
+
+  private scheduleStore(): ScheduleStore {
+    const store = this.deps.scheduleStore
+    if (store === undefined) {
+      throw new Error(UI_TEXT.scheduleStorageMissing)
+    }
+    return store
+  }
+
+  private isScheduleBusy(): boolean {
+    return this.active !== undefined || this.compacting !== undefined || this.queuedTurns.length > 0
+  }
+
+  private publishSchedules(jobs: readonly ScheduledPrompt[]): readonly ScheduledPrompt[] {
+    this.emit({ type: 'schedulesChanged', jobs: jobs.map((job) => scheduleViewOf(job)) })
+    if (this.scheduleTimer === undefined && !this.isDisposed) {
+      this.scheduleTimer = setInterval(() => {
+        if (!this.isDisposed) {
+          void this.listSchedules().catch((error: unknown) => {
+            this.deps.log.warn(`Scheduled prompts could not be refreshed: ${describe(error)}`)
+          })
+        }
+      }, SCHEDULE_POLL_INTERVAL_MS)
+    }
+    return jobs
+  }
+
+  /** A loaded session polls only its own jobs. Polls never make model calls. */
+  private async listSchedules(): Promise<readonly ScheduledPrompt[]> {
+    // A removed key clears the panel without waiting for storage. Check again
+    // after the read so a slow poll cannot publish a previous account's jobs.
+    if ((await this.deps.getAccountId?.()) === undefined) {
+      return this.publishSchedules([])
+    }
+    const store = this.scheduleStore()
+    const stored = await store.list(this.sessionId)
+    const accountId = await this.deps.getAccountId?.()
+    const jobs =
+      accountId === undefined
+        ? []
+        : stored.filter(
+            (job) => job.workspaceRoot === this.deps.workspaceRoot && job.accountId === accountId,
+          )
+    return this.publishSchedules(jobs)
+  }
+
+  private async createSchedule(cadence: ScheduleCadence, prompt: string): Promise<ScheduledPrompt> {
+    const parsed = scheduleCadenceSchema.safeParse(cadence)
+    const cleanPrompt = prompt.trim()
+    if (
+      cleanPrompt === '' ||
+      cleanPrompt.length > SCHEDULE_MAX_PROMPT_CHARS ||
+      !parsed.success ||
+      (parsed.data.kind === 'interval' &&
+        (!Number.isSafeInteger(parsed.data.everyMs) ||
+          parsed.data.everyMs < SCHEDULE_MIN_INTERVAL_MS ||
+          parsed.data.everyMs > SCHEDULE_MAX_INTERVAL_MS))
+    ) {
+      throw new Error(UI_TEXT.scheduleInvalid)
+    }
+    const existing = await this.listSchedules()
+    if (existing.length >= SCHEDULE_MAX_JOBS_PER_SESSION) {
+      throw new Error(UI_TEXT.scheduleTooMany)
+    }
+    const now = this.deps.now()
+    const expiresAtMs = now + SCHEDULE_LIFETIME_MS
+    const nextFireAtMs = nextScheduleFire(parsed.data, now, expiresAtMs)
+    if (nextFireAtMs === undefined) {
+      throw new Error(UI_TEXT.scheduleNoFire)
+    }
+    const job: ScheduledPrompt = {
+      id: this.deps.newId(),
+      sessionId: this.sessionId,
+      workspaceRoot: this.deps.workspaceRoot,
+      accountId: await this.scheduleAccountId(),
+      prompt: cleanPrompt,
+      cadence: parsed.data,
+      createdAtMs: now,
+      expiresAtMs,
+      nextFireAtMs,
+      fireCount: 0,
+    }
+    await this.scheduleStore().create(job)
+    this.touch()
+    try {
+      // The schedule must not be reported as created until its owning session
+      // is durable too; a crash would otherwise leave an orphaned job.
+      await this.onPersisted()
+    } catch (error: unknown) {
+      await this.scheduleStore().remove(this.sessionId, job.id)
+      throw error
+    }
+    await this.listSchedules()
+    return job
+  }
+
+  private async cancelSchedule(id: string): Promise<boolean> {
+    const jobs = await this.listSchedules()
+    const job = jobs.find((entry) => entry.id === id)
+    if (job === undefined) {
+      return false
+    }
+    const isRemoved = await this.scheduleStore().remove(this.sessionId, id)
+    await this.listSchedules()
+    if (isRemoved) {
+      this.touch()
+    }
+    return isRemoved
+  }
+
+  /** A confirmed occurrence: check gate and identity again, then claim before spending. */
+  private async runSchedule(
+    id: string,
+    occurrenceMs: number,
+    confirmed: ScheduleRunConfirmation,
+  ): Promise<TurnSubmission> {
+    if (confirmed.sessionId !== this.sessionId || confirmed.modelId !== this.modelId) {
+      throw new Error(UI_TEXT.scheduleConfirmationExpired)
+    }
+    if (!this.deps.isPaidFeatureOn('scheduledPrompts')) {
+      throw new Error(UI_TEXT.schedulePaidOff)
+    }
+    if (this.isScheduleBusy()) {
+      throw new Error(UI_TEXT.scheduleBusy)
+    }
+    const jobs = await this.listSchedules()
+    const job = jobs.find((entry) => entry.id === id)
+    if (job?.nextFireAtMs !== occurrenceMs || occurrenceMs > this.deps.now()) {
+      throw new Error(UI_TEXT.scheduleNotDue)
+    }
+    if (job.prompt !== confirmed.prompt || this.modelId !== confirmed.modelId) {
+      throw new Error(UI_TEXT.scheduleConfirmationExpired)
+    }
+    if (!(await this.scheduleStore().claim(job, occurrenceMs))) {
+      throw new Error(UI_TEXT.scheduleAlreadyRun)
+    }
+    const accountId = await this.scheduleAccountId()
+    if (this.isDisposed || this.isScheduleBusy()) {
+      throw new Error(UI_TEXT.scheduleBusy)
+    }
+    if (!this.deps.isPaidFeatureOn('scheduledPrompts')) {
+      throw new Error(UI_TEXT.schedulePaidOff)
+    }
+    if (this.modelId !== confirmed.modelId || accountId !== job.accountId) {
+      throw new Error(UI_TEXT.scheduleConfirmationExpired)
+    }
+    // The request carries only the confirmed model and a digest of the key.
+    // The client checks the actual SecretStorage key just before HTTP.
+    const requestFor = (turnId: string): ConfirmedModelRequest => {
+      let hasStarted = false
+      return {
+        modelId: confirmed.modelId,
+        keyDigest: job.accountId,
+        isStillAllowed: () =>
+          !this.isDisposed &&
+          this.modelId === confirmed.modelId &&
+          this.deps.isPaidFeatureOn('scheduledPrompts'),
+        onRequestStarted: () => {
+          if (hasStarted) {
+            return
+          }
+          hasStarted = true
+          const item: ItemSnapshot = {
+            itemId: this.deps.newId(),
+            kind: 'toolCall',
+            status: COMPLETED,
+            turnId,
+            tool: MODEL_API_SCHEDULED_TOOL,
+            args: JSON.stringify({ id: job.id, prompt: job.prompt }),
+            visibleOutput: UI_TEXT.scheduleRunStarted,
+            paid: 'scheduledPrompts',
+          }
+          this.recordTranscript(turnId, item)
+          this.emit({ type: 'itemCompleted', item })
+          this.deps.notePaidUse('scheduledPrompts', 1)
+          this.touch()
+        },
+      }
+    }
+    // No await between this check and sendTurn: a new turn cannot slip in and
+    // turn a confirmed scheduled prompt into a silently queued later run.
+    const submission = await this.sendTurn(
+      [{ type: 'text', text: job.prompt }],
+      job.prompt,
+      requestFor,
+    )
+    this.touch()
+    try {
+      await this.listSchedules()
+    } catch (error: unknown) {
+      // A run already admitted and started must never be reported as rejected.
+      this.deps.log.warn(`Scheduled prompts could not be refreshed: ${describe(error)}`)
+    }
+    return submission
+  }
+
   // --- AgentSession ---
 
   /** SessionStart runs when the session opens; context enters its first turn. */
@@ -4235,9 +4495,20 @@ export class ModelApiSession implements AgentSession {
     return this.permissions.currentMode
   }
 
-  public sendTurn(parts: readonly TurnPart[], displayText?: string): Promise<TurnSubmission> {
+  public sendTurn(
+    parts: readonly TurnPart[],
+    displayText?: string,
+    requestFor?: (turnId: string) => ConfirmedModelRequest,
+  ): Promise<TurnSubmission> {
     const turnId = this.isSubagent ? `${this.sessionId}:${this.deps.newId()}` : this.deps.newId()
-    const queued: QueuedTurn = { turnId, parts, displayText, isGoalWake: false }
+    const confirmedRequest = requestFor?.(turnId)
+    const queued: QueuedTurn = {
+      turnId,
+      parts,
+      displayText,
+      isGoalWake: false,
+      ...(confirmedRequest !== undefined && { confirmedRequest }),
+    }
     // A compaction is a turn too (D26): a message sent during one waits for it.
     if (this.active === undefined && this.compacting === undefined) {
       void this.runTurn(queued)
@@ -4679,6 +4950,10 @@ export class ModelApiSession implements AgentSession {
       return
     }
     this.isDisposed = true
+    if (this.scheduleTimer !== undefined) {
+      clearInterval(this.scheduleTimer)
+      this.scheduleTimer = undefined
+    }
     void this.cancel()
     // Nothing is left running unwatched (M46): the background commands and
     // the user's own go with the session.
@@ -4821,6 +5096,7 @@ export class ModelApiSession implements AgentSession {
         () => {
           this.touch()
         },
+        () => this.onPersisted(),
         NO_CHILD_DISPOSAL,
         true,
         this,
@@ -4912,6 +5188,7 @@ export class ModelApiSession implements AgentSession {
         () => {
           target.touch()
         },
+        () => target.onPersisted(),
         NO_CHILD_DISPOSAL,
         true,
         target,
@@ -5006,6 +5283,37 @@ export class ModelApiHost implements AgentHost {
     })()
   }
 
+  /** A schedule create needs proof its owning session was saved before success. */
+  private persistStrict(session: ModelApiSession): Promise<void> {
+    const { store } = this.deps
+    if (store === undefined) {
+      return Promise.reject(new Error(UI_TEXT.scheduleStorageMissing))
+    }
+    const snapshot = session.snapshot()
+    // A schedule cannot make an unsafe replay durable. The caller removes
+    // its new job on this refusal, leaving the last valid session snapshot.
+    if (
+      hasUnansweredCall(snapshot.replay) ||
+      (snapshot.children ?? []).some((child) => hasUnansweredCall(child.session.replay))
+    ) {
+      return Promise.reject(new Error(UI_TEXT.scheduleBusy))
+    }
+    this.stored.set(snapshot.sessionId, headerOf(snapshot))
+    const previous = this.saving
+    const saved = (async () => {
+      await previous
+      await store.save(snapshot)
+    })()
+    this.saving = (async () => {
+      try {
+        await saved
+      } catch (error: unknown) {
+        this.deps.log.warn(`Session ${snapshot.sessionId} was not saved: ${describe(error)}`)
+      }
+    })()
+    return saved
+  }
+
   private create(
     modelId: string,
     approvalMode: ApprovalMode,
@@ -5013,7 +5321,7 @@ export class ModelApiHost implements AgentHost {
     hooks: readonly HookDefinition[] = [],
     hookStartSource: 'startup' | 'resume' | 'fork' = 'startup',
   ): ModelApiSession {
-    const session = new ModelApiSession(
+    const session: ModelApiSession = new ModelApiSession(
       sessionId,
       modelId,
       approvalMode,
@@ -5022,6 +5330,7 @@ export class ModelApiHost implements AgentHost {
         this.persist(session)
         this.announce(session)
       },
+      () => this.persistStrict(session),
       () => {
         this.sessions.delete(sessionId)
       },

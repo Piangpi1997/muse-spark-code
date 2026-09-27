@@ -14,8 +14,10 @@ while they are (PLAN.md D30, D34).
 
 - **Pre-PR branch CI.** The existing cross-platform CI can be run
   manually on a pushed branch before a pull request. It runs the same shared
-  build as pull requests; see the sequence in `CONTRIBUTING.md`. Manual
-  dispatch is available now that the trigger is on `main`.
+  build as pull requests; the PR template records the exact tested tree,
+  independent review, staged-change secret scan, branch run and seven job
+  conclusions. See the sequence in `CONTRIBUTING.md`. Manual dispatch is
+  available now that the trigger is on `main`.
 - **Subagents on the Model API backend** (M48, PLAN.md D45). Child sessions
   run in parallel with bounded capacity, their own transcript, the existing
   tool approvals and workspace rules, and usage counted with the parent.
@@ -59,6 +61,22 @@ while they are (PLAN.md D30, D34).
   original MCP result still reaches the model. A required MCP server loss
   cannot be hidden by a post-tool hook stop.
 
+- **Model API scheduled prompts** (M52). `/loop` stores an interval or local
+  five-field cron prompt in the current conversation; the panel lists due
+  jobs and cancels them. Every due run waits for a machine-scoped paid gate
+  and a separate prompt-and-token-price confirmation. Jobs are scoped to the
+  workspace, conversation and stored key; an atomic receipt prevents two
+  windows or a restart from replaying one admitted occurrence. A model,
+  conversation, prompt or paid-gate change while the price dialog is open
+  expires that approval without sending a request; cancellation during the
+  dialog does too. The scheduled turn keeps its confirmed model and key
+  digest in memory through admission and retries; a changed key is refused
+  before HTTP. Stop during the key read sends no request or paid count, and
+  a slow job read cannot show another key's prompts after an account switch.
+  The paid row and tally appear only when the first request starts. Muse Code's
+  native cron remains available through its model tools; MSP offers no direct
+  scheduler controls.
+
 - **PDF input on the Model API backend** (M54, PLAN.md D47). Pick, paste or
   drop a PDF up to 32 MB; its name appears in the composer and sent history.
   The Model API agent can also read workspace PDFs and images through
@@ -74,6 +92,7 @@ while they are (PLAN.md D30, D34).
   are refused. The PDF page budget reads the page tree's own count even
   when nested metadata has another count, preventing an oversized request.
   Stop removes tool-read media from future replay if its turn ends early.
+
 
 - **Image edits** (M44, PLAN.md D37). With image generation on, the model
   can also change one workspace image, or combine up to four, by a prompt,

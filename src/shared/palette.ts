@@ -51,6 +51,7 @@ export type PaletteAction =
   | { readonly type: 'insertSkill'; readonly selector: string }
   /** `/goal ` in the prompt, for the objective (M45). */
   | { readonly type: 'startGoal' }
+  | { readonly type: 'startLoop' }
   | { readonly type: 'compact' }
   | { readonly type: 'manageSkills' }
   | { readonly type: 'importSkills' }
@@ -278,6 +279,20 @@ function exportItems(backend: BackendKind | undefined): readonly PaletteItem[] {
     : [markdown]
 }
 
+/** Model API schedules are extension-owned; Muse Code's native cron has no MSP controls. */
+function scheduleItems(backend: BackendKind | undefined): readonly PaletteItem[] {
+  return backend === 'modelApi'
+    ? [
+        {
+          id: 'loop',
+          label: UI_TEXT.loopItem,
+          detail: UI_TEXT.loopItemDetail,
+          action: { type: 'startLoop' },
+        },
+      ]
+    : []
+}
+
 function skillItems(skills: readonly SkillOption[] | undefined): readonly PaletteItem[] {
   if (skills === undefined) {
     return [
@@ -472,6 +487,7 @@ export function buildPalette(context: PaletteContext): readonly PaletteGroup[] {
           detail: UI_TEXT.goalItemDetail,
           action: { type: 'startGoal' },
         },
+        ...scheduleItems(context.backend),
         ...exportItems(context.backend),
         {
           id: 'clearCommand',

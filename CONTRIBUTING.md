@@ -30,9 +30,11 @@ Use this order for a candidate branch:
    behavior, exercise the same tree on the Windows 11 host and VM in parallel
    and record both results; collect other platform evidence where needed.
 3. Have an independent agent review the staged diff and acceptance evidence.
-   Fix findings, restage, and repeat the full local gate and affected platform
-   checks. Commit only after the final tree passes; verify the commit's tree
-   matches the tested `git write-tree` hash.
+   Scan the staged changes for secrets too: local `security:secrets` scans
+   committed history, so it cannot see the index before commit. Fix findings,
+   restage, and repeat the full local gate, staged secret scan and affected
+   platform checks. Commit only after the final tree passes; verify the
+   commit's tree matches the tested `git write-tree` hash.
 4. Push the reviewed commit to its feature branch. Once `workflow_dispatch`
    has reached the default branch, run `gh workflow run ci.yml --ref YOUR_BRANCH`.
    Find the new run with
@@ -43,7 +45,11 @@ Use this order for a candidate branch:
    Windows accessibility and VS Code integration; macOS dictation; packaging;
    gitleaks; and semgrep. Fix failures and repeat from the exact-tree gate.
 6. Open the pull request after that run is green. Pull-request CI and review
-   still gate the merge; later changes to the branch need a fresh run.
+   still gate the merge; later changes to the branch need a fresh run. Fill
+   the PR template with the tested tree, commit tree, branch run ID and
+   `headSha`, all seven conclusions, independent review, and any unproved
+   platform or live gate. A printed success line without the process exit
+   status is not a gate result.
 
 - Run `npm run quality` and make it green. It runs every gate: formatting,
   ESLint (zero warnings), stylelint, type checks, dead-code and cycle

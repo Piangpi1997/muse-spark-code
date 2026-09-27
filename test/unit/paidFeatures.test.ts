@@ -221,19 +221,21 @@ describe('PaidUsage and the prices (M33)', () => {
     usage.add('webSearch', 3)
     usage.add('imageGeneration', 1)
     usage.add('voice', 90)
+    usage.add('scheduledPrompts', 1)
     usage.add('voice', 0)
-    expect(usage.current).toEqual({ webSearches: 3, images: 1, voiceSeconds: 90 })
-    expect(listener).toHaveBeenCalledTimes(3)
+    expect(usage.current).toEqual({ webSearches: 3, images: 1, voiceSeconds: 90, scheduledRuns: 1 })
+    expect(listener).toHaveBeenCalledTimes(4)
     stop()
     usage.add('webSearch', 1)
-    expect(listener).toHaveBeenCalledTimes(3)
+    expect(listener).toHaveBeenCalledTimes(4)
   })
 
   it('estimates each feature at the published prices', () => {
-    const tally = { webSearches: 1000, images: 7, voiceSeconds: 7200 }
+    const tally = { webSearches: 1000, images: 7, voiceSeconds: 7200, scheduledRuns: 0 }
     expect(paidCostUsd('webSearch', tally)).toBeCloseTo(2.5)
     expect(paidCostUsd('imageGeneration', tally)).toBeCloseTo(0.07)
     expect(paidCostUsd('voice', tally)).toBeCloseTo(0.36)
+    expect(paidCostUsd('scheduledPrompts', { ...tally, scheduledRuns: 1 })).toBe(0)
     expect(paidTotalUsd(tally)).toBeCloseTo(2.93)
     expect(paidTotalUsd(EMPTY_PAID_TALLY)).toBe(0)
   })
@@ -243,6 +245,7 @@ describe('PaidUsage and the prices (M33)', () => {
     expect(paidFeaturePrice('webSearch')).toBe('$2.50 per 1,000 searches')
     expect(paidFeaturePrice('imageGeneration')).toBe('$0.01 per image')
     expect(paidFeaturePrice('voice')).toBe('$0.18 per hour of audio')
+    expect(paidFeaturePrice('scheduledPrompts')).toContain('$1.25/1M input')
   })
 
   it('reports the features that are on with the tally', () => {
@@ -251,7 +254,7 @@ describe('PaidUsage and the prices (M33)', () => {
     usage.add('voice', 5)
     expect(paidStateOf(t.gate, usage, true)).toEqual({
       features: ['voice'],
-      tally: { webSearches: 0, images: 0, voiceSeconds: 5 },
+      tally: { webSearches: 0, images: 0, voiceSeconds: 5, scheduledRuns: 0 },
       isKeyStored: true,
     })
   })

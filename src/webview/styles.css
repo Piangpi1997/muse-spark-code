@@ -361,6 +361,12 @@ body {
     display: none;
   }
 
+  /* Keep the paid warning visible without covering Commands in a sidebar. */
+  .composer .paid-badge {
+    max-width: 44px;
+    padding-inline: 4px;
+  }
+
   .composer-toolbar {
     flex-wrap: wrap;
   }
@@ -1413,6 +1419,64 @@ body {
 
 .goal-edit-input {
   flex: 1 1 200px;
+}
+
+/* Session-scoped Model API schedules (M52): wrap on narrow sidebars. */
+.local-schedules {
+  margin: 0 var(--ms-gap) 4px;
+  padding: 6px var(--ms-gap);
+  max-height: 35vh;
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: var(--ms-radius);
+  background: var(--vscode-editorWidget-background);
+  font-size: 0.9em;
+  overflow-y: auto;
+}
+
+.local-schedules-head,
+.local-schedule-facts,
+.local-schedule-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+}
+
+.local-schedules-head span,
+.local-schedule-facts {
+  color: var(--vscode-descriptionForeground);
+}
+
+.local-schedules-list {
+  display: grid;
+  gap: 6px;
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.local-schedule {
+  min-width: 0;
+  padding-top: 6px;
+  border-top: 1px solid var(--vscode-panel-border);
+}
+
+.local-schedule-prompt,
+.local-schedule-facts {
+  overflow-wrap: anywhere;
+}
+
+.local-schedule-prompt {
+  font-weight: 600;
+}
+
+.local-schedule-actions {
+  margin-top: 4px;
+}
+
+.local-schedule-actions .tool-more {
+  min-width: 24px;
+  min-height: 24px;
 }
 
 /* --- context indicator --- */

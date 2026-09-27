@@ -35,7 +35,8 @@
       "composerShellMode",
       "onboardingShortcuts.shell",
       "onboardingShortcuts.moveToBackground",
-      "pdfLabel"
+      "pdfLabel",
+      "loopItem"
     ],
     "cs": [
       "groupModel",

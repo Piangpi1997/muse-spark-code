@@ -1,5 +1,10 @@
 import { Buffer } from 'node:buffer'
-import { describe, expect, it, vi } from 'vitest'
+import { randomUUID } from 'node:crypto'
+import { mkdtempSync } from 'node:fs'
+import { writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
+import { afterAll, describe, expect, it, vi } from 'vitest'
 import type { SessionMcpHttpServer } from '../../src/core/agent/agentBackend'
 import { ModelApiHost, type ModelApiHostDeps } from '../../src/core/backends/modelapi/ModelApiHost'
 import { MuseCodeHost } from '../../src/core/backends/musecode/MuseCodeHost'
@@ -20,10 +25,13 @@ import { CHOICE_STEERING_NOTE, type GoalCommandVerb, UI_TEXT } from '../../src/s
 import type { HostAction, LineRange, MentionItem } from '../../src/shared/protocol'
 import type { SubscriptionUsage } from '../../src/shared/usage'
 import { FakeLogOutputChannel, fakeSurface } from './helpers/fakes'
-import { fakeModelApi, fakeModelApiClient } from './helpers/fakeModelApi'
+import { FAKE_MODEL_API_ACCOUNT_ID, fakeModelApi, fakeModelApiClient } from './helpers/fakeModelApi'
 import { disabledPaidFeatures } from './helpers/fakePaidFeatures'
 import { memoryContextIo } from './helpers/fakeContextIo'
 import { heldShellToolIo, memoryToolIo, type MemoryToolIo, noopToolIo } from './helpers/fakeToolIo'
+import { createFileScheduleStore } from '../../src/host/backend/fileScheduleStore'
+import { removeFolder } from './helpers/temporaryFolders'
+import { memorySessionStore } from './helpers/fakeSessionStore'
 import {
   fakeInitializeResult,
   fakeMspHost,
@@ -4384,5 +4392,182 @@ describe('ConversationController: explanations (M46)', () => {
     t.server.handle('userInput/clarify', refusalOf('userInputNotFound'))
     await t.controller.handle({ type: 'clarifyQuestion', userInputId: 'q3', text: 'red' })
     expect(t.surface.posted).toContainEqual({ type: 'promptDropped', userInputId: 'q3' })
+  })
+})
+
+const scheduleTestRoot = mkdtempSync(path.join(tmpdir(), 'muse-controller-schedules-'))
+afterAll(() => removeFolder(scheduleTestRoot))
+
+describe('ConversationController: scheduled prompts (M52)', () => {
+  it('creates without spending; an off gate and a declined per-run price keep a due job pending', async () => {
+    const clock = { now: NOW }
+    const t = setup({ clock, initialPermissionMode: 'bypassPermissions', isBypassAllowed: true })
+    const api = fakeModelApi()
+    let isPaidOn = false
+    const confirm = vi.fn(() => Promise.resolve(false))
+    const scheduleStore = createFileScheduleStore({
+      directory: path.join(scheduleTestRoot, 'confirm'),
+      now: () => clock.now,
+      log: t.log,
+    })
+    const modelHost = new ModelApiHost({
+      client: fakeModelApiClient(api, t.log),
+      workspaceRoot: '/ws',
+      platform: 'linux',
+      io: noopToolIo,
+      contextIo: memoryContextIo(new Map()),
+      newId: randomUUID,
+      now: () => clock.now,
+      log: t.log,
+      personalSkillsRoot: undefined,
+      isWorkspaceTrusted: () => true,
+      describeEnvironment: () => Promise.resolve({ git: undefined }),
+      isPaidFeatureOn: () => isPaidOn,
+      notePaidUse: () => undefined,
+      confirmSubagentTask: () => Promise.resolve(false),
+      noteSubagentUsage: () => undefined,
+      memory: undefined,
+      store: memorySessionStore(),
+      scheduleStore,
+      getAccountId: () => Promise.resolve(FAKE_MODEL_API_ACCOUNT_ID),
+    })
+    const controller = new ConversationController({
+      ...t.deps,
+      ensureHost: () => Promise.resolve(modelHost),
+      isScheduledPaidOn: () => isPaidOn,
+      confirmScheduledRun: confirm,
+    })
+    const staleNotices = () =>
+      t.surface.posted.filter(
+        (message) =>
+          message.type === 'notice' && message.text === UI_TEXT.scheduleConfirmationExpired,
+      )
+    await controller.handle({
+      type: 'scheduleCreate',
+      cadence: { kind: 'interval', everyMs: 60_000 },
+      prompt: 'Review tests',
+    })
+    expect(api.responseBodies()).toEqual([])
+    const changed = t.surface.posted.findLast(
+      (message) => message.type === 'agentEvent' && message.event.type === 'schedulesChanged',
+    )
+    if (changed?.type !== 'agentEvent' || changed.event.type !== 'schedulesChanged') {
+      throw new Error('expected scheduled prompt state')
+    }
+    const job = changed.event.jobs[0]
+    if (job === undefined) {
+      throw new Error('expected created job')
+    }
+    clock.now = job.nextFireAtMs + 1
+    await controller.handle({ type: 'scheduleRun', id: job.id, occurrenceMs: job.nextFireAtMs })
+    expect(confirm).not.toHaveBeenCalled()
+    expect(api.responseBodies()).toEqual([])
+    isPaidOn = true
+    await controller.handle({ type: 'scheduleRun', id: job.id, occurrenceMs: job.nextFireAtMs })
+    expect(confirm).toHaveBeenCalledOnce()
+    expect(api.responseBodies()).toEqual([])
+    expect(staleNotices()).toHaveLength(0)
+    const sessions = await modelHost.listSessions({ workspaceRoot: '/ws', limit: 10 })
+    const sessionId = sessions.sessions[0]?.sessionId
+    if (sessionId === undefined) {
+      throw new Error('expected session')
+    }
+    const beforeRun = await scheduleStore.list(sessionId)
+    expect(beforeRun[0]?.fireCount).toBe(0)
+    const pendingConfirmation = Promise.withResolvers<boolean>()
+    confirm.mockImplementationOnce(() => pendingConfirmation.promise)
+    const pendingRun = controller.handle({
+      type: 'scheduleRun',
+      id: job.id,
+      occurrenceMs: job.nextFireAtMs,
+    })
+    await vi.waitFor(() => {
+      expect(confirm).toHaveBeenCalledTimes(2)
+    })
+    await controller.handle({ type: 'setModel', modelId: 'muse-spark-1.2' })
+    pendingConfirmation.resolve(true)
+    await pendingRun
+    expect(api.responseBodies()).toEqual([])
+    expect(staleNotices()).toHaveLength(1)
+    const afterModelChange = await scheduleStore.list(sessionId)
+    expect(afterModelChange[0]?.fireCount).toBe(0)
+    await controller.handle({ type: 'setModel', modelId: 'muse-spark-1.3' })
+    const revokedGateConfirmation = Promise.withResolvers<boolean>()
+    confirm.mockImplementationOnce(() => revokedGateConfirmation.promise)
+    const revokedGateRun = controller.handle({
+      type: 'scheduleRun',
+      id: job.id,
+      occurrenceMs: job.nextFireAtMs,
+    })
+    await vi.waitFor(() => {
+      expect(confirm).toHaveBeenCalledTimes(3)
+    })
+    isPaidOn = false
+    revokedGateConfirmation.resolve(true)
+    await revokedGateRun
+    expect(api.responseBodies()).toEqual([])
+    expect(t.surface.posted).toContainEqual({
+      type: 'notice',
+      level: 'warning',
+      text: UI_TEXT.schedulePaidOff,
+    })
+    expect(staleNotices()).toHaveLength(1)
+    const afterGateRevoked = await scheduleStore.list(sessionId)
+    expect(afterGateRevoked[0]?.fireCount).toBe(0)
+    isPaidOn = true
+    const [stored] = await scheduleStore.list(sessionId)
+    if (stored === undefined) {
+      throw new Error('expected stored schedule')
+    }
+    const changedPromptConfirmation = Promise.withResolvers<boolean>()
+    confirm.mockImplementationOnce(() => changedPromptConfirmation.promise)
+    const changedPromptRun = controller.handle({
+      type: 'scheduleRun',
+      id: job.id,
+      occurrenceMs: job.nextFireAtMs,
+    })
+    await vi.waitFor(() => {
+      expect(confirm).toHaveBeenCalledTimes(4)
+    })
+    const scheduleFile = path.join(scheduleTestRoot, 'confirm', `${job.id}.json`)
+    await writeFile(scheduleFile, JSON.stringify({ ...stored, prompt: 'Different prompt' }))
+    changedPromptConfirmation.resolve(true)
+    await changedPromptRun
+    expect(api.responseBodies()).toEqual([])
+    expect(staleNotices()).toHaveLength(2)
+    const afterPromptChange = await scheduleStore.list(sessionId)
+    expect(afterPromptChange[0]?.fireCount).toBe(0)
+    await writeFile(scheduleFile, JSON.stringify(stored))
+    confirm.mockResolvedValueOnce(true)
+    api.script({ text: 'Tests look good' })
+    await controller.handle({ type: 'scheduleRun', id: job.id, occurrenceMs: job.nextFireAtMs })
+    await vi.waitFor(() => {
+      expect(api.responseBodies()).toHaveLength(1)
+    })
+    const afterRun = await scheduleStore.list(sessionId)
+    expect(afterRun[0]?.fireCount).toBe(1)
+    const next = afterRun[0]
+    if (next === undefined) {
+      throw new Error('expected recurring schedule')
+    }
+    clock.now = next.nextFireAtMs + 1
+    const cancellingConfirmation = Promise.withResolvers<boolean>()
+    confirm.mockImplementationOnce(() => cancellingConfirmation.promise)
+    const cancelledRun = controller.handle({
+      type: 'scheduleRun',
+      id: job.id,
+      occurrenceMs: next.nextFireAtMs,
+    })
+    await vi.waitFor(() => {
+      expect(confirm).toHaveBeenCalledTimes(6)
+    })
+    await controller.handle({ type: 'scheduleCancel', id: job.id })
+    cancellingConfirmation.resolve(true)
+    await cancelledRun
+    expect(api.responseBodies()).toHaveLength(1)
+    expect(staleNotices()).toHaveLength(3)
+    expect(await scheduleStore.list(sessionId)).toEqual([])
+    controller.dispose()
+    await modelHost.close()
   })
 })
