@@ -133,6 +133,8 @@ import { type SkillDefinition } from '../../context/skills'
 import { WorkspaceContext } from '../../context/workspaceContext'
 import type { CoreLogger } from '../../logging'
 import { textFileInput } from '../../textAttachment'
+import { isProtectedPath } from '../../protectedPaths'
+import { confineWorkspacePath } from '../../workspacePath'
 import type { McpTool } from '../../mcp'
 import type { MemoryStore } from '../../memory/memoryStore'
 import {
@@ -149,12 +151,12 @@ import {
   type GoalContext,
   goalInstructions,
   goalObjectiveProblem,
-  type GoalRecord,
   isGoalActive,
   runGoalTool,
   toSessionGoal,
   withTokensUsed,
 } from './goals'
+import type { GoalRecord } from './goalRecord'
 import { type EnvironmentFacts, instructionsFor } from './instructions'
 import {
   dispatchHooks,
@@ -176,7 +178,6 @@ import {
   APPROVAL_CHOICE_IDS,
   choicesFor,
   isKnownChoice,
-  isProtectedPath,
   PermissionEngine,
   type PermissionQuery,
   type PermissionVerdict,
@@ -213,7 +214,6 @@ import {
 } from './schemas'
 import {
   classifyTool,
-  confineWorkspacePath,
   executeTool,
   parseQuestions,
   readSkillArgs,

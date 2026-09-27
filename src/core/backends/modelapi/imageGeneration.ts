@@ -35,7 +35,8 @@ import { pathModule } from '../../workspaceRoot'
 import type { ModelApiClient } from './client'
 import { IMAGE_ASPECTS } from './imageToolDefinitions'
 import type { ImagesResponse } from './schemas'
-import { confineWorkspacePath, type FileReservation, type ToolIo, type ToolOutcome } from './tools'
+import { confineWorkspacePath } from '../../workspacePath'
+import type { FileReservation, ToolIo, ToolOutcome } from './tools'
 
 const DEFAULT_ASPECT: ImageAspect = 'square'
 const BYTES_PER_KIB = 1024

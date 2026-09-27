@@ -641,7 +641,7 @@ export const EN = {
   unsavedFilesNotice:
     'Muse reads and edits the saved files, not unsaved editor changes (turn on museSpark.autosave to save before each message). Unsaved:',
   sessionEditsUnsupported:
-    'Muse Code 1.3.0 cannot rename or fork sessions on Windows (meta-models/muse-code-sdk#30, #31).',
+    'Muse Code cannot rename or fork sessions on Windows (meta-models/muse-code-sdk#30, #31).',
   contributorTitle: 'Contributor-tier model',
   contributorDetail:
     'Meta may use prompts and completions sent to a contributor-tier model to train its models, in exchange for the lower price. Use it for this conversation?',
@@ -801,7 +801,7 @@ export const EN = {
     'Workspace trusted: Muse will load its rules, skills and memory from the next message.',
   sandboxRestartNotice:
     'A Muse Code setting changed; Muse Code restarts with it on the next message and continues this conversation.',
-  sandboxProfileNotice: String.raw`This workspace is under your user profile, which the Windows sandbox of this Muse Code version cannot enter: shell commands will start in the PowerShell folder instead of the project and take about half a minute each. File reads and edits are unaffected. A workspace outside C:\Users runs commands in place.`,
+  sandboxProfileNotice: String.raw`This workspace is under your user profile, which Muse Code's Windows sandbox cannot enter: shell commands will start in the PowerShell folder instead of the project. File reads and edits are unaffected. A workspace outside C:\Users runs commands in place.`,
   // Label groups keyed by id (they were records in constants.ts before M40).
   permissionModes: {
     manual: 'Manual',
@@ -1087,6 +1087,8 @@ export const EN = {
   editRevertedPath: 'Reverted {path}.',
   editCreatedRemovedPath: '{path}: Moved to the trash (Muse created it).',
   modelApiNeedsFolder: 'Open a folder first; the Model API backend works inside a workspace.',
+  modelApiBundleUnavailable:
+    'The Model API backend could not be loaded; reinstall the extension and reload the window. The log has the details.',
   // Why the Muse Code CLI was not found, on the sign-in page and in warnings.
   cliNotFound: 'Muse Code is not installed in any known location.',
   cliPathNotAbsolute: 'museSpark.museBinaryPath must be an absolute path.',

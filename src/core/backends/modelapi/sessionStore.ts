@@ -14,7 +14,7 @@ import {
 import { STORED_SESSION_VERSION } from '../../../shared/constants'
 import { APPROVAL_MODES, type ApprovalMode } from '../../../shared/permissionModes'
 import type { SessionRecord } from '../../agent/agentBackend'
-import { type GoalRecord, goalRecordSchema } from './goals'
+import { type GoalRecord, goalRecordSchema } from './goalRecord'
 import {
   functionCallItemSchema,
   type InputItem,

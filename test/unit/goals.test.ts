@@ -4,12 +4,12 @@ import {
   type GoalContext,
   goalInstructions,
   goalObjectiveProblem,
-  type GoalRecord,
   goalResultText,
   runGoalTool,
   toSessionGoal,
   withTokensUsed,
 } from '../../src/core/backends/modelapi/goals'
+import type { GoalRecord } from '../../src/core/backends/modelapi/goalRecord'
 import {
   GOAL_OBJECTIVE_MAX_CHARS,
   GOAL_PROGRESS_REMINDER_STEPS,

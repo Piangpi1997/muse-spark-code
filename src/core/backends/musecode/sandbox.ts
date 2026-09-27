@@ -16,7 +16,6 @@ import {
   MUSE_SANDBOX_SETUP_ARGS,
   MUSE_SERVE_ARGS,
   MUSE_TRUST_WORKSPACE_ARG,
-  SANDBOX_PROFILE_LIMITED_MAX_VERSION,
   type SandboxNetworkMode,
   SANDBOX_STATUS_READY,
   SANDBOX_STATUS_SETUP_REQUIRED,
@@ -124,47 +123,20 @@ export function sandboxSetupInvocation(launch: MuseLaunch): CliInvocation {
   return museCliInvocation(launch, MUSE_SANDBOX_SETUP_ARGS)
 }
 
-export interface ProfileWorkspaceProbe {
-  readonly platform: NodeJS.Platform
-  readonly workspaceRoot: string
-  /** `%USERPROFILE%`; undefined off Windows. */
-  readonly userProfileDir: string | undefined
-  /** The MSP server version from `initialize` (`1.3.0`, or `1.3.0-R…`). */
-  readonly serverVersion: string
-}
-
-const VERSION_PREFIX = /^(\d+)\.(\d+)\.(\d+)/
-const VERSION_PARTS = 3
-
-/** `major.minor.patch` as numbers, or undefined when the string has no such prefix. */
-function versionParts(version: string): readonly number[] | undefined {
-  const match = VERSION_PREFIX.exec(version)
-  return match === null ? undefined : match.slice(1, 1 + VERSION_PARTS).map(Number)
-}
-
-/** True when `version` is at most `limit`, comparing `major.minor.patch` numerically. */
-export function isVersionAtMost(version: string, limit: string): boolean {
-  const left = versionParts(version)
-  const right = versionParts(limit)
-  if (left === undefined || right === undefined) {
-    return false
-  }
-  for (const [index, part] of left.entries()) {
-    const other = right[index] ?? 0
-    if (part !== other) {
-      return part < other
-    }
-  }
-  return true
-}
-
 function isInsideDirectory(directory: string, candidate: string): boolean {
   const root = path.win32.resolve(directory).toLowerCase()
   const target = path.win32.resolve(candidate).toLowerCase()
   return target === root || target.startsWith(`${root}${path.win32.sep}`)
 }
 
-/** A Windows workspace under `C:\Users\<user>`, where the sandbox cannot run commands. */
+/**
+ * A Windows workspace under `C:\Users\<user>`, where Muse Code's sandbox runs
+ * shell commands in PowerShell's own folder instead (meta-models/muse-code-sdk#26;
+ * verified live on 1.3.0 on 2026-09-22 and on 1.4.0 on 2026-09-27). No release
+ * has fixed it, so this holds for every version until one is verified; an
+ * earlier version ceiling of 1.3.0 hid the warning on 1.4.0, which is still
+ * affected (docs/certification/m4.md, release-0.9.1.md).
+ */
 export function isProfileWorkspace(
   platform: NodeJS.Platform,
   workspaceRoot: string,
@@ -174,19 +146,6 @@ export function isProfileWorkspace(
     platform === 'win32' &&
     userProfileDir !== undefined &&
     isInsideDirectory(userProfileDir, workspaceRoot)
-  )
-}
-
-/**
- * Whether Muse Code's Windows sandbox will run shell commands outside this
- * workspace: the affected CLI versions cannot enter `C:\Users\<user>`, so a
- * workspace under the profile falls back to PowerShell's own folder
- * (verified live 2026-09-22; docs/certification/m4.md).
- */
-export function isProfileWorkspaceLimited(probe: ProfileWorkspaceProbe): boolean {
-  return (
-    isVersionAtMost(probe.serverVersion, SANDBOX_PROFILE_LIMITED_MAX_VERSION) &&
-    isProfileWorkspace(probe.platform, probe.workspaceRoot, probe.userProfileDir)
   )
 }
 
