@@ -321,3 +321,17 @@ in total: $0.06 for six images (case12 ran three times), $0.0075 for three
 searches, the rest tokens. Failed runs are included: case04 twice (8x8),
 case09 once (prompt), case18 once (the defect), the full run (case06), and
 drill L1.
+
+## The release gate
+
+On `6a60a5d` (tree `fe862fc8`), `npm run quality` exited 0 on Windows 11:
+
+```text
+ Test Files  173 passed | 2 skipped (175)
+      Tests  2515 passed | 23 skipped (2538)
+ok   dist/extension.js: 596.8 KiB (budget 600 KiB)
+ok   dist/searchWorker.js: 15.2 KiB (budget 50 KiB)
+ok   dist/webview/main.js: 748.6 KiB (budget 900 KiB)
+a11y: 332 pages (83 scenarios × 4 themes), 0 rules violated on 0 elements, 0 rules undecided on 0 elements, 8 exempt, 0 pages without a result
+gitleaks: no leaks found; semgrep: Ran 287 rules on 403 files: 0 findings.
+```

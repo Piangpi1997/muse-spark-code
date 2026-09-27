@@ -6483,7 +6483,9 @@ Before the tag:
   `release/0.9.0`);
 - the README "What's new", the walkthrough images and the README screenshots
   re-rendered (done on `release/0.9.0`);
-- `npm run quality` exit 0 on the release tree;
+- `npm run quality` exit 0 on the release tree (done: `6a60a5d`, tree
+  `fe862fc8`; 2,515 tests passed, 23 skipped; 332 accessibility pages;
+  `dist/extension.js` 596.8 KiB);
 - the release pull request from `release/0.9.0`, then tag `v0.9.0`.
 
 To record after the tag:
