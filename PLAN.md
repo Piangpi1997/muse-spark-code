@@ -6703,4 +6703,7 @@ sandbox warning, which still applies (#26). Both now hold for every version
 (D26 amendment). Known 1.4.0 schema fingerprints are logged at info instead
 of as a mismatch warning. The full gate passed on `9c2cdce` (2,507 tests,
 332 accessibility pages, no leaks, no Semgrep findings).
-`docs/certification/release-0.9.1.md`.
+`docs/certification/release-0.9.1.md`. Published 2026-09-27: PR #46 merged as `645c2ae`, tag
+`v0.9.1`; release run 36358973778 passed every job (tag checks, the seven
+build jobs, GitHub Release, Marketplace publish), and the GitHub Release
+carries `muse-spark-code-0.9.1.vsix` (1,162,362 bytes).
