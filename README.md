@@ -654,7 +654,10 @@ rewind button on any sent message (on hover):
   History. Images return when the backend still has their bytes; the panel
   warns if it cannot restore one. A Model API conversation cannot be rewound
   before its latest compaction. A rewind queued for a session the tab has since
-  left is ignored.
+  left is ignored. Messages steered into one turn use the last earlier turn as
+  their branch point; if none exists, the conversation rewind choice is hidden.
+  Wait for the selected turn to finish before rewinding its conversation.
+  A just-sent Model API image can be restored before History is reopened.
 - **Rewind code to here** reverts every edit made after that message, the
   conversation's and its subagents', in the reverse of the order they
   landed. A file the edit created goes to the trash, unless you have added
@@ -674,7 +677,9 @@ review those rules before treating that branch as read only. Close the side
 tab to return to the main one; its branch stays in History. It uses the
 selected backend's normal model allowance or key billing; it does not route
 Model API calls through a Muse subscription. In a side chat, `Shift+Tab`
-moves keyboard focus normally because its permission mode is fixed.
+moves keyboard focus normally because its permission mode is fixed. A side
+panel's History shows only its own side branches; the same boundary applies
+when the window reloads.
 
 Each edit is undone only where its own lines (the changed lines and the few
 around them) are still exactly as the edit left them. If you added or

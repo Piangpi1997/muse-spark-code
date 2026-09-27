@@ -231,6 +231,12 @@ export type SessionGoal = z.infer<typeof sessionGoalSchema>
 
 const agentEventSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('turnStarted'), turnId: z.string() }),
+  /** An accepted steer needed its own later turn after the previous one ended. */
+  z.object({
+    type: z.literal('userMessageTurnChanged'),
+    userMessageId: z.string(),
+    turnId: z.string(),
+  }),
   z.object({ type: z.literal('itemStarted'), item: itemSnapshotSchema }),
   z.object({
     type: z.literal('textDelta'),

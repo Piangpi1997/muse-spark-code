@@ -36,6 +36,8 @@ const snapshotSchema = z.object({
   draft: z.string(),
   reference: z.optional(chatReferenceSchema),
   lastCompletedTurnId: z.optional(z.string()),
+  /** A bounded promoted-steer correction that beat `turnAccepted`. */
+  pendingReplayTurns: z.optional(z.record(z.string(), z.string())),
 })
 type UiSnapshot = z.infer<typeof snapshotSchema>
 
@@ -66,6 +68,7 @@ function snapshotOf(state: UiState): UiSnapshot {
     draft: state.draft,
     reference: state.reference,
     lastCompletedTurnId: state.lastCompletedTurnId,
+    pendingReplayTurns: state.pendingReplayTurns,
   }
 }
 
@@ -141,6 +144,7 @@ export function restoredUiState(raw: unknown): UiState {
       draft: saved.draft,
       reference: saved.reference,
       lastCompletedTurnId: saved.lastCompletedTurnId,
+      pendingReplayTurns: saved.pendingReplayTurns ?? {},
       pendingRestore: { sessionId: saved.sessionId, isTranscriptOmitted: false },
     }
   }

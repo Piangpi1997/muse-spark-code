@@ -286,6 +286,7 @@ const NO_ENVIRONMENT: EnvironmentFacts = { git: undefined }
 interface ReplayItem {
   readonly turnId: string
   readonly item: InputItem
+  readonly userMessageId?: string
   /** The background task whose terminal context this note carries (M46). */
   readonly backgroundTaskId?: string
 }
@@ -342,6 +343,7 @@ interface QueuedTurn {
   readonly turnId: string
   readonly parts: readonly TurnPart[]
   readonly displayText: string | undefined
+  readonly userMessageId?: string
   /** In memory only: the model and key identity accepted for a scheduled run. */
   readonly confirmedRequest?: ConfirmedModelRequest
   /**
@@ -367,7 +369,7 @@ interface ActiveTurn {
   readonly abort: AbortController
   readonly confirmedRequest?: ConfirmedModelRequest
   /** Steered input, appended before the next model call. */
-  readonly steered: (readonly TurnPart[])[]
+  readonly steered: { readonly parts: readonly TurnPart[]; readonly userMessageId: string }[]
   modelFailure?: unknown
   /** A goal accepted after the current model request began needs another round. */
   goalWakePending: boolean
@@ -846,6 +848,14 @@ function typedText(parts: readonly TurnPart[]): string {
     .trim()
 }
 
+function userImageAttachments(parts: readonly TurnPart[]) {
+  return parts.flatMap((part) =>
+    part.type === 'image'
+      ? [{ type: 'image', mediaType: part.mediaType, width: part.width, height: part.height }]
+      : [],
+  )
+}
+
 /** A tool's argument JSON as an object; an empty one when it is not an object. */
 function parsedArguments(argsJson: string): Record<string, unknown> {
   try {
@@ -1041,6 +1051,8 @@ export class ModelApiSession implements AgentSession {
   private readonly replay: ReplayItem[] = []
   private readonly transcript: TranscriptItem[] = []
   private readonly turnIds: string[] = []
+  /** The real last turn summarized by an accepted compaction, not inferred from replay gaps. */
+  private compactedThroughTurnId: string | undefined
   private readonly outputs = new Map<string, string>()
   private readonly permissions: PermissionEngine
   /** The rules, skills and memory of the workspace (PLAN.md D13). */
@@ -1473,20 +1485,19 @@ export class ModelApiSession implements AgentSession {
     turnId: string,
     parts: readonly TurnPart[],
     displayText: string | undefined,
+    reservedUserMessageId?: string,
   ): void {
+    const itemId = reservedUserMessageId ?? this.deps.newId()
     this.replay.push({
       turnId,
+      userMessageId: itemId,
       item: { type: 'message', role: 'user', content: this.contentParts(parts) },
     })
     const text = displayText ?? typedText(parts)
     this.firstPrompt ??= text
-    const attachments = parts.flatMap((part) =>
-      part.type === 'image'
-        ? [{ type: 'image', mediaType: part.mediaType, width: part.width, height: part.height }]
-        : [],
-    )
+    const attachments = userImageAttachments(parts)
     this.recordTranscript(turnId, {
-      itemId: this.deps.newId(),
+      itemId,
       kind: 'userMessage',
       status: COMPLETED,
       turnId,
@@ -3613,10 +3624,12 @@ export class ModelApiSession implements AgentSession {
   private drainSteered(turn: ActiveTurn): void {
     // What ended or ran meanwhile first (M46), then what the user added.
     this.settleNotes(turn.turnId)
-    for (const parts of turn.steered.splice(0)) {
+    for (const { parts, userMessageId: itemId } of turn.steered.splice(0)) {
       const text = typedText(parts)
+      const attachments = userImageAttachments(parts)
       this.replay.push({
         turnId: turn.turnId,
+        userMessageId: itemId,
         item: {
           type: 'message',
           role: 'user',
@@ -3627,23 +3640,23 @@ export class ModelApiSession implements AgentSession {
         },
       })
       this.recordTranscript(turn.turnId, {
-        itemId: this.deps.newId(),
+        itemId,
         kind: 'userMessage',
         status: COMPLETED,
         turnId: turn.turnId,
         text,
+        ...(attachments.length > 0 && { attachments }),
       })
     }
   }
 
   /** Accepted steering that missed this turn's last request becomes user turns. */
   private queuedSteered(turn: ActiveTurn): QueuedTurn[] {
-    return turn.steered.splice(0).map((parts) => ({
-      turnId: this.deps.newId(),
-      parts,
-      displayText: undefined,
-      isGoalWake: false,
-    }))
+    return turn.steered.splice(0).map(({ parts, userMessageId }) => {
+      const turnId = this.deps.newId()
+      this.emit({ type: 'userMessageTurnChanged', userMessageId, turnId })
+      return { turnId, parts, displayText: undefined, userMessageId, isGoalWake: false }
+    })
   }
 
   /** A busy goal command was not in the request already in flight. */
@@ -3893,7 +3906,7 @@ export class ModelApiSession implements AgentSession {
       if (queued.isGoalWake) {
         this.appendGoalWake(turn.turnId, queued.parts)
       } else {
-        this.appendUserMessage(turn.turnId, queued.parts, queued.displayText)
+        this.appendUserMessage(turn.turnId, queued.parts, queued.displayText, queued.userMessageId)
       }
       if (!queued.isGoalWake) {
         const replayBeforeSubmit = this.replay.length
@@ -4112,6 +4125,7 @@ export class ModelApiSession implements AgentSession {
         content: [{ type: 'input_text', text: `${MODEL_TEXT.compactionPrefix}\n\n${summary}` }],
       },
     })
+    this.compactedThroughTurnId = this.turnIds.at(-1)
     this.appendHookContexts(COMPACTION_TURN_ID, post.contexts)
     const item: ItemSnapshot = {
       itemId: this.deps.newId(),
@@ -4141,8 +4155,27 @@ export class ModelApiSession implements AgentSession {
     if (this.replay.every((entry) => entry.turnId !== COMPACTION_TURN_ID)) {
       return -1
     }
-    const replayed = new Set(this.replay.map((entry) => entry.turnId))
-    return turnIds.findLastIndex((turnId) => !replayed.has(turnId))
+    if (this.compactedThroughTurnId !== undefined) {
+      const index = turnIds.indexOf(this.compactedThroughTurnId)
+      return index === -1 ? turnIds.length - 1 : index
+    }
+    // Old session files have no boundary field. The last completed
+    // compaction row marks where the summary was accepted in transcript
+    // order; replay gaps from later rejected prompts do not move it.
+    const compactionIndex = this.transcript.findLastIndex(
+      (entry) => entry.item.kind === 'compaction' && entry.item.status === COMPLETED,
+    )
+    if (compactionIndex === -1) {
+      // A summary without its event cannot prove an earlier cut is safe.
+      return turnIds.length - 1
+    }
+    for (let index = compactionIndex - 1; index >= 0; index -= 1) {
+      const turnIndex = turnIds.indexOf(this.transcript[index]?.turnId ?? '')
+      if (turnIndex !== -1) {
+        return turnIndex
+      }
+    }
+    return -1
   }
 
   /** Only a stored key's digest scopes a job; a changed key sees no old jobs. */
@@ -4394,29 +4427,32 @@ export class ModelApiSession implements AgentSession {
     requestFor?: (turnId: string) => ConfirmedModelRequest,
   ): Promise<TurnSubmission> {
     const turnId = this.isSubagent ? `${this.sessionId}:${this.deps.newId()}` : this.deps.newId()
+    const userMessageId = this.deps.newId()
     const confirmedRequest = requestFor?.(turnId)
     const queued: QueuedTurn = {
       turnId,
       parts,
       displayText,
+      userMessageId,
       isGoalWake: false,
       ...(confirmedRequest !== undefined && { confirmedRequest }),
     }
     // A compaction is a turn too (D26): a message sent during one waits for it.
     if (this.active === undefined && this.compacting === undefined) {
       void this.runTurn(queued)
-      return Promise.resolve({ turnId, disposition: 'started' })
+      return Promise.resolve({ turnId, disposition: 'started', userMessageId })
     }
     this.queuedTurns.push(queued)
-    return Promise.resolve({ turnId, disposition: 'queued' })
+    return Promise.resolve({ turnId, disposition: 'queued', userMessageId })
   }
 
-  public steer(expectedTurnId: string, parts: readonly TurnPart[]): Promise<string> {
+  public steer(expectedTurnId: string, parts: readonly TurnPart[]): Promise<TurnSubmission> {
     if (this.active?.turnId !== expectedTurnId || this.active.abort.signal.aborted) {
       return Promise.reject(new Error(TURN_NOT_RUNNING))
     }
-    this.active.steered.push(parts)
-    return Promise.resolve(expectedTurnId)
+    const userMessageId = this.deps.newId()
+    this.active.steered.push({ parts, userMessageId })
+    return Promise.resolve({ turnId: expectedTurnId, disposition: 'steered', userMessageId })
   }
 
   /**
@@ -4821,15 +4857,21 @@ export class ModelApiSession implements AgentSession {
     return Promise.resolve(name)
   }
 
-  /**
-   * The pictures a turn's message carried, read back from the replay (M53):
-   * a rewind puts them in the composer again. Undefined for a turn the
-   * replay no longer holds (compacted, or never here).
-   */
-  public sentImages(turnId: string): readonly SentImage[] | undefined {
+  /** The exact user card's pictures, or unavailable without a durable replay link. */
+  public sentImages(turnId: string, itemId: string): readonly SentImage[] | undefined {
+    const card = this.transcript.find(
+      (entry) =>
+        entry.turnId === turnId &&
+        entry.item.kind === 'userMessage' &&
+        entry.item.itemId === itemId,
+    )
+    if (card === undefined) {
+      return undefined
+    }
     const entry = this.replay.find(
       (candidate) =>
         candidate.turnId === turnId &&
+        candidate.userMessageId === itemId &&
         candidate.item.type === 'message' &&
         candidate.item.role === 'user',
     )
@@ -4941,6 +4983,9 @@ export class ModelApiSession implements AgentSession {
       createdAt: this.createdAt,
       lastActivityAt: this.lastActivityAt,
       turnIds: [...this.turnIds],
+      ...(this.compactedThroughTurnId !== undefined && {
+        compactedThroughTurnId: this.compactedThroughTurnId,
+      }),
       ...(this.forkedFrom !== undefined && { forkedFrom: this.forkedFrom }),
       ...(this.firstPrompt !== undefined && { firstPrompt: this.firstPrompt }),
       todos: [...this.todos],
@@ -4976,6 +5021,7 @@ export class ModelApiSession implements AgentSession {
     this.replay.push(...stored.replay)
     this.transcript.push(...withoutRunning(stored.transcript))
     this.turnIds.push(...stored.turnIds)
+    this.compactedThroughTurnId = stored.compactedThroughTurnId
     // A background command its window took with it (M46): the model, told it
     // runs on, hears that it ended and its output was lost.
     for (const { item } of stored.transcript) {
@@ -5068,7 +5114,8 @@ export class ModelApiSession implements AgentSession {
       const why = lastTurnId === undefined ? 'no completed turn' : 'unknown turn'
       throw new Error(`invalid fork boundary for session ${this.sessionId}: ${why}`)
     }
-    if (cut < this.compactedThrough(completed)) {
+    const compactedIndex = this.compactedThrough(completed)
+    if (cut < compactedIndex) {
       throw new Error(UI_TEXT.rewindBeforeCompaction)
     }
     const kept = new Set(completed.slice(0, cut + 1))
@@ -5077,6 +5124,7 @@ export class ModelApiSession implements AgentSession {
     const retained = this.transcript.filter((entry) => kept.has(entry.turnId))
     target.transcript.push(...withoutRunning(retained))
     target.turnIds.push(...completed.slice(0, cut + 1))
+    target.compactedThroughTurnId = completed[compactedIndex]
     const copiedNotes = new Set(
       target.replay.flatMap((entry) =>
         entry.backgroundTaskId === undefined ? [] : [entry.backgroundTaskId],

@@ -831,13 +831,15 @@ export function App({
         cut === undefined ||
         current.sessionId === undefined ||
         entry?.kind !== 'user' ||
-        entry.turnId === undefined
+        entry.turnId === undefined ||
+        entry.turnId === current.activeTurnId
       ) {
         return
       }
       postMessage({
         type: 'rewindConversation',
         sourceSessionId: current.sessionId,
+        itemId: entry.replayItemId ?? entry.id,
         turnId: entry.turnId,
         ...(cut.type === 'afterTurn' && { lastTurnId: cut.lastTurnId }),
         text: entry.text,
@@ -1217,6 +1219,7 @@ export function App({
     body = (
       <Transcript
         entries={state.transcript}
+        activeTurnId={state.activeTurnId}
         isRunning={isRunning}
         isFocusView={state.settings.focusView}
         outputPages={state.outputPages}

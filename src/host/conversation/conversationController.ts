@@ -295,7 +295,6 @@ const SUBAGENT_ITEM_KIND = 'subagent'
 const IN_PROGRESS_STATUS = 'inProgress'
 // The unsaved files a warning names before it counts the rest (D27).
 const UNSAVED_FILES_NAMED = 3
-const STEERED_DISPOSITION = 'steered'
 // How a notice the user saw reads in the log (M39).
 const NOTICE_PREFIX = 'Shown in the panel: '
 
@@ -417,6 +416,8 @@ export class ConversationController {
   private modelId: string
   private permissionMode: PermissionMode
   private isSideChat: boolean
+  /** Muse Code does not persist a side marker: this panel may resume only its own fork. */
+  private readonly sideSessionIds = new Set<string>()
   private effort: EffortLevel = DEFAULT_EFFORT
   private isThinkingEnabled = true
   private activeTurnId: string | undefined
@@ -495,6 +496,10 @@ export class ConversationController {
   public constructor(private readonly deps: ConversationDeps) {
     this.modelId = deps.modelId
     this.isSideChat = deps.surface.isSideChat === true
+    const restoredSideId = this.isSideChat ? deps.surface.takeRestoredSessionId() : undefined
+    if (restoredSideId !== undefined) {
+      this.sideSessionIds.add(restoredSideId)
+    }
     this.permissionMode = this.isSideChat ? 'plan' : deps.initialPermissionMode
     if (this.permissionMode === BYPASS_MODE && !deps.isBypassAllowed()) {
       // The initial-mode setting alone cannot switch approvals off; the
@@ -588,9 +593,15 @@ export class ConversationController {
     if (this.sessionRecords === undefined) {
       return
     }
+    const sessions: ReturnType<typeof toSessionRow>[] = []
+    for (const record of this.sessionRecords.values()) {
+      if (!this.deps.surface.isSideChat || this.sideSessionIds.has(record.sessionId)) {
+        sessions.push(toSessionRow(record))
+      }
+    }
     this.post({
       type: 'sessionList',
-      sessions: Array.from(this.sessionRecords.values(), (record) => toSessionRow(record)),
+      sessions,
       archivedIds: [...this.deps.sessions.archivedIds()],
     })
   }
@@ -1532,6 +1543,9 @@ export class ConversationController {
     session: AgentSession,
     origin: SessionOrigin,
   ): Promise<void> {
+    if (origin === 'started' && this.deps.surface.isSideChat === true) {
+      this.sideSessionIds.add(session.sessionId)
+    }
     this.deps.log.info(
       `Session ${session.sessionId} ${origin} on the ${host.info.kind} backend, model ${session.modelId}`,
     )
@@ -1780,12 +1794,12 @@ export class ConversationController {
     })
   }
 
-  /** A side panel may not turn an ordinary Model API session into a side chat. */
+  /** A side panel may only load its own fork; Model API also checks its durable marker. */
   private canLoadIntoSurface(host: AgentHost, loaded: LoadedSession): boolean {
     return (
       this.deps.surface.isSideChat !== true ||
-      host.info.kind !== 'modelApi' ||
-      loaded.record.sideChat === true
+      (this.sideSessionIds.has(loaded.session.sessionId) &&
+        (host.info.kind !== 'modelApi' || loaded.record.sideChat === true))
     )
   }
 
@@ -1801,6 +1815,15 @@ export class ConversationController {
     notice: string,
     origin: SessionOrigin,
   ): Promise<void> {
+    if (
+      origin === 'forked' &&
+      this.deps.surface.isSideChat === true &&
+      this.session !== undefined &&
+      this.sideSessionIds.has(this.session.sessionId) &&
+      (host.info.kind !== 'modelApi' || loaded.record.sideChat === true)
+    ) {
+      this.sideSessionIds.add(loaded.session.sessionId)
+    }
     if (!this.canLoadIntoSurface(host, loaded)) {
       loaded.session.dispose()
       throw new Error(UI_TEXT.sideChatSessionOnly)
@@ -1855,6 +1878,10 @@ export class ConversationController {
   }
 
   private async resumeSession(sessionId: string): Promise<void> {
+    if (this.deps.surface.isSideChat === true && !this.sideSessionIds.has(sessionId)) {
+      this.notice('warning', UI_TEXT.sideChatSessionOnly)
+      return
+    }
     if (this.refuseAction() !== undefined || this.session?.sessionId === sessionId) {
       return
     }
@@ -1915,13 +1942,19 @@ export class ConversationController {
   private async rewindConversation(
     message: Extract<ConversationMessage, { type: 'rewindConversation' }>,
   ): Promise<void> {
+    if (message.turnId === this.activeTurnId) {
+      return
+    }
     try {
       const forkable = await this.forkableSource(message.sourceSessionId)
       if (forkable === undefined) {
         return
       }
       const { source, host } = forkable
-      const images = source.sentImages?.(message.turnId) ?? []
+      if (message.turnId === this.activeTurnId) {
+        return
+      }
+      const images = source.sentImages?.(message.turnId, message.itemId) ?? []
       if (message.lastTurnId === undefined) {
         this.clear()
       } else {
@@ -2042,10 +2075,7 @@ export class ConversationController {
   ): Promise<TurnSubmission> {
     if (this.activeTurnId !== undefined) {
       try {
-        return {
-          turnId: await session.steer(this.activeTurnId, parts),
-          disposition: STEERED_DISPOSITION,
-        }
+        return await session.steer(this.activeTurnId, parts)
       } catch (error: unknown) {
         this.deps.log.warn(`turn/steer failed (${describe(error)}); submitting as a new turn`)
       }
@@ -2159,7 +2189,14 @@ export class ConversationController {
       if (submission.disposition !== QUEUED_DISPOSITION && !this.finishedTurns.has(turnId)) {
         this.activeTurnId = turnId
       }
-      this.post({ type: 'turnAccepted', localId, turnId })
+      this.post({
+        type: 'turnAccepted',
+        localId,
+        turnId,
+        ...(submission.userMessageId !== undefined && {
+          userMessageId: submission.userMessageId,
+        }),
+      })
       this.noteActivity()
     } catch (error: unknown) {
       const reason = describe(error)

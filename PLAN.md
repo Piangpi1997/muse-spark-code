@@ -1916,6 +1916,22 @@ tools regardless of a server's read-only hint. The M52 join adds core refusal
 of scheduled create, cancel and run before storage, claim or paid use. Focused
 tests pass; final side-branch certification remains open (M53 below).
 
+PR #41 review narrows the rewind boundary: a steered user card shares its
+turn with the original prompt, so its fork cut must use the preceding
+distinct completed turn or a fresh conversation. Rewind of a selected turn
+still running is hidden and refused until its steered image replay settles.
+Restored Model API image
+bytes must match the selected user card's persisted item identity, never the
+first user-role replay entry with the same turn ID. Accepted compaction must
+record its actual summarized turn across save and resume; a missing replay
+entry alone does not prove a compaction boundary. A Muse Code side panel may
+resume only its own side fork, never another ordinary session from History.
+Live cards retain a webview-local ID until History reload, so Model API turn
+acceptance must also return the backend-reserved replay item ID. Keep the
+local ID for UI reconciliation and use that durable ID for image restoration,
+including steering, queued turns and acknowledgements arriving after a turn
+already completed; never treat a webview-supplied ID as a durable backend ID.
+
 ## 3. Open questions (need the owner)
 
 | #   | Question                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            | Default until answered                                                |
@@ -4753,6 +4769,41 @@ audit. The capture and red drill are in `docs/certification/m52.md`; ordered
 integration and full gates on the later tree remain open.
 
 ### M53 — Conversation rewind and side chat (D46)
+
+**PR #41 live-card image follow-up (focused proof):** the webview's local user-card
+ID and Model API's replay user-message ID differ before any History reload.
+`turnAccepted` must carry the backend's ID to the card without replacing its
+local UI ID, including a late acceptance. A promoted steer may later receive
+a new turn ID, so its ID-keyed correction must work on either event order.
+Snapshot validation must preserve the replay ID. Five targeted cases failed
+before the fix and seven passed after it. Three affected suites passed 273/273;
+localization, changed-file lint, formatting and duplication reported zero
+problems. The joined-tree gates remain required before this follow-up is
+certified.
+
+**PR #41 review follow-up (focused proof):** a steered user card can share its turn
+ID with the previous card, so its fork cut must use an earlier distinct turn
+or hide conversation rewind when none exists. Image restoration must identify
+the selected card as well as its turn. A Muse Code side panel may resume only
+its own side fork from History or after a window reload; a foreign session must
+be refused before its Plan mode or goal can change. Five focused assertions
+failed first; disabling the side guard made its History test fail too. Seven
+targeted tests then passed after the source fix; four affected suites passed
+433/433 with all five TypeScript projects, lint, localization and formatting
+green. An active selected turn remained a further gap: menu and forged
+controller request both failed red drills, then were blocked before a fork.
+Model API replay now links
+each primary or steered user message to its exact transcript card; accepted
+compaction stores its real summarized turn through save and resume. Both core
+regressions failed before the fix and passed afterward, including older
+session files. Exact-tree gates and PR review remain required before this
+follow-up is complete.
+
+**Further PR #41 live-card correction pending:** an immediate Model API
+image rewind before History reload still uses the webview-local card ID while
+the durable replay uses a different generated ID. Red-test primary, steered,
+queued and late-acceptance paths; carry the generated ID through acceptance
+without replacing the local row ID, then rerun the exact combined gate.
 
 **Status 2026-09-26: M52 join staged; corrected M51 review and certification
 pending** (`docs/certification/m53.md`). Focused tests and merge red drills

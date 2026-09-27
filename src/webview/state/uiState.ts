@@ -186,6 +186,8 @@ export interface UiState {
   readonly activeTurnId: string | undefined
   /** The last turn the host reported finished (M25): a late `turnAccepted` for it starts nothing. */
   readonly lastCompletedTurnId: string | undefined
+  /** Promoted-steer turn corrections received before their local card is accepted. */
+  readonly pendingReplayTurns: Readonly<Record<string, string>>
   readonly usage: UsageSummary | undefined
   readonly context: ContextSummary | undefined
   /** undefined until the host answered `readUsage` for this window. */
@@ -328,6 +330,7 @@ export const initialUiState: UiState = {
   transcript: [],
   activeTurnId: undefined,
   lastCompletedTurnId: undefined,
+  pendingReplayTurns: {},
   usage: undefined,
   context: undefined,
   usageReport: undefined,
@@ -385,6 +388,14 @@ function without<T>(record: Readonly<Record<string, T>>, key: string): Readonly<
   return Object.hasOwn(record, key)
     ? Object.fromEntries(Object.entries(record).filter(([name]) => name !== key))
     : record
+}
+
+/** Keep only corrections that could still belong to pending user cards. */
+function boundedReplayTurns(
+  record: Readonly<Record<string, string>>,
+  pendingCount: number,
+): Readonly<Record<string, string>> {
+  return pendingCount === 0 ? {} : Object.fromEntries(Object.entries(record).slice(-pendingCount))
 }
 
 /** Queue a sentence for the live region; nothing to say leaves the state alone. */
@@ -1290,6 +1301,39 @@ function applyAgentEvent(state: UiState, event: AgentEvent, at: number): UiState
     case 'turnCompleted': {
       return completeTurn(state, event, at)
     }
+    case 'userMessageTurnChanged': {
+      const card = state.transcript.findLast(
+        (entry) =>
+          entry.kind === 'user' && (entry.replayItemId ?? entry.id) === event.userMessageId,
+      )
+      if (card?.kind === 'user') {
+        let activeTurnId = state.activeTurnId
+        if (card.turnId !== undefined && activeTurnId === card.turnId) {
+          activeTurnId = event.turnId === state.lastCompletedTurnId ? undefined : event.turnId
+        }
+        return {
+          ...state,
+          activeTurnId,
+          transcript: updateEntry(state.transcript, card.id, (entry) =>
+            entry.kind === 'user' ? { ...entry, turnId: event.turnId } : entry,
+          ),
+        }
+      }
+      const pendingCount = state.transcript.filter(
+        (entry) => entry.kind === 'user' && entry.status === 'pending',
+      ).length
+      if (pendingCount === 0) {
+        return state
+      }
+      const pending = {
+        ...without(state.pendingReplayTurns, event.userMessageId),
+        [event.userMessageId]: event.turnId,
+      }
+      return {
+        ...state,
+        pendingReplayTurns: boundedReplayTurns(pending, pendingCount),
+      }
+    }
     case 'turnRetry': {
       const seconds = Math.round(event.retryDelayMs / MILLISECONDS_PER_SECOND)
       return withNotice(
@@ -1487,6 +1531,7 @@ function clearedConversation(state: UiState): UiState {
     childTranscripts: {},
     childOwners: {},
     strayItems: {},
+    pendingReplayTurns: {},
     unsentAttachments: {},
     attachmentsToRelease: [],
     banner: undefined,
@@ -1772,6 +1817,7 @@ function applyHostMessage(state: UiState, message: HostToWebviewMessage, at: num
           schedules: isSameSession ? state.schedules : [],
           activeTurnId: message.activeTurnId,
           lastCompletedTurnId: undefined,
+          pendingReplayTurns: {},
           usage: isSameSession ? state.usage : undefined,
           context: isSameSession ? state.context : undefined,
           outputPages: {},
@@ -1786,14 +1832,34 @@ function applyHostMessage(state: UiState, message: HostToWebviewMessage, at: num
     case 'turnAccepted': {
       // A fast turn can finish before its acceptance arrives (M25); the
       // acceptance then marks the card sent and starts nothing.
-      const isFinished = message.turnId === state.lastCompletedTurnId
+      const turnId =
+        (message.userMessageId === undefined
+          ? undefined
+          : own(state.pendingReplayTurns, message.userMessageId)) ?? message.turnId
+      const isFinished = turnId === state.lastCompletedTurnId
+      const pending =
+        message.userMessageId === undefined
+          ? state.pendingReplayTurns
+          : without(state.pendingReplayTurns, message.userMessageId)
+      const pendingCount = state.transcript.filter(
+        (entry) =>
+          entry.kind === 'user' && entry.status === 'pending' && entry.id !== message.localId,
+      ).length
       return {
         ...state,
-        activeTurnId: isFinished ? state.activeTurnId : message.turnId,
-        strayItems: without(state.strayItems, message.turnId),
+        activeTurnId: isFinished ? state.activeTurnId : turnId,
+        strayItems: without(state.strayItems, turnId),
+        pendingReplayTurns: boundedReplayTurns(pending, pendingCount),
         unsentAttachments: without(state.unsentAttachments, message.localId),
         transcript: updateEntry(state.transcript, message.localId, (entry) =>
-          entry.kind === 'user' ? { ...entry, status: 'sent', turnId: message.turnId } : entry,
+          entry.kind === 'user'
+            ? {
+                ...entry,
+                status: 'sent',
+                turnId,
+                ...(message.userMessageId !== undefined && { replayItemId: message.userMessageId }),
+              }
+            : entry,
         ),
       }
     }
@@ -2136,8 +2202,9 @@ export type ForkCut =
 
 /**
  * The cut point for forking before the given user card: the last turn of
- * an earlier user message, or a fresh conversation when it is the first.
- * Undefined when the id is not a sent user card.
+ * an earlier distinct turn, or a fresh conversation when it is the first.
+ * A later message steered into the first turn has no completed-turn boundary.
+ * Undefined when the id is not a sent user card or has no safe cut.
  */
 export function forkCutBefore(
   transcript: readonly TranscriptEntry[],
@@ -2148,12 +2215,18 @@ export function forkCutBefore(
   if (target?.kind !== 'user' || target.status !== 'sent') {
     return undefined
   }
-  const earlier = transcript
-    .slice(0, index)
-    .findLast((entry) => entry.kind === 'user' && entry.turnId !== undefined)
-  return earlier?.kind === 'user' && earlier.turnId !== undefined
-    ? { type: 'afterTurn', lastTurnId: earlier.turnId }
-    : { type: 'fresh' }
+  const preceding = transcript.slice(0, index)
+  const earlier = preceding.findLast(
+    (entry) =>
+      entry.kind === 'user' && entry.turnId !== undefined && entry.turnId !== target.turnId,
+  )
+  const hasEarlierTurn = preceding.some(
+    (entry) => entry.kind === 'user' && entry.turnId !== undefined,
+  )
+  if (earlier?.kind === 'user' && earlier.turnId !== undefined) {
+    return { type: 'afterTurn', lastTurnId: earlier.turnId }
+  }
+  return hasEarlierTurn ? undefined : { type: 'fresh' }
 }
 
 /**

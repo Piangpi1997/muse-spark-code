@@ -180,6 +180,8 @@ function setup(
     /** VS Code's workspace trust (M46: Restricted Mode runs no `!` command). */
     isWorkspaceTrusted?: boolean
     isSideChat?: boolean
+    /** The side panel's original fork ID, including after window reload. */
+    sideSessionId?: string
     openSideChat?: (sessionId: string) => void
     /** Hold a host lookup after the action captured its source session. */
     hostGate?: { current: Promise<undefined> | undefined; onWait?: () => void }
@@ -273,6 +275,7 @@ function setup(
   )
   const auth = fakeAuth(options.status)
   const surface = fakeSurface('s', options.isSideChat)
+  surface.takeRestoredSessionId.mockReturnValue(options.sideSessionId)
   const openExternal = vi.fn<(url: string) => void>()
   const hostActions: HostAction[] = []
   let picked: PickedFile[] = []
@@ -2003,6 +2006,7 @@ describe('ConversationController: session history (M6)', () => {
     await t.controller.handle({
       type: 'rewindConversation',
       sourceSessionId: 's1',
+      itemId: 'u2',
       turnId: 't2',
       lastTurnId: 't1',
       text: 'second',
@@ -2016,6 +2020,7 @@ describe('ConversationController: session history (M6)', () => {
     await t.controller.handle({
       type: 'rewindConversation',
       sourceSessionId: 'forked',
+      itemId: 'u1',
       turnId: 't1',
       text: 'first',
       imageCount: 1,
@@ -2023,6 +2028,56 @@ describe('ConversationController: session history (M6)', () => {
     expect(t.surface.posted).toContainEqual({ type: 'conversationCleared' })
     expect(t.surface.posted).toContainEqual({ type: 'restoreDraft', text: 'first' })
     expect(t.surface.posted).toContainEqual({
+      type: 'notice',
+      level: 'warning',
+      text: UI_TEXT.rewindImagesUnavailable,
+    })
+  })
+
+  it('restores a completed live Model API image before History reload (M53)', async () => {
+    const t = setup()
+    const { api, controller } = modelApiController(t, {
+      newId: (() => {
+        let nextId = 0
+        return () => `id${String(++nextId)}`
+      })(),
+    })
+    await attachPng({ controller })
+    const attachment = t.surface.posted.findLast((message) => message.type === 'attachmentAdded')
+    if (attachment?.type !== 'attachmentAdded') {
+      throw new Error('expected attachment')
+    }
+    api.script({ text: 'I saw the image' })
+    await controller.handle({
+      type: 'sendMessage',
+      localId: 'live-card',
+      text: 'look at this',
+      attachmentIds: [attachment.attachment.id],
+    })
+    await vi.waitFor(() => {
+      expect(agentEvents(t).some((event) => event.type === 'turnCompleted')).toBe(true)
+    })
+    const accepted = t.surface.posted.findLast((message) => message.type === 'turnAccepted')
+    const info = t.surface.posted.findLast((message) => message.type === 'sessionInfo')
+    if (accepted?.type !== 'turnAccepted' || info?.type !== 'sessionInfo') {
+      throw new Error('expected live turn acceptance')
+    }
+    expect(accepted.userMessageId).toEqual(expect.any(String))
+    const attachmentCount = t.surface.posted.filter(
+      (message) => message.type === 'attachmentAdded',
+    ).length
+    await controller.handle({
+      type: 'rewindConversation',
+      sourceSessionId: info.sessionId ?? '',
+      itemId: accepted.userMessageId ?? '',
+      turnId: accepted.turnId,
+      text: 'look at this',
+      imageCount: 1,
+    })
+    expect(t.surface.posted.filter((message) => message.type === 'attachmentAdded')).toHaveLength(
+      attachmentCount + 1,
+    )
+    expect(t.surface.posted).not.toContainEqual({
       type: 'notice',
       level: 'warning',
       text: UI_TEXT.rewindImagesUnavailable,
@@ -2038,6 +2093,7 @@ describe('ConversationController: session history (M6)', () => {
     await t.controller.handle({
       type: 'rewindConversation',
       sourceSessionId: 'another-session',
+      itemId: 'u1',
       turnId: 't1',
       text: 'stale draft',
       imageCount: 0,
@@ -2045,6 +2101,25 @@ describe('ConversationController: session history (M6)', () => {
     expect(t.server.requestsFor('session/fork')).toHaveLength(0)
     expect(t.surface.posted).not.toContainEqual({ type: 'conversationCleared' })
     expect(t.surface.posted).not.toContainEqual({ type: 'restoreDraft', text: 'stale draft' })
+  })
+
+  it('refuses a forged rewind of the active turn before steered image replay settles (M53)', async () => {
+    const t = withHistory()
+    await t.send('l1', 'running')
+    await t.controller.handle({
+      type: 'rewindConversation',
+      sourceSessionId: 's1',
+      itemId: 'steered-user-card',
+      turnId: 't1',
+      lastTurnId: 'older',
+      text: 'steered with image',
+      imageCount: 1,
+    })
+    expect(t.server.requestsFor('session/fork')).toHaveLength(0)
+    expect(t.surface.posted).not.toContainEqual({
+      type: 'restoreDraft',
+      text: 'steered with image',
+    })
   })
 
   it('does not rewind another session if the surface clears during host lookup (M53)', async () => {
@@ -2063,6 +2138,7 @@ describe('ConversationController: session history (M6)', () => {
     const rewinding = t.controller.handle({
       type: 'rewindConversation',
       sourceSessionId: 's1',
+      itemId: 'u1',
       turnId: 't1',
       text: 'old draft',
       imageCount: 0,
@@ -2186,6 +2262,39 @@ describe('ConversationController: session history (M6)', () => {
     await controller.restoreSession(ordinary.sessionId)
     await controller.handle({ type: 'resumeSession', sessionId: ordinary.sessionId })
     expect(t.surface.posted.some((message) => message.type === 'historyLoaded')).toBe(false)
+  })
+
+  it('keeps a Muse Code side panel on its own fork across reload and History selection (M53)', async () => {
+    const t = withHistory({ isSideChat: true, sideSessionId: 'forked' })
+    await t.controller.restoreSession('forked')
+    expect(t.server.requestsFor('session/resume')).toHaveLength(1)
+    expect(t.surface.posted).toContainEqual(
+      expect.objectContaining({ type: 'sessionInfo', sessionId: 'forked', sideChat: true }),
+    )
+    t.server.handle('session/list', () => ({
+      sessions: [{ ...storedSession, sessionId: 'forked' }, storedSession],
+      nextCursor: null,
+    }))
+    await t.controller.handle({ type: 'listSessions' })
+    expect(t.surface.posted.at(-1)).toMatchObject({
+      type: 'sessionList',
+      sessions: [{ sessionId: 'forked' }],
+    })
+    t.surface.posted.length = 0
+    await t.controller.handle({ type: 'resumeSession', sessionId: 'old' })
+    expect(t.server.requestsFor('session/resume')).toHaveLength(1)
+    expect(
+      t.server
+        .requestsFor('session/setApprovalMode')
+        .some((request) => request.params?.['sessionId'] === 'old'),
+    ).toBe(false)
+    expect(t.server.requestsFor('goal/clear')).toHaveLength(0)
+    expect(t.surface.posted.some((message) => message.type === 'historyLoaded')).toBe(false)
+    expect(t.surface.posted).toContainEqual({
+      type: 'notice',
+      level: 'warning',
+      text: UI_TEXT.sideChatSessionOnly,
+    })
   })
 
   it('renames the session to the canonical name, and reports a refusal', async () => {
@@ -2457,11 +2566,14 @@ describe('ConversationController: backends and tiers (M7)', () => {
         (message) => message.type === 'notice' && message.text.includes('sandbox'),
       ),
     ).toBe(false)
-    expect(t.surface.posted).toContainEqual({
-      type: 'turnAccepted',
-      localId: 'l1',
-      turnId: 'fixed',
-    })
+    expect(t.surface.posted).toContainEqual(
+      expect.objectContaining({
+        type: 'turnAccepted',
+        localId: 'l1',
+        turnId: 'fixed',
+        userMessageId: expect.any(String),
+      }),
+    )
   })
 })
 

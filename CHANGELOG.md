@@ -12,6 +12,14 @@ while they are (PLAN.md D30, D34).
 
 ### Added
 
+- **M53 review fixes (pending final gates).** A steered user message now cuts
+  conversation rewind at an earlier distinct turn; an unsafe cut is hidden.
+  Image restoration names the selected user card. A Muse Code side panel's
+  History and reload stay bound to its own side fork. Live Model API cards keep
+  their UI IDs while carrying the backend replay ID, so an image can be
+  restored before a History reload. Promoted steers correct their turn on
+  either event order without restarting a completed turn.
+
 - **Optional branch CI.** The cross-platform CI can be run manually on a
   pushed branch when a pull request is not being opened. It uses the same
   shared build as pull requests. The normal path uses local and VM gates as
@@ -102,6 +110,8 @@ while they are (PLAN.md D30, D34).
   Rewind and side-chat clicks carry their source session, so a late request
   is ignored if that tab has moved to another session. Closing a
   side chat returns focus to its original tab while that tab remains open.
+  Conversation rewind waits for the selected turn to finish so pending steered
+  images cannot be mistaken for saved replay.
   Its locked Plan mode leaves `Shift+Tab` available for keyboard navigation.
   Muse Code's Windows 1.3.0 fork limitation still hides these actions.
 

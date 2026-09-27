@@ -202,7 +202,10 @@ describe('MuseCodeHost', () => {
       { type: 'text' as const, text: 'more' },
       { type: 'image' as const, base64Data: 'AAAA', mediaType: 'image/png', width: 1, height: 1 },
     ]
-    await expect(session.steer('turn-2', parts)).resolves.toBe('turn-1')
+    await expect(session.steer('turn-2', parts)).resolves.toEqual({
+      turnId: 'turn-1',
+      disposition: 'steered',
+    })
     expect(server.requestsFor('turn/steer')[0]?.params).toMatchObject({
       sessionId: session.sessionId,
       expectedTurnId: 'turn-2',

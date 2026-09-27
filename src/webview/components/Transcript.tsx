@@ -12,7 +12,12 @@ import { memo, type ReactNode, useDeferredValue, useRef, useState } from 'react'
 import type { CitationSummary, QuestionAnswer } from '../../shared/agentEvents'
 import { UI_TEXT } from '../../shared/constants'
 import { plural } from '../../shared/l10n/text'
-import { type OutputPage, outputPageKey, type TranscriptEntry } from '../state/uiState'
+import {
+  forkCutBefore,
+  type OutputPage,
+  outputPageKey,
+  type TranscriptEntry,
+} from '../state/uiState'
 import { splitForStreaming, splitOpenFence } from '../streamSplit'
 import { useDismiss } from '../useDismiss'
 import type { ApprovalDecisionInput } from './ApprovalCard'
@@ -65,6 +70,8 @@ export interface TranscriptProps {
   readonly onFork?: ((entryId: string) => void) | undefined
   readonly onRewind?: ((entryId: string) => void) | undefined
   readonly onRewindConversation?: ((entryId: string) => void) | undefined
+  /** A still-running turn has no settled replay for a steered user card. */
+  readonly activeTurnId?: string | undefined
   /** A reply's actions menu (M17); absent while no session exists. */
   readonly onReply?: ((entryId: string) => void) | undefined
   /** The row whose highlighted text has the Copy / Ask / Comment menu open (M17). */
@@ -540,6 +547,7 @@ function TranscriptList(props: TranscriptProps) {
     onFork,
     onRewind,
     onRewindConversation,
+    activeTurnId,
     onReply,
     quoteMenuEntryId,
     onQuote,
@@ -585,13 +593,16 @@ function TranscriptList(props: TranscriptProps) {
   const renderEntry = (entry: TranscriptEntry) => {
     switch (entry.kind) {
       case 'user': {
+        const canForkHere = forkCutBefore(entries, entry.id) !== undefined
         return (
           <UserCard
             key={entry.id}
             entry={entry}
-            onFork={onFork}
+            onFork={canForkHere ? onFork : undefined}
             onRewind={onRewind}
-            onRewindConversation={onRewindConversation}
+            onRewindConversation={
+              canForkHere && entry.turnId !== activeTurnId ? onRewindConversation : undefined
+            }
             quoteMenu={quoteMenuFor(entry.id)}
           />
         )

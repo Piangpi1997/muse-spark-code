@@ -518,9 +518,9 @@ export class MuseSession implements AgentSession {
    * steer when that turn is no longer the running one, so input meant for one
    * turn never leaks into the next; callers fall back to `sendTurn`.
    */
-  public async steer(expectedTurnId: string, parts: readonly TurnPart[]): Promise<string> {
+  public async steer(expectedTurnId: string, parts: readonly TurnPart[]): Promise<TurnSubmission> {
     const result = await this.command('turn/steer', { expectedTurnId, input: parts })
-    return turnSteerResultSchema.parse(result).turnId
+    return { turnId: turnSteerResultSchema.parse(result).turnId, disposition: 'steered' }
   }
 
   /** Ask the host to stop the running turn gracefully. */
