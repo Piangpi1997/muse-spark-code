@@ -1630,6 +1630,15 @@ function applyHostMessage(state: UiState, message: HostToWebviewMessage, at: num
     case 'authState': {
       return {
         ...state,
+        // Account-bound prompts disappear on sign-out or backend switch.
+        // A CLI sign-in attempt can be transient while the Model API key and
+        // session stay live; keep its list until auth actually changes.
+        schedules:
+          message.backend === 'modelApi' &&
+          (message.status === 'signedIn' ||
+            (message.status === 'signingIn' && state.auth.backend === 'modelApi'))
+            ? state.schedules
+            : [],
         auth: {
           status: message.status,
           detail: message.detail,

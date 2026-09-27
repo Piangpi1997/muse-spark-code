@@ -3915,6 +3915,38 @@ documented tree `0b990287` passed full local Windows quality (2,034 tests,
 gitleaks and SAST zero) and a process audit of zero. The verified pre-PR
 workflow receipt below changes documentation again, so the final candidate
 must receive its own exact-tree gate before commit and branch dispatch.
+The second M51 branch dispatch on `d9602f9` passed all other jobs but Windows
+again failed the real hook stdin fixture: with an adequate outer deadline,
+`more` returned exit code 1 in hosted CI. The test must exercise the same
+PowerShell-to-cmd hook runner using a deterministic Node stdin echo child,
+not a terminal pager whose behavior depends on runner console state. Keep
+the 10 second product deadline and the assertions that stdin is echoed,
+exit is zero and no timeout occurred. The exact staged tree `e46ece3`
+passed the focused real hook test on WIN-11-VM after `npm ci`, with zero
+checkout-owned processes. Repeat exact documented-tree local quality and
+branch dispatch before opening a PR.
+The third M51 pre-PR run on `348ac4f` failed the same Windows hook case
+after 10,962 ms even with the Node echo child. The next bounded diagnostic
+must report the controlled fixture's exit code, timeout/cancel flags and
+stdout/stderr on failure, without secrets. Do not infer a terminal-pager
+cause or relax the 10 second product limit before that result is known;
+the PowerShell-to-cmd stdin forwarding boundary may need a runtime fix.
+Run `36282344418` then reported `isTimedOut: true`, `elapsedMs: 11027`,
+empty stdout/stderr and no cancellation. Microsoft documents that
+[stdin is not connected to PowerShell's pipeline for input](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_redirection?view=powershell-5.1),
+while [`Console.In` reads standard input](https://learn.microsoft.com/en-us/dotnet/api/system.console.in?view=netframework-4.8.1).
+On Windows, the hook wrapper now explicitly reads its UTF-8 stdin and pipes
+it to cmd, with the existing 256 KiB hook-input cap enforced before spawn;
+the job-object join, allowlisted environment, 10 second test operation cap
+and child command line stay intact. A local Unicode JSON echo drill passed;
+removing the adapter cap made its oversized-input guard test fail before
+restoration. Exact staged tree `c977c836` passed a real Unicode+EOF hook
+drill and full WIN-11-VM `npm run quality`: 2,036 tests passed (3 skipped),
+304 accessible pages returned with zero violations/undecided/missing, and
+audit, gitleaks and SAST found zero. The remote tree matched before/after
+and process audit found zero checkout-owned processes. This receipt changes
+documentation, so final exact local Windows and hosted branch proof remain
+before a PR.
 An M54 integration review found a separate hook-stdin privacy boundary:
 `input_text`, developer instructions, tool descriptions and assistant output
 can themselves contain pasted `data:` media URLs. The common model-call
@@ -4558,6 +4590,17 @@ that state before the paid badge rendered. A protocol test confirmed the
 rejection. Adding `scheduledRuns: 0` to the shared fixture made the targeted
 scenario pass all four themes with zero findings. This is pre-fix full-gate
 evidence; the corrected exact tree still needs its full rerun.
+The corrected staged tree `8ed1a123a584a9e5ac6dc6cef37efd342c92afc7`
+then passed literal WIN-11-VM full quality: 2,075 unit tests passed, 312
+accessibility pages had zero findings or missing results, and audit, secret,
+SAST and PowerShell checks were clean. Its commit `bb9fd538` preserves that
+tested tree. This receipt precedes the later M51 fixture and hook-stdin fix.
+M55 review found one further display edge: sign-out left a prior schedule
+list in webview state even though the core would refuse its key. A reducer
+test failed with the old prompt still visible, then passed after auth-state
+clearing. Backend switches also clear it; transient CLI sign-in on the still
+active Model API backend preserves it until auth actually changes. The
+webview suite passed 98/98 after the fix. Final exact-tree gates remain open.
 The native price-modal decline was observed with a fake Model API in an
 ordinary VS Code development window; see the receipt below. Meta's [interactive
 guide](https://dev.meta.ai/docs/muse-code/interactive) defines `/loop` as a

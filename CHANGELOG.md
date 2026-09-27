@@ -62,6 +62,8 @@ while they are (PLAN.md D30, D34).
   cannot be hidden by a post-tool hook stop.
   Model-call hook text previews also remove pasted media data URLs before
   shortening user text, instructions, tool descriptions or assistant output.
+  Windows hook commands now receive their bounded UTF-8 JSON stdin through
+  PowerShell's explicit pipe to cmd; the payload stays off command lines.
 
 - **Model API scheduled prompts** (M52). `/loop` stores an interval or local
   five-field cron prompt in the current conversation; the panel lists due
@@ -77,7 +79,9 @@ while they are (PLAN.md D30, D34).
   a slow job read cannot show another key's prompts after an account switch.
   The paid row and tally appear only when the first request starts. Muse Code's
   native cron remains available through its model tools; MSP offers no direct
-  scheduler controls.
+  scheduler controls. Sign-out or a backend switch clears account-bound
+  prompts from the panel immediately; a temporary CLI sign-in attempt keeps
+  the still-active Model API list.
 
 - **Conversation rewind and side chats** (M53, PLAN.md D46). A sent message
   can branch before itself and return its prompt to the composer. Model API
@@ -109,8 +113,6 @@ while they are (PLAN.md D30, D34).
   are refused. The PDF page budget reads the page tree's own count even
   when nested metadata has another count, preventing an oversized request.
   Stop removes tool-read media from future replay if its turn ends early.
-
-
 
 - **Image edits** (M44, PLAN.md D37). With image generation on, the model
   can also change one workspace image, or combine up to four, by a prompt,

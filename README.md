@@ -535,6 +535,8 @@ prompt, cadence, next run or due state, run count, and ID, with **Run now**
 and **Cancel schedule** controls.
 
 Each job belongs to this workspace, conversation, and stored Model API key.
+Signing out or switching backends hides its prompts immediately; a temporary
+CLI sign-in attempt leaves the still-active Model API list in place.
 It expires after seven days. Only a loaded conversation checks for due work;
 closing VS Code stops checks. A missed recurring interval leaves one due
 occurrence, without a backlog. A due prompt **never runs by itself**: turn
