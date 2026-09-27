@@ -60,8 +60,8 @@ while they are (PLAN.md D30, D34).
   cannot be hidden by a post-tool hook stop.
   Model-call hook text previews also remove pasted media data URLs before
   shortening user text, instructions, tool descriptions or assistant output.
-  Windows hook commands now receive their bounded UTF-8 JSON stdin through
-  PowerShell's explicit pipe to cmd; the payload stays off command lines.
+  Hook stdin is bounded again at the host adapter before process launch;
+  the payload stays off command lines.
 - **Image edits** (M44, PLAN.md D37). With image generation on, the model
   can also change one workspace image, or combine up to four, by a prompt,
   into a new PNG (`edit_image`, Meta's `/images/edits`, $0.01 per image).

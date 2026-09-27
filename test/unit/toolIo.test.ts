@@ -491,7 +491,7 @@ describe('createToolIo (real file system and shell)', () => {
         : `${posixQuoted(process.execPath)} -e ${posixQuoted(echo)}`
     const payload = '{"session_id":"fixture","text":"héllo ✓"}\n'
     const startedAt = Date.now()
-    const result = await runHook(command, payload, root, 30_000)
+    const result = await runHook(command, payload, root, 60_000)
     if (result.exitCode !== 0) {
       // Fixed fixture: paths and the harmless echo expression are the only
       // command text; no model key, user input or workspace file is involved.
@@ -511,7 +511,7 @@ describe('createToolIo (real file system and shell)', () => {
     expect(result.stdout).toContain('"session_id":"fixture"')
     expect(result.stdout).toContain('héllo ✓')
     expect(result.isTimedOut).toBe(false)
-  }, 60_000)
+  }, 90_000)
 
   it('refuses hook stdin over its cap before launching an interpreter', async () => {
     const runHook = io().runHook

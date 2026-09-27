@@ -3857,10 +3857,10 @@ Run `36282344418` then reported `isTimedOut: true`, `elapsedMs: 11027`,
 empty stdout/stderr and no cancellation. Microsoft documents that
 [stdin is not connected to PowerShell's pipeline for input](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_redirection?view=powershell-5.1),
 while [`Console.In` reads standard input](https://learn.microsoft.com/en-us/dotnet/api/system.console.in?view=netframework-4.8.1).
-On Windows, the hook wrapper now explicitly reads its UTF-8 stdin and pipes
-it to cmd, with the existing 256 KiB hook-input cap enforced before spawn;
-the job-object join, allowlisted environment, 10 second test operation cap
-and child command line stay intact. A local Unicode JSON echo drill passed;
+A diagnostic Windows wrapper explicitly read UTF-8 stdin and piped it to
+cmd, with the existing 256 KiB hook-input cap enforced before spawn; the
+job-object join, allowlisted environment and child command line stayed
+intact. A local Unicode JSON echo drill passed;
 removing the adapter cap made its oversized-input guard test fail before
 restoration. Exact staged tree `c977c836` passed a real Unicode+EOF hook
 drill and full WIN-11-VM `npm run quality`: 2,036 tests passed (3 skipped),
@@ -3878,7 +3878,21 @@ keeping the exit/Unicode echo/no-timeout assertions and all separate
 timeout gates. A late success would point to hosted startup pressure; a
 30 second hang would call for deeper I/O work. If late success occurs,
 compare the original wrapper under the same hosted budget before
-retaining extra runtime forwarding code.
+retaining extra runtime forwarding code. Run `36285882702` then passed
+all seven hosted jobs on `cadb565`; its Windows Unicode/EOF hook test took
+28,779 ms, near the 30 second fixture cap. An isolated pre-forwarding
+wrapper tree `9ebcdf21` passed that Unicode/EOF test locally and on
+WIN-11-VM with no owned process left. The extra PowerShell read/pipe has
+no demonstrated benefit, so revert only that line while keeping the
+256 KiB adapter guard. Raise this fixture's bounded operation budget to
+60 seconds and its Vitest envelope to 90 seconds, still below the 600
+second product default; all separate timeout behavior tests remain. Exact
+staged tree `b9667382` then passed a focused Unicode/EOF test and full
+WIN-11-VM quality: 2,036 tests passed (3 skipped), all 304 a11y pages
+returned with zero violations/undecided/missing, and audit, gitleaks and
+SAST found zero. Remote tree and process audit were clean. This receipt
+changes documentation; exact host-local and hosted proof on the simpler
+wrapper remain required before a PR.
 An M54 integration review found a separate hook-stdin privacy boundary:
 `input_text`, developer instructions, tool descriptions and assistant output
 can themselves contain pasted `data:` media URLs. The common model-call
