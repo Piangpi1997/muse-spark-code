@@ -3869,6 +3869,16 @@ audit, gitleaks and SAST found zero. The remote tree matched before/after
 and process audit found zero checkout-owned processes. This receipt changes
 documentation, so final exact local Windows and hosted branch proof remain
 before a PR.
+Hosted run `36284566101` on `bf559d4` still timed out the controlled
+Windows echo case at 12,232 ms with empty output, despite explicit stdin
+forwarding. That does not prove stdin was the cause. The next diagnostic
+uses a 30 second budget only for this real-process fixture (still far below
+the product's 600 second default) and a 60 second Vitest envelope, while
+keeping the exit/Unicode echo/no-timeout assertions and all separate
+timeout gates. A late success would point to hosted startup pressure; a
+30 second hang would call for deeper I/O work. If late success occurs,
+compare the original wrapper under the same hosted budget before
+retaining extra runtime forwarding code.
 An M54 integration review found a separate hook-stdin privacy boundary:
 `input_text`, developer instructions, tool descriptions and assistant output
 can themselves contain pasted `data:` media URLs. The common model-call
