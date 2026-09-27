@@ -669,8 +669,8 @@ function clipMiddle(text: string, max: number): string {
   return `${text.slice(0, headEnd)}${TOOL_OUTPUT_ELIDED_MARKER}${text.slice(tailStart)}`
 }
 
-function failure(reason: string): ToolOutcome {
-  return { output: `Error: ${reason}`, visibleOutput: reason, failureReason: reason }
+function failure(reason: string, visibleReason = reason): ToolOutcome {
+  return { output: `Error: ${reason}`, visibleOutput: visibleReason, failureReason: visibleReason }
 }
 
 function argumentFailure(error: z.core.$ZodError): ToolOutcome {
@@ -817,7 +817,10 @@ function visualKindOf(relative: string): 'pdf' | 'image' | undefined {
 /** The PDF, checked by its header, for the model to read whole (M54). */
 function pdfOutcome(relative: string, bytes: Uint8Array): ToolOutcome {
   if (!isPdf(bytes)) {
-    return failure(`${relative} ${MODEL_TEXT.notPdf}`)
+    return failure(
+      `${relative} ${MODEL_TEXT.notPdf}`,
+      fill(UI_TEXT.toolReadPdfInvalid, { path: relative }),
+    )
   }
   const pageCount = pdfPageCount(bytes)
   const output = fill(MODEL_TEXT.readPdf, {
@@ -858,7 +861,10 @@ function pdfOutcome(relative: string, bytes: Uint8Array): ToolOutcome {
 function imageOutcome(relative: string, bytes: Uint8Array): ToolOutcome {
   const info = readImageInfo(bytes)
   if (info === undefined) {
-    return failure(`${relative} ${MODEL_TEXT.notImage}`)
+    return failure(
+      `${relative} ${MODEL_TEXT.notImage}`,
+      fill(UI_TEXT.toolReadImageInvalid, { path: relative }),
+    )
   }
   const output = fill(MODEL_TEXT.readImage, {
     path: relative,
@@ -899,12 +905,25 @@ async function readVisual(
   kind: 'pdf' | 'image',
   context: ToolContext,
 ): Promise<ToolOutcome> {
-  const bytes = await context.io.readBytes(
-    file.checkedAbsolute,
-    kind === 'pdf' ? MAX_DOCUMENT_BYTES : MAX_IMAGE_BYTES,
-  )
+  let bytes: Uint8Array | undefined
+  try {
+    bytes = await context.io.readBytes(
+      file.checkedAbsolute,
+      kind === 'pdf' ? MAX_DOCUMENT_BYTES : MAX_IMAGE_BYTES,
+    )
+  } catch (error: unknown) {
+    // Stop still belongs to the host's cancellation path, not a file error row.
+    if (context.signal?.aborted === true) {
+      throw error
+    }
+    const modelReason = error instanceof Error ? error.message : String(error)
+    return failure(modelReason, fill(UI_TEXT.toolVisualReadFailed, { path: file.relative }))
+  }
   if (bytes === undefined) {
-    return failure(`file not found: ${file.relative}`)
+    return failure(
+      `file not found: ${file.relative}`,
+      fill(UI_TEXT.toolVisualFileMissing, { path: file.relative }),
+    )
   }
   return kind === 'pdf' ? pdfOutcome(file.relative, bytes) : imageOutcome(file.relative, bytes)
 }

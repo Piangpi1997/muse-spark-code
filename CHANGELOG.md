@@ -326,11 +326,14 @@ while they are (PLAN.md D30, D34).
   pasted or dropped PDF. Host replies settle only their own request ID;
   identical filenames cannot release another file's reservation. New
   Conversation cancels deferred browser reads and host admissions from the
-  old conversation.
+  old conversation, including native file and mention pickers still waiting
+  on a dialog, path check or file read.
 - **Localized file-read rows (M54).** Model API PDF and image `read_file`
   transcript rows use the installed panel language and grouped page counts,
   byte sizes and image dimensions. The function result sent to the model
-  remains English.
+  remains English. Invalid PDF or image bytes, missing visual files and file
+  read errors now show localized failure rows and reasons too, while their
+  model-facing error text stays English.
 - **Account & usage reset timing (M53 follow-up).** The open modal updates
   its countdown each minute and stops treating an expired report as current.
   It uses Muse Code's reported account-level percentages and reset timestamps

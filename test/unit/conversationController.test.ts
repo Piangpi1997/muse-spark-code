@@ -135,6 +135,18 @@ function attachPng(t: { controller: ConversationController }): Promise<void> {
   })
 }
 
+function pickedTextFixture() {
+  const t = setup({ indexed: ['a.ts'] })
+  t.setPicked([{ name: 'a.ts', fsPath: '/ws/a.ts', relativePath: 'a.ts' }])
+  return t
+}
+
+async function heldPickerAt(t: ReturnType<typeof setup>, stage: () => void) {
+  const picking = t.controller.handle({ type: 'pickFile' })
+  await vi.waitFor(stage)
+  return { picking }
+}
+
 function setup(
   options: {
     status?: AuthSnapshot['status']
@@ -1215,6 +1227,91 @@ describe('ConversationController: context', () => {
       reason: UI_TEXT.attachmentUnreadable,
       requestId: 'offline-paste',
     })
+  })
+
+  it.each(['clearConversation', 'signOut'] as const)(
+    'does not attach a native-picked file from a dialog that outlived %s',
+    async (action) => {
+      const t = setup()
+      const dialog = Promise.withResolvers<readonly PickedFile[]>()
+      vi.spyOn(t.deps.files, 'showOpenDialog').mockReturnValue(dialog.promise)
+      const picking = t.controller.handle({ type: 'pickFile' })
+      await t.controller.handle({ type: action })
+      dialog.resolve([
+        { name: 'old.png', fsPath: '/ws/old.png', relativePath: 'old.png' },
+        { name: '.env', fsPath: '/ws/.env', relativePath: '.env' },
+      ])
+      await picking
+      expect(t.surface.posted).not.toContainEqual(
+        expect.objectContaining({
+          type: 'attachmentAdded',
+          attachment: expect.objectContaining({ name: 'old.png' }),
+        }),
+      )
+      expect(t.surface.posted).not.toContainEqual(
+        expect.objectContaining({ type: 'attachmentRejected', name: '.env' }),
+      )
+    },
+  )
+
+  it('does not attach a native-picked file read after clear', async () => {
+    const t = setup()
+    t.setPicked([{ name: 'old.png', fsPath: '/ws/old.png', relativePath: 'old.png' }])
+    const readGate = Promise.withResolvers<Uint8Array>()
+    const read = vi.spyOn(t.deps.files, 'readFile').mockReturnValue(readGate.promise)
+    const picking = t.controller.handle({ type: 'pickFile' })
+    await vi.waitFor(() => {
+      expect(read).toHaveBeenCalledOnce()
+    })
+    await t.controller.handle({ type: 'clearConversation' })
+    readGate.resolve(PNG)
+    await picking
+    expect(t.surface.posted).not.toContainEqual(
+      expect.objectContaining({
+        type: 'attachmentAdded',
+        attachment: expect.objectContaining({ name: 'old.png' }),
+      }),
+    )
+  })
+
+  it('does not continue a text picker after canonical validation outlives clear', async () => {
+    const t = pickedTextFixture()
+    const gate = Promise.withResolvers<{ canonical: string; checkedAbsolute: string }>()
+    const check = vi.spyOn(t.deps.files, 'canonicalRelativePath').mockReturnValue(gate.promise)
+    const { picking } = await heldPickerAt(t, () => {
+      expect(check).toHaveBeenCalledOnce()
+    })
+    await t.controller.handle({ type: 'clearConversation' })
+    gate.resolve({ canonical: 'a.ts', checkedAbsolute: '/ws/a.ts' })
+    await picking
+    expect(t.surface.posted).not.toContainEqual(
+      expect.objectContaining({ type: 'attachmentAdded' }),
+    )
+    expect(t.surface.posted).not.toContainEqual(expect.objectContaining({ type: 'insertText' }))
+  })
+
+  it('does not insert a stale path mention after the index lookup outlives clear', async () => {
+    const t = pickedTextFixture()
+    const gate = Promise.withResolvers<boolean>()
+    const check = vi.spyOn(t.deps.mentions, 'contains').mockReturnValue(gate.promise)
+    const { picking } = await heldPickerAt(t, () => {
+      expect(check).toHaveBeenCalledOnce()
+    })
+    await t.controller.handle({ type: 'clearConversation' })
+    gate.resolve(false)
+    await picking
+    expect(t.surface.posted).not.toContainEqual(expect.objectContaining({ type: 'insertText' }))
+  })
+
+  it('does not insert a native mention choice after New Conversation', async () => {
+    const t = setup()
+    const gate = Promise.withResolvers<string>()
+    vi.spyOn(t.deps.files, 'pickMentionFile').mockReturnValue(gate.promise)
+    const picking = t.controller.handle({ type: 'pickMentionFile' })
+    await t.controller.handle({ type: 'clearConversation' })
+    gate.resolve('src/old.ts')
+    await picking
+    expect(t.surface.posted).not.toContainEqual(expect.objectContaining({ type: 'insertText' }))
   })
 
   it('refuses a PDF on Muse Code before turn/start can receive an unsupported part', async () => {

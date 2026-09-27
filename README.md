@@ -587,7 +587,9 @@ panel cannot present an authoritative native job list or direct cancel.
   workspace PDF or image through `read_file`; other workspace files use its
   existing UTF-8 text reader. Excluded text files share only a path mention,
   and the Model API reader confines paths to the workspace. Picker reads stop
-  at the file's size cap even if it grows during the read. Model API text,
+  at the file's size cap even if it grows during the read. A native picker
+  still open after New Conversation or sign-out cannot add an old file or
+  mention to the new draft. Model API text,
   image and PDF reads use the checked canonical workspace target if a link
   changes after confinement. Combined image
   and PDF data URLs are capped at 48 million encoded characters per message;

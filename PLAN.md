@@ -1958,7 +1958,12 @@ tracks the missing MSP feature. We do not send an invented part to Muse Code.
   byte sizes and image dimensions formatted in that locale. A known PDF page
   count takes the language's plural form; an unknown count has its own label.
   Focused tests check a non-English table and grouped numbers without changing
-  the model-facing text.
+  the model-facing text. Invalid PDF/image headers, missing files and bounded
+  read errors keep function `output` English for the model but show a runtime
+  localized failure row and `failureReason`, with a requested path in one
+  template. The invalid file is never sent as media; an aborted read still
+  cancels the turn. Red/green tests cover these refusal shapes and the
+  model/UI split.
 - **Muse Code:** images retain their MSP path. A PDF attachment gets a clear
   refusal naming the Model API backend, including when its extension is
   disguised. A bounded text attachment becomes an MSP text part with the
@@ -4982,7 +4987,7 @@ cards keep the requested relative path, and unsaved-editor checks cover both
 the requested and canonical paths. Link-swap tests must prove the outside
 target is untouched and that an unavailable reservation sends no paid call.
 
-**Status 2026-09-27: M51–M53 merged; M54 second PR review follow-up underway.** The
+**Status 2026-09-27: M51–M53 merged; M54 third PR review follow-up underway.** The
 isolated M54 worktree is based on `34002ab`; its pre-M46 50-path staged tree
 is pinned at `refs/codex-backups/m54-pre-m46-20260926`. Focused PDF and
 replay checks passed; the M47-base reconciliation passed 724 focused
@@ -4993,8 +4998,10 @@ file-card identity and Muse History-resume gaps, so those gates are a
 checkpoint only. Corrected code tree `6b18a3e` passed full WIN-11-VM and Mac
 gates; a later review found aggregate browser-admission and localized
 tool-row gaps, making those gates a checkpoint. Combined code tree `f4b3a3e`
-passed full WIN-11-VM and Mac gates; its documentation receipt's local quality
-and hosted PR CI remain open. A compressed
+passed full WIN-11-VM and Mac gates. The next review found a stale native
+picker and English invalid-file rows, so those are checkpoint gates too;
+combined code tree `57a2a96` passed full WIN-11-VM and Mac gates. Its
+documentation receipt's local quality and hosted PR CI remain open. A compressed
 or encrypted page tree with
 unknown count still reserves all 50 image slots (D47).
 The raw page-tree inspector also has a fixed candidate limit: excessive
@@ -5016,6 +5023,12 @@ through the host's added/refused result, so only its own reservation is
 released; same-name local refusals cannot release an earlier file. Clearing
 or changing the conversation invalidates pending reads before they can post
 to the new conversation. The host rechecks actual bytes as before.
+The native picker captures that same conversation generation before opening
+its dialog and checks it after path validation and bounded file reads, so an
+old dialog or file read cannot add an attachment or mention after New
+Conversation. Its final add remains bound to the captured generation across
+the backend lookup. The separate mention QuickPick likewise ignores a choice
+that returns after the conversation cleared.
 An edit or paid image approval binds the canonical target it classified;
 the executing tool must use that target and refuse if a workspace alias
 resolves elsewhere after the card. Paid image sources use the bytes and

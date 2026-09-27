@@ -2702,8 +2702,12 @@ export class ConversationController {
     canAcceptText = false,
     requestId?: string,
     requestEpoch?: number,
+    expectedGeneration?: number,
   ): Promise<void> {
-    const generation = this.attachmentGeneration
+    const generation = expectedGeneration ?? this.attachmentGeneration
+    if (!this.isCurrentAttachmentGeneration(generation)) {
+      return
+    }
     let host: AgentHost
     try {
       host = await this.deps.ensureHost()
@@ -2754,14 +2758,23 @@ export class ConversationController {
     this.post({ type: 'insertText', text: `${formatMention(relativePath)} ` })
   }
 
+  private isCurrentAttachmentGeneration(generation: number): boolean {
+    return !this.isDisposed && generation === this.attachmentGeneration
+  }
+
   /** Text bytes need a trusted, indexed, canonical workspace path; path mentions stay available. */
   private async textFileDisposition(
     file: PickedFile,
+    generation: number,
   ): Promise<
     | { readonly kind: 'attach'; readonly checkedAbsolute: string }
     | { readonly kind: 'mention' }
     | { readonly kind: 'refuse' }
+    | { readonly kind: 'stale' }
   > {
+    if (!this.isCurrentAttachmentGeneration(generation)) {
+      return { kind: 'stale' }
+    }
     if (!this.deps.isWorkspaceTrusted()) {
       return { kind: 'mention' }
     }
@@ -2769,8 +2782,14 @@ export class ConversationController {
     try {
       checked = await this.deps.files.canonicalRelativePath(file.fsPath)
     } catch (error: unknown) {
+      if (!this.isCurrentAttachmentGeneration(generation)) {
+        return { kind: 'stale' }
+      }
       this.deps.log.warn(`text attachment path check failed: ${describe(error)}`)
       return { kind: 'mention' }
+    }
+    if (!this.isCurrentAttachmentGeneration(generation)) {
+      return { kind: 'stale' }
     }
     if (checked === undefined) {
       return { kind: 'mention' }
@@ -2787,14 +2806,41 @@ export class ConversationController {
       this.post({ type: 'attachmentRejected', name: file.name, reason: UI_TEXT.textFilePrivate })
       return { kind: 'refuse' }
     }
-    return (await this.deps.mentions.contains(canonical))
+    let isIndexed: boolean
+    try {
+      isIndexed = await this.deps.mentions.contains(canonical)
+    } catch (error: unknown) {
+      if (!this.isCurrentAttachmentGeneration(generation)) {
+        return { kind: 'stale' }
+      }
+      throw error
+    }
+    if (!this.isCurrentAttachmentGeneration(generation)) {
+      return { kind: 'stale' }
+    }
+    return isIndexed
       ? { kind: 'attach', checkedAbsolute: checked.checkedAbsolute }
       : { kind: 'mention' }
   }
 
   private async pickFile(): Promise<void> {
-    const picked = await this.deps.files.showOpenDialog()
+    const generation = this.attachmentGeneration
+    let picked: readonly PickedFile[]
+    try {
+      picked = await this.deps.files.showOpenDialog()
+    } catch (error: unknown) {
+      if (!this.isCurrentAttachmentGeneration(generation)) {
+        return
+      }
+      throw error
+    }
+    if (!this.isCurrentAttachmentGeneration(generation)) {
+      return
+    }
     for (const file of picked) {
+      if (!this.isCurrentAttachmentGeneration(generation)) {
+        return
+      }
       const extension = path.extname(file.name).toLowerCase()
       const lowerName = file.name.toLowerCase()
       if (
@@ -2808,7 +2854,10 @@ export class ConversationController {
       const isTextFile = TEXT_ATTACHMENT_EXTENSIONS.has(extension)
       let pathToRead = file.fsPath
       if (isTextFile) {
-        const disposition = await this.textFileDisposition(file)
+        const disposition = await this.textFileDisposition(file, generation)
+        if (disposition.kind === 'stale') {
+          return
+        }
         if (disposition.kind === 'refuse') {
           continue
         }
@@ -2826,6 +2875,9 @@ export class ConversationController {
         try {
           bytes = await this.deps.files.readFile(pathToRead, maxBytes)
         } catch (error: unknown) {
+          if (!this.isCurrentAttachmentGeneration(generation)) {
+            return
+          }
           this.deps.log.warn(`attachment read failed: ${describe(error)}`)
           this.post({
             type: 'attachmentRejected',
@@ -2833,6 +2885,9 @@ export class ConversationController {
             reason: UI_TEXT.attachmentUnreadable,
           })
           continue
+        }
+        if (!this.isCurrentAttachmentGeneration(generation)) {
+          return
         }
         if (bytes === undefined || bytes.byteLength > maxBytes) {
           const otherTooLarge = isTextFile ? UI_TEXT.textFileTooLarge : UI_TEXT.attachmentTooLarge
@@ -2842,7 +2897,7 @@ export class ConversationController {
             reason: isPdfFile ? UI_TEXT.documentTooLarge : otherTooLarge,
           })
         } else {
-          await this.addAttachment(file.name, bytes, isTextFile)
+          await this.addAttachment(file.name, bytes, isTextFile, undefined, undefined, generation)
         }
       } else {
         if (UNSUPPORTED_BINARY_ATTACHMENT_EXTENSIONS.has(extension)) {
@@ -2859,8 +2914,17 @@ export class ConversationController {
   }
 
   private async pickMentionFile(): Promise<void> {
-    const relativePath = await this.deps.files.pickMentionFile()
-    if (relativePath !== undefined) {
+    const generation = this.attachmentGeneration
+    let relativePath: string | undefined
+    try {
+      relativePath = await this.deps.files.pickMentionFile()
+    } catch (error: unknown) {
+      if (!this.isCurrentAttachmentGeneration(generation)) {
+        return
+      }
+      throw error
+    }
+    if (relativePath !== undefined && this.isCurrentAttachmentGeneration(generation)) {
       this.insertMention(relativePath)
     }
   }

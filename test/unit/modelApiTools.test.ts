@@ -256,6 +256,75 @@ describe('read_file: localized visual summaries (M54)', () => {
     )
     expect(result.visibleFile?.part).toMatchObject({ width: 1234, height: 2345 })
   })
+
+  it('localizes invalid PDF and image rows without changing model errors', async () => {
+    setUiText(
+      {
+        ...EN,
+        toolReadPdfInvalid: 'PDF-Datei `{path}` ist ungültig',
+        toolReadImageInvalid: 'Bilddatei `{path}` ist ungültig',
+      },
+      'de',
+    )
+    const { io, run } = context()
+    io.binaries.set('/ws/docs/fake.pdf', Buffer.from('not a PDF'))
+    io.binaries.set('/ws/img/fake.png', Buffer.from('not an image'))
+
+    const pdf = await run('read_file', { path: 'docs/fake.pdf' })
+    expect(pdf.output).toBe(
+      'Error: docs/fake.pdf is named as a PDF but is not one (it has no %PDF- header)',
+    )
+    expect(pdf.visibleOutput).toBe('PDF-Datei `docs/fake.pdf` ist ungültig')
+    expect(pdf.failureReason).toBe(pdf.visibleOutput)
+    expect(pdf.visibleFile).toBeUndefined()
+
+    const image = await run('read_file', { path: 'img/fake.png' })
+    expect(image.output).toBe(
+      'Error: img/fake.png is named as an image but is not a PNG, JPEG, GIF or WebP image',
+    )
+    expect(image.visibleOutput).toBe('Bilddatei `img/fake.png` ist ungültig')
+    expect(image.failureReason).toBe(image.visibleOutput)
+    expect(image.visibleFile).toBeUndefined()
+  })
+
+  it('localizes a missing PDF or image while retaining the English model result', async () => {
+    setUiText({ ...EN, toolVisualFileMissing: 'Datei `{path}` fehlt' }, 'de')
+    const { run } = context()
+    for (const file of ['docs/missing.pdf', 'img/missing.png']) {
+      const result = await run('read_file', { path: file })
+      expect(result.output).toBe(`Error: file not found: ${file}`)
+      expect(result.visibleOutput).toBe(`Datei \`${file}\` fehlt`)
+      expect(result.failureReason).toBe(result.visibleOutput)
+      expect(result.visibleFile).toBeUndefined()
+    }
+  })
+
+  it('localizes visual read exceptions and preserves their English model error', async () => {
+    setUiText({ ...EN, toolVisualReadFailed: 'Datei `{path}` kann nicht gelesen werden' }, 'de')
+    const { io, ctx } = context()
+    const failures: readonly { readonly file: string; readonly reason: string }[] = [
+      { file: 'img/huge.png', reason: 'huge.png is 12345 bytes, over the 10000 allowed' },
+      { file: 'docs/unreadable.pdf', reason: 'EIO: disk unavailable' },
+    ]
+    for (const { file, reason } of failures) {
+      io.readBytes = () => Promise.reject(new Error(reason))
+      const result = await executeTool('read_file', JSON.stringify({ path: file }), ctx)
+      expect(result.output).toBe(`Error: ${reason}`)
+      expect(result.visibleOutput).toBe(`Datei \`${file}\` kann nicht gelesen werden`)
+      expect(result.failureReason).toBe(result.visibleOutput)
+      expect(result.visibleFile).toBeUndefined()
+    }
+  })
+
+  it('still propagates an aborted visual read to the turn cancellation boundary', async () => {
+    const { io, ctx } = context()
+    const abort = new AbortController()
+    abort.abort()
+    io.readBytes = () => Promise.reject(new Error('stopped read'))
+    await expect(
+      executeTool('read_file', '{"path":"img/stopped.png"}', { ...ctx, signal: abort.signal }),
+    ).rejects.toThrow('stopped read')
+  })
 })
 
 function retargetedWritablePath(absolutePath: string): string {
