@@ -63,6 +63,15 @@ function reduceAll(actions: readonly UiAction[], start: UiState = initialUiState
   return state
 }
 
+function expectBoundReplayCard(state: UiState) {
+  expect(state.transcript[0]).toMatchObject({
+    id: 'l1',
+    replayItemId: 'backend-u1',
+    turnId: 't1',
+    status: 'sent',
+  })
+}
+
 const NOW = 1_000_000
 
 function host(message: HostToWebviewMessage, at = NOW): UiAction {
@@ -132,6 +141,47 @@ describe('uiReducer: shell', () => {
     })
     expect(state.model).toEqual({ modelId: 'muse-spark-1.3', contextLimit: 1_007_997 })
   })
+
+  it('clears account usage on sign-out and backend change', () => {
+    const subscription = {
+      observedAtMs: NOW,
+      tier: 'prior-account',
+      window: { usedPercent: 42, resetsAtMs: NOW + 60_000, windowDurationMins: 300 },
+      weekly: { usedPercent: 9, resetsAtMs: NOW + 86_400_000 },
+    }
+    const initial = reduceAll([
+      host({ type: 'authState', status: 'signedIn', backend: 'museCode' }),
+      host({ type: 'usageReport', backend: 'museCode', subscription }),
+    ])
+    expect(initial.usageReport?.subscription).toEqual(subscription)
+    expect(
+      uiReducer(initial, host({ type: 'authState', status: 'signedOut' })).usageReport,
+    ).toBeUndefined()
+    expect(
+      uiReducer(initial, host({ type: 'authState', status: 'signedIn', backend: 'modelApi' }))
+        .usageReport,
+    ).toBeUndefined()
+  })
+
+  it('keeps provider account usage unchanged when only the selected model changes', () => {
+    const subscription = {
+      observedAtMs: NOW,
+      tier: 'opaque-plan-id',
+      window: { usedPercent: 63, resetsAtMs: NOW + 60_000, windowDurationMins: 300 },
+      weekly: { usedPercent: 11, resetsAtMs: NOW + 86_400_000 },
+    }
+    const initial = reduceAll([
+      host({ type: 'authState', status: 'signedIn', backend: 'museCode' }),
+      host({ type: 'usageReport', backend: 'museCode', subscription }),
+      host({ type: 'sessionInfo', modelId: 'muse-spark-1.2', contextLimit: 1_007_997 }),
+    ])
+    const switched = uiReducer(
+      initial,
+      host({ type: 'sessionInfo', modelId: 'muse-spark-1.3', contextLimit: 1_007_997 }),
+    )
+    expect(switched.usageReport).toEqual(initial.usageReport)
+    expect(switched.model?.modelId).toBe('muse-spark-1.3')
+  })
 })
 
 describe('uiReducer: sending', () => {
@@ -153,6 +203,145 @@ describe('uiReducer: sending', () => {
     ])
     expect(state.transcript[0]).toMatchObject({ status: 'sent' })
     expect(state.activeTurnId).toBe('t1')
+  })
+
+  it('keeps the live card ID while binding its Model API replay ID through acceptance and snapshot (M53)', () => {
+    const state = reduceAll([
+      host({ type: 'sessionInfo', modelId: 'muse-spark-1.3', sessionId: 's1' }),
+      {
+        type: 'submitted',
+        localId: 'l1',
+        text: 'see image',
+        attachments: [],
+        contextLabel: undefined,
+      },
+      host({ type: 'turnAccepted', localId: 'l1', turnId: 't1', userMessageId: 'backend-u1' }),
+    ])
+    expectBoundReplayCard(state)
+    expect(restoredUiState(webviewStateOf(state, true)).transcript[0]).toMatchObject({
+      id: 'l1',
+      replayItemId: 'backend-u1',
+    })
+  })
+
+  it('binds a late accepted replay ID without restarting its completed turn (M53)', () => {
+    const state = reduceAll([
+      {
+        type: 'submitted',
+        localId: 'l1',
+        text: 'see image',
+        attachments: [],
+        contextLabel: undefined,
+      },
+      agent({ type: 'turnCompleted', turnId: 't1', terminal: 'completed' }),
+      host({ type: 'turnAccepted', localId: 'l1', turnId: 't1', userMessageId: 'backend-u1' }),
+    ])
+    expectBoundReplayCard(state)
+    expect(state.activeTurnId).toBeUndefined()
+  })
+
+  it('corrects a promoted steer by replay ID before or after its acceptance (M53)', () => {
+    const submit = {
+      type: 'submitted',
+      localId: 'l1',
+      text: 'steer',
+      attachments: [],
+      contextLabel: undefined,
+    } as const
+    const correction = agent({
+      type: 'userMessageTurnChanged',
+      userMessageId: 'backend-u1',
+      turnId: 'promoted-turn',
+    })
+    const acceptance = host({
+      type: 'turnAccepted',
+      localId: 'l1',
+      turnId: 'original-turn',
+      userMessageId: 'backend-u1',
+    })
+    const after = reduceAll([submit, acceptance, correction])
+    expect(after.transcript[0]).toMatchObject({
+      id: 'l1',
+      replayItemId: 'backend-u1',
+      turnId: 'promoted-turn',
+    })
+    const before = reduceAll([
+      submit,
+      correction,
+      agent({ type: 'turnCompleted', turnId: 'promoted-turn', terminal: 'completed' }),
+      acceptance,
+    ])
+    expect(before.transcript[0]).toMatchObject({
+      id: 'l1',
+      replayItemId: 'backend-u1',
+      turnId: 'promoted-turn',
+      status: 'sent',
+    })
+    expect(before.activeTurnId).toBeUndefined()
+  })
+
+  it('keeps queued-send and steered-card replay IDs distinct across promotion (M53)', () => {
+    const state = reduceAll([
+      { type: 'submitted', localId: 'l1', text: 'first', attachments: [], contextLabel: undefined },
+      host({ type: 'turnAccepted', localId: 'l1', turnId: 't1', userMessageId: 'backend-u1' }),
+      {
+        type: 'submitted',
+        localId: 'l2',
+        text: 'queued',
+        attachments: [],
+        contextLabel: undefined,
+      },
+      host({ type: 'turnAccepted', localId: 'l2', turnId: 't2', userMessageId: 'backend-u2' }),
+      {
+        type: 'submitted',
+        localId: 'l3',
+        text: 'steered',
+        attachments: [],
+        contextLabel: undefined,
+      },
+      host({ type: 'turnAccepted', localId: 'l3', turnId: 't2', userMessageId: 'backend-u3' }),
+      agent({
+        type: 'userMessageTurnChanged',
+        userMessageId: 'backend-u3',
+        turnId: 't3',
+      }),
+    ])
+    expect(state.transcript[1]).toMatchObject({
+      id: 'l2',
+      replayItemId: 'backend-u2',
+      turnId: 't2',
+    })
+    expect(state.transcript[2]).toMatchObject({
+      id: 'l3',
+      replayItemId: 'backend-u3',
+      turnId: 't3',
+    })
+  })
+
+  it('bounds early promoted-steer corrections by pending user cards (M53)', () => {
+    const state = reduceAll([
+      host({ type: 'sessionInfo', modelId: 'muse-spark-1.3', sessionId: 's1' }),
+      { type: 'submitted', localId: 'l1', text: 'one', attachments: [], contextLabel: undefined },
+      { type: 'submitted', localId: 'l2', text: 'two', attachments: [], contextLabel: undefined },
+      agent({ type: 'userMessageTurnChanged', userMessageId: 'backend-u0', turnId: 't0' }),
+      agent({ type: 'userMessageTurnChanged', userMessageId: 'backend-u1', turnId: 't1' }),
+      agent({ type: 'userMessageTurnChanged', userMessageId: 'backend-u2', turnId: 't2' }),
+    ])
+    expect(state.pendingReplayTurns).toEqual({ 'backend-u1': 't1', 'backend-u2': 't2' })
+    expect(restoredUiState(webviewStateOf(state, true)).pendingReplayTurns).toEqual(
+      state.pendingReplayTurns,
+    )
+    const first = uiReducer(
+      state,
+      host({ type: 'turnAccepted', localId: 'l1', turnId: 'old-t1', userMessageId: 'backend-u1' }),
+    )
+    expect(first.pendingReplayTurns).toEqual({ 'backend-u2': 't2' })
+    const second = uiReducer(
+      first,
+      host({ type: 'turnAccepted', localId: 'l2', turnId: 'old-t2', userMessageId: 'backend-u2' }),
+    )
+    expect(second.pendingReplayTurns).toEqual({})
+    expect(second.transcript[1]).toMatchObject({ replayItemId: 'backend-u2', turnId: 't2' })
   })
 
   it('marks the echo failed with the reason on sendFailed', () => {
@@ -981,6 +1170,34 @@ describe('uiReducer: session history (M6)', () => {
     // A pending card (no turn yet) is not a fork point; a missing id neither.
     expect(forkCutBefore(state.transcript, 'l3')).toBeUndefined()
     expect(forkCutBefore(state.transcript, 'ghost')).toBeUndefined()
+  })
+
+  it('cuts before a distinct turn and refuses a steered first turn (M53)', () => {
+    const state = reduceAll([
+      { type: 'submitted', localId: 'l1', text: 'first', attachments: [], contextLabel: undefined },
+      host({ type: 'turnAccepted', localId: 'l1', turnId: 't1' }),
+      {
+        type: 'submitted',
+        localId: 'l2',
+        text: 'steer first',
+        attachments: [],
+        contextLabel: undefined,
+      },
+      host({ type: 'turnAccepted', localId: 'l2', turnId: 't1' }),
+      { type: 'submitted', localId: 'l3', text: 'next', attachments: [], contextLabel: undefined },
+      host({ type: 'turnAccepted', localId: 'l3', turnId: 't2' }),
+      {
+        type: 'submitted',
+        localId: 'l4',
+        text: 'steer next',
+        attachments: [],
+        contextLabel: undefined,
+      },
+      host({ type: 'turnAccepted', localId: 'l4', turnId: 't2' }),
+    ])
+    expect(forkCutBefore(state.transcript, 'l2')).toBeUndefined()
+    expect(forkCutBefore(state.transcript, 'l3')).toEqual({ type: 'afterTurn', lastTurnId: 't1' })
+    expect(forkCutBefore(state.transcript, 'l4')).toEqual({ type: 'afterTurn', lastTurnId: 't1' })
   })
 
   it('tracks a subagent through its lifecycle and a backgrounded tool call (M14)', () => {

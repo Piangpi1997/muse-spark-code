@@ -78,6 +78,8 @@ const userEntrySchema = z.object({
   referenceLabel: z.optional(z.string()),
   /** The turn the message started, once known (fork cut points, M6). */
   turnId: z.optional(z.string()),
+  /** The Model API replay item's ID; live cards keep their local `id` for UI updates. */
+  replayItemId: z.optional(z.string()),
 })
 
 const assistantEntrySchema = z.object({

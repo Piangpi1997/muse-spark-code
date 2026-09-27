@@ -129,6 +129,8 @@ export interface StartSessionOptions {
   readonly approvalMode: string
   /** IDE tool servers, keyed by name; needs the `sessionMcp` grant. */
   readonly mcpServers?: Readonly<Record<string, SessionMcpHttpServer>>
+  /** A new conversation kept in a side-chat surface (M53). */
+  readonly sideChat?: boolean
 }
 
 /** One ordered content part of a turn (MSP `TurnInputPart`). */
@@ -143,10 +145,18 @@ export type TurnPart =
     }
   | { readonly type: 'skill'; readonly selector: string; readonly arguments?: string }
 
+/** An image a turn sent, as the backend kept it (M53): what a rewind puts back in the composer. */
+export interface SentImage {
+  readonly mediaType: string
+  readonly base64Data: string
+}
+
 export interface TurnSubmission {
   readonly turnId: string
   /** `started`, `queued` or `steered` (open on the wire). */
   readonly disposition: string
+  /** Backend-reserved transcript user ID for exact live-card replay (Model API). */
+  readonly userMessageId?: string
 }
 
 export interface CompactOutcome {
@@ -189,6 +199,7 @@ export interface ListSessionsOptions {
 /** A stored session as the host lists it (the MSP `Session` object, narrowed). */
 export interface SessionRecord {
   readonly sessionId: string
+  readonly sideChat?: boolean
   readonly name?: string | undefined
   readonly title?: string | undefined
   readonly firstUserPrompt?: string | undefined
@@ -211,6 +222,7 @@ export interface SessionPage {
 export interface SessionHistoryOutcome {
   /** `inline`, `snapshot`, `anchoredSnapshot` or `none` (then `items` is empty). */
   readonly mode: string
+  readonly sideChat?: boolean
   readonly items: readonly ItemSnapshot[]
   readonly name: string | undefined
   readonly todos: readonly TodoItem[]
@@ -247,7 +259,7 @@ export interface AgentSession {
    */
   sendTurn(parts: readonly TurnPart[], displayText?: string): Promise<TurnSubmission>
   /** Inject input into the running turn; rejects when it is no longer running. */
-  steer(expectedTurnId: string, parts: readonly TurnPart[]): Promise<string>
+  steer(expectedTurnId: string, parts: readonly TurnPart[]): Promise<TurnSubmission>
   cancel(): Promise<void>
   setModel(modelId: string): Promise<void>
   /** The session's standing reasoning-effort default (wire vocabulary). */
@@ -304,6 +316,13 @@ export interface AgentSession {
   listSkills(): Promise<readonly SkillSummary[]>
   /** Resolves to the canonical name, or undefined when it arrives as an event. */
   rename(name: string): Promise<string | undefined>
+  /**
+   * The images a turn of this session sent, where the backend keeps them
+   * (M53, PLAN.md D46): the Model API's replay holds them. Muse Code echoes
+   * attachment metadata only (MSP `Item.attachments`), so its sessions do
+   * not offer this and a rewind warns that the bytes cannot be restored.
+   */
+  readonly sentImages?: (turnId: string, itemId: string) => readonly SentImage[] | undefined
   dispose(): void
 }
 
@@ -323,8 +342,14 @@ export interface AgentHost {
     sessionId: string,
     modelId: string,
     mcpServers?: Readonly<Record<string, SessionMcpHttpServer>>,
+    options?: { readonly requireSideChat?: boolean },
   ): Promise<LoadedSession>
-  forkSession(sessionId: string, modelId: string, lastTurnId?: string): Promise<LoadedSession>
+  forkSession(
+    sessionId: string,
+    modelId: string,
+    lastTurnId?: string,
+    options?: { readonly sideChat?: boolean },
+  ): Promise<LoadedSession>
   onSessionListEvent(listener: (event: SessionListEvent) => void): () => void
   /**
    * The subscription usage the host last observed (M8); undefined when there

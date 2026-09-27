@@ -165,12 +165,6 @@ export interface SessionMemory {
   setLastSession(last: LastSession | undefined): Promise<void>
 }
 
-/** Where the last subscription window lives between sessions (extension global state). */
-export interface UsageCache {
-  read(): SubscriptionUsage | undefined
-  write(usage: SubscriptionUsage): Promise<void>
-}
-
 export interface ConversationDeps {
   readonly surface: ChatSurface
   readonly auth: AuthPort
@@ -181,6 +175,7 @@ export interface ConversationDeps {
   /** False until the approval cards ship (M4); see shared/permissionModes.ts. */
   readonly hasApprovalUi: boolean
   readonly openExternal: (url: string) => void
+  readonly openSideChat?: (sessionId: string) => void
   readonly mentions: MentionSearch
   readonly files: FileAccess
   /** The `allowDangerouslySkipPermissions` setting: whether Bypass is offered. */
@@ -223,8 +218,6 @@ export interface ConversationDeps {
   readonly openFile: (path: string, range: LineRange | undefined) => Promise<void>
   /** The picture a tool row names, from the workspace (M43, `loadToolImage`). */
   readonly readToolImage: (path: string) => Promise<ToolImageResult>
-  /** The subscription window the CLI last reported, kept across sessions (M16). */
-  readonly usageCache: UsageCache
   /** The IDE tool server for `session/start`, when it is listening. */
   readonly ideMcpEndpoint: () => Promise<SessionMcpHttpServer | undefined>
   readonly newAttachmentId: () => string
@@ -302,7 +295,6 @@ const SUBAGENT_ITEM_KIND = 'subagent'
 const IN_PROGRESS_STATUS = 'inProgress'
 // The unsaved files a warning names before it counts the rest (D27).
 const UNSAVED_FILES_NAMED = 3
-const STEERED_DISPOSITION = 'steered'
 // How a notice the user saw reads in the log (M39).
 const NOTICE_PREFIX = 'Shown in the panel: '
 
@@ -423,6 +415,9 @@ export class ConversationController {
   private readonly attachments: AttachmentStore
   private modelId: string
   private permissionMode: PermissionMode
+  private isSideChat: boolean
+  /** Muse Code does not persist a side marker: this panel may resume only its own fork. */
+  private readonly sideSessionIds = new Set<string>()
   private effort: EffortLevel = DEFAULT_EFFORT
   private isThinkingEnabled = true
   private activeTurnId: string | undefined
@@ -438,6 +433,11 @@ export class ConversationController {
   private sessionRecords: Map<string, SessionRecord> | undefined
   private readonly listWatch = new HostWatch()
   private readonly usageWatch = new HostWatch()
+  /** Usage belongs to one live host; a restarted host may use another account. */
+  private usageHost: AgentHost | undefined
+  private latestUsage: SubscriptionUsage | undefined
+  private usageEventRevision = 0
+  private usageReadSequence = 0
   /** The dictation driver, created on the first press (M9). */
   private dictation: DictationHandle | undefined
   private dictationStatus: DictationStatus = 'idle'
@@ -495,7 +495,12 @@ export class ConversationController {
 
   public constructor(private readonly deps: ConversationDeps) {
     this.modelId = deps.modelId
-    this.permissionMode = deps.initialPermissionMode
+    this.isSideChat = deps.surface.isSideChat === true
+    const restoredSideId = this.isSideChat ? deps.surface.takeRestoredSessionId() : undefined
+    if (restoredSideId !== undefined) {
+      this.sideSessionIds.add(restoredSideId)
+    }
+    this.permissionMode = this.isSideChat ? 'plan' : deps.initialPermissionMode
     if (this.permissionMode === BYPASS_MODE && !deps.isBypassAllowed()) {
       // The initial-mode setting alone cannot switch approvals off; the
       // explicit allow setting must be on too, as in Claude Code.
@@ -571,11 +576,12 @@ export class ConversationController {
     return this.models?.find((model) => model.modelId === modelId)?.contextLimit
   }
 
-  private postSessionInfo(modelId: string): void {
+  private postSessionInfo(modelId: string, shouldResetSideChat = false): void {
     const contextLimit = this.contextLimitFor(modelId)
     this.post({
       type: 'sessionInfo',
       modelId,
+      ...((this.isSideChat || shouldResetSideChat) && { sideChat: this.isSideChat }),
       ...(contextLimit !== undefined && { contextLimit }),
       ...(this.session !== undefined && { sessionId: this.session.sessionId }),
       // Said only where it is so (D26): the panel then offers neither.
@@ -587,9 +593,15 @@ export class ConversationController {
     if (this.sessionRecords === undefined) {
       return
     }
+    const sessions: ReturnType<typeof toSessionRow>[] = []
+    for (const record of this.sessionRecords.values()) {
+      if (!this.deps.surface.isSideChat || this.sideSessionIds.has(record.sessionId)) {
+        sessions.push(toSessionRow(record))
+      }
+    }
     this.post({
       type: 'sessionList',
-      sessions: Array.from(this.sessionRecords.values(), (record) => toSessionRow(record)),
+      sessions,
       archivedIds: [...this.deps.sessions.archivedIds()],
     })
   }
@@ -1519,12 +1531,21 @@ export class ConversationController {
     return ideEndpoint === undefined ? undefined : { [IDE_MCP_SERVER_NAME]: ideEndpoint }
   }
 
+  private sideResumeOptions(host: AgentHost): { readonly requireSideChat: true } | undefined {
+    return this.deps.surface.isSideChat === true && host.info.kind === 'modelApi'
+      ? { requireSideChat: true }
+      : undefined
+  }
+
   /** Take a session as this surface's: events, composer state, skills. */
   private async attach(
     host: AgentHost,
     session: AgentSession,
     origin: SessionOrigin,
   ): Promise<void> {
+    if (origin === 'started' && this.deps.surface.isSideChat === true) {
+      this.sideSessionIds.add(session.sessionId)
+    }
     this.deps.log.info(
       `Session ${session.sessionId} ${origin} on the ${host.info.kind} backend, model ${session.modelId}`,
     )
@@ -1592,6 +1613,7 @@ export class ConversationController {
       workspaceRoot,
       modelId: this.modelId,
       approvalMode: approvalModeFor(this.permissionMode, this.deps.hasApprovalUi),
+      ...(this.isSideChat && { sideChat: true }),
       ...(mcpServers !== undefined && { mcpServers }),
     })
     if (this.isDisposed) {
@@ -1628,10 +1650,21 @@ export class ConversationController {
         target.sessionId,
         this.modelId,
         await this.mcpServersFor(host),
+        this.sideResumeOptions(host),
       )
     } catch (error: unknown) {
       this.notice('warning', `${UI_TEXT.sessionNotContinued}: ${describe(error)}`)
       return undefined
+    }
+    if (!this.canLoadIntoSurface(host, loaded)) {
+      loaded.session.dispose()
+      this.notice('warning', UI_TEXT.sideChatSessionOnly)
+      return undefined
+    }
+    this.isSideChat = loaded.record.sideChat === true || this.deps.surface.isSideChat === true
+    if (this.isSideChat) {
+      this.permissionMode = 'plan'
+      this.postComposerState()
     }
     if (this.isDisposed) {
       loaded.session.dispose()
@@ -1750,6 +1783,7 @@ export class ConversationController {
     this.post({
       type: 'historyLoaded',
       sessionId,
+      ...(history.sideChat !== undefined && { sideChat: history.sideChat }),
       items: [...history.items],
       ...(history.name !== undefined && { name: history.name }),
       todos: [...history.todos],
@@ -1758,6 +1792,15 @@ export class ConversationController {
       // A turn still running keeps its Stop and its steering (D26).
       ...(activeTurnId !== undefined && { activeTurnId }),
     })
+  }
+
+  /** A side panel may only load its own fork; Model API also checks its durable marker. */
+  private canLoadIntoSurface(host: AgentHost, loaded: LoadedSession): boolean {
+    return (
+      this.deps.surface.isSideChat !== true ||
+      (this.sideSessionIds.has(loaded.session.sessionId) &&
+        (host.info.kind !== 'modelApi' || loaded.record.sideChat === true))
+    )
   }
 
   /**
@@ -1772,7 +1815,25 @@ export class ConversationController {
     notice: string,
     origin: SessionOrigin,
   ): Promise<void> {
+    if (
+      origin === 'forked' &&
+      this.deps.surface.isSideChat === true &&
+      this.session !== undefined &&
+      this.sideSessionIds.has(this.session.sessionId) &&
+      (host.info.kind !== 'modelApi' || loaded.record.sideChat === true)
+    ) {
+      this.sideSessionIds.add(loaded.session.sessionId)
+    }
+    if (!this.canLoadIntoSurface(host, loaded)) {
+      loaded.session.dispose()
+      throw new Error(UI_TEXT.sideChatSessionOnly)
+    }
     this.dropSession()
+    this.isSideChat = loaded.record.sideChat === true || this.deps.surface.isSideChat === true
+    if (this.isSideChat) {
+      this.permissionMode = 'plan'
+      this.postComposerState()
+    }
     const models = await host.listModels(loaded.session.sessionId)
     const active = models.find((model) => model.isActive)
     if (active !== undefined) {
@@ -1817,6 +1878,10 @@ export class ConversationController {
   }
 
   private async resumeSession(sessionId: string): Promise<void> {
+    if (this.deps.surface.isSideChat === true && !this.sideSessionIds.has(sessionId)) {
+      this.notice('warning', UI_TEXT.sideChatSessionOnly)
+      return
+    }
     if (this.refuseAction() !== undefined || this.session?.sessionId === sessionId) {
       return
     }
@@ -1828,6 +1893,7 @@ export class ConversationController {
         sessionId,
         this.modelId,
         await this.mcpServersFor(host),
+        this.sideResumeOptions(host),
       )
       await this.adopt(host, loaded, UI_TEXT.resumedNotice, 'resumed')
     } catch (error: unknown) {
@@ -1850,6 +1916,107 @@ export class ConversationController {
       await this.adopt(host, loaded, UI_TEXT.forkedNotice, 'forked')
     } catch (error: unknown) {
       this.notice('error', `${UI_TEXT.forkFailed}: ${describe(error)}`)
+    }
+  }
+
+  /** Resolve a still-current session before a fork-based panel action (M53). */
+  private async forkableSource(
+    sourceSessionId: string,
+  ): Promise<{ readonly source: AgentSession; readonly host: AgentHost } | undefined> {
+    const source = this.session
+    if (source?.sessionId !== sourceSessionId) {
+      return undefined
+    }
+    const host = await this.deps.ensureHost()
+    if (this.session !== source) {
+      return undefined
+    }
+    if (!host.info.canEditSessions) {
+      this.notice('info', UI_TEXT.sessionEditsUnsupported)
+      return undefined
+    }
+    return { source, host }
+  }
+
+  /** Branch before a user turn, then put its prompt back in the composer (M53). */
+  private async rewindConversation(
+    message: Extract<ConversationMessage, { type: 'rewindConversation' }>,
+  ): Promise<void> {
+    if (message.turnId === this.activeTurnId) {
+      return
+    }
+    try {
+      const forkable = await this.forkableSource(message.sourceSessionId)
+      if (forkable === undefined) {
+        return
+      }
+      const { source, host } = forkable
+      if (message.turnId === this.activeTurnId) {
+        return
+      }
+      const images = source.sentImages?.(message.turnId, message.itemId) ?? []
+      if (message.lastTurnId === undefined) {
+        this.clear()
+      } else {
+        const loaded = await host.forkSession(source.sessionId, this.modelId, message.lastTurnId)
+        if (this.session !== source) {
+          loaded.session.dispose()
+          return
+        }
+        await this.adopt(host, loaded, UI_TEXT.forkedNotice, 'forked')
+        this.attachments.clear()
+        this.post({ type: 'attachmentsCleared' })
+      }
+      for (const image of images) {
+        const added = this.attachments.add(image.mediaType, Buffer.from(image.base64Data, 'base64'))
+        if (added.ok) {
+          this.post({ type: 'attachmentAdded', attachment: added.attachment })
+        }
+      }
+      if (images.length < message.imageCount) {
+        this.notice('warning', UI_TEXT.rewindImagesUnavailable)
+      }
+      this.post({ type: 'restoreDraft', text: message.text })
+    } catch (error: unknown) {
+      this.notice('error', `${UI_TEXT.rewindConversationFailed}: ${describe(error)}`)
+    }
+  }
+
+  /** A separate Plan-mode fork, leaving this surface attached (M53). */
+  private async openSideChat(sourceSessionId: string): Promise<void> {
+    if (this.deps.openSideChat === undefined) {
+      return
+    }
+    try {
+      const forkable = await this.forkableSource(sourceSessionId)
+      if (forkable === undefined) {
+        return
+      }
+      const { source, host } = forkable
+      const loaded = await host.forkSession(source.sessionId, this.modelId, undefined, {
+        sideChat: true,
+      })
+      try {
+        if (loaded.record.sideChat !== true) {
+          await loaded.session.setApprovalMode('denyUnmatched')
+          try {
+            // Muse Code's fork keeps the parent's goal until cleared.
+            await loaded.session.controlGoal({ verb: 'clear' })
+          } catch (error: unknown) {
+            if (!(error instanceof GoalRefusedError && error.refusal === 'noGoal')) {
+              throw error
+            }
+          }
+        }
+        if (this.session !== source) {
+          return
+        }
+        this.deps.openSideChat(loaded.session.sessionId)
+      } finally {
+        loaded.session.dispose()
+      }
+    } catch (error: unknown) {
+      this.notice('error', `${UI_TEXT.sideChatFailed}: ${describe(error)}`)
     }
   }
 
@@ -1908,10 +2075,7 @@ export class ConversationController {
   ): Promise<TurnSubmission> {
     if (this.activeTurnId !== undefined) {
       try {
-        return {
-          turnId: await session.steer(this.activeTurnId, parts),
-          disposition: STEERED_DISPOSITION,
-        }
+        return await session.steer(this.activeTurnId, parts)
       } catch (error: unknown) {
         this.deps.log.warn(`turn/steer failed (${describe(error)}); submitting as a new turn`)
       }
@@ -2025,7 +2189,14 @@ export class ConversationController {
       if (submission.disposition !== QUEUED_DISPOSITION && !this.finishedTurns.has(turnId)) {
         this.activeTurnId = turnId
       }
-      this.post({ type: 'turnAccepted', localId, turnId })
+      this.post({
+        type: 'turnAccepted',
+        localId,
+        turnId,
+        ...(submission.userMessageId !== undefined && {
+          userMessageId: submission.userMessageId,
+        }),
+      })
       this.noteActivity()
     } catch (error: unknown) {
       const reason = describe(error)
@@ -2318,6 +2489,11 @@ export class ConversationController {
   }
 
   private async setPermissionMode(mode: PermissionMode): Promise<void> {
+    if (mode !== 'plan' && this.isSideChat) {
+      this.notice('info', UI_TEXT.sideChatPlanOnly)
+      this.postComposerState()
+      return
+    }
     if (mode === BYPASS_MODE && !(await this.mayBypass())) {
       this.postComposerState()
       return
@@ -2340,7 +2516,9 @@ export class ConversationController {
   }
 
   private clear(): void {
+    const wasSideChat = this.isSideChat
     this.dropSession()
+    this.isSideChat = this.deps.surface.isSideChat === true
     // A new conversation is new: the session a restart or crash left to
     // resume is not picked up by its first message (D25).
     this.resumeTarget = undefined
@@ -2351,7 +2529,7 @@ export class ConversationController {
     this.setTitle(undefined)
     // No session any more: the webview forgets the id it keeps for the
     // reload serializer (D15).
-    this.postSessionInfo(this.modelId)
+    this.postSessionInfo(this.modelId, wasSideChat && !this.isSideChat)
     void this.deps.sessions.setLastSession(undefined)
     this.post({ type: 'attachmentsCleared' })
   }
@@ -2467,12 +2645,30 @@ export class ConversationController {
   private async readUsage(): Promise<void> {
     try {
       const host = await this.deps.ensureHost()
+      if (this.usageHost !== host) {
+        this.usageHost = host
+        this.latestUsage = undefined
+      }
+      const readSequence = ++this.usageReadSequence
+      const eventRevision = this.usageEventRevision
       this.usageWatch.ensure(host, (watched) =>
         watched.onUsageChanged((usage) => {
+          if (this.usageHost === watched) {
+            this.usageEventRevision += 1
+          }
           void this.postUsage(watched, usage)
         }),
       )
-      await this.postUsage(host, await host.readUsage())
+      const subscription = await host.readUsage()
+      if (this.usageHost !== host || this.usageReadSequence !== readSequence) {
+        return
+      }
+      // An empty read can mean account switched within the same CLI host;
+      // only clear observations that preceded this read, not newer events.
+      if (subscription === undefined && this.usageEventRevision !== eventRevision) {
+        return
+      }
+      await this.postUsage(host, subscription)
     } catch (error: unknown) {
       this.notice('error', `${UI_TEXT.usageUnavailable}: ${describe(error)}`)
     }
@@ -2482,17 +2678,24 @@ export class ConversationController {
     host: AgentHost,
     subscription: SubscriptionUsage | undefined,
   ): Promise<void> {
+    if (!this.canPostUsage(host)) {
+      return
+    }
+    if (
+      subscription !== undefined &&
+      this.latestUsage !== undefined &&
+      subscription.observedAtMs < this.latestUsage.observedAtMs
+    ) {
+      return
+    }
+    this.latestUsage = subscription
+    const shown = subscription
     const account = await this.deps.accountFacts(host.info.kind)
     const insights = host.info.kind === 'museCode' ? await this.deps.usageInsights() : undefined
-    // The CLI reports a window only after it has seen a reply (M8, re-probed
-    // 2026-09-22: `usage/read` is empty after a host and even a session
-    // start). Until then the dialog shows the last window it ever reported,
-    // dated by its own `observedAtMs` (M16).
-    if (subscription !== undefined) {
-      await this.deps.usageCache.write(subscription)
+    // An older read or a stopped host must not replace a newer observation.
+    if (!this.canPostUsage(host) || this.latestUsage !== shown) {
+      return
     }
-    const shown =
-      subscription ?? (host.info.kind === 'museCode' ? this.deps.usageCache.read() : undefined)
     this.post({
       type: 'usageReport',
       backend: host.info.kind,
@@ -2500,6 +2703,12 @@ export class ConversationController {
       ...(shown !== undefined && { subscription: shown }),
       ...(insights !== undefined && { insights }),
     })
+  }
+
+  private canPostUsage(host: AgentHost): boolean {
+    return (
+      !this.isDisposed && this.usageHost === host && this.deps.auth.current.status === 'signedIn'
+    )
   }
 
   /** An owner command on a subagent from the Agent map (M18); the CLI's item updates carry the outcome. */
@@ -2797,6 +3006,14 @@ export class ConversationController {
         await this.rewindCode(message.edits)
         break
       }
+      case 'rewindConversation': {
+        await this.rewindConversation(message)
+        break
+      }
+      case 'openSideChat': {
+        await this.openSideChat(message.sourceSessionId)
+        break
+      }
       case 'setModel': {
         await this.setModel(message.modelId)
         break
@@ -3085,6 +3302,8 @@ export class ConversationController {
     this.dropSession(false)
     this.listWatch.forget()
     this.usageWatch.forget()
+    this.usageHost = undefined
+    this.latestUsage = undefined
   }
 
   /**
@@ -3102,6 +3321,8 @@ export class ConversationController {
     this.dropSession(false)
     this.listWatch.forget()
     this.usageWatch.forget()
+    this.usageHost = undefined
+    this.latestUsage = undefined
     if (exit.isPersistent) {
       this.deps.auth.markBackendError(`${UI_TEXT.hostExited} (${exit.description})`)
     } else if (didHaveSession) {
@@ -3120,6 +3341,8 @@ export class ConversationController {
     this.dropSession()
     this.listWatch.dispose()
     this.usageWatch.dispose()
+    this.usageHost = undefined
+    this.latestUsage = undefined
     this.dictation?.dispose()
     this.dictation = undefined
     this.retiredDictation?.dispose()

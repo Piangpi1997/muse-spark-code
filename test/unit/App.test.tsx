@@ -62,6 +62,47 @@ function historyEdit(itemId: string, turnId: string, patch: string) {
   }
 }
 
+function historyUser(itemId: string, turnId: string, text: string) {
+  return { itemId, kind: 'userMessage', status: 'completed', turnId, text }
+}
+
+function loadHistory(items: readonly Record<string, unknown>[]) {
+  deliver({ type: 'historyLoaded', sessionId: 'old', todos: [], items })
+}
+
+function addTestImage() {
+  deliver({
+    type: 'attachmentAdded',
+    attachment: {
+      id: 'att-1',
+      name: 'shot.png',
+      mediaType: 'image/png',
+      width: 2,
+      height: 3,
+      sizeBytes: 9,
+    },
+  })
+}
+
+function chooseConversationRewind(cardIndex: number) {
+  fireEvent.click(screen.getAllByLabelText('Fork or rewind')[cardIndex]!)
+  fireEvent.click(screen.getByRole('menuitem', { name: 'Rewind conversation to here' }))
+}
+
+function expectRewindRequest(
+  postMessage: ReturnType<typeof renderReady>,
+  expected: Omit<
+    Extract<WebviewToHostMessage, { type: 'rewindConversation' }>,
+    'type' | 'sourceSessionId'
+  >,
+) {
+  expect(postMessage).toHaveBeenLastCalledWith({
+    type: 'rewindConversation',
+    sourceSessionId: 'old',
+    ...expected,
+  })
+}
+
 /** The agent asks one single-choice question and the user picks Red. */
 function askColour() {
   deliver({
@@ -202,17 +243,7 @@ describe('App sign-in gate', () => {
 describe('App conversation', () => {
   it('sends the draft with attachment ids, echoes it, and streams the reply', () => {
     const postMessage = renderReady()
-    deliver({
-      type: 'attachmentAdded',
-      attachment: {
-        id: 'att-1',
-        name: 'shot.png',
-        mediaType: 'image/png',
-        width: 2,
-        height: 3,
-        sizeBytes: 9,
-      },
-    })
+    addTestImage()
     fireEvent.change(textarea(), { target: { value: 'hello muse' } })
     fireEvent.keyDown(textarea(), { key: 'Enter' })
     expect(postMessage).toHaveBeenLastCalledWith({
@@ -993,6 +1024,127 @@ describe('App session history (M6)', () => {
     fireEvent.click(screen.getByRole('menuitem', { name: 'Fork conversation from here' }))
     expect(postMessage).toHaveBeenLastCalledWith({ type: 'clearConversation' })
     expect(screen.queryByText('first')).toBeNull()
+  })
+
+  it('rewinds a conversation at the preceding turn and restores its prompt only after host success (M53)', () => {
+    const postMessage = renderReady()
+    loadHistory([historyUser('u1', 't1', 'first'), historyUser('u2', 't2', 'second')])
+    chooseConversationRewind(1)
+    expectRewindRequest(postMessage, {
+      itemId: 'u2',
+      turnId: 't2',
+      lastTurnId: 't1',
+      text: 'second',
+      imageCount: 0,
+    })
+    expect(textarea()).toHaveValue('')
+    deliver({ type: 'restoreDraft', text: 'second' })
+    expect(textarea()).toHaveValue('second')
+  })
+
+  it('uses the backend replay ID for an image card rewound before History reload (M53)', () => {
+    const postMessage = renderReady()
+    loadHistory([historyUser('u1', 't1', 'first')])
+    addTestImage()
+    fireEvent.change(textarea(), { target: { value: 'describe this' } })
+    fireEvent.keyDown(textarea(), { key: 'Enter' })
+    deliver({
+      type: 'turnAccepted',
+      localId: 'local-1',
+      turnId: 't2',
+      userMessageId: 'backend-u2',
+    })
+    deliver({
+      type: 'agentEvent',
+      event: { type: 'turnCompleted', turnId: 't2', terminal: 'completed' },
+    })
+    chooseConversationRewind(1)
+    expectRewindRequest(postMessage, {
+      itemId: 'backend-u2',
+      turnId: 't2',
+      lastTurnId: 't1',
+      text: 'describe this',
+      imageCount: 1,
+    })
+  })
+
+  it('cuts a steered card before its distinct prior turn and names the exact card (M53)', () => {
+    const postMessage = renderReady()
+    loadHistory([
+      historyUser('u1', 't1', 'first'),
+      historyUser('u2', 't2', 'second'),
+      historyUser('u3', 't2', 'steered'),
+    ])
+    chooseConversationRewind(2)
+    expectRewindRequest(postMessage, {
+      itemId: 'u3',
+      turnId: 't2',
+      lastTurnId: 't1',
+      text: 'steered',
+      imageCount: 0,
+    })
+  })
+
+  it('hides unsafe conversation rewind on a steered first turn (M53)', () => {
+    renderReady()
+    loadHistory([historyUser('u1', 't1', 'first'), historyUser('u2', 't1', 'steered')])
+    fireEvent.click(screen.getAllByLabelText('Fork or rewind')[1]!)
+    expect(screen.queryByRole('menuitem', { name: 'Rewind conversation to here' })).toBeNull()
+  })
+
+  it('hides conversation rewind for an active steered turn before its image reaches replay (M53)', () => {
+    renderReady()
+    loadHistory([
+      historyUser('u1', 't1', 'completed'),
+      historyUser('u2', 't2', 'running'),
+      historyUser('u3', 't2', 'steered with image'),
+    ])
+    deliver({ type: 'agentEvent', event: { type: 'turnStarted', turnId: 't2' } })
+    fireEvent.click(screen.getAllByLabelText('Fork or rewind')[2]!)
+    expect(screen.queryByRole('menuitem', { name: 'Rewind conversation to here' })).toBeNull()
+  })
+
+  it('offers a side chat on a fork-capable session and labels the Plan-mode tab (M53)', () => {
+    const postMessage = renderReady()
+    deliver({ type: 'sessionInfo', modelId: 'muse-spark-1.3', sessionId: 'old' })
+    deliver({
+      type: 'historyLoaded',
+      sessionId: 'old',
+      todos: [],
+      items: [
+        { itemId: 'u1', kind: 'userMessage', status: 'completed', turnId: 't1', text: 'first' },
+      ],
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Side chat' }))
+    expect(postMessage).toHaveBeenLastCalledWith({ type: 'openSideChat', sourceSessionId: 'old' })
+    deliver({
+      ...init,
+      sideChat: true,
+      settings: { ...testSettings, initialPermissionMode: 'plan' },
+    })
+    expect(screen.getByText('Side chat')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Side chat' })).toBeNull()
+  })
+
+  it('labels a side session resumed through ordinary History and locks its mode (M53)', () => {
+    renderReady()
+    deliver({
+      type: 'historyLoaded',
+      sessionId: 'side',
+      sideChat: true,
+      todos: [],
+      items: [{ itemId: 'u1', kind: 'userMessage', status: 'completed', turnId: 't1', text: 'hi' }],
+    })
+    deliver({ type: 'sessionInfo', modelId: 'muse-spark-1.3', sessionId: 'side', sideChat: true })
+    deliver({
+      type: 'composerState',
+      effort: 'high',
+      isThinkingEnabled: true,
+      permissionMode: 'plan',
+    })
+    expect(screen.getByText('Side chat')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: UI_TEXT.sideChatPlanOnly })).toBeDisabled()
+    expect(screen.queryByRole('button', { name: 'Side chat' })).toBeNull()
   })
 
   it('rewinds code to a message, forks after rewinding, and closes the menu on Escape (M13)', () => {

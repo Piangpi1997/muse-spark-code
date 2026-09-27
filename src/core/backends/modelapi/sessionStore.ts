@@ -26,6 +26,8 @@ import {
 export interface StoredReplayItem {
   readonly turnId: string
   readonly item: InputItem
+  /** The transcript user card that supplied this exact replay message (M53). */
+  readonly userMessageId?: string
   /** Identifies a background task's terminal model note across fork cuts. */
   readonly backgroundTaskId?: string
 }
@@ -64,6 +66,7 @@ export interface StoredChild {
 export interface StoredSession {
   readonly version: typeof STORED_SESSION_VERSION
   readonly sessionId: string
+  readonly sideChat?: boolean
   readonly workspaceRoot: string
   readonly modelId: string
   readonly approvalMode: ApprovalMode
@@ -72,6 +75,8 @@ export interface StoredSession {
   readonly createdAt: string
   readonly lastActivityAt: string
   readonly turnIds: readonly string[]
+  /** Last completed turn covered by the accepted compaction summary (M53). */
+  readonly compactedThroughTurnId?: string
   readonly forkedFrom?: string
   readonly firstPrompt?: string
   readonly todos: readonly TodoItem[]
@@ -96,6 +101,7 @@ export interface StoredSession {
  */
 export interface StoredSessionHeader {
   readonly sessionId: string
+  readonly sideChat?: boolean
   readonly workspaceRoot: string
   readonly name?: string
   readonly createdAt: string
@@ -118,6 +124,7 @@ export interface SessionStore {
 export function headerOf(stored: StoredSession): StoredSessionHeader {
   return {
     sessionId: stored.sessionId,
+    ...(stored.sideChat === true && { sideChat: true }),
     workspaceRoot: stored.workspaceRoot,
     ...(stored.name !== undefined && { name: stored.name }),
     createdAt: stored.createdAt,
@@ -164,6 +171,7 @@ const storedInputItemSchema = z.union([
 const storedSessionFields = {
   version: z.literal(STORED_SESSION_VERSION),
   sessionId: z.string(),
+  sideChat: z.optional(z.boolean()),
   workspaceRoot: z.string(),
   modelId: z.string(),
   approvalMode: z.enum(APPROVAL_MODES),
@@ -172,6 +180,7 @@ const storedSessionFields = {
   createdAt: z.string(),
   lastActivityAt: z.string(),
   turnIds: z.array(z.string()),
+  compactedThroughTurnId: z.optional(z.string()),
   forkedFrom: z.optional(z.string()),
   firstPrompt: z.optional(z.string()),
   todos: z.array(todoItemSchema),
@@ -181,6 +190,7 @@ const storedSessionFields = {
     z.object({
       turnId: z.string(),
       item: storedInputItemSchema,
+      userMessageId: z.optional(z.string()),
       backgroundTaskId: z.optional(z.string()),
     }),
   ),
@@ -238,14 +248,17 @@ export function parseStoredSession(raw: unknown): StoredSessionParse {
     name,
     forkedFrom,
     firstPrompt,
+    compactedThroughTurnId,
     goal,
+    sideChat,
     children,
     pendingChildResults,
     spawnCommands,
     ...rest
   } = result.data
-  const replay = rest.replay.map(({ backgroundTaskId, ...entry }) => ({
+  const replay = rest.replay.map(({ backgroundTaskId, userMessageId, ...entry }) => ({
     ...entry,
+    ...(userMessageId !== undefined && { userMessageId }),
     ...(backgroundTaskId !== undefined && { backgroundTaskId }),
   }))
   const restoredChildren: StoredChild[] = []
@@ -277,7 +290,9 @@ export function parseStoredSession(raw: unknown): StoredSessionParse {
       ...(name !== undefined && { name }),
       ...(forkedFrom !== undefined && { forkedFrom }),
       ...(firstPrompt !== undefined && { firstPrompt }),
+      ...(compactedThroughTurnId !== undefined && { compactedThroughTurnId }),
       ...(goal !== undefined && { goal }),
+      ...(sideChat === true && { sideChat: true }),
       ...(children !== undefined && { children: restoredChildren }),
       ...(pendingChildResults !== undefined && { pendingChildResults }),
       ...(spawnCommands !== undefined && { spawnCommands }),
@@ -291,6 +306,7 @@ const IDLE = 'idle'
 export function recordOf(stored: StoredSessionHeader): SessionRecord {
   return {
     sessionId: stored.sessionId,
+    ...(stored.sideChat === true && { sideChat: true }),
     ...(stored.name !== undefined && { name: stored.name }),
     ...(stored.firstPrompt !== undefined && {
       title: stored.firstPrompt,

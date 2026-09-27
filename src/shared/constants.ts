@@ -49,7 +49,7 @@ export const COMMAND_IDS = {
 export const GLOBAL_STATE_KEYS = {
   /** "Don't ask again" on the Windows sandbox setup prompt. */
   sandboxPromptSuppressed: 'museSpark.sandboxPromptSuppressed',
-  /** The subscription window the CLI last reported, shown "as of" until a fresh one (M16). */
+  /** Legacy unscoped subscription snapshot, erased at activation (M53 follow-up). */
   lastUsage: 'museSpark.lastUsage',
   /**
    * The paid features whose price the user accepted in the confirmation
@@ -905,6 +905,7 @@ export const OUTPUT_PAGE_BYTES = 256 * 1024
 export const STATUS_VERB_INTERVAL_MS = 4000
 export const MILLISECONDS_PER_SECOND = 1000
 export const SECONDS_PER_MINUTE = 60
+export const USAGE_COUNTDOWN_REFRESH_MS = MILLISECONDS_PER_SECOND * SECONDS_PER_MINUTE
 export const MINUTES_PER_HOUR = 60
 export const HOURS_PER_DAY = 24
 export const DAYS_PER_WEEK = 7

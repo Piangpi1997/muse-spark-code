@@ -12,6 +12,14 @@ while they are (PLAN.md D30, D34).
 
 ### Added
 
+- **M53 review fixes (pending final gates).** A steered user message now cuts
+  conversation rewind at an earlier distinct turn; an unsafe cut is hidden.
+  Image restoration names the selected user card. A Muse Code side panel's
+  History and reload stay bound to its own side fork. Live Model API cards keep
+  their UI IDs while carrying the backend replay ID, so an image can be
+  restored before a History reload. Promoted steers correct their turn on
+  either event order without restarting a completed turn.
+
 - **Optional branch CI.** The cross-platform CI can be run manually on a
   pushed branch when a pull request is not being opened. It uses the same
   shared build as pull requests. The normal path uses local and VM gates as
@@ -89,6 +97,23 @@ while they are (PLAN.md D30, D34).
   prompt can be claimed only before expiry. Feature enable shows both verified
   token tiers, and each run quotes its selected model's exact tier, including
   the contributor cached-input rate; an unknown model cannot gain consent.
+
+- **Conversation rewind and side chats** (M53, PLAN.md D46). A sent message
+  can branch before itself and return its prompt to the composer. Model API
+  images return when replay still holds them; otherwise the panel warns.
+  Side chat opens a separate Plan-mode fork without stopping the main tab.
+  On the Model API backend, its stored side marker survives reopen, keeps
+  Plan and the cleared goal, suppresses hooks, and refuses external MCP tools
+  even when a server marks them read only. A failed fork save opens no panel.
+  Scheduled prompt creation, cancellation and runs are refused in core before
+  storage, claim or paid use, including after a side fork is reopened.
+  Rewind and side-chat clicks carry their source session, so a late request
+  is ignored if that tab has moved to another session. Closing a
+  side chat returns focus to its original tab while that tab remains open.
+  Conversation rewind waits for the selected turn to finish so pending steered
+  images cannot be mistaken for saved replay.
+  Its locked Plan mode leaves `Shift+Tab` available for keyboard navigation.
+  Muse Code's Windows 1.3.0 fork limitation still hides these actions.
 
 - **Image edits** (M44, PLAN.md D37). With image generation on, the model
   can also change one workspace image, or combine up to four, by a prompt,
@@ -254,6 +279,14 @@ while they are (PLAN.md D30, D34).
 
 ### Fixed
 
+- **Account & usage reset timing (M53 follow-up).** The open modal updates
+  its countdown each minute and stops treating an expired report as current.
+  It uses Muse Code's reported account-level percentages and reset timestamps
+  without guessing model or plan multipliers. Sign-out and authentication
+  changes clear visible usage; the old global snapshot is no longer read and
+  is removed during activation when storage permits. An empty CLI read also
+  clears a same-host snapshot. A late
+  read cannot replace a newer report or restore a stopped host's usage.
 - **Windows MCP stdio startup (M50).** A compiled C# job executable now starts
   each configured server directly. PowerShell only compiles it once, avoiding
   per-server startup delay while retaining binary pipes, job containment and

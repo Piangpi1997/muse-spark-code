@@ -1,6 +1,7 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { openChatPanel, restoreChatPanel } from '../../src/host/views/chatPanel'
 import { SurfaceRegistry } from '../../src/host/views/surfaceRegistry'
+import { UI_TEXT } from '../../src/shared/constants'
 import { FakeWebviewPanel, fakeHostContext, fakeSurface } from './helpers/fakes'
 // Same module instance the production code receives through the `vscode`
 // alias in vitest.config.ts, imported by path so its mock surface is typed.
@@ -137,5 +138,43 @@ describe('openChatPanel', () => {
     panel.active = true
     panel.viewStateChanges.fire({ webviewPanel: panel })
     expect(panel.title).toBe('Renamed')
+  })
+
+  it('opens a Plan-mode side panel and restores its side-chat policy after reload (M53)', () => {
+    const registry = new SurfaceRegistry()
+    const onDisposed = vi.fn()
+    const opened = openChatPanel(fakeHostContext(), registry, {
+      sessionId: 'forked',
+      isSideChat: true,
+      onDisposed,
+    })
+    if (!(opened instanceof FakeWebviewPanel)) {
+      throw new TypeError('expected the fake side panel')
+    }
+    const panel = opened
+    expect(panel.title).toBe(UI_TEXT.sideChatTitle)
+    expect(registry.active?.takeRestoredSessionId()).toBe('forked')
+    expect(registry.active?.isSideChat).toBe(true)
+    panel.webview.messages.fire({ type: 'ready' })
+    expect(panel.webview.postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'init',
+        sideChat: true,
+        settings: expect.objectContaining({ initialPermissionMode: 'plan' }),
+      }),
+    )
+    registry.active?.setTitle('Parser fix')
+    expect(panel.title).toBe(`${UI_TEXT.sideChatTitle}: Parser fix`)
+    panel.dispose()
+    expect(registry.size).toBe(0)
+    expect(onDisposed).toHaveBeenCalledOnce()
+
+    const restored = restore({ sessionId: 'forked', sideChat: true }, panel.title)
+    expect(restored.registry.active?.takeRestoredSessionId()).toBe('forked')
+    expect(restored.registry.active?.isSideChat).toBe(true)
+    restored.panel.webview.messages.fire({ type: 'ready' })
+    expect(restored.panel.webview.postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'init', sideChat: true }),
+    )
   })
 })

@@ -649,11 +649,37 @@ change, and **Click to expand** opens the diff editor. To undo, use the
 rewind button on any sent message (on hover):
 
 - **Fork conversation from here**.
+- **Rewind conversation to here** starts a branch before that message and
+  puts its prompt back in the composer. The original conversation stays in
+  History. Images return when the backend still has their bytes; the panel
+  warns if it cannot restore one. A Model API conversation cannot be rewound
+  before its latest compaction. A rewind queued for a session the tab has since
+  left is ignored. Messages steered into one turn use the last earlier turn as
+  their branch point; if none exists, the conversation rewind choice is hidden.
+  Wait for the selected turn to finish before rewinding its conversation.
+  A just-sent Model API image can be restored before History is reopened.
 - **Rewind code to here** reverts every edit made after that message, the
   conversation's and its subagents', in the reverse of the order they
   landed. A file the edit created goes to the trash, unless you have added
   to it since, in which case your lines stay.
 - **Fork conversation and rewind code**.
+
+**Side chat.** Use **Side chat** in the header to open a separate Plan-mode
+conversation with the completed turns as reference. Its inherited goal is
+cleared; the original tab keeps its session, goal and running turn. A delayed
+side-chat request is ignored if the original tab has since changed sessions.
+On the Model API backend, the side branch keeps Plan mode after reopen,
+suppresses local hooks and refuses external MCP tools, including ones their
+server labels read only. It also refuses scheduled prompt creation, cancellation
+and paid runs before any job claim or Model API request. Muse Code applies its
+own project and session rules in Plan mode;
+review those rules before treating that branch as read only. Close the side
+tab to return to the main one; its branch stays in History. It uses the
+selected backend's normal model allowance or key billing; it does not route
+Model API calls through a Muse subscription. In a side chat, `Shift+Tab`
+moves keyboard focus normally because its permission mode is fixed. A side
+panel's History shows only its own side branches; the same boundary applies
+when the window reloads.
 
 Each edit is undone only where its own lines (the changed lines and the few
 around them) are still exactly as the edit left them. If you added or
@@ -811,8 +837,15 @@ backend runs no workflows.
 
 - **Account:** auth method, plan, backend, Muse Code version and model.
 - **Usage (Muse Code):** the subscription's current window and week. Muse
-  Code reports them only after a reply; until then the modal shows the last
-  window it reported, dated "as of".
+  Code reports them only after a reply. The modal reads the latest report
+  from the signed-in CLI when opened; it does not use an account-agnostic
+  snapshot after a host restart or sign-out. Countdowns update each minute
+  while the modal is open. Once a reported reset has passed, that row waits
+  for a fresh Muse Code report instead of showing an expired percentage or
+  reset countdown. Each observation is dated "as of". The numbers are the
+  CLI's account-level percentages and reset times: changing the selected
+  model does not create a separate local quota or reset calculation, and an
+  opaque plan ID is shown as "Muse Code subscription".
 - **This conversation:** token totals (on Muse Code, prompt tokens as it
   counts them once). On the Model API also the cached tokens, the cache-hit
   rate and a dollar estimate from Meta's published per-token prices
@@ -1239,12 +1272,13 @@ message resumes the same session.
   without the sandbox for such workspaces: commands run directly as you, in
   the project, still gated by the approval cards, and the panel says so once
   per conversation. `muse` keeps the sandbox regardless; `off` never sandboxes.
-- **No Rename in the header, no Fork in a message's menu (Windows)** — Muse
+- **No Rename, conversation rewind or Side chat on Muse Code 1.3.0 for Windows** — Muse
   Code 1.3.0 refuses `session/rename` and `session/fork` on Windows
   ([#30](https://github.com/meta-models/muse-code-sdk/issues/30),
   [#31](https://github.com/meta-models/muse-code-sdk/issues/31)), so the
-  panel does not offer them there; **Rewind code to here** still works. A
-  newer Muse Code gets both back, and the Model API backend has both.
+  panel does not offer fork-based actions there; **Rewind code to here**
+  still works. A newer Muse Code gets them back when its fork method works,
+  and the Model API backend offers them now.
 - **A warning that "Muse Code reported an error for the decision (the tool
   may have run anyway): … approval ledger durability fence …"** — Muse Code
   1.3.0 on Windows sometimes fails its own ledger write after applying your

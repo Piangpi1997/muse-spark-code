@@ -153,8 +153,6 @@ function setup(
     /** How long the IDE tool server takes to answer (a retried start, D25). */
     ideMcpStartMs?: number
     grantedCapabilities?: readonly string[]
-    /** The window a previous session left in the cache (M16). */
-    cachedUsage?: SubscriptionUsage
     shellSandbox?: ShellSandboxPosture
     /** Contributor-tier guard (M7). */
     isConfidentialWorkspace?: boolean
@@ -181,6 +179,12 @@ function setup(
     readToolImage?: ConversationDeps['readToolImage']
     /** VS Code's workspace trust (M46: Restricted Mode runs no `!` command). */
     isWorkspaceTrusted?: boolean
+    isSideChat?: boolean
+    /** The side panel's original fork ID, including after window reload. */
+    sideSessionId?: string
+    openSideChat?: (sessionId: string) => void
+    /** Hold a host lookup after the action captured its source session. */
+    hostGate?: { current: Promise<undefined> | undefined; onWait?: () => void }
   } = {},
 ) {
   const handle = fakeMspHost()
@@ -270,7 +274,8 @@ function setup(
     log,
   )
   const auth = fakeAuth(options.status)
-  const surface = fakeSurface('s')
+  const surface = fakeSurface('s', options.isSideChat)
+  surface.takeRestoredSessionId.mockReturnValue(options.sideSessionId)
   const openExternal = vi.fn<(url: string) => void>()
   const hostActions: HostAction[] = []
   let picked: PickedFile[] = []
@@ -288,7 +293,6 @@ function setup(
   const reviews: [string, string, string][] = []
   const opened: [string, string][] = []
   const openedFiles: [string, LineRange | undefined][] = []
-  let cachedUsage: SubscriptionUsage | undefined = options.cachedUsage
   const contributorPrompts: string[] = []
   let remoteBypassPrompts = 0
   // What "Export conversation…" handed the save dialog (M30).
@@ -328,6 +332,11 @@ function setup(
     usageInsights: () => Promise.resolve(options.usageInsights),
     ensureHost: async () => {
       await options.beforeEnsureHost?.()
+      const gate = options.hostGate?.current
+      if (gate !== undefined) {
+        options.hostGate?.onWait?.()
+        await gate
+      }
       return host
     },
     workspaceRoot: 'workspaceRoot' in options ? options.workspaceRoot : '/ws',
@@ -335,6 +344,7 @@ function setup(
     initialPermissionMode: options.initialPermissionMode ?? 'manual',
     hasApprovalUi: options.hasApprovalUi ?? false,
     openExternal,
+    ...(options.openSideChat !== undefined && { openSideChat: options.openSideChat }),
     mentions: {
       search: (query: string, limit: number) => {
         const items: MentionItem[] = [
@@ -411,13 +421,6 @@ function setup(
     },
     readToolImage:
       options.readToolImage ?? (() => Promise.resolve({ ok: false, reason: 'no image here' })),
-    usageCache: {
-      read: () => cachedUsage,
-      write: (usage) => {
-        cachedUsage = usage
-        return Promise.resolve()
-      },
-    },
     ideMcpEndpoint: () =>
       new Promise((resolve) => {
         // A server still (re)starting answers later (D25); the session waits.
@@ -476,7 +479,6 @@ function setup(
     inserted,
     opened,
     openedFiles,
-    cachedUsage: () => cachedUsage,
     onSandboxUnavailable,
     saveAll,
     unsaved,
@@ -1684,6 +1686,31 @@ async function firstUsageReport(t: ReturnType<typeof setup>) {
   return t.surface.posted.at(-1)
 }
 
+async function observeUsage(t: ReturnType<typeof setup>, usage: SubscriptionUsage): Promise<void> {
+  await firstUsageReport(t)
+  t.server.notify('usage/changed', usage)
+  await settle()
+  expect(t.surface.posted.at(-1)).toMatchObject({ subscription: usage })
+}
+
+async function expectEmptyUsageRead(t: ReturnType<typeof setup>): Promise<void> {
+  t.server.handle('usage/read', () => ({}))
+  await t.controller.handle({ type: 'readUsage' })
+  expect(t.surface.posted.at(-1)).not.toHaveProperty('subscription')
+}
+
+async function pendingUsageRead(t: ReturnType<typeof setup>) {
+  await firstUsageReport(t)
+  t.server.silence('usage/read')
+  const read = t.controller.handle({ type: 'readUsage' })
+  await settle()
+  const request = t.server.requestsFor('usage/read').at(-1)
+  if (request?.id === undefined) {
+    throw new Error('usage/read was not sent')
+  }
+  return { read, requestId: request.id }
+}
+
 function withHistory(
   options: Parameters<typeof setup>[0] = {},
   sessionOverrides: Record<string, unknown> = {},
@@ -1704,12 +1731,20 @@ function withHistory(
   t.server.handle('session/fork', () =>
     envelope({ ...storedSession, sessionId: 'forked', forkedFrom: { sessionId: 'old' } }),
   )
+  t.server.handle('goal/clear', goalRefusal('missing_goal'))
   t.server.handle('session/rename', (params) => ({
     commandId: params['commandId'],
     status: 'accepted',
     name: `${String(params['name'])} (canonical)`,
   }))
   return t
+}
+
+/** One completed source turn for fork and side-chat tests (M53). */
+async function completeFirstTurn(t: ReturnType<typeof withHistory>): Promise<void> {
+  await t.send('l1', 'first')
+  t.finishTurn()
+  await settle()
 }
 
 const historyLoaded = {
@@ -1960,6 +1995,305 @@ describe('ConversationController: session history (M6)', () => {
       type: 'notice',
       level: 'error',
       text: 'Could not fork the conversation: invalid fork boundary: WriteFailed',
+    })
+  })
+
+  it('rewinds by forking before the chosen turn and restores its draft; the first turn clears (M53)', async () => {
+    const t = withHistory()
+    await t.send('l1', 'first')
+    t.finishTurn()
+    await settle()
+    await t.controller.handle({
+      type: 'rewindConversation',
+      sourceSessionId: 's1',
+      itemId: 'u2',
+      turnId: 't2',
+      lastTurnId: 't1',
+      text: 'second',
+      imageCount: 0,
+    })
+    expect(t.server.requestsFor('session/fork')[0]?.params).toMatchObject({
+      sessionId: 's1',
+      cutPoint: { lastTurnId: 't1' },
+    })
+    expect(t.surface.posted).toContainEqual({ type: 'restoreDraft', text: 'second' })
+    await t.controller.handle({
+      type: 'rewindConversation',
+      sourceSessionId: 'forked',
+      itemId: 'u1',
+      turnId: 't1',
+      text: 'first',
+      imageCount: 1,
+    })
+    expect(t.surface.posted).toContainEqual({ type: 'conversationCleared' })
+    expect(t.surface.posted).toContainEqual({ type: 'restoreDraft', text: 'first' })
+    expect(t.surface.posted).toContainEqual({
+      type: 'notice',
+      level: 'warning',
+      text: UI_TEXT.rewindImagesUnavailable,
+    })
+  })
+
+  it('restores a completed live Model API image before History reload (M53)', async () => {
+    const t = setup()
+    const { api, controller } = modelApiController(t, {
+      newId: (() => {
+        let nextId = 0
+        return () => `id${String(++nextId)}`
+      })(),
+    })
+    await attachPng({ controller })
+    const attachment = t.surface.posted.findLast((message) => message.type === 'attachmentAdded')
+    if (attachment?.type !== 'attachmentAdded') {
+      throw new Error('expected attachment')
+    }
+    api.script({ text: 'I saw the image' })
+    await controller.handle({
+      type: 'sendMessage',
+      localId: 'live-card',
+      text: 'look at this',
+      attachmentIds: [attachment.attachment.id],
+    })
+    await vi.waitFor(() => {
+      expect(agentEvents(t).some((event) => event.type === 'turnCompleted')).toBe(true)
+    })
+    const accepted = t.surface.posted.findLast((message) => message.type === 'turnAccepted')
+    const info = t.surface.posted.findLast((message) => message.type === 'sessionInfo')
+    if (accepted?.type !== 'turnAccepted' || info?.type !== 'sessionInfo') {
+      throw new Error('expected live turn acceptance')
+    }
+    expect(accepted.userMessageId).toEqual(expect.any(String))
+    const attachmentCount = t.surface.posted.filter(
+      (message) => message.type === 'attachmentAdded',
+    ).length
+    await controller.handle({
+      type: 'rewindConversation',
+      sourceSessionId: info.sessionId ?? '',
+      itemId: accepted.userMessageId ?? '',
+      turnId: accepted.turnId,
+      text: 'look at this',
+      imageCount: 1,
+    })
+    expect(t.surface.posted.filter((message) => message.type === 'attachmentAdded')).toHaveLength(
+      attachmentCount + 1,
+    )
+    expect(t.surface.posted).not.toContainEqual({
+      type: 'notice',
+      level: 'warning',
+      text: UI_TEXT.rewindImagesUnavailable,
+    })
+  })
+
+  it('ignores a rewind sent for a session no longer on this surface (M53)', async () => {
+    const t = withHistory()
+    await t.send('l1', 'first')
+    t.finishTurn()
+    await settle()
+    t.surface.posted.length = 0
+    await t.controller.handle({
+      type: 'rewindConversation',
+      sourceSessionId: 'another-session',
+      itemId: 'u1',
+      turnId: 't1',
+      text: 'stale draft',
+      imageCount: 0,
+    })
+    expect(t.server.requestsFor('session/fork')).toHaveLength(0)
+    expect(t.surface.posted).not.toContainEqual({ type: 'conversationCleared' })
+    expect(t.surface.posted).not.toContainEqual({ type: 'restoreDraft', text: 'stale draft' })
+  })
+
+  it('refuses a forged rewind of the active turn before steered image replay settles (M53)', async () => {
+    const t = withHistory()
+    await t.send('l1', 'running')
+    await t.controller.handle({
+      type: 'rewindConversation',
+      sourceSessionId: 's1',
+      itemId: 'steered-user-card',
+      turnId: 't1',
+      lastTurnId: 'older',
+      text: 'steered with image',
+      imageCount: 1,
+    })
+    expect(t.server.requestsFor('session/fork')).toHaveLength(0)
+    expect(t.surface.posted).not.toContainEqual({
+      type: 'restoreDraft',
+      text: 'steered with image',
+    })
+  })
+
+  it('does not rewind another session if the surface clears during host lookup (M53)', async () => {
+    const onWait = vi.fn()
+    const hostGate: { current: Promise<undefined> | undefined; onWait: () => void } = {
+      current: undefined,
+      onWait,
+    }
+    const t = withHistory({ hostGate })
+    await t.send('l1', 'first')
+    t.finishTurn()
+    await settle()
+    t.surface.posted.length = 0
+    const gate = Promise.withResolvers<undefined>()
+    hostGate.current = gate.promise
+    const rewinding = t.controller.handle({
+      type: 'rewindConversation',
+      sourceSessionId: 's1',
+      itemId: 'u1',
+      turnId: 't1',
+      text: 'old draft',
+      imageCount: 0,
+    })
+    await vi.waitFor(() => {
+      expect(onWait).toHaveBeenCalledOnce()
+    })
+    await t.controller.handle({ type: 'clearConversation' })
+    gate.resolve(undefined)
+    await rewinding
+    expect(
+      t.surface.posted.filter((message) => message.type === 'conversationCleared'),
+    ).toHaveLength(1)
+    expect(t.surface.posted).not.toContainEqual({ type: 'restoreDraft', text: 'old draft' })
+  })
+
+  it('opens a Plan-mode side fork without dropping the main session (M53)', async () => {
+    const opened = vi.fn<(sessionId: string) => void>()
+    const t = withHistory({ openSideChat: opened })
+    await completeFirstTurn(t)
+    await t.controller.handle({ type: 'openSideChat', sourceSessionId: 's1' })
+    expect(opened).toHaveBeenCalledWith('forked')
+    expect(t.server.requestsFor('session/setApprovalMode').at(-1)?.params).toMatchObject({
+      sessionId: 'forked',
+      mode: 'denyUnmatched',
+    })
+    expect(t.server.requestsFor('turn/cancel')).toHaveLength(0)
+    expect(t.surface.posted).toContainEqual(
+      expect.objectContaining({ type: 'sessionInfo', sessionId: 's1' }),
+    )
+    expect(t.surface.posted).not.toContainEqual({ type: 'conversationCleared' })
+  })
+
+  it('ignores a delayed side-chat click from the session this surface left (M53)', async () => {
+    const opened = vi.fn<(sessionId: string) => void>()
+    const t = withHistory({ openSideChat: opened })
+    await completeFirstTurn(t)
+    await t.controller.handle({ type: 'resumeSession', sessionId: 'old' })
+    await t.controller.handle({ type: 'openSideChat', sourceSessionId: 's1' })
+    expect(t.server.requestsFor('session/fork')).toHaveLength(0)
+    expect(opened).not.toHaveBeenCalled()
+  })
+
+  it('does not open a side fork after its source surface cleared during host lookup (M53)', async () => {
+    const onWait = vi.fn()
+    const hostGate: { current: Promise<undefined> | undefined; onWait: () => void } = {
+      current: undefined,
+      onWait,
+    }
+    const opened = vi.fn<(sessionId: string) => void>()
+    const t = withHistory({ hostGate, openSideChat: opened })
+    await t.send('l1', 'first')
+    t.finishTurn()
+    await settle()
+    const gate = Promise.withResolvers<undefined>()
+    hostGate.current = gate.promise
+    const opening = t.controller.handle({ type: 'openSideChat', sourceSessionId: 's1' })
+    await vi.waitFor(() => {
+      expect(onWait).toHaveBeenCalledOnce()
+    })
+    await t.controller.handle({ type: 'clearConversation' })
+    gate.resolve(undefined)
+    await opening
+    expect(t.server.requestsFor('session/fork')).toHaveLength(0)
+    expect(opened).not.toHaveBeenCalled()
+  })
+
+  it('keeps a side chat in Plan mode even when the panel asks to change it (M53)', async () => {
+    const t = setup({ isSideChat: true, initialPermissionMode: 'bypassPermissions' })
+    await t.controller.handle({ type: 'setPermissionMode', mode: 'auto' })
+    expect(t.surface.posted).toContainEqual({
+      type: 'notice',
+      level: 'info',
+      text: UI_TEXT.sideChatPlanOnly,
+    })
+    expect(t.surface.posted).toContainEqual({
+      type: 'composerState',
+      effort: 'high',
+      isThinkingEnabled: true,
+      permissionMode: 'plan',
+    })
+  })
+
+  it('restores a durable side session as Plan when ordinary History resumes it (M53)', async () => {
+    const t = setup()
+    const { host, controller } = modelApiController(t)
+    const side = await host.startSession({
+      workspaceRoot: '/ws',
+      modelId: 'muse-spark-1.3',
+      approvalMode: 'promptUnmatched',
+      sideChat: true,
+    })
+    await controller.handle({ type: 'resumeSession', sessionId: side.sessionId })
+    expect(t.surface.posted).toContainEqual(
+      expect.objectContaining({ type: 'historyLoaded', sessionId: side.sessionId, sideChat: true }),
+    )
+    expect(t.surface.posted).toContainEqual(
+      expect.objectContaining({ type: 'sessionInfo', sessionId: side.sessionId, sideChat: true }),
+    )
+    expect(t.surface.posted).toContainEqual(
+      expect.objectContaining({ type: 'composerState', permissionMode: 'plan' }),
+    )
+    await controller.handle({ type: 'setPermissionMode', mode: 'auto' })
+    expect(t.surface.posted).toContainEqual({
+      type: 'notice',
+      level: 'info',
+      text: UI_TEXT.sideChatPlanOnly,
+    })
+    await controller.handle({ type: 'clearConversation' })
+    expect(t.surface.posted.at(-2)).toMatchObject({ type: 'sessionInfo', sideChat: false })
+  })
+
+  it('refuses an ordinary Model API session in a side surface on restore or History selection (M53)', async () => {
+    const t = setup({ isSideChat: true })
+    const { host, controller } = modelApiController(t)
+    const ordinary = await host.startSession({
+      workspaceRoot: '/ws',
+      modelId: 'muse-spark-1.3',
+      approvalMode: 'promptUnmatched',
+    })
+    await controller.restoreSession(ordinary.sessionId)
+    await controller.handle({ type: 'resumeSession', sessionId: ordinary.sessionId })
+    expect(t.surface.posted.some((message) => message.type === 'historyLoaded')).toBe(false)
+  })
+
+  it('keeps a Muse Code side panel on its own fork across reload and History selection (M53)', async () => {
+    const t = withHistory({ isSideChat: true, sideSessionId: 'forked' })
+    await t.controller.restoreSession('forked')
+    expect(t.server.requestsFor('session/resume')).toHaveLength(1)
+    expect(t.surface.posted).toContainEqual(
+      expect.objectContaining({ type: 'sessionInfo', sessionId: 'forked', sideChat: true }),
+    )
+    t.server.handle('session/list', () => ({
+      sessions: [{ ...storedSession, sessionId: 'forked' }, storedSession],
+      nextCursor: null,
+    }))
+    await t.controller.handle({ type: 'listSessions' })
+    expect(t.surface.posted.at(-1)).toMatchObject({
+      type: 'sessionList',
+      sessions: [{ sessionId: 'forked' }],
+    })
+    t.surface.posted.length = 0
+    await t.controller.handle({ type: 'resumeSession', sessionId: 'old' })
+    expect(t.server.requestsFor('session/resume')).toHaveLength(1)
+    expect(
+      t.server
+        .requestsFor('session/setApprovalMode')
+        .some((request) => request.params?.['sessionId'] === 'old'),
+    ).toBe(false)
+    expect(t.server.requestsFor('goal/clear')).toHaveLength(0)
+    expect(t.surface.posted.some((message) => message.type === 'historyLoaded')).toBe(false)
+    expect(t.surface.posted).toContainEqual({
+      type: 'notice',
+      level: 'warning',
+      text: UI_TEXT.sideChatSessionOnly,
     })
   })
 
@@ -2232,11 +2566,14 @@ describe('ConversationController: backends and tiers (M7)', () => {
         (message) => message.type === 'notice' && message.text.includes('sandbox'),
       ),
     ).toBe(false)
-    expect(t.surface.posted).toContainEqual({
-      type: 'turnAccepted',
-      localId: 'l1',
-      turnId: 'fixed',
-    })
+    expect(t.surface.posted).toContainEqual(
+      expect.objectContaining({
+        type: 'turnAccepted',
+        localId: 'l1',
+        turnId: 'fixed',
+        userMessageId: expect.any(String),
+      }),
+    )
   })
 })
 
@@ -2410,7 +2747,7 @@ describe('ConversationController (M15)', () => {
   })
 })
 
-describe('ConversationController usage cache (M16)', () => {
+describe('ConversationController usage host boundaries (M53 follow-up)', () => {
   const stale: SubscriptionUsage = {
     observedAtMs: 1000,
     tier: 'tier-1',
@@ -2418,24 +2755,62 @@ describe('ConversationController usage cache (M16)', () => {
     weekly: { usedPercent: 5, resetsAtMs: 9000 },
   }
 
-  it('shows the last reported window while the CLI has none yet, then refreshes the cache', async () => {
-    const t = setup({ cachedUsage: stale })
-    expect(await firstUsageReport(t)).toMatchObject({
-      type: 'usageReport',
-      backend: 'museCode',
-      subscription: stale,
-    })
-    const fresh = { ...stale, observedAtMs: 2000 }
-    t.server.handle('usage/read', () => ({ usage: fresh }))
-    await t.controller.handle({ type: 'readUsage' })
-    expect(t.surface.posted.at(-1)).toMatchObject({ subscription: fresh })
-    expect(t.cachedUsage()).toEqual(fresh)
+  it('drops an old host observation before a new empty usage read', async () => {
+    const t = setup()
+    await observeUsage(t, stale)
+    await t.controller.backendStopping(true)
+    await expectEmptyUsageRead(t)
   })
 
   it('reports no window at all when nothing was ever cached', async () => {
     const t = setup()
     expect(await firstUsageReport(t)).not.toHaveProperty('subscription')
-    expect(t.cachedUsage()).toBeUndefined()
+  })
+
+  it('clears a same-host observation when a later read has no account usage', async () => {
+    const t = setup()
+    await observeUsage(t, stale)
+    await expectEmptyUsageRead(t)
+  })
+
+  it('keeps a newer event when an empty read started before that event', async () => {
+    const t = setup()
+    const { read, requestId } = await pendingUsageRead(t)
+    t.server.notify('usage/changed', stale)
+    await settle()
+    t.server.incoming.push(`${JSON.stringify({ jsonrpc: '2.0', id: requestId, result: {} })}\n`)
+    await read
+    expect(t.surface.posted.at(-1)).toMatchObject({ subscription: stale })
+  })
+
+  it('keeps a newer usage event when an older read finishes later', async () => {
+    const t = setup()
+    const older = { ...stale, observedAtMs: 2000 }
+    const newer = { ...stale, observedAtMs: 3000, weekly: { ...stale.weekly, usedPercent: 90 } }
+    const { read, requestId } = await pendingUsageRead(t)
+    t.server.notify('usage/changed', newer)
+    await settle()
+    t.server.incoming.push(
+      `${JSON.stringify({ jsonrpc: '2.0', id: requestId, result: { usage: older } })}\n`,
+    )
+    await read
+    const reports = t.surface.posted.filter((message) => message.type === 'usageReport')
+    expect(reports.at(-1)).toMatchObject({ subscription: newer })
+    expect(reports).not.toContainEqual(expect.objectContaining({ subscription: older }))
+  })
+
+  it('drops a delayed usage read from a host stopped by sign-out', async () => {
+    const t = setup()
+    const { read, requestId } = await pendingUsageRead(t)
+    const reportsBeforeStop = t.surface.posted.filter((message) => message.type === 'usageReport')
+    await t.controller.backendStopping(true)
+    t.server.incoming.push(
+      `${JSON.stringify({ jsonrpc: '2.0', id: requestId, result: { usage: stale } })}\n`,
+    )
+    await read
+    expect(t.surface.posted.filter((message) => message.type === 'usageReport')).toEqual(
+      reportsBeforeStop,
+    )
   })
 })
 

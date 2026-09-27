@@ -62,5 +62,6 @@ The PNGs beside the records are that day's harness renders.
 - [M50](m50.md): MCP servers on the Model API backend and its diagnostics tool (PLAN.md D42; merged as PR #37)
 - [M51](m51.md): Model API hooks (PLAN.md D36; ordered integration in progress)
 - [M52](m52.md): Model API scheduled prompts, explicit paid admission and native Muse Code cron boundary (in progress)
+- [M53](m53.md): conversation rewind and side chat; certification pending (PLAN.md D46)
 - [M42](m42.md): replay as Meta validates it: commentary, reasoning summaries, reasoning-only turns, stream retries (PLAN.md D35)
 - [M33–M35](m33-m35.md): the paid features: web search, image generation and Muse Voice, opt in and loud (PLAN.md D30, D34)

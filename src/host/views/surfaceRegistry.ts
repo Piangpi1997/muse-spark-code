@@ -68,6 +68,11 @@ export class SurfaceRegistry {
     }
   }
 
+  /** True only while this exact surface is still registered. */
+  public has(surface: ChatSurface): boolean {
+    return this.surfaces.get(surface.id) === surface
+  }
+
   /** The surface that last reported focus, else the earliest registered one. */
   public get active(): ChatSurface | undefined {
     return this.activeId === undefined ? undefined : this.surfaces.get(this.activeId)

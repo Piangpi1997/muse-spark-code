@@ -12,7 +12,12 @@ import { memo, type ReactNode, useDeferredValue, useRef, useState } from 'react'
 import type { CitationSummary, QuestionAnswer } from '../../shared/agentEvents'
 import { UI_TEXT } from '../../shared/constants'
 import { plural } from '../../shared/l10n/text'
-import { type OutputPage, outputPageKey, type TranscriptEntry } from '../state/uiState'
+import {
+  forkCutBefore,
+  type OutputPage,
+  outputPageKey,
+  type TranscriptEntry,
+} from '../state/uiState'
 import { splitForStreaming, splitOpenFence } from '../streamSplit'
 import { useDismiss } from '../useDismiss'
 import type { ApprovalDecisionInput } from './ApprovalCard'
@@ -64,6 +69,9 @@ export interface TranscriptProps {
   /** The user card's menu (M6, M13); absent while no session exists. */
   readonly onFork?: ((entryId: string) => void) | undefined
   readonly onRewind?: ((entryId: string) => void) | undefined
+  readonly onRewindConversation?: ((entryId: string) => void) | undefined
+  /** A still-running turn has no settled replay for a steered user card. */
+  readonly activeTurnId?: string | undefined
   /** A reply's actions menu (M17); absent while no session exists. */
   readonly onReply?: ((entryId: string) => void) | undefined
   /** The row whose highlighted text has the Copy / Ask / Comment menu open (M17). */
@@ -73,12 +81,13 @@ export interface TranscriptProps {
   readonly onCloseQuoteMenu?: (() => void) | undefined
 }
 
-type RewindChoice = 'fork' | 'rewind' | 'both'
+type RewindChoice = 'fork' | 'rewind' | 'both' | 'conversation'
 
 /** The rows of the user card's menu, in Claude Code's order. */
 function rewindMenu(): readonly { readonly id: RewindChoice; readonly label: string }[] {
   return [
     { id: 'fork', label: UI_TEXT.forkFromHere },
+    { id: 'conversation', label: UI_TEXT.rewindConversationToHere },
     { id: 'rewind', label: UI_TEXT.rewindCodeToHere },
     { id: 'both', label: UI_TEXT.forkAndRewind },
   ]
@@ -132,11 +141,13 @@ const UserCard = memo(function UserCard({
   entry,
   onFork,
   onRewind,
+  onRewindConversation,
   quoteMenu,
 }: {
   readonly entry: Extract<TranscriptEntry, { kind: 'user' }>
   readonly onFork: ((entryId: string) => void) | undefined
   readonly onRewind: ((entryId: string) => void) | undefined
+  readonly onRewindConversation: ((entryId: string) => void) | undefined
   readonly quoteMenu: ReactNode
 }) {
   const hasChips =
@@ -151,9 +162,18 @@ const UserCard = memo(function UserCard({
   const onMenuBlur = useDismiss(menuArea, isMenuOpen, closeMenu)
   // Without fork (a host that refuses it, D26) the menu offers the rewind alone.
   const hasMenu = onRewind !== undefined && entry.status === 'sent'
-  const menuRows = rewindMenu().filter((row) => onFork !== undefined || row.id === 'rewind')
+  const menuRows = rewindMenu().filter(
+    (row) =>
+      row.id === 'rewind' ||
+      (row.id === 'conversation' && onRewindConversation !== undefined) ||
+      ((row.id === 'fork' || row.id === 'both') && onFork !== undefined),
+  )
   const choose = (choice: RewindChoice) => {
     setMenuOpen(false)
+    if (choice === 'conversation') {
+      onRewindConversation?.(entry.id)
+      return
+    }
     if (choice !== 'fork') {
       onRewind?.(entry.id)
     }
@@ -526,6 +546,8 @@ function TranscriptList(props: TranscriptProps) {
     onRefuseLink,
     onFork,
     onRewind,
+    onRewindConversation,
+    activeTurnId,
     onReply,
     quoteMenuEntryId,
     onQuote,
@@ -571,12 +593,16 @@ function TranscriptList(props: TranscriptProps) {
   const renderEntry = (entry: TranscriptEntry) => {
     switch (entry.kind) {
       case 'user': {
+        const canForkHere = forkCutBefore(entries, entry.id) !== undefined
         return (
           <UserCard
             key={entry.id}
             entry={entry}
-            onFork={onFork}
+            onFork={canForkHere ? onFork : undefined}
             onRewind={onRewind}
+            onRewindConversation={
+              canForkHere && entry.turnId !== activeTurnId ? onRewindConversation : undefined
+            }
             quoteMenu={quoteMenuFor(entry.id)}
           />
         )
