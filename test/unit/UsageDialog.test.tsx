@@ -43,7 +43,7 @@ function renderDialog(overrides: Partial<UsageDialogProps> = {}) {
     usage: { inputTokens: 12_345, outputTokens: 678, cachedTokens: 10_000 },
     context: { usedTokens: 21_014, windowTokens: 1_007_997, pressure: 'normal' },
     modelId: 'muse-spark-1.3',
-    paid: { features: [], tally: EMPTY_PAID_TALLY, isKeyStored: false },
+    paid: { features: [], tally: EMPTY_PAID_TALLY, isKeyStored: false, alwaysAllowed: [] },
     auth: {
       status: 'signedIn',
       detail: undefined,
@@ -54,6 +54,7 @@ function renderDialog(overrides: Partial<UsageDialogProps> = {}) {
     },
     onInstallMuseCode: vi.fn(),
     onSetupSignIn: vi.fn(),
+    onForgetPaidUse: vi.fn(),
     now: () => NOW,
     onOpenExternal: vi.fn(),
     onClose: vi.fn(),
@@ -90,7 +91,7 @@ describe('UsageDialog', () => {
         hasCliSession: false,
         installCommand: 'irm https://dev.meta.ai/install.ps1 | iex',
       },
-      paid: { features: [], tally: EMPTY_PAID_TALLY, isKeyStored: true },
+      paid: { features: [], tally: EMPTY_PAID_TALLY, isKeyStored: true, alwaysAllowed: [] },
     })
     fireEvent.click(screen.getByRole('button', { name: 'Install Muse Code' }))
     expect(screen.getByText('irm https://dev.meta.ai/install.ps1 | iex')).toBeInTheDocument()
@@ -394,6 +395,7 @@ describe('UsageDialog: paid features (M33, PLAN.md D30)', () => {
       paid: {
         features: ['subagents'],
         isKeyStored: true,
+        alwaysAllowed: [],
         tally: { ...EMPTY_PAID_TALLY, subagentRequests: 1, subagentUnknownRequests: 1 },
       },
     })
@@ -419,6 +421,7 @@ describe('UsageDialog: paid features (M33, PLAN.md D30)', () => {
         features: ['webSearch'],
         tally: { webSearches: 4, images: 2, voiceSeconds: 90, scheduledRuns: 0 },
         isKeyStored: true,
+        alwaysAllowed: [],
       },
     })
     const dialog = screen.getByRole('dialog')
@@ -430,6 +433,41 @@ describe('UsageDialog: paid features (M33, PLAN.md D30)', () => {
     expect(dialog).toHaveTextContent('published prices, read on 2026-09-24')
   })
 
+  it('names what is allowed always in this workspace, and asks again on request (M58)', () => {
+    const onForgetPaidUse = vi.fn()
+    renderDialog({
+      report: modelApiReport,
+      onForgetPaidUse,
+      paid: {
+        features: ['webSearch', 'imageGeneration'],
+        tally: EMPTY_PAID_TALLY,
+        isKeyStored: true,
+        alwaysAllowed: ['webSearch'],
+      },
+    })
+    const dialog = screen.getByRole('dialog')
+    expect(dialog).toHaveTextContent('Web search (on, allowed always in this workspace)')
+    expect(dialog).toHaveTextContent('Images (on)')
+    expect(dialog).toHaveTextContent(
+      'Allowed always in this workspace, without asking: Web search.',
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Ask again every time' }))
+    expect(onForgetPaidUse).toHaveBeenCalledTimes(1)
+  })
+
+  it('offers no "Ask again" while every paid use still asks (M58)', () => {
+    renderDialog({
+      report: modelApiReport,
+      paid: {
+        features: ['webSearch'],
+        tally: EMPTY_PAID_TALLY,
+        isKeyStored: true,
+        alwaysAllowed: [],
+      },
+    })
+    expect(screen.queryByRole('button', { name: 'Ask again every time' })).not.toBeInTheDocument()
+  })
+
   it('counts scheduled runs without adding their tokens twice to the paid extra total (M52)', () => {
     renderDialog({
       report: modelApiReport,
@@ -437,6 +475,7 @@ describe('UsageDialog: paid features (M33, PLAN.md D30)', () => {
         features: ['scheduledPrompts'],
         tally: { webSearches: 0, images: 0, voiceSeconds: 0, scheduledRuns: 2 },
         isKeyStored: true,
+        alwaysAllowed: [],
       },
     })
     const dialog = screen.getByRole('dialog')
@@ -457,6 +496,7 @@ describe('UsageDialog: paid features (M33, PLAN.md D30)', () => {
         features: ['imageGeneration'],
         tally: { webSearches: 0, images: 3, voiceSeconds: 0, scheduledRuns: 0 },
         isKeyStored: true,
+        alwaysAllowed: [],
       },
     })
     const dialog = screen.getByRole('dialog')
@@ -472,6 +512,7 @@ describe('UsageDialog: paid features (M33, PLAN.md D30)', () => {
         features: ['imageGeneration'],
         tally: { webSearches: 4, images: 3, voiceSeconds: 0, scheduledRuns: 0 },
         isKeyStored: true,
+        alwaysAllowed: [],
       },
     })
     const dialog = screen.getByRole('dialog')

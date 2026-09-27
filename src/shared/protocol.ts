@@ -415,6 +415,9 @@ const webviewToHostMessageSchema = z.discriminatedUnion('type', [
     feature: z.enum(PAID_FEATURES),
     isOn: z.boolean(),
   }),
+  // Account & usage's "Ask again" (M58): no paid feature stays allowed
+  // always in this workspace.
+  z.object({ type: z.literal('forgetPaidUse') }),
 ])
 
 export type WebviewToHostMessage = z.infer<typeof webviewToHostMessageSchema>

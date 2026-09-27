@@ -122,7 +122,8 @@ export class ModelApiBackendManager {
       promptCacheRetention: this.deps.promptCacheRetention,
       mcpServers: await this.deps.createMcpServers?.(workspaceRoot),
       ideTools: this.deps.ideTools,
-      confirmSubagentTask: this.deps.confirmSubagentTask,
+      allowsPaidUse: this.deps.allowsPaidUse,
+      isPaidUseRemembered: this.deps.isPaidUseRemembered,
       noteSubagentUsage: this.deps.noteSubagentUsage,
       isHooksEnabled: this.deps.isHooksEnabled,
       loadHooks: async () =>

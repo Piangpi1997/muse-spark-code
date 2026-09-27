@@ -73,6 +73,7 @@ export const SCENARIOS = [
   'slash-commands',
   'paid',
   'paid-usage',
+  'paid-always',
   'paid-subagent-approval',
   'paid-subagent-usage',
   'paid-subagent-map',

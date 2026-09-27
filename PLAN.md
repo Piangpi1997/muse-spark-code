@@ -1147,7 +1147,8 @@ The choices:
 - **Images.** `generate_image` (prompt, workspace path ending in `.png`,
   square, landscape or portrait) is offered only while the feature is on.
   Every call asks, in every mode, Bypass included, with "Allow once" and
-  "Reject" only; Plan refuses it, since it writes a file. The card is not a
+  "Reject" only (superseded by D48: the paid-use popup, which adds "Allow
+  always in this workspace"); Plan refuses it, since it writes a file. The card is not a
   file write, so Edit automatically never answers it, and it shows the
   prompt and the price. What cannot be saved is refused before the card (a
   taken path, a wrong extension, a path outside the workspace, a prompt
@@ -2198,6 +2199,52 @@ own parts before it starts.
   an earlier successful model response: only still-pending media from a later
   tool round is replaced by path-only text. Multi-round red/green tests cover
   both a later Stop and a later failed model request.
+
+### D48 — A popup before every paid use (M58, 2026-09-27)
+
+The owner (2026-09-27): "anything requiring extra payment should promt you
+with a popup that asks allow once allow always in this workspace or deny".
+Until then the paid features asked in four different ways: an in-chat card
+with Allow once and Reject for a Model API image or child task, a native
+dialog for an image on Muse Code, a scheduled run and a child task started
+from the Agent map, and nothing per use for web search and Muse Voice (D34:
+the price accepted once, then only the row, the badge and the tally).
+
+- **One popup, three answers.** `PaidUseConsent.allows`
+  (`src/core/paid/paidConsent.ts`) asks through `askPaidUse`
+  (`src/host/paid/paidHost.ts`), a native modal naming what is about to be
+  billed and its price, with **Allow once**, **Allow always in this
+  workspace** and **Deny**; closing it is Deny. It asks in every permission
+  mode, Bypass included. A paid call never gets an approval card or a
+  session rule any more: `paidChoices`, the `paidTool` subject and the
+  card's price line are gone.
+- **What asks, and when.** An image, before it is bought (after every check
+  that can refuse it for free, as before). A child task, before its grant;
+  Plan still refuses it. A scheduled run, before its turn. A Muse Voice
+  recording, before the recorder starts; a stop pressed while the popup is
+  open cancels the start. Web search, once per prompt before its first
+  request: Meta runs the searches inside the response and the model decides
+  whether to search, so no popup can come before each search; Deny sends
+  that prompt without the `web_search` tool. A child task searches only
+  when its parent's prompt was allowed to (its grant carries the answer), or,
+  for a task the user starts from the Agent map, when web search is allowed
+  always here. A child never asks for itself.
+- **"Always" is per workspace, and revocable.** It is kept in the
+  workspace's own state (feature names with a grant generation, no content),
+  offered and honoured only in a trusted workspace with a folder open. Every
+  change to a feature's price acceptance (turned off, or a new price
+  accepted) counts its generation up in global state, which voids every
+  workspace's "always" for it. **Ask again every time** in Account & usage
+  clears them for this workspace.
+- **Still loud when silent.** A use that no longer asks keeps its paid row,
+  the badge (whose tooltip names the features allowed always), and the tally;
+  Account & usage marks each such feature "on, allowed always in this
+  workspace". A hook's `allow` never answers the popup; a hook that demands
+  a question, and a paid image aimed at a protected path (D24), ask even when
+  the feature is allowed always.
+- **Not asked:** an ordinary Model API turn the user types. Choosing the
+  Model API backend with a pay-as-you-go key is that consent (D1, D37); the
+  popup covers what costs extra beyond it.
 
 ## 3. Open questions (need the owner)
 
@@ -5953,6 +6000,39 @@ joins, combined M56 gates and live enterprise proxy/private-root proof.
   `endpoint_transport.proxy` is the user's to set in its settings file. No
   enterprise proxy with authentication and a private root has been exercised
   end to end; routing and failure messages have local capture evidence only.
+
+### M58 — A popup before every paid use (D48)
+
+- **Goal.** The owner's rule of 2026-09-27: every paid use asks in a popup
+  with Allow once, Allow always in this workspace, or Deny.
+- **Scope.** `PaidUseConsent` and its grants; `askPaidUse`; the Model API
+  host's image, child-task and web search paths; the controller's Muse
+  Voice start and scheduled run; the Muse Code `ide` image tools; Account &
+  usage's "always" state and **Ask again every time**; the badge's tooltip;
+  the removal of the paid approval card.
+- **Files.** `src/core/paid/paidConsent.ts` (new), `src/host/paid/paidHost.ts`,
+  `src/core/backends/modelapi/ModelApiHost.ts`, `permissions.ts`,
+  `imageGeneration.ts`, `src/host/conversation/conversationController.ts`,
+  `src/extension.ts`, `src/shared/{paid,protocol,agentEvents,constants}.ts`,
+  `src/webview/{App.tsx,components/ApprovalCard.tsx,components/UsageDialog.tsx}`,
+  the 14 UI and manifest tables, the harness (`paid-always` added; the three
+  paid card scenarios now show the row while the popup asks).
+- **Acceptance.** Each paid use asks once per use (web search once per
+  prompt), in every mode; Deny bills nothing; "always" stops the asking in
+  this trusted workspace only, lapses on a price-acceptance change, and is
+  taken back by Ask again; a protected image target and a hook demanding a
+  question ask anyway; no paid card remains.
+- **Tests.** `paidConsent.test.ts` (new), `paidHost.test.ts` and
+  `scheduledRunConfirmation.test.ts` (rewritten for the popup),
+  `modelApiHost.test.ts` (image, child-task and web search paths),
+  `conversationController.test.ts` (Muse Voice), `UsageDialog.test.tsx`.
+- **Gates.** `npm run quality`; drills recorded in
+  `docs/certification/m58.md`.
+- **Docs.** README (Paid features, settings table), PRIVACY, SECURITY,
+  AGENTS rule 12, CONTRIBUTING, CHANGELOG.
+- **Security.** Grants hold feature names only; untrusted workspaces never
+  offer or honour "always"; settings stay machine-scoped.
+- **Status.** Built on `feature/m58-paid-consent` (2026-09-27).
 
 ### M41 — Install Muse Code from the panel (folded into M55)
 

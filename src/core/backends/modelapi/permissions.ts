@@ -12,9 +12,11 @@
 //                      Edit-automatically mode, as it does for Muse Code
 //   denyUnmatched    → reads run, everything else is refused (Plan)
 //
-// A paid call (M34, PLAN.md D30: image generation) asks in every mode,
-// Bypass included, with no "always allow"; Plan refuses it, since it writes
-// a file. The price is the user's to accept each time.
+// A paid call (M34, PLAN.md D30: image generation; M48: a child task) asks
+// in every mode, Bypass included, never through a card or a session rule:
+// the paid-use popup asks (M58, PLAN.md D48), whose "Allow always in this
+// workspace" is the only way it stops asking. Plan refuses it, since it
+// writes a file or starts an agent.
 //
 // A protected write (PLAN.md D24) asks in every mode but Bypass and Plan,
 // session rules included: a file that configures or runs code outside the
@@ -155,11 +157,6 @@ export function choicesFor(toolName: string, command?: string): readonly Approva
       acceptsFeedback: true,
     },
   ]
-}
-
-/** The choices for a paid call (M34): this once, or not at all; never for the session. */
-export function paidChoices(): readonly ApprovalChoice[] {
-  return choicesFor('').filter((choice) => choice.choiceId !== APPROVAL_CHOICE_IDS.allowSession)
 }
 
 /** One call as the engine judges it. */

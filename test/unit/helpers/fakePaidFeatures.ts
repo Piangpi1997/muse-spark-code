@@ -1,7 +1,8 @@
-/** Default host/manager fixture: no paid feature or child-task consent is granted. */
+/** Default host/manager fixture: no paid feature is on, and the paid-use popup denies. */
 export const disabledPaidFeatures = {
   isPaidFeatureOn: () => false,
   notePaidUse: () => undefined,
-  confirmSubagentTask: () => Promise.resolve(false),
+  allowsPaidUse: () => Promise.resolve(false),
+  isPaidUseRemembered: () => false,
   noteSubagentUsage: () => undefined,
 }

@@ -180,11 +180,6 @@ export const approvalSubjectSchema = z.object({
   target: z.optional(z.string()),
   toolName: z.optional(z.string()),
   stages: z.optional(z.array(approvalStageSchema)),
-  /** A call billed on top of tokens (M34, PLAN.md D30): the card names its price. */
-  paidFeature: z.optional(z.enum(PAID_FEATURES)),
-  /** Model API child-task consent (M48): exact model and hard HTTP attempt cap. */
-  modelId: z.optional(z.string()),
-  requestLimit: z.optional(z.number()),
 })
 export type ApprovalSubject = z.infer<typeof approvalSubjectSchema>
 

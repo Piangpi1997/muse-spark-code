@@ -728,8 +728,9 @@ async function openRig(options: RigOptions): Promise<Rig> {
       notePaidUse: (feature, units) => {
         usage.add(feature, units)
       },
-      // The panel's per-task price card, answered yes like every other.
-      confirmSubagentTask: () => Promise.resolve(true),
+      // The paid-use popup (M58), answered "Allow once" like every card.
+      allowsPaidUse: (request) => Promise.resolve(gate.isOn(request.feature)),
+      isPaidUseRemembered: () => false,
       noteSubagentUsage: (modelId, childUsage) => {
         usage.addSubagentUsage(modelId, childUsage)
       },

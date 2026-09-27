@@ -85,6 +85,7 @@ import { fill, plural } from '../../../shared/l10n/text'
 import { APPROVAL_MODES, type ApprovalMode } from '../../../shared/permissionModes'
 import {
   modelApiPaidTier,
+  type PaidUseRequest,
   type SubagentTaskConfirmation,
   type SubagentUsage,
 } from '../../../shared/paid'
@@ -165,7 +166,7 @@ import {
 import { postModelCallFields, preModelCallFields } from './modelCallHooks'
 import { nextScheduleFire } from './schedules'
 import { toolHookInput, toolHookOutput } from './toolHookPayload'
-import { type ImagePlan, prepareImageCall, runImageCall } from './imageGeneration'
+import { type ImagePlan, imageUseRequest, prepareImageCall, runImageCall } from './imageGeneration'
 import { promptCacheKey } from './promptCache'
 import { MediaBudget } from './mediaBudget'
 import { mcpFunctionDefinition, mcpFunctionName } from './mcp/functions'
@@ -176,7 +177,6 @@ import {
   choicesFor,
   isKnownChoice,
   isProtectedPath,
-  paidChoices,
   PermissionEngine,
   type PermissionQuery,
   type PermissionVerdict,
@@ -244,8 +244,13 @@ export interface ModelApiPaidHooks {
   readonly isPaidFeatureOn: (feature: PaidFeature) => boolean
   /** Counts attempts and extra-feature uses for the window. */
   readonly notePaidUse: (feature: PaidFeature, units: number) => void
-  /** A fresh user decision before an owner-initiated child task. */
-  readonly confirmSubagentTask: (task: SubagentTaskConfirmation) => Promise<boolean>
+  /**
+   * The popup before a paid use (M58, PLAN.md D48): true when it is allowed
+   * always in this workspace or allowed now. `requiresAsking` asks even then.
+   */
+  readonly allowsPaidUse: (request: PaidUseRequest, requiresAsking: boolean) => Promise<boolean>
+  /** Whether the feature is allowed always in this workspace, asking nothing. */
+  readonly isPaidUseRemembered: (feature: PaidFeature) => boolean
   /** Child token cost is a subset of the parent's conversation estimate. */
   readonly noteSubagentUsage: (modelId: string, usage: SubagentUsage) => void
 }
@@ -381,6 +386,12 @@ interface ChildTaskGrant {
   readonly keyDigest: string
   readonly goalId: string | undefined
   remainingAttempts: number
+  /**
+   * Whether the task may search the web (M58): the parent turn's answer to
+   * the web search popup, or for a task the user starts, the feature allowed
+   * always in this workspace. A child never asks for itself.
+   */
+  readonly isWebSearchAllowed: boolean
 }
 
 interface QueuedTurn {
@@ -419,6 +430,8 @@ interface ActiveTurn {
   modelFailure?: unknown
   /** A goal accepted after the current model request began needs another round. */
   goalWakePending: boolean
+  /** The prompt's answer to the web search popup (M58); false until it is asked. */
+  isWebSearchAllowed: boolean
 }
 
 interface HookToolResult {
@@ -977,8 +990,8 @@ function commandOf(argsJson: string): string {
 }
 
 /**
- * The paid feature a tool call bills (M34): its row is marked paid and its
- * card names the price. Undefined for every free tool.
+ * The paid feature a tool call bills (M34): its row is marked paid, and the
+ * paid-use popup asks before it (M58). Undefined for every free tool.
  */
 function paidFeatureOf(toolName: string): PaidFeature | undefined {
   return imageKindOf(toolName) === undefined ? undefined : 'imageGeneration'
@@ -1056,24 +1069,16 @@ function mcpNotices(snapshot: McpPoolSnapshot): readonly { key: string; text: st
   )
 }
 
-/** What the approval card is about, in the MSP subject vocabulary. */
+/**
+ * What the approval card is about, in the MSP subject vocabulary. A paid
+ * call never gets a card: the paid-use popup asks instead (M58).
+ */
 function subjectFor(
   call: FunctionCallItem,
   platform: NodeJS.Platform,
   isExternal: boolean,
-  childTask?: SubagentTaskConfirmation,
 ): ApprovalSubject {
   const args = argumentsOf(call)
-  if (childTask !== undefined) {
-    return {
-      kind: 'paidTool',
-      toolName: call.name,
-      paidFeature: 'subagents',
-      target: childTask.role,
-      modelId: childTask.modelId,
-      requestLimit: childTask.attemptLimit,
-    }
-  }
   if (call.name === shellToolFor(platform).name) {
     return { kind: 'shell', command: pick(args, 'command') ?? call.arguments }
   }
@@ -1082,18 +1087,7 @@ function subjectFor(
   if (isExternal) {
     return { kind: 'tool', toolName: call.name }
   }
-  const paidFeature = paidFeatureOf(call.name)
   const path = pick(args, 'path')
-  // Never a `fileWrite`: Edit automatically answers those itself (D24), and
-  // a paid call is always the user's to accept (D30).
-  if (paidFeature !== undefined) {
-    return {
-      kind: 'paidTool',
-      toolName: call.name,
-      paidFeature,
-      ...(path !== undefined && { path }),
-    }
-  }
   return path === undefined
     ? { kind: 'tool', toolName: call.name }
     : { kind: 'fileWrite', path, toolName: call.name }
@@ -1200,7 +1194,7 @@ export class ModelApiSession implements AgentSession {
     }
     if (
       body.tools.some((tool) => tool.type === MODEL_API_WEB_SEARCH_TOOL) &&
-      !this.deps.isPaidFeatureOn('webSearch')
+      !(grant.isWebSearchAllowed && this.deps.isPaidFeatureOn('webSearch'))
     ) {
       throw new ChildTaskRefusedError('webSearchOff')
     }
@@ -1544,9 +1538,30 @@ export class ModelApiSession implements AgentSession {
     )
     const mcp = hasShell ? (this.deps.mcpServers?.definitions() ?? []) : []
     const offered = [...own, ...ide, ...mcp]
-    return this.deps.isPaidFeatureOn('webSearch')
-      ? [...offered, { type: MODEL_API_WEB_SEARCH_TOOL }]
-      : offered
+    return this.isWebSearchOffered() ? [...offered, { type: MODEL_API_WEB_SEARCH_TOOL }] : offered
+  }
+
+  /**
+   * Meta's search, billed per search, rides on the turn's requests only while
+   * the feature is on and this prompt's popup allowed it (M58).
+   */
+  private isWebSearchOffered(): boolean {
+    return this.active?.isWebSearchAllowed === true && this.deps.isPaidFeatureOn('webSearch')
+  }
+
+  /**
+   * The web search popup, once per prompt before its first request (M58,
+   * PLAN.md D48). Meta runs the searches inside the response, so the popup
+   * cannot come before each search; Deny sends the prompt without the tool.
+   * A child task never asks: its grant carries its parent's answer.
+   */
+  private async webSearchConsent(signal: AbortSignal): Promise<boolean> {
+    if (!this.deps.isPaidFeatureOn('webSearch')) {
+      return false
+    }
+    return this.isSubagent
+      ? this.childTaskGrant?.isWebSearchAllowed === true
+      : await unlessStopped(this.deps.allowsPaidUse({ feature: 'webSearch' }, false), signal)
   }
 
   /** The IDE tool or MCP server tool a function name is, when it is one (M50). */
@@ -1611,9 +1626,9 @@ export class ModelApiSession implements AgentSession {
     }
   }
 
-  /** The encrypted reasoning always; the search results while search is on, for the rows. */
+  /** The encrypted reasoning always; the search results while search is offered, for the rows. */
   private includes(): readonly IncludeField[] {
-    return this.deps.isPaidFeatureOn('webSearch')
+    return this.isWebSearchOffered()
       ? ['reasoning.encrypted_content', 'web_search_call.results']
       : ['reasoning.encrypted_content']
   }
@@ -2249,13 +2264,55 @@ export class ModelApiSession implements AgentSession {
     return calls
   }
 
+  /**
+   * The `Notification` hook for a question left waiting (M51): run once
+   * after the delay unless the question is answered or the turn stops
+   * first. Returns what ends the wait.
+   */
+  private notifyWhileAsking(call: FunctionCallItem, signal: AbortSignal): () => void {
+    if (this.hooks.every((entry) => entry.event !== 'Notification')) {
+      return NO_UNSUBSCRIBE
+    }
+    const notificationAbort = new AbortController()
+    const onTurnAbort = () => {
+      notificationAbort.abort()
+    }
+    signal.addEventListener('abort', onTurnAbort, { once: true })
+    const notification = setTimeout(() => {
+      void this.runHooks(
+        'Notification',
+        this.active?.turnId,
+        {
+          notification_type: 'permission_prompt',
+          title: call.name,
+          message: call.arguments,
+        },
+        'permission_prompt',
+        notificationAbort.signal,
+      ).catch((error: unknown) => {
+        this.deps.log.warn(`Model API Notification hook failed: ${describe(error)}`)
+      })
+    }, this.deps.hookNotificationDelayMs ?? HOOK_NOTIFICATION_DELAY_MS)
+    return () => {
+      clearTimeout(notification)
+      notificationAbort.abort()
+      signal.removeEventListener('abort', onTurnAbort)
+    }
+  }
+
+  /**
+   * The user's decision on a call: an approval card, or for a paid call
+   * (an image, a subagent task) the paid-use popup (M58, PLAN.md D48),
+   * which asks in every mode unless the feature is allowed always in this
+   * workspace. A hook's "allow" never answers either for a protected write
+   * or a paid call; a hook that demands a question asks even then.
+   */
   private async askApproval(
     itemId: string,
     call: FunctionCallItem,
     signal: AbortSignal,
     query: PermissionQuery,
-    subject: ApprovalSubject,
-    childTask?: SubagentTaskConfirmation,
+    question: { readonly card: ApprovalSubject } | { readonly paid: PaidUseRequest },
     requiresUserApproval = false,
   ): Promise<ApprovalOutcome> {
     const hook = await this.runHooks(
@@ -2269,13 +2326,19 @@ export class ModelApiSession implements AgentSession {
     if (hook.blockedReason !== undefined) {
       return { isApproved: false, feedback: hook.blockedReason, deniedByHook: true }
     }
-    if (
-      !requiresUserApproval &&
-      childTask === undefined &&
-      query.isProtected !== true &&
-      query.toolClass !== 'paid' &&
-      hook.approvalDecision === 'allow'
-    ) {
+    if ('paid' in question) {
+      const stopNotifying = this.notifyWhileAsking(call, signal)
+      try {
+        const isAllowed = await unlessStopped(
+          this.deps.allowsPaidUse(question.paid, requiresUserApproval),
+          signal,
+        )
+        return { isApproved: isAllowed, feedback: undefined }
+      } finally {
+        stopNotifying()
+      }
+    }
+    if (!requiresUserApproval && query.isProtected !== true && hook.approvalDecision === 'allow') {
       return { isApproved: true, feedback: undefined }
     }
     const approvalId = this.deps.newId()
@@ -2286,38 +2349,13 @@ export class ModelApiSession implements AgentSession {
       toolName: call.name,
       rawArgs: call.arguments,
       requirementId: { approvalId, sourceIndex: 0 },
-      subject,
-      availableChoices: [
-        ...(childTask !== undefined || query.toolClass === 'paid'
-          ? paidChoices()
-          : choicesFor(call.name, query.command)),
-      ],
+      subject: question.card,
+      availableChoices: [...choicesFor(call.name, query.command)],
       isJudgeEscalated: requiresUserApproval,
       isProtectedWrite: query.isProtected === true,
     }
     let decision: ApprovalDecision
-    const notificationAbort = new AbortController()
-    const onTurnAbort = () => {
-      notificationAbort.abort()
-    }
-    signal.addEventListener('abort', onTurnAbort, { once: true })
-    const notification = this.hooks.some((entry) => entry.event === 'Notification')
-      ? setTimeout(() => {
-          void this.runHooks(
-            'Notification',
-            this.active?.turnId,
-            {
-              notification_type: 'permission_prompt',
-              title: call.name,
-              message: call.arguments,
-            },
-            'permission_prompt',
-            notificationAbort.signal,
-          ).catch((error: unknown) => {
-            this.deps.log.warn(`Model API Notification hook failed: ${describe(error)}`)
-          })
-        }, this.deps.hookNotificationDelayMs ?? HOOK_NOTIFICATION_DELAY_MS)
-      : undefined
+    const stopNotifying = this.notifyWhileAsking(call, signal)
     try {
       decision = await waitFor<ApprovalDecision>(signal, (pending) => {
         this.pendingApprovals.set(approvalId, pending)
@@ -2327,9 +2365,7 @@ export class ModelApiSession implements AgentSession {
     } finally {
       this.pendingApprovalEvents.delete(approvalId)
       this.pendingApprovals.delete(approvalId)
-      clearTimeout(notification)
-      notificationAbort.abort()
-      signal.removeEventListener('abort', onTurnAbort)
+      stopNotifying()
     }
     const isOffered = request.availableChoices.some(
       (choice) => choice.choiceId === decision.choiceId,
@@ -3003,6 +3039,8 @@ export class ModelApiSession implements AgentSession {
       keyDigest: await this.deps.client.currentKeyDigest(),
       goalId: isGoalActive(this.goal) ? this.goal.goal_id : undefined,
       remainingAttempts: SUBAGENT_TASK_MAX_REQUESTS,
+      isWebSearchAllowed:
+        this.active?.isWebSearchAllowed ?? this.deps.isPaidUseRemembered('webSearch'),
     }
   }
 
@@ -3021,19 +3059,25 @@ export class ModelApiSession implements AgentSession {
     }
   }
 
-  /** A user-owned follow-up or reopen gets one native price decision. */
+  /** A user-owned follow-up or reopen gets the paid-use popup (M58). */
   private async confirmOwnerChildTask(
     child: ChildRecord,
     objective: string,
   ): Promise<ChildTaskGrant> {
     try {
       const grant = await this.prepareChildGrant()
-      const isAccepted = await this.deps.confirmSubagentTask({
-        role: child.role,
-        objective,
-        modelId: grant.modelId,
-        attemptLimit: SUBAGENT_TASK_MAX_REQUESTS,
-      })
+      const isAccepted = await this.deps.allowsPaidUse(
+        {
+          feature: 'subagents',
+          task: {
+            role: child.role,
+            objective,
+            modelId: grant.modelId,
+            attemptLimit: SUBAGENT_TASK_MAX_REQUESTS,
+          },
+        },
+        false,
+      )
       if (!isAccepted) {
         throw new ChildTaskRefusedError('consentDeclined')
       }
@@ -3491,8 +3535,7 @@ export class ModelApiSession implements AgentSession {
       call,
       signal,
       query,
-      subject,
-      undefined,
+      { card: subject },
       shouldForceApproval,
     )
     return approval.isApproved
@@ -3657,14 +3700,23 @@ export class ModelApiSession implements AgentSession {
       }
     }
     if (verdict === 'ask') {
+      let paid: PaidUseRequest | undefined
+      if (childTask !== undefined) {
+        paid = { feature: 'subagents', task: childTask }
+      } else if (approvedImagePlan !== undefined) {
+        paid = imageUseRequest(approvedImagePlan)
+      }
       const approval = await this.askApproval(
         itemId,
         call,
         signal,
         query,
-        subjectFor(call, this.deps.platform, toolClass === 'mcp', childTask),
-        childTask,
-        shouldForceApproval,
+        paid === undefined
+          ? { card: subjectFor(call, this.deps.platform, toolClass === 'mcp') }
+          : { paid },
+        // A protected write never happens without a question (D24), even
+        // when its feature is allowed always.
+        shouldForceApproval || (paid !== undefined && query.isProtected === true),
       )
       if (!approval.isApproved) {
         if (childTask !== undefined && approval.deniedByHook !== true) {
@@ -4288,6 +4340,7 @@ export class ModelApiSession implements AgentSession {
       acceptedTextAttachmentBytes: textAttachmentBytes(queued.parts),
       modelFailure: undefined,
       goalWakePending: false,
+      isWebSearchAllowed: false,
       ...(queued.confirmedRequest !== undefined && {
         confirmedRequest: queued.confirmedRequest,
       }),
@@ -4368,6 +4421,7 @@ export class ModelApiSession implements AgentSession {
         }
       }
       await this.prepareMcp(turn.abort.signal)
+      turn.isWebSearchAllowed = await this.webSearchConsent(turn.abort.signal)
       await this.loop(turn)
     } catch (error: unknown) {
       if (turn.abort.signal.aborted) {
