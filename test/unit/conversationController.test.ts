@@ -5931,6 +5931,21 @@ function namedSetup(name: string, calls: string[]): DictationSetup {
     },
   }
 }
+/** The microphone was told Muse Voice is its idle engine. */
+function expectIdleMuseVoice(t: ReturnType<typeof setup>): void {
+  expect(t.surface.posted).toContainEqual({
+    type: 'dictationState',
+    status: 'idle',
+    engine: 'museVoice',
+  })
+}
+
+/** One tap to record and one to stop. */
+async function recordOnce(t: ReturnType<typeof setup>): Promise<void> {
+  await t.controller.handle({ type: 'dictation', action: 'start' })
+  await t.controller.handle({ type: 'dictation', action: 'stop' })
+}
+
 describe('ConversationController: the microphone’s engine (M35, PLAN.md D30)', () => {
   it('records with Muse Voice while it is the engine, and says so to the microphone', async () => {
     const calls: string[] = []
@@ -5940,13 +5955,8 @@ describe('ConversationController: the microphone’s engine (M35, PLAN.md D30)',
       museVoice: () => (engine.isPaid ? namedSetup('muse', calls) : undefined),
     })
     t.controller.surfaceReady()
-    expect(t.surface.posted).toContainEqual({
-      type: 'dictationState',
-      status: 'idle',
-      engine: 'museVoice',
-    })
-    await t.controller.handle({ type: 'dictation', action: 'start' })
-    await t.controller.handle({ type: 'dictation', action: 'stop' })
+    expectIdleMuseVoice(t)
+    await recordOnce(t)
     // Turned off: the idle paid driver goes, and the next press is the free engine's.
     engine.isPaid = false
     t.surface.posted.length = 0
@@ -5996,14 +6006,9 @@ describe('ConversationController: the microphone’s engine (M35, PLAN.md D30)',
     // Denied: nothing records, and the microphone is told it is idle.
     await t.controller.handle({ type: 'dictation', action: 'start' })
     expect(calls).toEqual([])
-    expect(t.surface.posted).toContainEqual({
-      type: 'dictationState',
-      status: 'idle',
-      engine: 'museVoice',
-    })
+    expectIdleMuseVoice(t)
     // Allowed: this recording starts; stopping it asks nothing.
-    await t.controller.handle({ type: 'dictation', action: 'start' })
-    await t.controller.handle({ type: 'dictation', action: 'stop' })
+    await recordOnce(t)
     expect(calls).toEqual(['muse:create', 'muse:start', 'muse:stop'])
     expect(allowsPaidUse.mock.calls).toEqual([[{ feature: 'voice' }], [{ feature: 'voice' }]])
     // The free recogniser never asks.
