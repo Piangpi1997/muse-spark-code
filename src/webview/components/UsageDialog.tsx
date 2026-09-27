@@ -42,6 +42,8 @@ import {
 } from '../../shared/usage'
 import { estimateCostUsd, formatUsd, percentOf } from '../../core/usage/insights'
 import type { ContextSummary, UsageReport, UsageSummary } from '../state/uiState'
+import type { UiState } from '../state/uiState'
+import type { SignInMethod } from '../../shared/protocol'
 import { formatDurationMs } from '../agentFormat'
 import { Modal } from './Modal'
 
@@ -53,6 +55,9 @@ export interface UsageDialogProps {
   readonly modelId: string | undefined
   /** The paid features that are on and this window's tally (M33, PLAN.md D30). */
   readonly paid: PaidState
+  readonly auth: UiState['auth']
+  readonly onInstallMuseCode: () => void
+  readonly onSetupSignIn: (method: SignInMethod) => void
   readonly now: () => number
   readonly onOpenExternal: (url: string) => void
   readonly onClose: () => void
@@ -427,10 +432,14 @@ export function UsageDialog({
   context,
   modelId,
   paid,
+  auth,
+  onInstallMuseCode,
+  onSetupSignIn,
   now,
   onOpenExternal,
   onClose,
 }: UsageDialogProps) {
+  const [confirmInstall, setConfirmInstall] = useState(false)
   const [, setCountdownTick] = useState(0)
   useEffect(() => {
     const interval = setInterval(() => {
@@ -508,6 +517,79 @@ export function UsageDialog({
   return (
     <Modal title={UI_TEXT.usageLabel} titleId="usage-title" onClose={onClose}>
       {body}
+      {auth.status === 'signedIn' ? (
+        <div className="usage-setup">
+          {auth.hasCli === false ? (
+            <>
+              {auth.installState === 'running' ? (
+                <p role="status">{UI_TEXT.installWaiting}</p>
+              ) : (
+                <>
+                  {auth.installState === 'failed' ? (
+                    <p role="alert">{auth.detail ?? UI_TEXT.installTimedOut}</p>
+                  ) : null}
+                  {confirmInstall && auth.installCommand !== undefined ? (
+                    <div className="gate-install-confirm">
+                      <p>{UI_TEXT.installConfirmDetail}</p>
+                      <code className="gate-install-command">{auth.installCommand}</code>
+                      <button
+                        type="button"
+                        className="button-primary"
+                        onClick={() => {
+                          setConfirmInstall(false)
+                          onInstallMuseCode()
+                        }}
+                      >
+                        {UI_TEXT.installConfirmAction}
+                      </button>
+                      <button
+                        type="button"
+                        className="button-secondary"
+                        onClick={() => {
+                          setConfirmInstall(false)
+                        }}
+                      >
+                        {UI_TEXT.installCancelAction}
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      className="button-secondary"
+                      onClick={() => {
+                        setConfirmInstall(true)
+                      }}
+                    >
+                      {UI_TEXT.installStartAction}
+                    </button>
+                  )}
+                </>
+              )}
+            </>
+          ) : null}
+          {auth.hasCli === true && auth.hasCliSession === false && auth.backend === 'modelApi' ? (
+            <button
+              type="button"
+              className="button-secondary"
+              onClick={() => {
+                onSetupSignIn('browser')
+              }}
+            >
+              {UI_TEXT.signInBrowser}
+            </button>
+          ) : null}
+          <button
+            type="button"
+            className="button-secondary"
+            onClick={() => {
+              onSetupSignIn('apiKey')
+            }}
+          >
+            {paid.isKeyStored ? UI_TEXT.usageReplaceModelApiKey : UI_TEXT.usageAddModelApiKey}
+          </button>
+          <p className="usage-row-meta">{UI_TEXT.signInApiKeyDetail}</p>
+        </div>
+      ) : null}
     </Modal>
   )
 }

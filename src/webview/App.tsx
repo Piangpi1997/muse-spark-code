@@ -100,7 +100,7 @@ const KEEPS_PALETTE_OPEN: ReadonlySet<PaletteAction['type']> = new Set([
 // What choosing `/goal` leaves in the prompt: the command, ready for the objective (M45).
 const GOAL_PROMPT_START = `/${GOAL_SLASH_COMMAND} `
 const LOOP_PROMPT_START = `/${LOOP_SLASH_COMMAND} `
-const GATED_STATUSES = new Set(['noCli', 'signedOut', 'signingIn', 'error'])
+const GATED_STATUSES = new Set(['noCli', 'installing', 'signedOut', 'signingIn', 'error'])
 const ATTACH_UPLOAD = 'upload'
 const ATTACH_CONTEXT = 'context'
 const MENTION_TRIGGER = '@'
@@ -230,6 +230,7 @@ export function App({
   const state = useSyncExternalStore(store.subscribe, store.getState)
   const { dispatch } = store
   const [overlay, setOverlay] = useState<Overlay | undefined>(undefined)
+  const [isInstallConfirmOpen, setIsInstallConfirmOpen] = useState(false)
   const [selectedAgentId, setSelectedAgentId] = useState<string | undefined>(undefined)
   const canBypass = state.settings?.allowDangerouslySkipPermissions ?? false
 
@@ -278,7 +279,7 @@ export function App({
       postMessage(webviewErrorReport(source, error))
     }
     const stop = isOwnStore ? listenToHost(store, window, now, report) : undefined
-    postMessage({ type: 'ready' })
+    postMessage({ type: 'ready', attachmentEpoch: store.getState().attachmentEpoch })
     return () => {
       stop?.()
     }
@@ -474,9 +475,17 @@ export function App({
   }, [dispatch])
   // Replying to an output and quoting a highlighted passage (M17): both set
   // the composer's reference chip; the message carries it as context.
-  const [quoteMenu, setQuoteMenu] = useState<
-    { readonly entryId: string; readonly role: string; readonly text: string } | undefined
+  const [quoteMenuState, setQuoteMenu] = useState<
+    | {
+        readonly entryId: string
+        readonly role: string
+        readonly text: string
+        readonly epoch: number
+      }
+    | undefined
   >(undefined)
+  // A clear can come from another panel. A saved selection from its rows is inert.
+  const quoteMenu = quoteMenuState?.epoch === state.attachmentEpoch ? quoteMenuState : undefined
   const onDismissReference = useCallback(() => {
     dispatch({ type: 'referenceCleared' })
   }, [dispatch])
@@ -494,19 +503,27 @@ export function App({
     },
     [store, dispatch],
   )
-  const onTranscriptContextMenu = useCallback((event: React.MouseEvent<HTMLElement>) => {
-    const selection = window.getSelection()
-    const text = selection?.toString().trim() ?? ''
-    const anchor = selection?.anchorNode ?? null
-    const element = anchor instanceof Element ? anchor : anchor?.parentElement
-    const row = element?.closest<HTMLElement>('[data-entry-id]') ?? null
-    const entryId = row?.dataset['entryId']
-    if (text === '' || row === null || entryId === undefined) {
-      return
-    }
-    event.preventDefault()
-    setQuoteMenu({ entryId, role: row.dataset['role'] ?? 'assistant', text })
-  }, [])
+  const onTranscriptContextMenu = useCallback(
+    (event: React.MouseEvent<HTMLElement>) => {
+      const selection = window.getSelection()
+      const text = selection?.toString().trim() ?? ''
+      const anchor = selection?.anchorNode ?? null
+      const element = anchor instanceof Element ? anchor : anchor?.parentElement
+      const row = element?.closest<HTMLElement>('[data-entry-id]') ?? null
+      const entryId = row?.dataset['entryId']
+      if (text === '' || row === null || entryId === undefined) {
+        return
+      }
+      event.preventDefault()
+      setQuoteMenu({
+        entryId,
+        role: row.dataset['role'] ?? 'assistant',
+        text,
+        epoch: store.getState().attachmentEpoch,
+      })
+    },
+    [store],
+  )
   const onCloseQuoteMenu = useCallback(() => {
     setQuoteMenu(undefined)
   }, [])
@@ -783,10 +800,15 @@ export function App({
   )
   const onResumeSession = useCallback(
     (sessionId: string) => {
-      postMessage({ type: 'resumeSession', sessionId })
+      dispatch({ type: 'sessionChangeRequested' })
+      postMessage({
+        type: 'resumeSession',
+        sessionId,
+        attachmentEpoch: store.getState().attachmentEpoch,
+      })
       closeOverlay()
     },
-    [postMessage, closeOverlay],
+    [dispatch, postMessage, closeOverlay, store],
   )
   const onSetSessionArchived = useCallback(
     (sessionId: string, isArchived: boolean) => {
@@ -812,9 +834,14 @@ export function App({
         onNewConversation()
         return
       }
-      postMessage({ type: 'forkSession', lastTurnId: cut.lastTurnId })
+      dispatch({ type: 'sessionChangeRequested' })
+      postMessage({
+        type: 'forkSession',
+        lastTurnId: cut.lastTurnId,
+        attachmentEpoch: store.getState().attachmentEpoch,
+      })
     },
-    [store, onNewConversation, postMessage],
+    [store, onNewConversation, dispatch, postMessage],
   )
   // "Rewind code to here": the host reverts the edits after that message,
   // newest first, and says so (or that there was nothing to revert).
@@ -839,6 +866,7 @@ export function App({
       ) {
         return
       }
+      dispatch({ type: 'sessionChangeRequested' })
       postMessage({
         type: 'rewindConversation',
         sourceSessionId: current.sessionId,
@@ -847,9 +875,10 @@ export function App({
         ...(cut.type === 'afterTurn' && { lastTurnId: cut.lastTurnId }),
         text: entry.text,
         imageCount: entry.attachments.length,
+        attachmentEpoch: store.getState().attachmentEpoch,
       })
     },
-    [store, postMessage],
+    [store, dispatch, postMessage],
   )
   const onRemoveAttachment = useCallback(
     (id: string) => {
@@ -1153,7 +1182,10 @@ export function App({
     [onSelectEffort, effortLevels, state.effort],
   )
 
-  const isShellReady = state.settings !== undefined && state.pendingRestore === undefined
+  const isShellReady =
+    state.settings !== undefined &&
+    state.pendingRestore === undefined &&
+    state.auth.status !== 'checking'
   // The first commit of the conversation itself (not the "Connecting…" shell):
   // a crash after it is not the restored state's doing (M25).
   useLayoutEffect(() => {
@@ -1185,10 +1217,17 @@ export function App({
     }
   }, [isShellReady, isBodyGated, hasTranscript])
 
-  const title = state.title ?? UI_TEXT.untitledConversation
+  const title =
+    state.pendingRestore === undefined && state.auth.status === 'signedIn'
+      ? (state.title ?? UI_TEXT.untitledConversation)
+      : UI_TEXT.untitledConversation
 
-  if (state.settings === undefined || state.pendingRestore !== undefined) {
-    // A restored panel waits for the host to confirm its conversation (M25).
+  if (
+    state.settings === undefined ||
+    state.pendingRestore !== undefined ||
+    state.auth.status === 'checking'
+  ) {
+    // A restored panel waits for the host to confirm its conversation and account.
     return (
       <div className="app">
         <Header title={title} isFocusView={false} onNewConversation={onNewConversation} />
@@ -1202,6 +1241,28 @@ export function App({
   }
 
   const isRunning = state.activeTurnId !== undefined
+  const signInGate = GATED_STATUSES.has(state.auth.status) ? (
+    <SignIn
+      key={state.auth.status}
+      status={state.auth.status}
+      detail={state.auth.detail}
+      methods={state.auth.methods}
+      verificationUrl={state.auth.verificationUrl}
+      userCode={state.auth.userCode}
+      installCommand={state.auth.installCommand}
+      withTranscript={hasTranscript}
+      onSignIn={onSignIn}
+      onInstall={() => {
+        postMessage({ type: 'installMuseCode' })
+      }}
+      onInstallConfirmationChange={setIsInstallConfirmOpen}
+      onCancelSignIn={() => {
+        postMessage({ type: 'cancelSignIn' })
+      }}
+      onRetry={onRetry}
+      onOpenExternal={onOpenExternal}
+    />
+  ) : null
   const canOpenSideChat =
     state.sessionId !== undefined &&
     state.canEditSessions &&
@@ -1212,53 +1273,49 @@ export function App({
     )
   let body
   if (isBodyGated) {
-    body = (
-      <SignIn
-        status={state.auth.status}
-        detail={state.auth.detail}
-        methods={state.auth.methods}
-        onSignIn={onSignIn}
-        onRetry={onRetry}
-        onOpenExternal={onOpenExternal}
-      />
-    )
+    body = signInGate
   } else if (hasTranscript) {
     body = (
-      <Transcript
-        entries={state.transcript}
-        activeTurnId={state.activeTurnId}
-        isRunning={isRunning}
-        isFocusView={state.settings.focusView}
-        outputPages={state.outputPages}
-        toolImages={state.toolImages}
-        onReadImage={onReadImage}
-        onOpenLink={onOpenExternal}
-        onCopy={onCopy}
-        onInsert={onInsert}
-        onReadOutput={onReadOutput}
-        onOpenOutput={onOpenOutput}
-        onDecide={onDecide}
-        onAnswer={onAnswer}
-        onCancelQuestion={onCancelQuestion}
-        onClarifyQuestion={onClarifyQuestion}
-        onMoveToBackground={onMoveToBackground}
-        onStopTask={onStopTask}
-        canStopUserShell={state.auth.backend === 'modelApi'}
-        onApply={onApply}
-        onOpenEditDiff={onOpenEditDiff}
-        onOpenFile={onOpenFile}
-        onRefuseLink={onRefuseLink}
-        onFork={state.sessionId === undefined || !state.canEditSessions ? undefined : onFork}
-        onRewind={state.sessionId === undefined ? undefined : onRewind}
-        onRewindConversation={
-          state.sessionId === undefined || !state.canEditSessions ? undefined : onRewindConversation
-        }
-        onReply={onReply}
-        quoteMenuEntryId={quoteMenu?.entryId}
-        onQuote={onQuote}
-        onCopyQuote={onCopyQuote}
-        onCloseQuoteMenu={onCloseQuoteMenu}
-      />
+      <>
+        {signInGate}
+        <Transcript
+          entries={state.transcript}
+          activeTurnId={state.activeTurnId}
+          isRunning={isRunning}
+          isFocusView={state.settings.focusView}
+          outputPages={state.outputPages}
+          toolImages={state.toolImages}
+          onReadImage={onReadImage}
+          onOpenLink={onOpenExternal}
+          onCopy={onCopy}
+          onInsert={onInsert}
+          onReadOutput={onReadOutput}
+          onOpenOutput={onOpenOutput}
+          onDecide={onDecide}
+          onAnswer={onAnswer}
+          onCancelQuestion={onCancelQuestion}
+          onClarifyQuestion={onClarifyQuestion}
+          onMoveToBackground={onMoveToBackground}
+          onStopTask={onStopTask}
+          canStopUserShell={state.auth.backend === 'modelApi'}
+          onApply={onApply}
+          onOpenEditDiff={onOpenEditDiff}
+          onOpenFile={onOpenFile}
+          onRefuseLink={onRefuseLink}
+          onFork={state.sessionId === undefined || !state.canEditSessions ? undefined : onFork}
+          onRewind={state.sessionId === undefined ? undefined : onRewind}
+          onRewindConversation={
+            state.sessionId === undefined || !state.canEditSessions
+              ? undefined
+              : onRewindConversation
+          }
+          onReply={onReply}
+          quoteMenuEntryId={quoteMenu?.entryId}
+          onQuote={onQuote}
+          onCopyQuote={onCopyQuote}
+          onCloseQuoteMenu={onCloseQuoteMenu}
+        />
+      </>
     )
   } else {
     body = (
@@ -1379,6 +1436,14 @@ export function App({
   const usageDialog =
     overlay === 'usage' ? (
       <UsageDialog
+        auth={state.auth}
+        onInstallMuseCode={() => {
+          postMessage({ type: 'installMuseCode' })
+        }}
+        onSetupSignIn={(method) => {
+          closeOverlay()
+          onSignIn(method)
+        }}
         report={state.usageReport}
         usage={state.usage}
         context={state.context}
@@ -1391,7 +1456,7 @@ export function App({
     ) : null
   // Behind a modal nothing takes focus or clicks (M25): the modal traps Tab,
   // the rest of the panel is inert.
-  const isModalOpen = overlay === 'usage' || overlay === 'agents'
+  const isModalOpen = overlay === 'usage' || overlay === 'agents' || isInstallConfirmOpen
 
   return (
     <div className="app">

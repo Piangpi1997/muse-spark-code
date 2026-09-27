@@ -172,6 +172,12 @@ export interface UiState {
     readonly backend: BackendKind | undefined
     /** The sign-in paths the gate offers; undefined means both. */
     readonly methods: readonly SignInMethod[] | undefined
+    readonly verificationUrl?: string | undefined
+    readonly userCode?: string | undefined
+    readonly installCommand?: string | undefined
+    readonly hasCli?: boolean | undefined
+    readonly hasCliSession?: boolean | undefined
+    readonly installState?: 'running' | 'failed' | undefined
   }
   readonly model:
     { readonly modelId: string; readonly contextLimit: number | undefined } | undefined
@@ -282,6 +288,8 @@ export type UiAction =
   | { readonly type: 'referenceSet'; readonly reference: ChatReference }
   | { readonly type: 'referenceCleared' }
   | { readonly type: 'attachmentRemoved'; readonly id: string }
+  /** Invalidate unfinished browser encodes before a session replacement waits on the host. */
+  | { readonly type: 'sessionChangeRequested' }
   /** The panel's own New Conversation; the host echoes it back (M25). */
   | { readonly type: 'conversationCleared' }
   /** The × on the composer banner (M14). */
@@ -1582,6 +1590,28 @@ function clearedConversation(state: UiState): UiState {
   }
 }
 
+/** Credentials changed: no prior-account rows may survive in any panel cache. */
+function clearedAccountView(state: UiState): UiState {
+  return {
+    ...clearedConversation(state),
+    auth: initialUiState.auth,
+    canEditSessions: initialUiState.canEditSessions,
+    sessions: [],
+    archivedIds: [],
+    model: undefined,
+    models: [],
+    skills: undefined,
+    usageReport: undefined,
+    editorContext: undefined,
+    dismissedEditorPath: undefined,
+    mentionResults: undefined,
+    pendingInsert: undefined,
+    announcement: undefined,
+    pendingRestore: undefined,
+    pendingClearEchoes: 0,
+  }
+}
+
 /**
  * The goal after a history load (M45): the history's, or, when it cannot
  * say (Muse Code's inline history carries none), the one the panel already
@@ -1636,7 +1666,12 @@ function reconcile(
   at: number,
 ): UiState {
   const restore = state.pendingRestore
-  const live: UiState = { ...state, pendingRestore: undefined, activeTurnId: message.activeTurnId }
+  const live: UiState = {
+    ...state,
+    attachmentEpoch: Math.max(state.attachmentEpoch, message.attachmentEpoch ?? 0),
+    pendingRestore: undefined,
+    activeTurnId: message.activeTurnId,
+  }
   if (restore === undefined) {
     return live
   }
@@ -1677,6 +1712,9 @@ function applyHostMessage(state: UiState, message: HostToWebviewMessage, at: num
       return { ...state, focusRequests: state.focusRequests + 1 }
     }
     case 'conversationCleared': {
+      if (message.accountBoundary === true) {
+        return clearedAccountView(state)
+      }
       // The echo of a clear this panel already made is spent, not applied
       // again: a message sent right after it must survive (M25).
       return state.pendingClearEchoes > 0
@@ -1702,16 +1740,26 @@ function applyHostMessage(state: UiState, message: HostToWebviewMessage, at: num
       }
     }
     case 'authState': {
+      const isTransientCliSignIn =
+        message.status === 'signingIn' &&
+        message.backend === 'modelApi' &&
+        state.auth.status === 'signedIn' &&
+        state.auth.backend === 'modelApi'
+      const isAccountBoundary =
+        !isTransientCliSignIn &&
+        (message.status !== 'signedIn' ||
+          (state.auth.status === 'signedIn' && message.backend !== state.auth.backend))
+      const current = isAccountBoundary ? clearedAccountView(state) : state
       return {
-        ...state,
+        ...current,
         // Account-bound prompts disappear on sign-out or backend switch.
         // A CLI sign-in attempt can be transient while the Model API key and
         // session stay live; keep its list until auth actually changes.
         schedules:
           message.backend === 'modelApi' &&
           (message.status === 'signedIn' ||
-            (message.status === 'signingIn' && state.auth.backend === 'modelApi'))
-            ? state.schedules
+            (message.status === 'signingIn' && current.auth.backend === 'modelApi'))
+            ? current.schedules
             : [],
         // No account identity accompanies authState: discard prior-account
         // usage even if the backend name stays the same.
@@ -1721,6 +1769,12 @@ function applyHostMessage(state: UiState, message: HostToWebviewMessage, at: num
           detail: message.detail,
           backend: message.backend,
           methods: message.methods,
+          verificationUrl: message.verificationUrl,
+          userCode: message.userCode,
+          installCommand: message.installCommand,
+          hasCli: message.hasCli,
+          hasCliSession: message.hasCliSession,
+          installState: message.installState,
         },
       }
     }
@@ -2195,6 +2249,9 @@ export function uiReducer(state: UiState, action: UiAction): UiState {
     }
     case 'attachmentRefused': {
       return withBanner(state, action.name, action.reason)
+    }
+    case 'sessionChangeRequested': {
+      return { ...state, attachmentEpoch: state.attachmentEpoch + 1, attachmentSettlements: [] }
     }
     case 'attachmentsReleased': {
       return {

@@ -153,6 +153,19 @@ body {
   text-align: center;
 }
 
+.gate-with-transcript {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  align-self: stretch;
+  max-width: none;
+  max-height: 55vh;
+  padding: var(--ms-gap);
+  overflow: auto;
+  border-bottom: 1px solid var(--vscode-panel-border);
+  background: var(--vscode-editor-background);
+}
+
 .gate-title {
   margin: 0;
   font-size: 1.2em;
@@ -188,6 +201,24 @@ body {
   margin: 0 0 var(--ms-gap);
   color: var(--vscode-descriptionForeground);
   font-size: 0.85em;
+}
+
+.gate-install-confirm {
+  display: grid;
+  gap: var(--ms-gap);
+  min-width: 0;
+  padding: var(--ms-gap);
+  border: 1px solid var(--vscode-focusBorder);
+}
+
+.gate-install-confirm p {
+  margin: 0;
+}
+
+.gate-install-command,
+.gate-device-code {
+  overflow-wrap: anywhere;
+  user-select: text;
 }
 
 .button-primary,
@@ -1910,6 +1941,17 @@ body {
   display: grid;
   grid-template-columns: max-content 1fr;
   gap: 2px var(--ms-gap);
+  margin: 0;
+}
+
+.usage-setup {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ms-gap);
+  min-width: 0;
+}
+
+.usage-setup p {
   margin: 0;
 }
 

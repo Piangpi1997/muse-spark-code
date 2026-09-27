@@ -356,11 +356,15 @@ export class ModelApiClient {
     path: string,
     body: CreateImageBody,
     signal: AbortSignal,
+    admitAttempt?: ResponseAttemptGuard,
   ): Promise<ImagesResponse> {
     const response = await this.request(
       path,
       { method: 'POST', body, accept: JSON_MEDIA_TYPE, retries: 'rateLimitOnly' },
       AbortSignal.any([signal, AbortSignal.timeout(IMAGE_REQUEST_TIMEOUT_MS)]),
+      undefined,
+      undefined,
+      admitAttempt,
     )
     return imagesResponseSchema.parse(await response.json())
   }
@@ -408,13 +412,21 @@ export class ModelApiClient {
    * per image returned; a failed or filtered one is not. The turn's Stop and
    * a deadline of its own end the wait.
    */
-  public async createImage(body: CreateImageBody, signal: AbortSignal): Promise<ImagesResponse> {
-    return await this.imageRequest('/images/generations', body, signal)
+  public async createImage(
+    body: CreateImageBody,
+    signal: AbortSignal,
+    admitAttempt?: ResponseAttemptGuard,
+  ): Promise<ImagesResponse> {
+    return await this.imageRequest('/images/generations', body, signal, admitAttempt)
   }
 
   /** One edited image (M44): `POST /images/edits`, billed and retried as a generation is. */
-  public async editImage(body: EditImageBody, signal: AbortSignal): Promise<ImagesResponse> {
-    return await this.imageRequest('/images/edits', body, signal)
+  public async editImage(
+    body: EditImageBody,
+    signal: AbortSignal,
+    admitAttempt?: ResponseAttemptGuard,
+  ): Promise<ImagesResponse> {
+    return await this.imageRequest('/images/edits', body, signal, admitAttempt)
   }
 
   /**

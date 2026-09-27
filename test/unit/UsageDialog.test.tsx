@@ -44,6 +44,16 @@ function renderDialog(overrides: Partial<UsageDialogProps> = {}) {
     context: { usedTokens: 21_014, windowTokens: 1_007_997, pressure: 'normal' },
     modelId: 'muse-spark-1.3',
     paid: { features: [], tally: EMPTY_PAID_TALLY, isKeyStored: false },
+    auth: {
+      status: 'signedIn',
+      detail: undefined,
+      backend: 'museCode',
+      methods: ['browser', 'apiKey'],
+      hasCli: true,
+      hasCliSession: true,
+    },
+    onInstallMuseCode: vi.fn(),
+    onSetupSignIn: vi.fn(),
     now: () => NOW,
     onOpenExternal: vi.fn(),
     onClose: vi.fn(),
@@ -54,6 +64,42 @@ function renderDialog(overrides: Partial<UsageDialogProps> = {}) {
 }
 
 describe('UsageDialog', () => {
+  it('names an installer terminal failure while the Model API stays available', () => {
+    renderDialog({
+      auth: {
+        status: 'signedIn',
+        detail: 'The installer terminal could not open. Try again or use the install instructions.',
+        backend: 'modelApi',
+        methods: ['apiKey'],
+        hasCli: false,
+        installState: 'failed',
+      },
+    })
+    expect(screen.getByRole('alert')).toHaveTextContent('The installer terminal could not open')
+    expect(screen.getByRole('button', { name: 'Install Muse Code' })).toBeInTheDocument()
+  })
+
+  it('shows CLI install and key replacement inside its modal without running either on open', () => {
+    const props = renderDialog({
+      auth: {
+        status: 'signedIn',
+        detail: undefined,
+        backend: 'modelApi',
+        methods: ['apiKey'],
+        hasCli: false,
+        hasCliSession: false,
+        installCommand: 'irm https://dev.meta.ai/install.ps1 | iex',
+      },
+      paid: { features: [], tally: EMPTY_PAID_TALLY, isKeyStored: true },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Install Muse Code' }))
+    expect(screen.getByText('irm https://dev.meta.ai/install.ps1 | iex')).toBeInTheDocument()
+    expect(props.onInstallMuseCode).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Run installer' }))
+    expect(props.onInstallMuseCode).toHaveBeenCalledOnce()
+    fireEvent.click(screen.getByRole('button', { name: 'Replace Model API key' }))
+    expect(props.onSetupSignIn).toHaveBeenCalledWith('apiKey')
+  })
   it('advances both reset countdowns while open and stops its clock when closed', () => {
     vi.useFakeTimers()
     vi.setSystemTime(NOW)

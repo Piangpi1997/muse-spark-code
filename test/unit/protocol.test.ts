@@ -177,6 +177,8 @@ describe('parseHostToWebviewMessage', () => {
     ['side chat init', { ...init, sideChat: true }],
     ['settingsChanged', { type: 'settingsChanged', settings: testSettings }],
     ['focusInput', { type: 'focusInput' }],
+    ['surfaceState epoch', { type: 'surfaceState', attachmentEpoch: 3 }],
+    ['old surfaceState', { type: 'surfaceState' }],
     ['insertText', { type: 'insertText', text: '@a.ts ' }],
     ['restoreDraft', { type: 'restoreDraft', text: 'again' }],
     ['authState', { type: 'authState', status: 'signedIn' }],

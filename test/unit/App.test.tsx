@@ -2,8 +2,11 @@
 import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { UI_TEXT } from '../../src/shared/constants'
-import type { WebviewToHostMessage } from '../../src/shared/protocol'
+import type { HostToWebviewMessage, WebviewToHostMessage } from '../../src/shared/protocol'
 import { App } from '../../src/webview/App'
+import { restoredUiState, webviewStateOf } from '../../src/webview/state/snapshot'
+import { createUiStore } from '../../src/webview/state/store'
+import { initialUiState } from '../../src/webview/state/uiState'
 import { testSettings } from './helpers/fakes'
 
 function deliver(data: unknown) {
@@ -32,7 +35,7 @@ const init = {
   emptyStateHint: 'Type /model to pick the right tool for the job.',
   composerPlaceholder: 'ctrl esc to focus or unfocus Muse',
   settings: testSettings,
-}
+} satisfies HostToWebviewMessage
 
 const models = [
   {
@@ -84,6 +87,20 @@ function addTestImage() {
   })
 }
 
+function holdPastedPdf() {
+  const pdf = new File([Uint8Array.from([1])], 'stale.pdf', { type: 'application/pdf' })
+  const heldRead = Promise.withResolvers<ArrayBuffer>()
+  vi.spyOn(pdf, 'arrayBuffer').mockImplementation(() => heldRead.promise)
+  fireEvent.paste(textarea(), { clipboardData: { files: [pdf] } })
+  return async () => {
+    heldRead.resolve(Uint8Array.from([1]).buffer)
+    await act(async () => {
+      await heldRead.promise
+      await Promise.resolve()
+    })
+  }
+}
+
 function chooseConversationRewind(cardIndex: number) {
   fireEvent.click(screen.getAllByLabelText('Fork or rewind')[cardIndex]!)
   fireEvent.click(screen.getByRole('menuitem', { name: 'Rewind conversation to here' }))
@@ -99,6 +116,7 @@ function expectRewindRequest(
   expect(postMessage).toHaveBeenLastCalledWith({
     type: 'rewindConversation',
     sourceSessionId: 'old',
+    attachmentEpoch: 2,
     ...expected,
   })
 }
@@ -137,6 +155,31 @@ function textarea() {
   return screen.getByLabelText<HTMLTextAreaElement>('Message Muse')
 }
 
+function storeWithSavedConversation(sessionId: string | undefined, title: string, answer: string) {
+  const saved = webviewStateOf(
+    {
+      ...initialUiState,
+      sessionId,
+      title,
+      sequence: 1,
+      goal: { objective: `${title} goal`, status: 'active', percentComplete: 0 },
+      todos: [{ text: `${title} todo`, status: 'pending' }],
+      transcript: [
+        {
+          kind: 'user',
+          id: 'u1',
+          seq: 1,
+          text: answer,
+          status: 'sent',
+          attachments: [],
+        },
+      ],
+    },
+    true,
+  )
+  return createUiStore(restoredUiState(saved))
+}
+
 describe('App shell', () => {
   afterEach(() => {
     vi.restoreAllMocks()
@@ -145,13 +188,82 @@ describe('App shell', () => {
   it('announces ready to the host on mount', () => {
     const postMessage = vi.fn()
     render(<App postMessage={postMessage} />)
-    expect(postMessage).toHaveBeenCalledWith({ type: 'ready' })
+    expect(postMessage).toHaveBeenCalledWith({ type: 'ready', attachmentEpoch: 0 })
   })
 
   it('shows a connecting status until init arrives', () => {
     render(<App postMessage={vi.fn()} />)
     expect(screen.getByRole('status')).toHaveTextContent('Connecting to the extension host')
     expect(screen.queryByLabelText('Message Muse')).toBeNull()
+  })
+
+  it.each([undefined, 'old'])(
+    'hides persisted account A data until auth confirms it (session %s)',
+    (sessionId) => {
+      const store = storeWithSavedConversation(sessionId, 'Private A title', 'Private A answer')
+      const expectPrivateContentHidden = () => {
+        expect(screen.queryByText('Private A title')).toBeNull()
+        expect(screen.queryByText('Private A answer')).toBeNull()
+        expect(screen.queryByText('Private A title goal')).toBeNull()
+        expect(screen.queryByText('Private A title todo')).toBeNull()
+      }
+      render(<App postMessage={vi.fn()} store={store} />)
+      expectPrivateContentHidden()
+      act(() => {
+        store.dispatch({ type: 'hostMessage', message: init, at: 1 })
+      })
+      expectPrivateContentHidden()
+      act(() => {
+        store.dispatch({
+          type: 'hostMessage',
+          message: { type: 'surfaceState', ...(sessionId !== undefined && { sessionId }) },
+          at: 2,
+        })
+      })
+      expectPrivateContentHidden()
+      act(() => {
+        store.dispatch({
+          type: 'hostMessage',
+          message: { type: 'authState', status: 'signedOut', backend: 'modelApi' },
+          at: 3,
+        })
+      })
+      expectPrivateContentHidden()
+      expect(store.getState().title).toBeUndefined()
+      expect(store.getState().transcript).toEqual([])
+      expect(store.getState().goal).toBeUndefined()
+      expect(store.getState().todos).toEqual([])
+      expect(store.getState().pendingRestore).toBeUndefined()
+      expect(webviewStateOf(store.getState(), true).snapshot).toMatchObject({
+        transcript: [],
+      })
+    },
+  )
+
+  it('reveals a saved conversation only after both sign-in and same-session confirmation', () => {
+    const store = storeWithSavedConversation('old', 'Restored title', 'Restored answer')
+    render(<App postMessage={vi.fn()} store={store} />)
+    act(() => {
+      store.dispatch({ type: 'hostMessage', message: init, at: 1 })
+      store.dispatch({
+        type: 'hostMessage',
+        message: { type: 'authState', status: 'signedIn', backend: 'modelApi' },
+        at: 2,
+      })
+    })
+    expect(screen.queryByText('Restored title')).toBeNull()
+    expect(screen.queryByText('Restored answer')).toBeNull()
+    act(() => {
+      store.dispatch({
+        type: 'hostMessage',
+        message: { type: 'surfaceState', sessionId: 'old' },
+        at: 3,
+      })
+    })
+    expect(screen.getByText('Restored title')).toBeInTheDocument()
+    expect(screen.getByText('Restored answer')).toBeInTheDocument()
+    expect(screen.getByText('Restored title goal')).toBeInTheDocument()
+    expect(screen.getByText('Restored title todo')).toBeInTheDocument()
   })
 
   it('renders the empty state once signed in and focuses the composer', () => {
@@ -179,20 +291,53 @@ describe('App shell', () => {
 
   it('does not attach a deferred pasted PDF after New Conversation clears its source', async () => {
     const postMessage = renderReady()
-    const pdf = new File([Uint8Array.from([1])], 'stale.pdf', { type: 'application/pdf' })
-    const heldRead = Promise.withResolvers<ArrayBuffer>()
-    vi.spyOn(pdf, 'arrayBuffer').mockImplementation(() => heldRead.promise)
-    fireEvent.paste(textarea(), { clipboardData: { files: [pdf] } })
+    const releasePdf = holdPastedPdf()
     fireEvent.click(screen.getByLabelText('New conversation'))
-    heldRead.resolve(Uint8Array.from([1]).buffer)
-    await act(async () => {
-      await heldRead.promise
-      await Promise.resolve()
-    })
+    await releasePdf()
     expect(postMessage).not.toHaveBeenCalledWith(
       expect.objectContaining({ type: 'attachImageData', name: 'stale.pdf' }),
     )
   })
+
+  it.each(['resume', 'fork'] as const)(
+    'drops a deferred PDF when %s begins, preserving the draft and accepted chip',
+    async (action) => {
+      const postMessage = renderReady()
+      loadHistory([historyUser('u1', 't1', 'first'), historyUser('u2', 't2', 'second')])
+      addTestImage()
+      fireEvent.change(textarea(), { target: { value: 'keep draft' } })
+      const releasePdf = holdPastedPdf()
+      if (action === 'resume') {
+        fireEvent.click(screen.getByLabelText('Session history'))
+        deliver({
+          type: 'sessionList',
+          sessions: [
+            {
+              sessionId: 'other',
+              title: 'Other session',
+              isNamed: false,
+              createdAt: '2026-09-22T10:00:00Z',
+              updatedAt: new Date().toISOString(),
+              status: 'notLoaded',
+              turnCount: 1,
+              isFork: false,
+            },
+          ],
+          archivedIds: [],
+        })
+        fireEvent.keyDown(screen.getByRole('combobox'), { key: 'Enter' })
+      } else {
+        fireEvent.click(screen.getAllByLabelText('Fork or rewind')[1]!)
+        fireEvent.click(screen.getByRole('menuitem', { name: 'Fork conversation from here' }))
+      }
+      expect(textarea()).toHaveValue('keep draft')
+      expect(screen.getByLabelText('Remove shot.png')).toBeInTheDocument()
+      await releasePdf()
+      expect(postMessage).not.toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'attachImageData', name: 'stale.pdf' }),
+      )
+    },
+  )
 
   it('inserts host-provided text at the caret', () => {
     renderReady()
@@ -251,11 +396,122 @@ describe('App sign-in gate', () => {
     expect(postMessage).toHaveBeenLastCalledWith({ type: 'retryBackend' })
   })
 
+  it('requires an in-panel confirmation before asking the host to install', () => {
+    const postMessage = renderReady()
+    deliver({
+      type: 'authState',
+      status: 'noCli',
+      installCommand: 'irm https://dev.meta.ai/install.ps1 | iex',
+    })
+    fireEvent.click(screen.getByText('Install Muse Code'))
+    expect(screen.getByRole('dialog', { name: 'Install Muse Code' })).toHaveAttribute(
+      'aria-modal',
+      'true',
+    )
+    expect(document.querySelector('main')).toHaveAttribute('inert')
+    expect(screen.getByText('irm https://dev.meta.ai/install.ps1 | iex')).toBeInTheDocument()
+    expect(postMessage).not.toHaveBeenCalledWith({ type: 'installMuseCode' })
+    fireEvent.click(screen.getByText('Run installer'))
+    expect(postMessage).toHaveBeenLastCalledWith({ type: 'installMuseCode' })
+    expect(document.querySelector('main')).not.toHaveAttribute('inert')
+  })
+
+  it('dismisses installer confirmation when CLI state changes outside the dialog', () => {
+    renderReady()
+    deliver({
+      type: 'authState',
+      status: 'noCli',
+      installCommand: 'irm https://dev.meta.ai/install.ps1 | iex',
+    })
+    fireEvent.click(screen.getByText('Install Muse Code'))
+    expect(screen.getByRole('dialog', { name: 'Install Muse Code' })).toBeInTheDocument()
+    deliver({ type: 'authState', status: 'installing' })
+    expect(screen.queryByRole('dialog', { name: 'Install Muse Code' })).toBeNull()
+    expect(document.querySelector('main')).not.toHaveAttribute('inert')
+    deliver({
+      type: 'authState',
+      status: 'noCli',
+      installCommand: 'irm https://dev.meta.ai/install.ps1 | iex',
+    })
+    expect(screen.queryByRole('dialog', { name: 'Install Muse Code' })).toBeNull()
+  })
+
   it('shows the waiting state while the browser sign-in runs', () => {
     renderReady('signedOut')
     deliver({ type: 'authState', status: 'signingIn', detail: 'Waiting for the browser…' })
     expect(screen.getByText('Waiting for the browser…')).toBeInTheDocument()
     expect(screen.queryByText('Sign in with your Meta account')).toBeNull()
+  })
+
+  it('clears prior-account history on sign-out while keeping sign-in and device code visible', () => {
+    renderReady()
+    fireEvent.change(textarea(), { target: { value: 'Remember this answer' } })
+    fireEvent.keyDown(textarea(), { key: 'Enter' })
+    deliver({ type: 'authState', status: 'signedOut', backend: 'museCode', methods: ['browser'] })
+    expect(screen.queryByText('Remember this answer')).toBeNull()
+    expect(
+      screen.getByRole('button', { name: 'Sign in with your Meta account' }),
+    ).toBeInTheDocument()
+    deliver({
+      type: 'authState',
+      status: 'signingIn',
+      backend: 'museCode',
+      verificationUrl: 'https://auth.meta.com/oauth/device/?code=example',
+      userCode: 'ABCD-EFGH',
+    })
+    expect(screen.queryByText('Remember this answer')).toBeNull()
+    expect(screen.getByText('ABCD-EFGH')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Open sign-in page' })).toBeInTheDocument()
+  })
+
+  it('offers CLI install while a Model API key keeps the backend signed in', () => {
+    const postMessage = renderReady()
+    deliver({
+      type: 'authState',
+      status: 'signedIn',
+      backend: 'modelApi',
+      hasCli: false,
+      installCommand: 'irm https://dev.meta.ai/install.ps1 | iex',
+    })
+    openUsageDialog()
+    fireEvent.click(screen.getByRole('button', { name: 'Install Muse Code' }))
+    expect(screen.getByText('irm https://dev.meta.ai/install.ps1 | iex')).toBeInTheDocument()
+    expect(postMessage).not.toHaveBeenCalledWith({ type: 'installMuseCode' })
+    fireEvent.click(screen.getByRole('button', { name: 'Run installer' }))
+    expect(postMessage).toHaveBeenLastCalledWith({ type: 'installMuseCode' })
+    deliver({
+      type: 'authState',
+      status: 'signedIn',
+      backend: 'modelApi',
+      hasCli: false,
+      installState: 'running',
+    })
+    expect(screen.getByRole('dialog', { name: 'Account & usage' })).toHaveTextContent(
+      'Installing Muse Code',
+    )
+    deliver({
+      type: 'authState',
+      status: 'signedIn',
+      backend: 'modelApi',
+      hasCli: true,
+      hasCliSession: false,
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in with your Meta account' }))
+    expect(postMessage).toHaveBeenCalledWith({ type: 'signIn', method: 'browser' })
+  })
+
+  it('offers an extra Model API key while Muse Code remains signed in', () => {
+    const postMessage = renderReady()
+    deliver({
+      type: 'authState',
+      status: 'signedIn',
+      backend: 'museCode',
+      hasCli: true,
+      hasCliSession: true,
+    })
+    openUsageDialog()
+    fireEvent.click(screen.getByRole('button', { name: 'Add Model API key' }))
+    expect(postMessage).toHaveBeenCalledWith({ type: 'signIn', method: 'apiKey' })
   })
 })
 
@@ -673,6 +929,14 @@ function openPalette() {
   return screen.getByRole('combobox')
 }
 
+/** Opens the account modal through the same palette action a user selects. */
+function openUsageDialog() {
+  const filter = openPalette()
+  fireEvent.change(filter, { target: { value: '/usage' } })
+  fireEvent.keyDown(filter, { key: 'Enter' })
+  return screen.getByRole('dialog', { name: 'Account & usage' })
+}
+
 describe('App palette', () => {
   it('opens from the Commands button, asks for skills once, and closes back to the composer', () => {
     const postMessage = renderReady()
@@ -801,6 +1065,10 @@ describe('App palette', () => {
     expect(postMessage).toHaveBeenCalledWith({ type: 'exportConversation', format: 'markdown' })
     // The CLI's own rows (M30) need the Muse Code backend.
     deliver({ type: 'authState', status: 'signedIn', backend: 'museCode' })
+    deliver({
+      type: 'skillList',
+      skills: [{ selector: 'fix-bug', displayName: 'Fix bug', description: 'd' }],
+    })
     run('Export session log')
     expect(postMessage).toHaveBeenCalledWith({ type: 'exportConversation', format: 'sessionLog' })
     run('Manage skills')
@@ -987,7 +1255,11 @@ describe('App session history (M6)', () => {
       isArchived: true,
     })
     fireEvent.keyDown(screen.getByRole('combobox'), { key: 'Enter' })
-    expect(postMessage).toHaveBeenCalledWith({ type: 'resumeSession', sessionId: 'old' })
+    expect(postMessage).toHaveBeenCalledWith({
+      type: 'resumeSession',
+      sessionId: 'old',
+      attachmentEpoch: 1,
+    })
     expect(screen.queryByRole('dialog')).toBeNull()
     expect(document.activeElement).toBe(textarea())
   })
@@ -1036,7 +1308,11 @@ describe('App session history (M6)', () => {
     expect(menus).toHaveLength(2)
     fireEvent.click(menus[1]!)
     fireEvent.click(screen.getByRole('menuitem', { name: 'Fork conversation from here' }))
-    expect(postMessage).toHaveBeenLastCalledWith({ type: 'forkSession', lastTurnId: 't1' })
+    expect(postMessage).toHaveBeenLastCalledWith({
+      type: 'forkSession',
+      lastTurnId: 't1',
+      attachmentEpoch: 2,
+    })
     expect(screen.queryByRole('menu')).toBeNull()
     // Before the first message there is nothing to keep: a new conversation.
     fireEvent.click(menus[0]!)
@@ -1248,7 +1524,7 @@ describe('App session history (M6)', () => {
     fireEvent.click(screen.getByRole('menuitem', { name: 'Fork conversation and rewind code' }))
     expect(postMessage.mock.calls.slice(-2).map(([message]) => message)).toEqual([
       { type: 'rewindCode', edits: [{ itemId: 'e2', outputRef: 'p2' }] },
-      { type: 'forkSession', lastTurnId: 't1' },
+      { type: 'forkSession', lastTurnId: 't1', attachmentEpoch: 2 },
     ])
     fireEvent.click(menus[0]!)
     expect(screen.getByRole('menu')).toBeInTheDocument()
@@ -1463,11 +1739,8 @@ describe('App account & usage, onboarding and announcements (M8)', () => {
 
   it('opens Account & usage from /usage, asks the host, renders the report, closes on Escape', () => {
     const postMessage = renderReady()
-    const filter = openPalette()
-    fireEvent.change(filter, { target: { value: '/usage' } })
-    fireEvent.keyDown(filter, { key: 'Enter' })
+    const dialog = openUsageDialog()
     expect(postMessage).toHaveBeenLastCalledWith({ type: 'readUsage' })
-    const dialog = screen.getByRole('dialog', { name: 'Account & usage' })
     expect(dialog.parentElement).toHaveClass('modal-backdrop')
     expect(dialog).toHaveTextContent('Reading usage…')
     deliver({ type: 'usageReport', backend: 'museCode', subscription })
@@ -1478,6 +1751,17 @@ describe('App account & usage, onboarding and announcements (M8)', () => {
     fireEvent.keyDown(screen.getByLabelText('Close'), { key: 'Escape' })
     expect(screen.queryByRole('dialog')).toBeNull()
     expect(document.activeElement).toBe(textarea())
+  })
+
+  it('hides old account usage immediately on the boundary clear before auth replies', () => {
+    renderReady()
+    const dialog = openUsageDialog()
+    deliver({ type: 'usageReport', backend: 'museCode', subscription })
+    expect(dialog).toHaveTextContent('muse-pro')
+    deliver({ type: 'conversationCleared', accountBoundary: true })
+    expect(screen.queryByText('muse-pro')).toBeNull()
+    expect(screen.queryByRole('dialog', { name: 'Account & usage' })).toBeNull()
+    expect(screen.getByRole('status')).toHaveTextContent('Connecting to the extension host')
   })
 
   it('opens the dialog from the Account & usage row and from /cost', () => {
@@ -1736,9 +2020,7 @@ describe('App webview and UI state (M25)', () => {
 
   it('makes everything behind a modal inert', () => {
     renderReady()
-    const filter = openPalette()
-    fireEvent.change(filter, { target: { value: '/usage' } })
-    fireEvent.keyDown(filter, { key: 'Enter' })
+    openUsageDialog()
     expect(screen.getByRole('main')).toHaveAttribute('inert')
     expect(document.querySelector('.composer-area')).toHaveAttribute('inert')
     expect(document.querySelector('.header-area')).toHaveAttribute('inert')

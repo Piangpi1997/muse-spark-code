@@ -6,6 +6,7 @@ import { mcpJobExecutable, mcpJobExecutableName } from '../../src/host/backend/m
 import type { RunProgram } from '../../src/host/processTree'
 import { SHELL_JOB_FOLDER } from '../../src/shared/constants'
 import { removeFolder } from './helpers/temporaryFolders'
+import { JOB_SOURCE, readJobSource } from './helpers/jobSource'
 
 const paths = { root: '' }
 
@@ -34,6 +35,7 @@ describe('M50 compiled Windows job executable', () => {
     }
     const logged: string[] = []
     const deps = {
+      readJobSource,
       storageDir,
       systemRoot: String.raw`C:\Windows`,
       log: (message: string) => {
@@ -42,12 +44,14 @@ describe('M50 compiled Windows job executable', () => {
       run,
     }
     const ready = mcpJobExecutable(deps)
-    const executable = path.join(folder, mcpJobExecutableName())
+    const executable = path.join(folder, mcpJobExecutableName(JOB_SOURCE))
     expect(await ready()).toBe(executable)
     expect(await ready()).toBe(executable)
     const left = await readdir(folder)
     expect(left.toSorted((a, b) => a.localeCompare(b))).toEqual(
-      ['MuseSparkJob-live.dll', mcpJobExecutableName()].toSorted((a, b) => a.localeCompare(b)),
+      ['MuseSparkJob-live.dll', mcpJobExecutableName(JOB_SOURCE)].toSorted((a, b) =>
+        a.localeCompare(b),
+      ),
     )
     expect(scripts).toHaveLength(1)
     expect(scripts[0]).toContain('-OutputType ConsoleApplication')
@@ -71,6 +75,7 @@ describe('M50 compiled Windows job executable', () => {
     const storageDir = await mkdtemp(path.join(paths.root, 'broken-'))
     const logged: string[] = []
     const ready = mcpJobExecutable({
+      readJobSource,
       storageDir,
       systemRoot: String.raw`C:\Windows`,
       log: (message) => {
@@ -93,9 +98,13 @@ describe('M50 compiled Windows job executable', () => {
       const storageDir = await mkdtemp(path.join(paths.root, 'corrupt-'))
       const folder = path.join(storageDir, SHELL_JOB_FOLDER)
       await mkdir(folder)
-      await writeFile(path.join(folder, mcpJobExecutableName()), 'not a Windows executable')
+      await writeFile(
+        path.join(folder, mcpJobExecutableName(JOB_SOURCE)),
+        'not a Windows executable',
+      )
       const logged: string[] = []
       const ready = mcpJobExecutable({
+        readJobSource,
         storageDir,
         systemRoot: process.env['SystemRoot'] ?? '',
         log: (message) => {

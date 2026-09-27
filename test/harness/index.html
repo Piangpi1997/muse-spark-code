@@ -1028,6 +1028,53 @@
             detail: 'The sign-in did not complete in time. Try again.',
           })
         },
+        'signin-history': () => {
+          setDraft('Earlier answer stays visible')
+          key({ key: 'Enter' })
+          later(100, () =>
+            send({
+              type: 'authState',
+              status: 'signingIn',
+              backend: 'museCode',
+              verificationUrl: 'https://auth.meta.com/oauth/device/?code=example',
+              userCode: 'ABCD-EFGH',
+            }),
+          )
+        },
+        'signin-history-narrow': () => {
+          document.body.style.maxWidth = '300px'
+          steps['signin-history']()
+        },
+        'usage-install': () => {
+          window.harnessBackend = 'modelApi'
+          send({
+            type: 'authState',
+            status: 'signedIn',
+            backend: 'modelApi',
+            hasCli: false,
+            installCommand: 'irm https://dev.meta.ai/install.ps1 | iex',
+          })
+          send({
+            type: 'paidState',
+            state: {
+              features: [],
+              tally: { webSearches: 0, images: 0, voiceSeconds: 0 },
+              isKeyStored: true,
+            },
+          })
+          click('Commands')
+          whenFound('.palette-filter', (filter) => {
+            setValue(filter, HTMLInputElement.prototype, '/usage')
+            filter.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+          })
+          whenFound('.usage-setup button', (install) => {
+            install.click()
+          })
+        },
+        'usage-install-narrow': () => {
+          document.body.style.maxWidth = '300px'
+          steps['usage-install']()
+        },
         // The Commands button: the palette with its own filter box.
         palette: () => {
           click('Commands')

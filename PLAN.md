@@ -1960,6 +1960,11 @@ for prompt, replay and output (32,768 maximum); a large single file can be
 refused despite its 1 MiB per-file read cap. It does not account for an
 already long replay, which the Model API may still refuse at its context
 limit.
+During an active turn, its initial named text files and every accepted steer
+share that same 768 KiB allowance. A steer that would cross it is refused
+before entering the next replay request. Draining steering into replay does
+not reset the turn's admission count; a separately queued turn validates its
+own parts before it starts.
 
 - **Model API:** PDF bytes, checked by header, may be attached from the file
   picker, clipboard or drop, up to 32 MB each; the inline base64 stays below
@@ -1978,12 +1983,7 @@ limit.
   byte sizes and image dimensions formatted in that locale. A known PDF page
   count takes the language's plural form; an unknown count has its own label.
   Focused tests check a non-English table and grouped numbers without changing
-  the model-facing text. Invalid PDF/image headers, missing files and bounded
-  read errors keep function `output` English for the model but show a runtime
-  localized failure row and `failureReason`, with a requested path in one
-  template. The invalid file is never sent as media; an aborted read still
-  cancels the turn. Red/green tests cover these refusal shapes and the
-  model/UI split.
+  the model-facing text.
 - **Muse Code:** images retain their MSP path. A PDF attachment gets a clear
   refusal naming the Model API backend, including when its extension is
   disguised. A bounded text attachment becomes an MSP text part with the
@@ -2034,6 +2034,11 @@ limit.
   a later tool result cannot displace it silently, and a steer that arrives
   after pending tool media is refused before it enters this turn. The panel
   can submit that prompt as a later turn after the pending media is delivered.
+  A successful `read_file` stays reserved after its media moves from the
+  current batch into replay, including while `PostToolBatch` runs. The
+  reservation ends only after the first completed request carries or durably
+  omits that media, or Stop/failure scrubs it. A steer arriving during that
+  hook cannot displace the unread PDF or image.
   Red/green tests bind the fitted request, snapshot, resume and unchanged
   history chips to that boundary. The
   `read_file` tool also stops collecting media in one tool round at the same
@@ -5130,6 +5135,24 @@ old dialog or file read cannot add an attachment or mention after New
 Conversation. Its final add remains bound to the captured generation across
 the backend lookup. The separate mention QuickPick likewise ignores a choice
 that returns after the conversation cleared.
+Browser paste/drop encoding also belongs to the conversation in which it
+started. Resume, fork and conversation rewind advance the browser attachment
+epoch before asynchronous session replacement; the host binds that epoch
+before awaiting the backend and refuses older upload messages. Accepted chips
+and the draft remain available, while only unfinished encodes are invalidated.
+Restored panels report their current epoch on readiness so a host-driven
+session replacement can advance the same boundary before History loads.
+A delayed or debounced webview snapshot may restore an epoch older than the
+host's current session-change guard. `ready` must never lower that host epoch;
+the host returns its current epoch in `surfaceState`, and the panel raises its
+epoch before admitting fresh files. A held old upload followed by resume or
+fork, stale `ready`, and release must be refused; a new upload after sync must
+still be accepted.
+Host-driven panel and recent-session restore follows the same browser epoch
+boundary before its asynchronous resume. A file delivered after session drop
+but before the restored History must be refused, while the panel receives the
+new epoch in time to accept fresh uploads. Same-session host restart keeps
+accepted chips and draft and does not advance this browser boundary.
 An edit or paid image approval binds the canonical target it classified;
 the executing tool must use that target and refuse if a workspace alias
 resolves elsewhere after the card. Paid image sources use the bytes and
@@ -5198,8 +5221,16 @@ was superseded by the browser paste/drop review finding. Final browser and
 native picker source tree `2fbb593cd99b54fc786587e6847ee87b2dffd496`
 passed exact-tree Mac/Kubuntu `npm run quality:gates`; the Windows VM passed
 349 focused Composer, PDF, picker, ToolIo and attachment tests (two skips).
-The final documentation receipt needs local `npm run quality`; the updated PR
-head needs hosted CI and review. Live paid PDF delivery remains unverified;
+That documentation receipt was superseded by two further PR review fixes:
+aggregate named-text steering plus undelivered `read_file` reservations, and
+browser upload epochs across session replacement and reload. Corrected staged
+source tree `91d0e2751ba0dd4d2dcd510919692a8a0fbebfc5` passed exact-tree
+Mac and Kubuntu `npm run quality:gates` (2,344 tests on each); WIN-11-VM
+passed 817 focused tests on the same tree. The root checkout passed 817
+combined focused tests, all five TypeScript projects, lint, localization,
+formatting and duplication. The exact receipts are in `docs/certification/m54.md`.
+The new documentation receipt still needs local `npm run quality`; the updated
+PR head needs hosted CI and review. Live paid PDF delivery remains unverified;
 no paid request ran.
 
 - **Goal:** a user can send a PDF to the Model API backend from the picker,
@@ -5262,6 +5293,310 @@ no paid request ran.
   unchanged tree and post-gate process audit 0 are in `m54.md`. The green
   receipt is a later docs-only edit, and M48–M53 integration plus live Model
   API verification remain open.
+
+### M55 — Install and sign in from the panel (D36, M41)
+
+**Status 2026-09-27: built; the full gate passed on the final tree (2,454
+tests, 328 accessibility pages, the host bundle 593.5 KiB within D6); the
+PR review and merge follow. A live Meta install and a completed device
+sign-in are owner steps: installing software here needs his go-ahead**
+(`docs/certification/m55.md`). The staged implementation was reconciled onto
+merged M47 main `34002ab` with 449/449 focused tests passing across ten
+files; the pre-move stage is pinned at
+`refs/codex-backups/m55-pre-m47-20260926`. Full quality, visual and real
+installer/sign-in gates remain open. A focused M55 audit on that M47 base
+replaced the inline installer confirmation group with the existing accessible
+modal, including an inert background. It also resolved the credential-write
+versus Cancel/timeout race. Meta's current Muse Code overview documents
+`irm https://dev.meta.ai/install.ps1 | iex` on Windows and
+`curl -fsSL https://dev.meta.ai/install.sh | sh` on macOS/Linux. The panel
+will display the exact platform command and ask for confirmation before opening
+a visible terminal to run it. It will recheck the known CLI locations and offer
+sign-in when the binary appears; a timed out install remains retriable.
+
+**Follow-up acceptance, 2026-09-26:** A signed-out or signing-in panel with
+a saved transcript keeps that transcript available and shows its sign-in and
+device-code controls in a visible, accessible banner. Account & usage offers
+CLI installation while a Model API key is stored, without changing the live
+Model API backend during the installer watch, and offers adding or replacing
+the stored Model API key while Muse Code is signed in, without restarting its
+session or making a paid call. After an install, the same panel can start Muse
+Code browser sign-in; the key stays only in SecretStorage. M52's stale
+schedule/account display and M53's side-chat replay remain cross-milestone
+join checks, not claims certified by this milestone.
+The follow-up's red-first App/Auth cases failed 5/5 on the earlier staged
+behavior; after implementation three focused suites passed 115/115, all three
+affected TypeScript projects and localization passed, and 32 English/pseudo
+targeted accessibility pages across four themes had zero violations. Full
+quality and live installer/sign-in proof remain open (`docs/certification/m55.md`).
+Final focused regression passed 458/458 tests across nine discovered suites,
+with host/webview/unit typechecks, localization, scoped lint and the dev build
+green; this remains scoped evidence, not the full quality gate.
+The first isolated Mac Node 22 `quality:gates` run on staged tree `13b2f8c`
+stopped at one duplicated App test setup; earlier gates passed, later gates
+did not run. The shared `/usage` test helper made local `npm run duplication`
+pass with zero clones. Mac `quality:gates` then exited 0 on the corrected
+staged source tree `f2557f66`: 1715 tests passed, 7 skipped, 0 dependency
+advisories and production bundles within budget. Full browser accessibility,
+integration, Windows PowerShell lint and live installer/sign-in remain open.
+M55 auth safety QA also covers an unsuccessful CLI device sign-in started from
+a live Model API key session: Cancel, timeout, refusal or launch failure must
+restore that session rather than leave a valid key marked signed out. No key
+is passed to the temporary Muse Code host, and no paid request is implied by
+the sign-in attempt. A cancelled flow must not publish a late device code.
+If VS Code cannot open the installer terminal, the panel must report that
+launch failure distinctly from a CLI-discovery timeout, while preserving an
+active Model API session. An installer watch that finishes after sign-out must
+derive the current credentials and must not restore the earlier signed-in
+state. An installer timeout or terminal failure during sign-out or a retained
+logout hold must not republish a signed-in status from raw credentials; a
+watcher started before sign-out stops at the changed sign-out generation. A
+browser sign-in click paused on a SecretStorage read before a newer sign-out
+must not start its device flow afterward; a fresh click while held still may
+recover a newly written CLI credential under the rules below.
+An API-key prompt open in another panel when sign-out starts must not store a
+late key. Sign-out waits for any SecretStorage write already underway before
+clearing the key, and for any already-started key sign-in backend restart
+before ending sessions; neither may publish a signed-in state afterward.
+Sign-out must still end the extension host and clear its stored key if the
+visible `muse logout` terminal cannot open. A CLI credential file may remain
+until that terminal command finishes, and an inherited or configured
+`META_API_KEY` cannot be revoked by `muse logout`. Keep the extension gated
+and show that remaining-credential condition on refresh; never turn it back
+to signed-in merely because the same credential is still present. Persist
+only a boolean logout hold in VS Code's extension-private local global state
+so a window reload cannot reassert sign-in. An ended extension session reports
+signed-out with explicit remaining-credential detail; a later refresh stays
+gated as an error until the CLI credential disappears or a new CLI sign-in
+explicitly succeeds **without** `META_API_KEY` in the CLI environment. Meta's
+[auth guide](https://dev.meta.ai/docs/muse-code/auth) says that environment
+key overrides browser sign-in and `muse logout` cannot unset it; do not let a
+browser approval silently re-enable key-billed CLI use. Do not remove a user
+environment variable or log its value.
+The host selector must refuse a held or otherwise unsigned auth state before
+and after its asynchronous raw credential check; raw `META_API_KEY` or a file
+alone must never create a host. If VS Code cannot persist the logout hold,
+the extension must still close the host and show an error instead of claiming
+sign-out finished; a new activation cannot safely infer consent from the
+remaining raw credential.
+After a held refresh sees credentials disappear, it must derive backend facts
+again before publishing a signed-in state; the earlier snapshot may be stale.
+If a host finishes opening after sign-out revokes admission, close that owned
+host before refusing the request.
+Backend kind alone cannot bind admission: sign-out followed by a fresh sign-in
+to the same Model API kind must invalidate a host selection started before
+sign-out. An in-flight session opening or send captures the auth and
+conversation generation before its first await, then refuses and preserves
+the draft and attachment chips if sign-out, account replacement or New
+Conversation occurs before the host or session opens. Close a stale host;
+never send the old prompt under the new key.
+Recovery from a held old CLI credential file may start an explicit browser
+device flow only when `META_API_KEY` is absent and the extension key was
+cleared; accept it only after a new credential-file modification is observed.
+Sign-out must publish a gated state and start ending attached sessions before
+awaiting global state or SecretStorage. Other panels must not send a paid
+child follow-up or similar session action during that wait. A rejected
+SecretStorage key deletion must still end the host, keep the hold, and report
+an actionable error rather than leaving a signed-in turn running.
+Two panels may request sign-out concurrently. Treat those requests as one
+operation or keep admission blocked until the final sign-out settles; an
+earlier caller's `finally` must not release the hold while another stop or
+credential clear is pending.
+Model and skill catalogues are scoped to the attached session and backend.
+Dropping a session clears those cached choices; an asynchronous list begun
+under the old session cannot publish after sign-out, New Conversation or a
+backend/account switch. A fresh session must fetch its own catalogue even if
+an older list is still in flight. An attach delayed in effort setup must
+not start old-session skill loading after its generation was revoked.
+The M52 account-switch fix clears visible schedules when the Model API key is
+replaced; verify it on the ordered M55 join.
+Model API conversations also belong to the key that created them. Persist a
+nonreversible key digest with each session and expose, resume, read or fork it
+only for that same digest. A stored session without ownership metadata stays
+on disk but is not admitted: its owner cannot be proved. Replacing a key must
+not resume the prior key's session or send its replay under the new key;
+History must omit the prior key's sessions. Check the owner again after
+asynchronous storage reads. Stop an active old-key turn before replacing its
+SecretStorage value so a later tool round cannot pick up the new key. Clear
+the panel's old History rows and reject a list reply arriving after the
+host stopped. Prove key A to key B with fake keys and zero B requests
+containing A's conversation.
+On the Muse Code backend, replacing only the secondary Model API key keeps
+the subscription conversation running. An extension-owned paid image tool
+captures the key generation and digest before its confirmation; a changed
+key refuses purchase and every retry before HTTP, without restarting the CLI.
+Auth transitions also clear rendered private transcript, output pages and
+child transcripts before a new account can see them, while a local unsent
+draft remains available. Retained image/file chips and in-flight browser
+reads from the prior account are discarded. Reads, History events and session adoption begun
+under a stopped host cannot publish old-account content after sign-out.
+An account-ending stop detaches this surface's session and closed-session
+listeners before awaiting turn cancellation, and queued callbacks check the
+session generation. A rename reply held across that stop cannot restore the
+former account's title. Other surfaces keep their own listeners until their
+own stop, and the stopped turn still receives its local cancelled end. A
+`view/gap` history read begun before account stop checks that generation
+after every await and cannot refill the cleared panel or post a stale notice.
+A surface reloaded during the cancellation wait receives no prior session id,
+model or skill catalogue; its saved old-account transcript is invalidated
+even when same-kind Model API sign-in follows.
+The saved webview snapshot is untrusted until both the live session and
+signed-in account are confirmed. Its private title and transcript cannot
+render in the connecting/checking shell. A signed-out result clears the
+snapshot even when the prior local auth state was only `checking`; a
+transient CLI sign-in while the Model API conversation remains live may keep
+that already-confirmed conversation visible.
+The explicit account-boundary clear is immediate even before the next auth
+reply: gate the panel as checking and discard the old usage report, model and
+skill catalogues, History archive ids, editor context, mention results and
+pending announcement or insert. Keep the unsent local draft. Invalidate a
+local quote selection when the conversation changes.
+All new session actions use the auth service's admitted backend, not only its
+visible signed-in label, and refuse while an account stop is in flight.
+Actions already started carry the session and stop generation through their
+awaits: stored output and edit review, rewind/side fork, goal and subagent
+commands, compaction, and paid scheduled-run confirmation cannot act on the
+prior account after that boundary. Paged output stays bound to one session.
+Selecting a manager-cached host never closes that borrowed live host merely
+because the secondary key changed. Installer discovery in auto mode must
+retire the former backend's active session before a newly selected CLI host
+is used, then start the next send on the selected backend.
+The QA fixes passed 164/164 focused fake-host/fake-CLI tests across eight
+suites, host/webview/unit typechecks, localization, scoped lint/format and
+zero-duplicate checks. Mac `quality:gates` exited 0 on the pre-documentation
+QA staged tree `ed5d2926`: 1723 tests passed, 7 skipped, zero clones and zero
+advisories. This receipt was documented afterward; M48–M54 joins and the final
+integrated tree need their own gate.
+
+M55 provisional tree `eb30d625` passed Linux and Mac `quality:gates` and
+WIN-11-VM full `quality` before later PR #42 review found two more source
+issues in M54. These are pre-review checkpoints, not certification of the
+final joined tree. Exact receipts are in `docs/certification/m55.md`; final
+M54 ancestry, M55 gates and live installer/device approval remain open.
+
+Frozen M54 follow-up tree `f4b3a3e` was layered onto the isolated M55
+stage without changing M55 auth source or its earlier gate receipts. The
+31-path join passed 633 focused tests across nine suites, five TypeScript
+projects, localization across fourteen tables, scoped formatting and lint,
+and duplication with zero clones. Those checks are provisional; new exact-tree
+Linux, Mac and Windows gates remain required after final M54 ancestry.
+
+Frozen M54 tree `57a2a963` was then layered onto this isolated M55 stage
+with its native-picker generation guard and localized visual-read failures.
+The 23-path join kept M55 auth source unchanged. Ten selected new
+regressions, five TypeScript projects, fourteen localization tables, scoped
+ESLint and duplication passed. The earlier `80af642a` WIN-11-VM quality run
+was interrupted at accessibility after review found these issues; it has no
+quality result. This new tree still needs exact cross-platform gates after
+M54 final ancestry and live installer/device approval.
+
+The `a09eac30` Windows host full quality gate completed exit 0 before a
+stop request reached it, but a later PR #42 review found two more M54 source
+issues; that run is a green checkpoint, not final M55 certification. The
+24-path frozen M54 tree `b770bd6a` was then layered onto this isolated M55
+stage without changing its auth source. Four affected suites passed 415/415,
+all five TypeScript projects, fourteen localization tables, scoped ESLint
+and duplication passed. Final exact-tree gates remain open.
+
+PR #42 commit `5292d4a` records the corrected M54 `b770bd6a` Windows VM
+and Mac code-tree gates in `m54.md`. The isolated M55 branch now follows
+that commit; only receipt documentation changed from its prior staged tree.
+Its source still needs M55-specific exact-tree quality after PR #42 review
+and merge.
+
+The fifth PR #42 review follow-up, frozen M54 tree `75b30e59`, is now
+provisionally layered onto M55's backed-up `bdba7726` stage. Its 27 changed
+paths add the Model API named-text context allowance, send/steer admission,
+durable media pruning after a completed response, and a History-bound image
+rewind guard. The M55 auth implementation remains in place; this combined
+source checkpoint was `e0207e2a` before its documentation receipt. M54
+VM/Mac gates certify M54 alone. M55 exact-tree quality, PR #42 final
+review/merge, and live installer/device approval remain open.
+
+PR #42 fifth-review receipt commit `a228787b` now anchors the isolated M55
+branch. Its only change from frozen M54 code tree `75b30e59` is the M54
+Windows VM/Mac gate record. M55's prior staged tree `589d5646` was backed
+up, and the branch head moved to that commit without changing staged
+source, tests, translations or scripts. The M54 certification file now
+matches the commit. PR #42 hosted review/merge, M55 exact-tree quality and
+live installer/device approval remain open.
+
+The sixth PR #42 review delta from `a228787b` to frozen M54 tree
+`639bf222` is provisionally layered onto the backed-up M55 `f531774e`
+stage. The ten changed paths add Muse Code attachment admission after a
+backend switch and stop stale sends before submission or after a late
+acknowledgement, while retaining owned session recovery. M55 authentication
+source/tests remain intact; the combined source checkpoint was `ac558296`
+before its documentation receipt. M54 platform gates on this code tree,
+PR #42 final review/merge, M55 exact-tree quality and live installer/device
+approval remain open.
+
+PR #42 sixth-review receipt commit `bd667e46` now anchors the isolated M55
+branch. Its only difference from frozen M54 code tree `639bf222` is the
+Windows VM/Mac gate record. The prior M55 stage `a54ccfaa` was backed up;
+the soft anchor preserved its source, tests, translations and scripts.
+The M54 certification file now matches the commit. PR #42 hosted
+review/merge, M55 exact-tree quality and live installer/device approval
+remain open.
+
+The seventh PR #42 review delta from `bd667e46` to frozen M54 tree
+`423ef6f5` is provisionally layered onto the backed-up M55 `8d08b889`
+stage. Eight changed paths add page-slot admission for same-round visual
+reads and preserve specific localized attachment refusal banners. M55 auth
+source/tests remain intact; the combined source checkpoint was `220d9ee0`
+before its documentation receipt. M54 platform gates on this code tree,
+PR #42 review/merge, M55 exact-tree quality and live installer/device
+approval remain open.
+
+PR #42 seventh-review receipt commit `97a13326` now anchors the isolated
+M55 branch. Its only difference from frozen M54 code tree `423ef6f5` is
+the Windows VM/Mac gate record. The prior M55 stage `1b9e5981` was backed
+up; the soft anchor preserved its source, tests, translations and scripts.
+The M54 certification file now matches the commit. PR #42 hosted
+review/merge, M55 exact-tree quality and live installer/device approval
+remain open.
+
+The eighth PR #42 review delta from `97a13326` to frozen M54 tree
+`53237394` is provisionally layered onto the backed-up M55 `eeaf355a`
+stage. Six changed paths reserve visual MCP tool output, queued `read_file`
+media and accepted steering together until first delivery. Stop or failed
+delivery removes undelivered output images from replay. M55 authentication
+source/tests remain intact; the combined source checkpoint was `c4d4a50d`
+before its documentation receipt. M54 platform gates on this code tree,
+PR #42 review/merge, M55 exact-tree quality and live installer/device
+approval remain open.
+
+PR #42 eighth-review receipt commit `e8974ee3` now anchors the isolated
+M55 branch. Its only difference from frozen M54 code tree `53237394` is
+the Windows VM/Mac gate record. The prior M55 stage `43789177` was backed
+up; the soft anchor preserved source, tests, translations and scripts.
+The M54 certification file now matches the commit. PR #42 hosted
+review/merge, M55 exact-tree quality and live installer/device approval
+remain open.
+
+For sign-in, the panel uses the experimental MSP `account/loginStart` device
+flow, with code and browser link visible in the panel, Cancel, and credential
+file observation. The isolated 1.3.0 capture `scratchpad/m55/capture-m55.jsonl`
+showed `account/read` logged out, `loginStart {type:"deviceCode"}` returning
+`verificationUrl` and `userCode`, `loginCancel` returning `cancelled`, and a
+`loginCompleted` cancellation notification. It did not capture a successful
+sign-in; success must be proved by a credential file change and the backend's
+refresh, not a guessed notification shape. The Model API key continues through
+SecretStorage and is never given to `muse serve`.
+
+**Acceptance:** no installer or login starts without its button; installer
+command is fixed, shown before confirmation, and runs in a visible terminal;
+duplicate clicks start one watcher; install detection leads to sign-in; device
+code and URL are schema-checked before display; Cancel also works during
+the temporary host handshake, closing that process without starting login;
+cancel and timeout close the temporary MSP process; a file change yields a refreshed signed-in state; unit
+tests, red drills, accessibility and `npm run quality` pass before certification.
+
+**Host bundle budget (D6), 2026-09-27:** the C# the Windows job helpers
+share ships as `native/windows/MuseSparkMcpJob.cs` and is read when a helper
+is first built, instead of riding in the host bundle as a 12 KiB string;
+`dist/extension.js` went from 605.5 KiB (over the 600 KiB budget) to
+593.5 KiB. The budget is unchanged.
 
 ### M41 — Install Muse Code from the panel (folded into M55)
 

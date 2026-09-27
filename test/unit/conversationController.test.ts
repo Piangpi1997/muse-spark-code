@@ -60,6 +60,7 @@ import {
 interface FakeAuth {
   readonly service: AuthPort
   readonly calls: string[]
+  isAdmitted: boolean
   snapshot: AuthSnapshot
 }
 
@@ -67,16 +68,29 @@ function fakeAuth(status: AuthSnapshot['status'] = 'signedIn'): FakeAuth {
   const calls: string[] = []
   const state: FakeAuth = {
     calls,
+    isAdmitted: true,
     snapshot: { status, detail: undefined },
     // AuthPort is exactly the member set the controller touches.
     service: {
       get current() {
         return state.snapshot
       },
+      get backend() {
+        return state.snapshot.status === 'signedIn' && state.isAdmitted
+          ? (state.snapshot.backend ?? 'museCode')
+          : undefined
+      },
       toMessage: () => ({ type: 'authState', status: state.snapshot.status }),
       signIn: (method: string) => {
         calls.push(`signIn:${method}`)
         return Promise.resolve(state.snapshot)
+      },
+      installMuseCode: () => {
+        calls.push('installMuseCode')
+        return Promise.resolve(state.snapshot)
+      },
+      cancelSignIn: () => {
+        calls.push('cancelSignIn')
       },
       signOut: () => {
         calls.push('signOut')
@@ -533,12 +547,29 @@ function setup(
 }
 
 describe('ConversationController.surfaceReady', () => {
+  it('does not restore an old account session while cancellation is pending', async () => {
+    const t = setup()
+    await t.send('old', 'Account A turn')
+    const { stopping, request } = await holdTurnCancel(t)
+    t.surface.posted.length = 0
+    t.controller.surfaceReady(0)
+    expect(t.surface.posted).toContainEqual({ type: 'surfaceState', attachmentEpoch: 1 })
+    expect(t.surface.posted).not.toContainEqual(
+      expect.objectContaining({ type: 'surfaceState', sessionId: 's1' }),
+    )
+    expect(t.surface.posted).not.toContainEqual(
+      expect.objectContaining({ type: 'sessionInfo', sessionId: 's1' }),
+    )
+    answerHeldCancel(t, request)
+    await stopping
+  })
+
   it('replays auth and composer state, then models, session, skills and attachments', async () => {
     const t = setup()
     t.controller.surfaceReady()
     expect(t.surface.posted).toEqual([
       // M25: first, the live session and turn a reloaded webview checks its saved state against.
-      { type: 'surfaceState' },
+      { type: 'surfaceState', attachmentEpoch: 0 },
       { type: 'authState', status: 'signedIn' },
       composerState,
       {
@@ -554,7 +585,7 @@ describe('ConversationController.surfaceReady', () => {
     t.surface.posted.length = 0
     t.controller.surfaceReady()
     expect(t.surface.posted).toEqual([
-      { type: 'surfaceState', sessionId: 's1', activeTurnId: 't1' },
+      { type: 'surfaceState', attachmentEpoch: 0, sessionId: 's1', activeTurnId: 't1' },
       { type: 'authState', status: 'signedIn' },
       composerState,
       {
@@ -1011,7 +1042,8 @@ describe('ConversationController: composer controls', () => {
     await t.controller.handle({ type: 'clearConversation' })
     expect(t.host.sessionCount).toBe(0)
     // M25: the webview drops its transcript too, however the clear came (a keybinding too).
-    expect(t.surface.posted[0]).toEqual({ type: 'conversationCleared' })
+    expect(t.surface.posted).toContainEqual({ type: 'modelList', models: [] })
+    expect(t.surface.posted).toContainEqual({ type: 'conversationCleared' })
     expect(t.surface.posted.at(-1)).toEqual({ type: 'attachmentsCleared' })
     await t.controller.handle({ type: 'compact' })
     expect(t.server.requestsFor('session/start')).toHaveLength(2)
@@ -1378,6 +1410,237 @@ describe('ConversationController: context', () => {
     )
   })
 
+  it.each(['resumeSession', 'forkSession'] as const)(
+    'rejects an old browser upload while %s waits for the backend',
+    async (action) => {
+      const gate = Promise.withResolvers<undefined>()
+      let shouldHoldNextLookup = false
+      const t = withHistory({
+        beforeEnsureHost: () => {
+          if (shouldHoldNextLookup) {
+            shouldHoldNextLookup = false
+            return gate.promise
+          }
+          return Promise.resolve()
+        },
+      })
+      await completeFirstTurn(t)
+      shouldHoldNextLookup = true
+      const changing = t.controller.handle(
+        action === 'resumeSession'
+          ? { type: action, sessionId: 'old', attachmentEpoch: 1 }
+          : { type: action, lastTurnId: 't1', attachmentEpoch: 1 },
+      )
+      await Promise.resolve()
+      await t.controller.handle({
+        type: 'attachImageData',
+        name: 'stale.png',
+        mediaType: 'image/png',
+        base64: Buffer.from(PNG).toString('base64'),
+        requestId: 'stale-upload',
+        attachmentEpoch: 0,
+      })
+      gate.resolve(undefined)
+      await changing
+      expect(t.surface.posted).not.toContainEqual(
+        expect.objectContaining({ type: 'attachmentAdded', requestId: 'stale-upload' }),
+      )
+    },
+  )
+
+  it('rejects a late browser upload after fork drops the source but before History loads', async () => {
+    const t = withHistory()
+    await completeFirstTurn(t)
+    const held = holdNextModelList(t)
+    const changing = t.controller.handle({
+      type: 'forkSession',
+      lastTurnId: 't1',
+      attachmentEpoch: 1,
+    })
+    await held.waitBeforeHistory()
+    await t.controller.handle({
+      type: 'attachImageData',
+      name: 'late.png',
+      mediaType: 'image/png',
+      base64: Buffer.from(PNG).toString('base64'),
+      requestId: 'late-upload',
+      attachmentEpoch: 0,
+    })
+    held.release()
+    await changing
+    expect(t.surface.posted).not.toContainEqual(
+      expect.objectContaining({ type: 'attachmentAdded', requestId: 'late-upload' }),
+    )
+    await t.controller.handle({
+      type: 'attachImageData',
+      name: 'fresh.png',
+      mediaType: 'image/png',
+      base64: Buffer.from(PNG).toString('base64'),
+      requestId: 'fresh-upload',
+      attachmentEpoch: 1,
+    })
+    expect(t.surface.posted).toContainEqual(
+      expect.objectContaining({ type: 'attachmentAdded', requestId: 'fresh-upload' }),
+    )
+  })
+
+  it('uses a restored panel epoch before accepting browser uploads', async () => {
+    const t = setup()
+    t.controller.surfaceReady(4)
+    await t.controller.handle({
+      type: 'attachImageData',
+      name: 'previous.png',
+      mediaType: 'image/png',
+      base64: Buffer.from(PNG).toString('base64'),
+      requestId: 'previous-upload',
+      attachmentEpoch: 3,
+    })
+    expect(t.surface.posted).not.toContainEqual(
+      expect.objectContaining({ type: 'attachmentAdded', requestId: 'previous-upload' }),
+    )
+    await t.controller.handle({
+      type: 'attachImageData',
+      name: 'current.png',
+      mediaType: 'image/png',
+      base64: Buffer.from(PNG).toString('base64'),
+      requestId: 'current-upload',
+      attachmentEpoch: 4,
+    })
+    expect(t.surface.posted).toContainEqual(
+      expect.objectContaining({ type: 'attachmentAdded', requestId: 'current-upload' }),
+    )
+  })
+
+  it.each(['resumeSession', 'forkSession'] as const)(
+    'does not lower the upload guard for stale ready during %s',
+    async (action) => {
+      const uploadGate = Promise.withResolvers<undefined>()
+      const actionGate = Promise.withResolvers<undefined>()
+      let shouldHoldLookups = false
+      let heldLookups = 0
+      const t = withHistory({
+        beforeEnsureHost: () => {
+          if (!shouldHoldLookups) {
+            return Promise.resolve()
+          }
+          heldLookups += 1
+          return heldLookups === 1 ? uploadGate.promise : actionGate.promise
+        },
+      })
+      await completeFirstTurn(t)
+      shouldHoldLookups = true
+      const uploading = t.controller.handle({
+        type: 'attachImageData',
+        name: 'held-old.png',
+        mediaType: 'image/png',
+        base64: Buffer.from(PNG).toString('base64'),
+        requestId: 'held-old-upload',
+        attachmentEpoch: 0,
+      })
+      await vi.waitFor(() => {
+        expect(heldLookups).toBe(1)
+      })
+      const changing = t.controller.handle(
+        action === 'resumeSession'
+          ? { type: action, sessionId: 'old', attachmentEpoch: 1 }
+          : { type: action, lastTurnId: 't1', attachmentEpoch: 1 },
+      )
+      await vi.waitFor(() => {
+        expect(heldLookups).toBe(2)
+      })
+      t.controller.surfaceReady(0)
+      uploadGate.resolve(undefined)
+      await uploading
+      actionGate.resolve(undefined)
+      await changing
+      expect(t.surface.posted).not.toContainEqual(
+        expect.objectContaining({ type: 'attachmentAdded', requestId: 'held-old-upload' }),
+      )
+      expect(t.surface.posted).toContainEqual(
+        expect.objectContaining({ type: 'surfaceState', attachmentEpoch: 1 }),
+      )
+      shouldHoldLookups = false
+      await t.controller.handle({
+        type: 'attachImageData',
+        name: 'fresh-after-ready.png',
+        mediaType: 'image/png',
+        base64: Buffer.from(PNG).toString('base64'),
+        requestId: 'fresh-after-ready',
+        attachmentEpoch: 1,
+      })
+      expect(t.surface.posted).toContainEqual(
+        expect.objectContaining({ type: 'attachmentAdded', requestId: 'fresh-after-ready' }),
+      )
+    },
+  )
+
+  it.each(['restoreSession', 'restoreRecentSession'] as const)(
+    'rejects an old browser upload after host-driven %s drops the session',
+    async (action) => {
+      const t = withHistory({ isRestorable: true, lastSession: { sessionId: 'old', at: NOW } })
+      t.controller.surfaceReady(0)
+      await settle()
+      const held = holdNextModelList(t)
+      const restoring =
+        action === 'restoreSession'
+          ? t.controller.restoreSession('old')
+          : t.controller.restoreRecentSession()
+      await held.waitBeforeHistory()
+      await t.controller.handle({
+        type: 'attachImageData',
+        name: 'pre-restore.png',
+        mediaType: 'image/png',
+        base64: Buffer.from(PNG).toString('base64'),
+        requestId: 'pre-restore',
+        attachmentEpoch: 0,
+      })
+      held.release()
+      await restoring
+      expect(t.surface.posted).not.toContainEqual(
+        expect.objectContaining({ type: 'attachmentAdded', requestId: 'pre-restore' }),
+      )
+      expect(t.surface.posted).toContainEqual(
+        expect.objectContaining({ type: 'surfaceState', attachmentEpoch: 1 }),
+      )
+      await t.controller.handle({
+        type: 'attachImageData',
+        name: 'post-restore.png',
+        mediaType: 'image/png',
+        base64: Buffer.from(PNG).toString('base64'),
+        requestId: 'post-restore',
+        attachmentEpoch: 1,
+      })
+      expect(t.surface.posted).toContainEqual(
+        expect.objectContaining({ type: 'attachmentAdded', requestId: 'post-restore' }),
+      )
+    },
+  )
+
+  it('syncs the upload epoch when host-driven restore fails before History', async () => {
+    const t = withHistory()
+    t.controller.surfaceReady(0)
+    await settle()
+    t.server.handle('session/resume', () => {
+      throw new Error('offline')
+    })
+    await t.controller.restoreSession('old')
+    expect(t.surface.posted).toContainEqual(
+      expect.objectContaining({ type: 'surfaceState', attachmentEpoch: 1 }),
+    )
+    expect(t.surface.posted.some((message) => message.type === 'historyLoaded')).toBe(false)
+    await t.controller.handle({
+      type: 'attachImageData',
+      name: 'after-failed-restore.png',
+      mediaType: 'image/png',
+      base64: Buffer.from(PNG).toString('base64'),
+      requestId: 'after-failed-restore',
+      attachmentEpoch: 1,
+    })
+    expect(t.surface.posted).toContainEqual(
+      expect.objectContaining({ type: 'attachmentAdded', requestId: 'after-failed-restore' }),
+    )
+  })
+
   it('settles a browser file request when the backend cannot be reached', async () => {
     const t = setup({ beforeEnsureHost: () => Promise.reject(new Error('offline')) })
     await t.controller.handle({
@@ -1653,6 +1916,33 @@ describe('ConversationController: transcript actions (M4)', () => {
     // What the panel said is in the log too (M39).
     expect(t.log.error).toHaveBeenCalledWith(
       expect.stringMatching(/^Shown in the panel: .*missing/),
+    )
+  })
+
+  it('does not publish a held output page after account host stop', async () => {
+    const t = setup()
+    await t.send('a', 'Start A')
+    t.server.silence('item/readOutput')
+    const reading = t.controller.handle({
+      type: 'readOutput',
+      itemId: 'private-a',
+      outputRef: 'a',
+      offsetBytes: 0,
+    })
+    await vi.waitFor(() => {
+      expect(t.server.requestsFor('item/readOutput')).toHaveLength(1)
+    })
+    const request = t.server.requestsFor('item/readOutput')[0]
+    if (request?.id === undefined) {
+      throw new Error('expected output request id')
+    }
+    await t.controller.backendStopping(true)
+    t.server.incoming.push(
+      `${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { content: 'A secret', encoding: 'utf8', mediaType: 'text/plain', offsetBytes: 0, byteLen: 8, eof: true } })}\n`,
+    )
+    await reading
+    expect(t.surface.posted).not.toContainEqual(
+      expect.objectContaining({ type: 'outputPage', content: 'A secret' }),
     )
   })
 
@@ -2005,10 +2295,18 @@ describe('ConversationController: other messages', () => {
   it('delegates sign-in, sign-out, retry and external links', async () => {
     const t = setup()
     await t.controller.handle({ type: 'signIn', method: 'apiKey' })
+    await t.controller.handle({ type: 'installMuseCode' })
+    await t.controller.handle({ type: 'cancelSignIn' })
     await t.controller.handle({ type: 'signOut' })
     await t.controller.handle({ type: 'retryBackend' })
     await t.controller.handle({ type: 'openExternal', url: 'https://example.invalid/' })
-    expect(t.auth.calls).toEqual(['signIn:apiKey', 'signOut', 'refresh'])
+    expect(t.auth.calls).toEqual([
+      'signIn:apiKey',
+      'installMuseCode',
+      'cancelSignIn',
+      'signOut',
+      'refresh',
+    ])
     expect(t.openExternal).toHaveBeenCalledWith('https://example.invalid/')
   })
 
@@ -2122,6 +2420,68 @@ function envelope(session: Record<string, unknown>, mode = 'inline') {
     pendingRequests: [],
     viewCursor: 'v:old:9',
   }
+}
+
+async function holdTurnCancel(t: ReturnType<typeof setup>) {
+  t.server.silence('turn/cancel')
+  const stopping = t.controller.backendStopping(true)
+  await vi.waitFor(() => {
+    expect(t.server.requestsFor('turn/cancel')).toHaveLength(1)
+  })
+  const request = t.server.requestsFor('turn/cancel')[0]
+  if (request?.id === undefined) {
+    throw new Error('expected held turn/cancel')
+  }
+  return { stopping, request }
+}
+
+function answerHeldCancel(
+  t: ReturnType<typeof setup>,
+  request: { id?: number | string; params?: Record<string, unknown> },
+): void {
+  if (request.id === undefined) {
+    throw new Error('expected held turn/cancel id')
+  }
+  t.server.incoming.push(
+    `${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { status: 'accepted', commandId: request.params?.['commandId'] } })}\n`,
+  )
+}
+
+async function holdViewGapRead(t: ReturnType<typeof setup>) {
+  t.server.handle('view/page', () => ({ events: [], nextCursor: null }))
+  t.server.silence('session/read')
+  t.server.notify('view/gap', { sessionId: 's1', after: 'v1', next: 'v2' })
+  return await waitForHeldSessionRead(t)
+}
+
+async function waitForHeldSessionRead(t: ReturnType<typeof setup>) {
+  await vi.waitFor(() => {
+    expect(t.server.requestsFor('session/read')).toHaveLength(1)
+  })
+  const read = t.server.requestsFor('session/read')[0]
+  if (read?.id === undefined) {
+    throw new Error('expected held session/read')
+  }
+  return read
+}
+
+function gapHistory(text: string) {
+  const base = envelope({ ...storedSession, sessionId: 's1' })
+  return {
+    ...base,
+    history: {
+      ...base.history,
+      items: [{ itemId: text, kind: 'agentMessage', status: 'completed', text }],
+    },
+  }
+}
+
+function accountBoundaryIndex(t: ReturnType<typeof setup>): number {
+  const index = t.surface.posted.findIndex(
+    (message) => message.type === 'conversationCleared' && message.accountBoundary === true,
+  )
+  expect(index).toBeGreaterThanOrEqual(0)
+  return index
 }
 
 /** The first readUsage answer of a host that has observed no window yet. */
@@ -2294,6 +2654,26 @@ async function completeFirstTurn(t: ReturnType<typeof withHistory>): Promise<voi
   await settle()
 }
 
+function holdNextModelList(t: ReturnType<typeof withHistory>) {
+  const gate = Promise.withResolvers<undefined>()
+  const listModels = t.host.listModels.bind(t.host)
+  const listing = vi.spyOn(t.host, 'listModels').mockImplementationOnce(async (sessionId) => {
+    await gate.promise
+    return await listModels(sessionId)
+  })
+  return {
+    waitBeforeHistory: async () => {
+      await vi.waitFor(() => {
+        expect(listing).toHaveBeenCalled()
+      })
+      expect(t.surface.posted.some((message) => message.type === 'historyLoaded')).toBe(false)
+    },
+    release: () => {
+      gate.resolve(undefined)
+    },
+  }
+}
+
 const historyLoaded = {
   type: 'historyLoaded',
   sessionId: 'old',
@@ -2381,6 +2761,167 @@ describe('ConversationController: account & usage (M8)', () => {
 })
 
 describe('ConversationController: session history (M6)', () => {
+  it('clears old account History rows when authentication ends its host', async () => {
+    const t = withHistory()
+    await t.controller.handle({ type: 'listSessions' })
+    expect(t.surface.posted.findLast((message) => message.type === 'sessionList')).toMatchObject({
+      sessions: [expect.objectContaining({ sessionId: 'old' }), expect.anything()],
+    })
+    await t.controller.backendStopping(true)
+    expect(t.surface.posted.findLast((message) => message.type === 'sessionList')).toMatchObject({
+      sessions: [],
+    })
+  })
+
+  it('does not restore the prior account image chip after ending its host', async () => {
+    const t = setup()
+    await attachPng(t)
+    await t.controller.backendStopping(true)
+    t.surface.posted.length = 0
+    t.controller.surfaceReady()
+    expect(t.surface.posted).not.toContainEqual(
+      expect.objectContaining({ type: 'attachmentAdded' }),
+    )
+  })
+
+  it('unsubscribes old host list events at account stop', async () => {
+    const t = withHistory()
+    await t.controller.handle({ type: 'listSessions' })
+    await t.controller.backendStopping(true)
+    const before = t.surface.posted.filter((message) => message.type === 'sessionList').length
+    t.server.notify('session/listChanged', {
+      session: { ...storedSession, sessionId: 'old-account-secret', title: 'A private title' },
+    })
+    await settle()
+    expect(t.surface.posted.filter((message) => message.type === 'sessionList')).toHaveLength(
+      before,
+    )
+  })
+
+  it('drops an old account History response that arrives after host stop', async () => {
+    const t = withHistory()
+    t.server.silence('session/list')
+    const listing = t.controller.handle({ type: 'listSessions' })
+    await vi.waitFor(() => {
+      expect(t.server.requestsFor('session/list')).toHaveLength(1)
+    })
+    const request = t.server.requestsFor('session/list')[0]
+    if (request?.id === undefined) {
+      throw new Error('expected a session/list request id')
+    }
+    await t.controller.backendStopping(true)
+    t.server.incoming.push(
+      `${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { sessions: [storedSession], nextCursor: null } })}\n`,
+    )
+    await listing
+    expect(t.surface.posted.findLast((message) => message.type === 'sessionList')).toMatchObject({
+      sessions: [],
+    })
+  })
+
+  it('drops a resumed old account session whose answer arrives after host stop', async () => {
+    const t = withHistory()
+    t.server.silence('session/resume')
+    const resuming = t.controller.handle({ type: 'resumeSession', sessionId: 'old' })
+    await vi.waitFor(() => {
+      expect(t.server.requestsFor('session/resume')).toHaveLength(1)
+    })
+    const request = t.server.requestsFor('session/resume')[0]
+    if (request?.id === undefined) {
+      throw new Error('expected resume request id')
+    }
+    await t.controller.backendStopping(true)
+    t.server.incoming.push(
+      `${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: envelope({ ...storedSession, sessionId: 'old', name: 'A private session' }) })}\n`,
+    )
+    await resuming
+    expect(t.surface.posted).not.toContainEqual(
+      expect.objectContaining({ type: 'historyLoaded', sessionId: 'old' }),
+    )
+  })
+
+  it('does not restore an old rewind draft after account stop begins', async () => {
+    const t = withHistory()
+    await t.send('first', 'First A turn')
+    t.finishTurn()
+    await settle()
+    t.server.handle('turn/start', (params) => ({
+      turnId: 't2',
+      status: 'accepted',
+      disposition: 'started',
+      startedNewTurn: true,
+      commandId: params['commandId'],
+    }))
+    await t.send('current', 'Current A turn')
+    t.server.silence('session/read')
+    const rewinding = t.controller.handle({
+      type: 'rewindConversation',
+      sourceSessionId: 's1',
+      itemId: 'u1',
+      turnId: 't1',
+      text: 'Old prompt',
+      imageCount: 0,
+    })
+    const read = await waitForHeldSessionRead(t)
+    const { stopping, request } = await holdTurnCancel(t)
+    const boundary = accountBoundaryIndex(t)
+    t.server.incoming.push(
+      `${JSON.stringify({ jsonrpc: '2.0', id: read.id, result: envelope({ ...storedSession, sessionId: 's1' }) })}\n`,
+    )
+    await rewinding
+    expect(t.surface.posted.slice(boundary + 1)).not.toContainEqual({
+      type: 'restoreDraft',
+      text: 'Old prompt',
+    })
+    answerHeldCancel(t, request)
+    await stopping
+  })
+
+  it('does not open an old side fork returned after account stop', async () => {
+    const opened = vi.fn<(sessionId: string) => void>()
+    const t = withHistory({ openSideChat: opened })
+    await t.send('old', 'A prompt')
+    t.server.silence('session/fork')
+    const opening = t.controller.handle({ type: 'openSideChat', sourceSessionId: 's1' })
+    await vi.waitFor(() => {
+      expect(t.server.requestsFor('session/fork')).toHaveLength(1)
+    })
+    const fork = t.server.requestsFor('session/fork')[0]
+    if (fork?.id === undefined) {
+      throw new Error('expected held side fork')
+    }
+    const { stopping, request } = await holdTurnCancel(t)
+    t.server.incoming.push(
+      `${JSON.stringify({ jsonrpc: '2.0', id: fork.id, result: envelope({ ...storedSession, sessionId: 'side-a', sideChat: true }) })}\n`,
+    )
+    await opening
+    expect(opened).not.toHaveBeenCalled()
+    answerHeldCancel(t, request)
+    await stopping
+  })
+
+  it('drops an old adoption held while listing its session models', async () => {
+    const t = withHistory()
+    const listing = t.host.listModels.bind(t.host)
+    const entered = Promise.withResolvers<undefined>()
+    const release = Promise.withResolvers<undefined>()
+    vi.spyOn(t.host, 'listModels').mockImplementation(async (sessionId) => {
+      if (sessionId !== undefined) {
+        entered.resolve(undefined)
+        await release.promise
+      }
+      return await listing(sessionId)
+    })
+    const resuming = t.controller.handle({ type: 'resumeSession', sessionId: 'old' })
+    await entered.promise
+    await t.controller.backendStopping(true)
+    release.resolve(undefined)
+    await resuming
+    expect(t.surface.posted).not.toContainEqual(
+      expect.objectContaining({ type: 'historyLoaded', sessionId: 'old' }),
+    )
+  })
+
   it('lists the workspace sessions page by page and posts rows with the archived ids', async () => {
     const t = withHistory({ archivedIds: ['page2'] })
     await t.controller.handle({ type: 'listSessions' })
@@ -2454,6 +2995,7 @@ describe('ConversationController: session history (M6)', () => {
     })
     expect(t.surface.posted).toEqual([
       modelList,
+      { type: 'modelList', models: [] },
       { ...historyLoaded },
       { type: 'notice', level: 'info', text: 'Resumed Old prompt' },
       { type: 'sessionInfo', modelId: 'muse-spark-1.2', sessionId: 'old' },
@@ -2525,7 +3067,8 @@ describe('ConversationController: session history (M6)', () => {
       sessionId: 's1',
       cutPoint: { lastTurnId: 't1' },
     })
-    expect(t.surface.posted[0]).toEqual({ ...historyLoaded, sessionId: 'forked' })
+    expect(t.surface.posted).toContainEqual({ type: 'modelList', models: [] })
+    expect(t.surface.posted).toContainEqual({ ...historyLoaded, sessionId: 'forked' })
     expect(t.surface.posted).toContainEqual({
       type: 'notice',
       level: 'info',
@@ -3071,6 +3614,28 @@ describe('ConversationController: session history (M6)', () => {
     })
   })
 
+  it('drops a rename reply held past account sign-out', async () => {
+    const t = withHistory()
+    await t.send('old', 'A prompt')
+    t.server.silence('session/rename')
+    const naming = t.controller.handle({ type: 'renameSession', name: 'A private title' })
+    await vi.waitFor(() => {
+      expect(t.server.requestsFor('session/rename')).toHaveLength(1)
+    })
+    const request = t.server.requestsFor('session/rename')[0]
+    if (request?.id === undefined) {
+      throw new Error('expected session/rename id')
+    }
+    await t.controller.backendStopping(true)
+    const boundary = accountBoundaryIndex(t)
+    t.server.incoming.push(
+      `${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { status: 'accepted', commandId: request.params?.['commandId'], name: 'A private title (canonical)' } })}\n`,
+    )
+    await naming
+    expect(JSON.stringify(t.surface.posted.slice(boundary + 1))).not.toContain('A private title')
+    expect(t.surface.setTitle).not.toHaveBeenCalledWith('A private title (canonical)')
+  })
+
   it('archives and unarchives in workspace memory and re-posts the rows', async () => {
     const t = withHistory({ archivedIds: ['a'] })
     await t.controller.handle({ type: 'setSessionArchived', sessionId: 'b', isArchived: true })
@@ -3142,6 +3707,27 @@ describe('ConversationController: session history (M6)', () => {
       level: 'warning',
       text: 'Could not read the agent’s transcript: unknown session',
     })
+  })
+
+  it('does not publish a held child transcript after account stop', async () => {
+    const t = withHistory()
+    t.server.silence('session/read')
+    const reading = t.controller.handle({ type: 'readChildSession', sessionId: 'child-a' })
+    await vi.waitFor(() => {
+      expect(t.server.requestsFor('session/read')).toHaveLength(1)
+    })
+    const request = t.server.requestsFor('session/read')[0]
+    if (request?.id === undefined) {
+      throw new Error('expected child read id')
+    }
+    await t.controller.backendStopping(true)
+    t.server.incoming.push(
+      `${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: envelope({ ...storedSession, sessionId: 'child-a', name: 'A private child' }) })}\n`,
+    )
+    await reading
+    expect(t.surface.posted).not.toContainEqual(
+      expect.objectContaining({ type: 'childTranscript', sessionId: 'child-a' }),
+    )
   })
 
   it('exports the conversation as Markdown or Muse Code’s session log (M30)', async () => {
@@ -3466,6 +4052,35 @@ describe('ConversationController (M15)', () => {
     ])
   })
 
+  it('does not open old stored output after account stop begins', async () => {
+    const t = setup()
+    await t.send('old', 'A prompt')
+    t.server.silence('item/readOutput')
+    const opening = t.controller.handle({
+      type: 'openOutput',
+      itemId: 'old-tool',
+      label: 'Read',
+      text: 'A inline copy',
+      outputRef: 'old-ref',
+    })
+    await vi.waitFor(() => {
+      expect(t.server.requestsFor('item/readOutput')).toHaveLength(1)
+    })
+    const read = t.server.requestsFor('item/readOutput')[0]
+    if (read?.id === undefined) {
+      throw new Error('expected held output read')
+    }
+    const { stopping, request } = await holdTurnCancel(t)
+    t.server.incoming.push(
+      `${JSON.stringify({ jsonrpc: '2.0', id: read.id, result: { content: 'A private patch', encoding: 'utf8', mediaType: 'text/plain', offsetBytes: 0, byteLen: 15, eof: true } })}\n`,
+    )
+    await opening
+    expect(JSON.stringify(t.opened)).not.toContain('A private patch')
+    expect(JSON.stringify(t.opened)).not.toContain('A inline copy')
+    answerHeldCancel(t, request)
+    await stopping
+  })
+
   it('reports an approval decision the CLI could not record as a warning, not a refusal', async () => {
     const t = setup()
     await t.send('l1', 'hi')
@@ -3617,6 +4232,20 @@ describe('ConversationController chat references (M17)', () => {
 })
 
 describe('ConversationController subagent controls (M18, M48)', () => {
+  it('refuses a paid child follow-up in another panel as sign-out begins', async () => {
+    const t = setup()
+    await t.send('l1', 'hi')
+    t.auth.snapshot = { status: 'error', detail: UI_TEXT.signOutPending }
+    t.server.handle('subagent/followupTask', () => ({ status: 'accepted' }))
+    await t.controller.handle({
+      type: 'subagentMessage',
+      subagentId: 'sub-1',
+      body: 'continue paid work',
+      isFollowup: true,
+    })
+    expect(t.server.requestsFor('subagent/followupTask')).toEqual([])
+  })
+
   it('relays owner controls and notes to the session and reports a refusal', async () => {
     const t = setup()
     await t.send('l1', 'hi')
@@ -3722,6 +4351,7 @@ function modelApiController(
     personalSkillsRoot: undefined,
     isWorkspaceTrusted: () => true,
     describeEnvironment: () => Promise.resolve({ git: undefined }),
+    getAccountId: () => Promise.resolve(FAKE_MODEL_API_ACCOUNT_ID),
     ...disabledPaidFeatures,
     memory: undefined,
   })
@@ -4174,6 +4804,247 @@ describe('ConversationController: permission hardening (D24)', () => {
 })
 
 describe('ConversationController: lifecycle (D25)', () => {
+  it('reloads model choices after a same-kind account change', async () => {
+    const t = setup()
+    await t.send('before', 'first')
+    await t.controller.backendStopping(true)
+    t.server.handle('model/list', () => ({
+      providerId: 'meta',
+      profileId: null,
+      source: 'catalog',
+      models: [
+        {
+          modelId: 'muse-spark-1.3',
+          displayLabel: 'New account model',
+          contextLimit: 1_007_997,
+          isDefault: true,
+        },
+      ],
+    }))
+    await t.send('after', 'second')
+    expect(t.server.requestsFor('model/list')).toHaveLength(2)
+    expect(t.surface.posted.findLast((message) => message.type === 'modelList')).toMatchObject({
+      models: [{ displayLabel: 'New account model' }],
+    })
+  })
+
+  it('ignores an old model catalogue that resolves after a new session starts', async () => {
+    const t = setup()
+    t.server.silence('model/list')
+    const oldSend = t.send('old-models', 'Old prompt')
+    await vi.waitFor(() => {
+      expect(t.server.requestsFor('model/list')).toHaveLength(1)
+    })
+    await t.controller.backendStopping(true)
+    const freshSend = t.send('fresh-models', 'Fresh prompt')
+    await vi.waitFor(() => {
+      expect(t.server.requestsFor('model/list')).toHaveLength(2)
+    })
+    const reads = t.server.requestsFor('model/list')
+    const respond = (index: number, label: string) => {
+      t.server.incoming.push(
+        `${JSON.stringify({
+          jsonrpc: '2.0',
+          id: reads[index]?.id,
+          result: {
+            providerId: 'meta',
+            profileId: null,
+            source: 'catalog',
+            models: [
+              {
+                modelId: 'muse-spark-1.3',
+                displayLabel: label,
+                contextLimit: 1_007_997,
+                isDefault: true,
+              },
+            ],
+          },
+        })}\n`,
+      )
+    }
+    respond(1, 'Fresh account model')
+    await freshSend
+    respond(0, 'Old account model')
+    await oldSend
+    await settle()
+    expect(t.surface.posted.findLast((message) => message.type === 'modelList')).toMatchObject({
+      models: [{ displayLabel: 'Fresh account model' }],
+    })
+    expect(t.surface.posted).not.toContainEqual(
+      expect.objectContaining({ type: 'turnAccepted', localId: 'old-models' }),
+    )
+  })
+
+  it('ignores an old skill list that resolves after a new session attaches', async () => {
+    const t = setup()
+    t.server.silence('skill/list')
+    await t.send('before', 'first')
+    await vi.waitFor(() => {
+      expect(t.server.requestsFor('skill/list')).toHaveLength(1)
+    })
+    const oldRead = t.server.requestsFor('skill/list')[0]
+    await t.controller.backendStopping(true)
+    await t.send('after', 'second')
+    await settle()
+    const reads = t.server.requestsFor('skill/list')
+    const newer = reads[1]
+    const respond = (id: number | string | undefined, selector: string) => {
+      t.server.incoming.push(
+        `${JSON.stringify({
+          jsonrpc: '2.0',
+          id,
+          result: {
+            skills: [
+              {
+                selector,
+                displayName: selector,
+                description: 'A skill',
+                argumentHint: '',
+                source: 'project',
+              },
+            ],
+          },
+        })}\n`,
+      )
+    }
+    if (newer !== undefined) {
+      respond(newer.id, 'new-account-skill')
+      await settle()
+    }
+    respond(oldRead?.id, 'old-private-skill')
+    await settle()
+    expect(reads).toHaveLength(2)
+    expect(t.surface.posted.findLast((message) => message.type === 'skillList')).toMatchObject({
+      skills: [{ selector: 'new-account-skill' }],
+    })
+  })
+
+  it('does not start old skill loading after attach effort crosses sign-out', async () => {
+    const t = setup()
+    t.server.silence('session/setReasoningEffort')
+    const oldSend = t.send('old-effort', 'Old prompt')
+    await vi.waitFor(() => {
+      expect(t.server.requestsFor('session/setReasoningEffort')).toHaveLength(1)
+    })
+    await t.controller.backendStopping(true)
+    const freshSend = t.send('fresh-effort', 'Fresh prompt')
+    await vi.waitFor(() => {
+      expect(t.server.requestsFor('session/setReasoningEffort')).toHaveLength(2)
+    })
+    const efforts = t.server.requestsFor('session/setReasoningEffort')
+    const respond = (index: number) => {
+      const request = efforts[index]
+      t.server.incoming.push(
+        `${JSON.stringify({
+          jsonrpc: '2.0',
+          id: request?.id,
+          result: { status: 'accepted', commandId: request?.params?.['commandId'] },
+        })}\n`,
+      )
+    }
+    respond(1)
+    await freshSend
+    await settle()
+    respond(0)
+    await oldSend
+    await settle()
+    expect(t.server.requestsFor('skill/list')).toHaveLength(1)
+    expect(t.surface.posted.findLast((message) => message.type === 'skillList')).toMatchObject({
+      skills: [{ selector: 'fix-bug' }],
+    })
+    expect(t.surface.posted).not.toContainEqual(
+      expect.objectContaining({ type: 'turnAccepted', localId: 'old-effort' }),
+    )
+  })
+
+  it('drops a send whose first session opening spans same-kind sign-out and sign-in', async () => {
+    const pendingHost = setupWithDeferredHost()
+    const t = pendingHost.t
+    await attachPng(t)
+    pendingHost.delay()
+    const oldSend = t.send('old-account', 'Private old prompt', ['att-1'])
+    await vi.waitFor(() => {
+      expect(pendingHost.isWaiting()).toBe(true)
+    })
+    t.auth.snapshot = { status: 'signedOut', detail: undefined }
+    await t.controller.backendStopping(true)
+    t.auth.snapshot = { status: 'signedIn', detail: undefined }
+    pendingHost.allowOtherRequests()
+    const freshSend = t.send('new-account', 'Fresh prompt')
+    pendingHost.release()
+    await Promise.all([oldSend, freshSend])
+    expect(t.surface.posted).not.toContainEqual(
+      expect.objectContaining({ type: 'turnAccepted', localId: 'old-account' }),
+    )
+    expect(t.surface.posted).toContainEqual(
+      expect.objectContaining({
+        type: 'sendFailed',
+        localId: 'old-account',
+        attachmentsKept: true,
+      }),
+    )
+    expect(t.surface.posted).toContainEqual(
+      expect.objectContaining({ type: 'turnAccepted', localId: 'new-account' }),
+    )
+    expect(t.server.requestsFor('turn/start')).toHaveLength(1)
+  })
+
+  it('does not charge a new Model API account for a send held before session opening', async () => {
+    const t = setup()
+    let nextId = 0
+    const { api, host: modelHost } = modelApiController(t, {
+      newId: () => `id${String(++nextId)}`,
+    })
+    const opening = Promise.withResolvers<AgentHost>()
+    let isHeld = false
+    const ensureHost = vi.fn(() =>
+      isHeld ? opening.promise : Promise.resolve<AgentHost>(modelHost),
+    )
+    const controller = new ConversationController({ ...t.deps, ensureHost })
+    await attachPng({ controller })
+    const added = t.surface.posted.findLast((message) => message.type === 'attachmentAdded')
+    if (added?.type !== 'attachmentAdded') {
+      throw new TypeError('expected image chip')
+    }
+    const priorLookups = ensureHost.mock.calls.length
+    isHeld = true
+    const oldSend = controller.handle({
+      type: 'sendMessage',
+      localId: 'old-key',
+      text: 'Private old prompt',
+      attachmentIds: [added.attachment.id],
+    })
+    await vi.waitFor(() => {
+      expect(ensureHost.mock.calls.length).toBeGreaterThan(priorLookups)
+    })
+    t.auth.snapshot = { status: 'signedOut', detail: undefined }
+    await controller.backendStopping(true)
+    t.auth.snapshot = { status: 'signedIn', detail: undefined }
+    isHeld = false
+    api.script({ text: 'Fresh reply' })
+    const freshSend = controller.handle({
+      type: 'sendMessage',
+      localId: 'new-key',
+      text: 'Fresh prompt',
+      attachmentIds: [],
+    })
+    opening.resolve(modelHost)
+    await Promise.all([oldSend, freshSend])
+    await vi.waitFor(() => {
+      expect(api.responseBodies()).toHaveLength(1)
+    })
+    const input = JSON.stringify(api.responseBodies()[0]?.['input'])
+    expect(input).toContain('Fresh prompt')
+    expect(input).not.toContain('Private old prompt')
+    expect(input).not.toContain(Buffer.from(PNG).toString('base64'))
+    expect(t.surface.posted).toContainEqual(
+      expect.objectContaining({ type: 'sendFailed', localId: 'old-key', attachmentsKept: true }),
+    )
+    expect(t.surface.posted).toContainEqual(
+      expect.objectContaining({ type: 'turnAccepted', localId: 'new-key' }),
+    )
+  })
+
   it('ignores a turn ack from a dropped session and keeps its image chip', async () => {
     const t = setup()
     await attachPng(t)
@@ -4260,6 +5131,87 @@ describe('ConversationController: lifecycle (D25)', () => {
     expect(t.surface.posted).toContainEqual(
       expect.objectContaining({ type: 'turnAccepted', localId: 'fresh-muse-send' }),
     )
+  })
+
+  it('starts the next send on newly selected Muse Code after installer retirement', async () => {
+    const t = setup()
+    const { api, host: modelHost } = modelApiController(t)
+    let selectedHost: AgentHost = modelHost
+    const controller = new ConversationController({
+      ...t.deps,
+      ensureHost: () => Promise.resolve(selectedHost),
+    })
+    api.script({ text: 'A reply' })
+    await controller.handle({
+      type: 'sendMessage',
+      localId: 'model-a',
+      text: 'A prompt',
+      attachmentIds: [],
+    })
+    await vi.waitFor(() => {
+      expect(api.responseBodies()).toHaveLength(1)
+    })
+    await controller.backendStopping(true)
+    selectedHost = t.host
+    await controller.handle({
+      type: 'sendMessage',
+      localId: 'cli-b',
+      text: 'Fresh CLI prompt',
+      attachmentIds: [],
+    })
+    expect(t.server.requestsFor('session/start')).toHaveLength(1)
+    expect(t.server.requestsFor('turn/start')).toHaveLength(1)
+    expect(t.surface.posted).toContainEqual(
+      expect.objectContaining({ type: 'turnAccepted', localId: 'cli-b' }),
+    )
+  })
+
+  it('drops late private output while a sign-out waits for turn cancellation', async () => {
+    const t = setup()
+    await t.send('old', 'Start account A')
+    const { stopping, request } = await holdTurnCancel(t)
+    const boundary = accountBoundaryIndex(t)
+    t.server.notify('item/completed', {
+      sessionId: 's1',
+      item: {
+        itemId: 'private-a',
+        kind: 'agentMessage',
+        status: 'completed',
+        turnId: 't1',
+        text: 'Private old answer',
+      },
+    })
+    await settle()
+    expect(JSON.stringify(t.surface.posted.slice(boundary + 1))).not.toContain('Private old answer')
+    answerHeldCancel(t, request)
+    await stopping
+    expect(agentEvents(t)).toContainEqual(
+      expect.objectContaining({ type: 'turnCompleted', terminal: 'cancelled' }),
+    )
+  })
+
+  it('refuses new session and paid actions while auth admission is closed', async () => {
+    const t = setup()
+    await t.send('old', 'A prompt')
+    const requestCount = t.server.requests.length
+    t.auth.isAdmitted = false
+    expect(t.auth.snapshot.status).toBe('signedIn')
+    await t.controller.handle({ type: 'compact' })
+    await t.controller.handle({
+      type: 'goalCommand',
+      requestId: 'goal-a',
+      verb: 'set',
+      objective: 'Continue A',
+    })
+    await t.controller.handle({ type: 'subagentControl', subagentId: 'child-a', action: 'stop' })
+    await t.controller.handle({ type: 'runUserShell', command: 'echo old' })
+    await t.controller.handle({ type: 'scheduleRun', id: 'job-a', occurrenceMs: NOW })
+    expect(t.server.requests).toHaveLength(requestCount)
+    expect(t.surface.posted).toContainEqual({
+      type: 'notice',
+      level: 'warning',
+      text: UI_TEXT.notSignedInReason,
+    })
   })
 
   it('cancels the running turn before a restart and resumes the session on the next message', async () => {
@@ -4525,6 +5477,67 @@ describe('ConversationController: protocol semantics (D26)', () => {
       sessionId: 's1',
       canEditSessions: false,
     })
+  })
+
+  it('drops a held view-gap history read while account stop waits for cancellation', async () => {
+    const t = setup()
+    await t.send('old', 'Account A turn')
+    const read = await holdViewGapRead(t)
+    const { stopping, request } = await holdTurnCancel(t)
+    const boundary = accountBoundaryIndex(t)
+    t.server.incoming.push(
+      `${JSON.stringify({ jsonrpc: '2.0', id: read.id, result: gapHistory('Private old gap answer') })}\n`,
+    )
+    await settle()
+    expect(JSON.stringify(t.surface.posted.slice(boundary + 1))).not.toContain(
+      'Private old gap answer',
+    )
+    answerHeldCancel(t, request)
+    await stopping
+  })
+
+  it('does not report an old view-gap read error after account stop', async () => {
+    const t = setup()
+    await t.send('old', 'Account A turn')
+    const read = await holdViewGapRead(t)
+    await t.controller.backendStopping(true)
+    t.server.incoming.push(
+      `${JSON.stringify({ jsonrpc: '2.0', id: read.id, error: { code: -32_000, message: 'old account log locked', data: { kind: 'commandRejected' } } })}\n`,
+    )
+    await settle()
+    expect(t.surface.posted).not.toContainEqual(
+      expect.objectContaining({
+        type: 'notice',
+        text: expect.stringContaining('old account log locked'),
+      }),
+    )
+  })
+
+  it('loads a new account gap while the old account gap read is still pending', async () => {
+    const t = setup()
+    await t.send('old', 'A prompt')
+    const oldRead = await holdViewGapRead(t)
+    await t.controller.backendStopping(true)
+    await t.send('new', 'B prompt')
+    t.server.notify('view/gap', { sessionId: 's1', after: 'v3', next: 'v4' })
+    await vi.waitFor(() => {
+      expect(t.server.requestsFor('session/read')).toHaveLength(2)
+    })
+    const newRead = t.server.requestsFor('session/read')[1]
+    if (newRead?.id === undefined) {
+      throw new Error('expected both held history reads')
+    }
+    t.server.incoming.push(
+      `${JSON.stringify({ jsonrpc: '2.0', id: newRead.id, result: gapHistory('B current history') })}\n`,
+    )
+    await vi.waitFor(() => {
+      expect(JSON.stringify(t.surface.posted)).toContain('B current history')
+    })
+    t.server.incoming.push(
+      `${JSON.stringify({ jsonrpc: '2.0', id: oldRead.id, result: gapHistory('A private history') })}\n`,
+    )
+    await settle()
+    expect(JSON.stringify(t.surface.posted)).not.toContain('A private history')
   })
 
   it('reloads the transcript after a delivery gap, once more for a gap during the read', async () => {
@@ -4802,6 +5815,7 @@ describe('ConversationController: protocol semantics (D26)', () => {
     t.controller.surfaceReady()
     expect(t.surface.posted[0]).toEqual({
       type: 'surfaceState',
+      attachmentEpoch: 1,
       sessionId: 'old',
       activeTurnId: 'tr',
     })
@@ -5004,6 +6018,18 @@ describe('ConversationController: Muse Voice turned off mid-recording (the revie
 })
 
 describe('ConversationController: a tool row’s picture (M43)', () => {
+  it('drops a held old-account picture after backend stop', async () => {
+    const image = Promise.withResolvers<{ ok: true; dataUri: string }>()
+    const t = setup({ readToolImage: () => image.promise })
+    const reading = t.controller.handle({ type: 'readToolImage', itemId: 'a-image', path: 'a.png' })
+    await t.controller.backendStopping(true)
+    image.resolve({ ok: true, dataUri: 'data:image/png;base64,AA' })
+    await reading
+    expect(t.surface.posted).not.toContainEqual(
+      expect.objectContaining({ type: 'toolImage', itemId: 'a-image' }),
+    )
+  })
+
   it('answers with the picture as a data URI, or with why it cannot be shown', async () => {
     const asked: string[] = []
     const t = setup({
@@ -5755,6 +6781,28 @@ describe('ConversationController: scheduled prompts (M52)', () => {
     expect(latestSchedules()).toMatchObject({
       event: { jobs: [expect.objectContaining({ prompt: 'Private old-account prompt' })] },
     })
+    const [accountJob] = await scheduleStore.list(sessionId)
+    if (accountJob === undefined) {
+      throw new Error('expected account-bound scheduled job')
+    }
+    clock.now = accountJob.nextFireAtMs + 1
+    const admissionConfirmation = Promise.withResolvers<boolean>()
+    confirm.mockImplementationOnce(() => admissionConfirmation.promise)
+    const awaitingAdmission = controller.handle({
+      type: 'scheduleRun',
+      id: accountJob.id,
+      occurrenceMs: accountJob.nextFireAtMs,
+    })
+    await vi.waitFor(() => {
+      expect(confirm).toHaveBeenCalledTimes(7)
+    })
+    t.auth.isAdmitted = false
+    admissionConfirmation.resolve(true)
+    await awaitingAdmission
+    expect(api.responseBodies()).toHaveLength(1)
+    const stillPending = await scheduleStore.list(sessionId)
+    expect(stillPending[0]?.fireCount).toBe(0)
+    t.auth.isAdmitted = true
     await controller.backendStopping(false)
     expect(latestSchedules()).toMatchObject({ event: { jobs: [] } })
     controller.dispose()

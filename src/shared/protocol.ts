@@ -81,6 +81,7 @@ export type SettingsSnapshot = z.infer<typeof settingsSnapshotSchema>
 export const AUTH_STATUSES = [
   'checking',
   'noCli',
+  'installing',
   'signedOut',
   'signingIn',
   'signedIn',
@@ -196,7 +197,7 @@ const composerStateSchema = z.object({
 
 const webviewToHostMessageSchema = z.discriminatedUnion('type', [
   // Sent once when the React app has mounted and is listening for messages.
-  z.object({ type: z.literal('ready') }),
+  z.object({ type: z.literal('ready'), attachmentEpoch: z.optional(z.number()) }),
   // The composer gained or lost keyboard focus; drives the
   // `museSpark.inputFocused` context key behind Ctrl+Esc.
   z.object({ type: z.literal('inputFocusChanged'), focused: z.boolean() }),
@@ -227,6 +228,8 @@ const webviewToHostMessageSchema = z.discriminatedUnion('type', [
   // The user pressed Stop.
   z.object({ type: z.literal('cancelTurn') }),
   z.object({ type: z.literal('signIn'), method: z.enum(SIGN_IN_METHODS) }),
+  z.object({ type: z.literal('installMuseCode') }),
+  z.object({ type: z.literal('cancelSignIn') }),
   z.object({ type: z.literal('signOut') }),
   // Re-check for the CLI / restart the backend after an error.
   z.object({ type: z.literal('retryBackend') }),
@@ -360,6 +363,7 @@ const webviewToHostMessageSchema = z.discriminatedUnion('type', [
     lastTurnId: z.optional(z.string()),
     text: z.string(),
     imageCount: z.number(),
+    attachmentEpoch: z.optional(z.number()),
   }),
   // Session history (M6).
   z.object({ type: z.literal('listSessions') }),
@@ -378,14 +382,22 @@ const webviewToHostMessageSchema = z.discriminatedUnion('type', [
     body: z.string(),
     isFollowup: z.boolean(),
   }),
-  z.object({ type: z.literal('resumeSession'), sessionId: z.string() }),
+  z.object({
+    type: z.literal('resumeSession'),
+    sessionId: z.string(),
+    attachmentEpoch: z.optional(z.number()),
+  }),
   z.object({
     type: z.literal('setSessionArchived'),
     sessionId: z.string(),
     isArchived: z.boolean(),
   }),
   /** Fork the current session through `lastTurnId` (all turns when absent). */
-  z.object({ type: z.literal('forkSession'), lastTurnId: z.optional(z.string()) }),
+  z.object({
+    type: z.literal('forkSession'),
+    lastTurnId: z.optional(z.string()),
+    attachmentEpoch: z.optional(z.number()),
+  }),
   z.object({
     type: z.literal('openSideChat'),
     sourceSessionId: z.string().check(z.minLength(1)),
@@ -422,7 +434,7 @@ const hostToWebviewMessageSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('focusInput') }),
   // The host dropped this surface's conversation (M25): New Conversation
   // from a keybinding, or the echo of the webview's own clear.
-  z.object({ type: z.literal('conversationCleared') }),
+  z.object({ type: z.literal('conversationCleared'), accountBoundary: z.optional(z.boolean()) }),
   // Sent first on every `ready` (M25): the session and turn the host holds
   // for this surface, so a reloaded webview keeps the transcript it saved
   // only when that conversation is still the live one.
@@ -430,6 +442,8 @@ const hostToWebviewMessageSchema = z.discriminatedUnion('type', [
     type: z.literal('surfaceState'),
     sessionId: z.optional(z.string()),
     activeTurnId: z.optional(z.string()),
+    /** The host's monotonic browser-file guard; older saved webviews raise their epoch. */
+    attachmentEpoch: z.optional(z.number()),
   }),
   // Insert text at the composer caret (Alt+K mention reference).
   z.object({ type: z.literal('insertText'), text: z.string() }),
@@ -448,6 +462,12 @@ const hostToWebviewMessageSchema = z.discriminatedUnion('type', [
     backend: z.optional(z.enum(BACKEND_KINDS)),
     /** The sign-in paths the gate offers; both when absent. */
     methods: z.optional(z.array(z.enum(SIGN_IN_METHODS))),
+    verificationUrl: z.optional(z.url()),
+    userCode: z.optional(z.string()),
+    installCommand: z.optional(z.string()),
+    hasCli: z.optional(z.boolean()),
+    hasCliSession: z.optional(z.boolean()),
+    installState: z.optional(z.enum(['running', 'failed'])),
   }),
   // The active session's model (shown in the composer pill) and identity.
   z.object({

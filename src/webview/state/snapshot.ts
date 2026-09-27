@@ -45,6 +45,8 @@ const webviewStateSchema = z.object({
   /** What the host resumes after a window reload (D15, `parsePersistedState`). */
   sessionId: z.optional(z.string()),
   sideChat: z.optional(z.boolean()),
+  /** Browser-file epoch survives document reload even when transcript storage is omitted. */
+  attachmentEpoch: z.optional(z.number()),
   /** The conversation as shown, validated separately so a stale shape loses only itself. */
   snapshot: z.optional(z.unknown()),
   /** The session whose transcript was too long to save (WEBVIEW_STATE_MAX_CHARS). */
@@ -88,6 +90,7 @@ export function webviewStateOf(
   const base: WebviewState = {
     ...(sessionId !== undefined && { sessionId }),
     ...(state.isSideChat && { sideChat: true }),
+    ...(state.attachmentEpoch > 0 && { attachmentEpoch: state.attachmentEpoch }),
   }
   if (!isTranscriptKept) {
     return base
@@ -119,11 +122,12 @@ export function restoredUiState(raw: unknown): UiState {
   if (!persisted.success) {
     return initialUiState
   }
-  const { sessionId, snapshot, omittedSessionId, sideChat } = persisted.data
+  const { sessionId, snapshot, omittedSessionId, sideChat, attachmentEpoch } = persisted.data
   const base: UiState = {
     ...initialUiState,
     restoredSessionId: sessionId,
     isSideChat: sideChat === true,
+    attachmentEpoch: attachmentEpoch ?? 0,
   }
   const parsed = snapshotSchema.safeParse(snapshot)
   // A valid snapshot for another session must not supply history details here.

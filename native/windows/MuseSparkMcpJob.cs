@@ -1,8 +1,7 @@
-// The binary-safe Windows MCP launcher (M50): source compiled into its own
-// console executable and M27's separate DLL. Its process and job handles own
-// the server and every descendant from before the first instruction runs.
-export const MCP_JOB_SOURCE = String.raw`
-
+// The Win32 half of the Windows MCP stdio launcher (M50) and of the shell
+// job helper (M27), shipped beside the extension and compiled on first use
+// (PLAN.md D6: kept out of the host bundle). C# 5, which Windows PowerShell
+// 5.1's Add-Type compiles.
 public static class MuseSparkMcpJob {
   [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
   struct STARTUPINFO {
@@ -244,5 +243,3 @@ public static class MuseSparkMcpJob {
     }
   }
 }
-
-`

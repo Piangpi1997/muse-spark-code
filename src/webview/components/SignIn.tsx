@@ -4,13 +4,23 @@
 
 import { MUSE_INSTALL_URL, UI_TEXT } from '../../shared/constants'
 import type { AuthStatus, SignInMethod } from '../../shared/protocol'
+import { useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
+import { Modal } from './Modal'
 
 export interface SignInProps {
   readonly status: AuthStatus
   readonly detail: string | undefined
   /** The paths to offer; both when the host has not said (M7). */
   readonly methods?: readonly SignInMethod[] | undefined
+  readonly verificationUrl?: string | undefined
+  readonly userCode?: string | undefined
+  readonly installCommand?: string | undefined
+  readonly withTranscript?: boolean | undefined
   readonly onSignIn: (method: SignInMethod) => void
+  readonly onInstall: () => void
+  readonly onInstallConfirmationChange?: ((isOpen: boolean) => void) | undefined
+  readonly onCancelSignIn: () => void
   readonly onRetry: () => void
   readonly onOpenExternal: (url: string) => void
 }
@@ -21,10 +31,30 @@ export function SignIn({
   status,
   detail,
   methods = ALL_METHODS,
+  verificationUrl,
+  userCode,
+  installCommand,
+  withTranscript = false,
   onSignIn,
+  onInstall,
+  onInstallConfirmationChange,
+  onCancelSignIn,
   onRetry,
   onOpenExternal,
 }: SignInProps) {
+  const [confirmInstall, setConfirmInstall] = useState(false)
+  const installButton = useRef<HTMLButtonElement>(null)
+  const confirmOpenRef = useRef(false)
+  useEffect(() => {
+    onInstallConfirmationChange?.(confirmInstall)
+    if (!confirmInstall && status === 'noCli' && confirmOpenRef.current) {
+      installButton.current?.focus()
+    }
+    confirmOpenRef.current = confirmInstall
+    return () => {
+      onInstallConfirmationChange?.(false)
+    }
+  }, [confirmInstall, onInstallConfirmationChange, status])
   const hasBrowser = methods.includes('browser')
   const hasApiKey = methods.includes('apiKey')
   const apiKeyButton = hasApiKey ? (
@@ -42,30 +72,92 @@ export function SignIn({
     </>
   ) : null
 
-  if (status === 'noCli') {
+  if (status === 'noCli' || status === 'installing') {
     return (
-      <section className="gate" aria-labelledby="gate-title">
+      <section
+        className={withTranscript ? 'gate gate-with-transcript' : 'gate'}
+        aria-labelledby="gate-title"
+      >
         <h2 id="gate-title" className="gate-title">
           {UI_TEXT.installTitle}
         </h2>
         <p className="gate-detail">
           {hasApiKey ? UI_TEXT.installOrKeyDetail : UI_TEXT.installDetail}
         </p>
-        {detail === undefined ? null : <p className="gate-diagnostic">{detail}</p>}
+        {status === 'installing' && (
+          <p className="gate-detail" role="status">
+            {UI_TEXT.installWaiting}
+          </p>
+        )}
+        {status !== 'installing' && detail !== undefined && (
+          <p className="gate-diagnostic">{detail}</p>
+        )}
+        {confirmInstall && installCommand !== undefined && status === 'noCli'
+          ? createPortal(
+              <Modal
+                title={UI_TEXT.installStartAction}
+                titleId="install-muse-code-title"
+                onClose={() => {
+                  setConfirmInstall(false)
+                }}
+              >
+                <div className="gate-install-confirm">
+                  <p>{UI_TEXT.installConfirmDetail}</p>
+                  <code className="gate-install-command">{installCommand}</code>
+                  <div className="gate-actions">
+                    <button
+                      type="button"
+                      className="button-primary"
+                      onClick={() => {
+                        setConfirmInstall(false)
+                        onInstall()
+                      }}
+                    >
+                      {UI_TEXT.installConfirmAction}
+                    </button>
+                    <button
+                      type="button"
+                      className="button-secondary"
+                      onClick={() => {
+                        setConfirmInstall(false)
+                      }}
+                    >
+                      {UI_TEXT.installCancelAction}
+                    </button>
+                  </div>
+                </div>
+              </Modal>,
+              document.body,
+            )
+          : null}
         <div className="gate-actions">
+          {installCommand !== undefined && status === 'noCli' && !confirmInstall ? (
+            <button
+              ref={installButton}
+              type="button"
+              className="button-primary"
+              onClick={() => {
+                setConfirmInstall(true)
+              }}
+            >
+              {UI_TEXT.installStartAction}
+            </button>
+          ) : null}
           <button
             type="button"
-            className="button-primary"
+            className="button-secondary"
             onClick={() => {
               onOpenExternal(MUSE_INSTALL_URL)
             }}
           >
             {UI_TEXT.installAction}
           </button>
-          <button type="button" className="button-secondary" onClick={onRetry}>
-            {UI_TEXT.retryAction}
-          </button>
-          {apiKeyButton}
+          {status === 'noCli' ? (
+            <button type="button" className="button-secondary" onClick={onRetry}>
+              {UI_TEXT.retryAction}
+            </button>
+          ) : null}
+          {status === 'noCli' ? apiKeyButton : null}
         </div>
       </section>
     )
@@ -73,19 +165,44 @@ export function SignIn({
 
   if (status === 'signingIn') {
     return (
-      <section className="gate" aria-live="polite">
-        <p className="gate-detail">{detail ?? UI_TEXT.signInWaiting}</p>
+      <section className={withTranscript ? 'gate gate-with-transcript' : 'gate'} aria-live="polite">
+        <p className="gate-detail">{detail ?? UI_TEXT.deviceCodeWaiting}</p>
+        {verificationUrl !== undefined && userCode !== undefined ? (
+          <>
+            <p className="gate-detail">{UI_TEXT.deviceCodePrompt}</p>
+            <code className="gate-device-code">{userCode}</code>
+          </>
+        ) : null}
+        <div className="gate-actions">
+          {verificationUrl === undefined || userCode === undefined ? null : (
+            <button
+              type="button"
+              className="button-primary"
+              onClick={() => {
+                onOpenExternal(verificationUrl)
+              }}
+            >
+              {UI_TEXT.deviceCodeOpenAction}
+            </button>
+          )}
+          <button type="button" className="button-secondary" onClick={onCancelSignIn}>
+            {UI_TEXT.deviceCodeCancelAction}
+          </button>
+        </div>
       </section>
     )
   }
 
   return (
-    <section className="gate" aria-labelledby="gate-title">
+    <section
+      className={withTranscript ? 'gate gate-with-transcript' : 'gate'}
+      aria-labelledby="gate-title"
+    >
       <h2 id="gate-title" className="gate-title">
         {UI_TEXT.signInTitle}
       </h2>
       {detail === undefined ? null : (
-        <p className="gate-diagnostic" role={status === 'error' ? 'alert' : undefined}>
+        <p className="gate-diagnostic" role={status === 'error' ? 'alert' : 'status'}>
           {detail}
         </p>
       )}

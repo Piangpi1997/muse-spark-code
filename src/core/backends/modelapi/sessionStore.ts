@@ -66,6 +66,8 @@ export interface StoredChild {
 export interface StoredSession {
   readonly version: typeof STORED_SESSION_VERSION
   readonly sessionId: string
+  /** SHA-256 digest of the owning Model API key; absent on legacy files. */
+  readonly accountId?: string
   readonly sideChat?: boolean
   readonly workspaceRoot: string
   readonly modelId: string
@@ -101,6 +103,7 @@ export interface StoredSession {
  */
 export interface StoredSessionHeader {
   readonly sessionId: string
+  readonly accountId?: string
   readonly sideChat?: boolean
   readonly workspaceRoot: string
   readonly name?: string
@@ -124,6 +127,7 @@ export interface SessionStore {
 export function headerOf(stored: StoredSession): StoredSessionHeader {
   return {
     sessionId: stored.sessionId,
+    ...(stored.accountId !== undefined && { accountId: stored.accountId }),
     ...(stored.sideChat === true && { sideChat: true }),
     workspaceRoot: stored.workspaceRoot,
     ...(stored.name !== undefined && { name: stored.name }),
@@ -179,6 +183,8 @@ const storedInputItemSchema = z.union([
 const storedSessionFields = {
   version: z.literal(STORED_SESSION_VERSION),
   sessionId: z.string(),
+  // Legacy sessions remain readable for retention, but are never admitted.
+  accountId: z.optional(z.string().check(z.regex(/^[a-f0-9]{64}$/))),
   sideChat: z.optional(z.boolean()),
   workspaceRoot: z.string(),
   modelId: z.string(),
@@ -253,6 +259,7 @@ export function parseStoredSession(raw: unknown): StoredSessionParse {
   }
   // Optional fields are absent in a StoredSession, never undefined.
   const {
+    accountId,
     name,
     forkedFrom,
     firstPrompt,
@@ -294,6 +301,7 @@ export function parseStoredSession(raw: unknown): StoredSessionParse {
     ok: true,
     session: {
       ...rest,
+      ...(accountId !== undefined && { accountId }),
       replay,
       ...(name !== undefined && { name }),
       ...(forkedFrom !== undefined && { forkedFrom }),

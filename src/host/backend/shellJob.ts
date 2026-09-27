@@ -24,12 +24,12 @@ import {
 } from '../../shared/constants'
 import { powerShellQuoted } from '../../core/shellQuote'
 import { type RunProgram, runProgram, type ShellJob, windowsPowerShell } from '../processTree'
-import { MCP_JOB_SOURCE } from './mcpJobSource'
 
 // C# 5, which Windows PowerShell 5.1's `Add-Type` compiles. The shell keeps
 // its handle for its whole life: a job's name lasts as long as a handle to
-// it, and the Stop opens the job by that name.
-const SOURCE = `using System;
+// it, and the Stop opens the job by that name. The shared Win32 half is the
+// shipped native/windows/MuseSparkMcpJob.cs (`jobSource.ts`).
+const shellJobSource = (mcpJobSource: string): string => `using System;
 using System.ComponentModel;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -37,7 +37,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.IO.Pipes;
 
-${MCP_JOB_SOURCE}
+${mcpJobSource}
 
 public static class ${SHELL_JOB_TYPE_NAME} {
   [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
@@ -99,6 +99,8 @@ export interface ShellJobDeps {
   readonly storageDir: string
   readonly systemRoot: string
   readonly log: (message: string) => void
+  /** The shared C# (`jobSource.ts`), read when the helper is first built. */
+  readonly readJobSource: () => Promise<string>
   /** `execFile` for Windows PowerShell; tests stand in the compiler. */
   readonly run?: RunProgram
 }
@@ -112,13 +114,21 @@ async function isPresent(file: string): Promise<boolean> {
   }
 }
 
-/** The assembly's file name for this source. */
-export function shellJobAssemblyName(): string {
-  const digest = createHash('sha256').update(SOURCE).digest('hex').slice(0, DIGEST_LENGTH)
+/** The assembly's file name for this source (the whole C#, the shared half included). */
+export function shellJobAssemblyName(mcpJobSource: string): string {
+  const digest = createHash('sha256')
+    .update(shellJobSource(mcpJobSource))
+    .digest('hex')
+    .slice(0, DIGEST_LENGTH)
   return `${ASSEMBLY_STEM}${digest}${ASSEMBLY_EXTENSION}`
 }
 
-async function compile(assembly: string, deps: ShellJobDeps, run: RunProgram): Promise<void> {
+async function compile(
+  assembly: string,
+  csharp: string,
+  deps: ShellJobDeps,
+  run: RunProgram,
+): Promise<void> {
   const directory = path.dirname(assembly)
   await mkdir(directory, { recursive: true })
   // Unique names, so two windows compiling at once never share a file.
@@ -127,7 +137,7 @@ async function compile(assembly: string, deps: ShellJobDeps, run: RunProgram): P
   const output = `${stem}${ASSEMBLY_EXTENSION}`
   const powershell = windowsPowerShell(deps.systemRoot)
   try {
-    await writeFile(source, SOURCE, 'utf8')
+    await writeFile(source, csharp, 'utf8')
     await run(
       powershell.file,
       [
@@ -171,10 +181,15 @@ async function removeStale(assembly: string, log: (message: string) => void): Pr
 
 async function prepare(deps: ShellJobDeps): Promise<string | undefined> {
   const run = deps.run ?? runProgram
-  const assembly = path.join(deps.storageDir, SHELL_JOB_FOLDER, shellJobAssemblyName())
   try {
+    const mcpJobSource = await deps.readJobSource()
+    const assembly = path.join(
+      deps.storageDir,
+      SHELL_JOB_FOLDER,
+      shellJobAssemblyName(mcpJobSource),
+    )
     if (!(await isPresent(assembly))) {
-      await compile(assembly, deps, run)
+      await compile(assembly, shellJobSource(mcpJobSource), deps, run)
       await removeStale(assembly, deps.log)
     }
     // Joining a job, as a command does, proves the type loads and the

@@ -1,4 +1,5 @@
 import { Buffer } from 'node:buffer'
+import { createHash } from 'node:crypto'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
@@ -17,7 +18,7 @@ import {
   type PaidFeature,
   UI_TEXT,
 } from '../../src/shared/constants'
-import type { AgentSession, DocumentPart } from '../../src/core/agent/agentBackend'
+import type { AgentSession, DocumentPart, TurnPart } from '../../src/core/agent/agentBackend'
 import { AttachmentStore } from '../../src/core/attachments'
 import { ModelApiClient } from '../../src/core/backends/modelapi/client'
 import type { SubagentTaskConfirmation } from '../../src/shared/paid'
@@ -166,6 +167,7 @@ function setup(
     mediaBudgetMaxEncodedChars?: number
     scheduleStore?: ScheduleStore
     getAccountId?: () => Promise<string | undefined>
+    newId?: () => string
     hooks?: readonly HookDefinition[]
     runHook?: NonNullable<ToolIo['runHook']>
     isHooksEnabled?: () => boolean
@@ -221,10 +223,12 @@ function setup(
     io,
     // The context loaders read the same files the tools do.
     contextIo: memoryContextIo(io.files),
-    newId: () => {
-      ids += 1
-      return `id${String(ids)}`
-    },
+    newId:
+      options.newId ??
+      (() => {
+        ids += 1
+        return `id${String(ids)}`
+      }),
     now: () => {
       clock += 1000
       return clock
@@ -234,7 +238,7 @@ function setup(
     isWorkspaceTrusted: () => options.isTrusted ?? true,
     store: options.store,
     scheduleStore: options.scheduleStore,
-    getAccountId: options.getAccountId,
+    getAccountId: options.getAccountId ?? (() => Promise.resolve(FAKE_MODEL_API_ACCOUNT_ID)),
     describeEnvironment: options.describeEnvironment ?? (() => Promise.resolve({ git: undefined })),
     isPaidFeatureOn: (feature) => options.paid?.includes(feature) === true,
     notePaidUse: (feature, units) => {
@@ -536,6 +540,20 @@ function pdfTurnPart(pages: number): DocumentPart {
     sizeBytes: bytes.length,
     pageCount: pages,
   }
+}
+
+function namedTextPart(name: string, text: string): TurnPart {
+  return {
+    type: 'textFile',
+    name,
+    mediaType: 'text/plain',
+    text,
+    sizeBytes: Buffer.byteLength(text),
+  }
+}
+
+function halfBudgetTextPart(name: string): TurnPart {
+  return namedTextPart(name, 'x'.repeat(Math.ceil(MAX_MODEL_API_TEXT_ATTACHMENT_BYTES / 2)))
 }
 
 /** Earlier bytes stay, while a later undelivered file becomes path-only context. */
@@ -1211,7 +1229,7 @@ describe('Model API scheduled prompts (M52)', () => {
     expect(afterRun[0]?.fireCount).toBe(1)
     await t.host.flush()
     const savedJson = JSON.stringify(sessionStore.saved.get(session.sessionId))
-    expect(savedJson).not.toContain(FAKE_MODEL_API_ACCOUNT_ID)
+    expect(sessionStore.saved.get(session.sessionId)?.accountId).toBe(FAKE_MODEL_API_ACCOUNT_ID)
     expect(savedJson).not.toContain('confirmedRequest')
     const logJson = JSON.stringify([
       ...t.log.trace.mock.calls,
@@ -2410,6 +2428,70 @@ describe('ModelApiSession: turns', () => {
     expect(t.api.responseBodies()).toHaveLength(1)
   })
 
+  it('refuses a steer when earlier accepted steering already uses the text allowance', async () => {
+    const t = setup()
+    const { session, turnDone } = await startSession(t)
+    const held = Promise.withResolvers<undefined>()
+    t.api.script({ text: 'first', hold: held.promise }, { text: 'after first steer' })
+    const turn = await session.sendTurn([{ type: 'text', text: 'Read the next file' }])
+    await session.steer(turn.turnId, [halfBudgetTextPart('first.txt')])
+    await expect(session.steer(turn.turnId, [halfBudgetTextPart('second.txt')])).rejects.toThrow(
+      UI_TEXT.textFilesOverModelApiBudget,
+    )
+    held.resolve(undefined)
+    await turnDone()
+    expect(t.api.responseBodies().length).toBeGreaterThan(0)
+    expect(JSON.stringify(t.api.responseBodies())).toContain('first.txt')
+    expect(JSON.stringify(t.api.responseBodies())).not.toContain('second.txt')
+    expect(session.history().items.some((item) => item.text?.includes('second.txt'))).toBe(false)
+  })
+
+  it('counts the active turn text file before accepting a steer', async () => {
+    const t = setup()
+    const { session, turnDone } = await startSession(t)
+    const held = Promise.withResolvers<undefined>()
+    t.api.script({ text: 'first', hold: held.promise })
+    const turn = await session.sendTurn([
+      { type: 'text', text: 'Read this' },
+      halfBudgetTextPart('initial.txt'),
+    ])
+    await expect(session.steer(turn.turnId, [halfBudgetTextPart('later.txt')])).rejects.toThrow(
+      UI_TEXT.textFilesOverModelApiBudget,
+    )
+    held.resolve(undefined)
+    await turnDone()
+    expect(t.api.responseBodies()).toHaveLength(1)
+    expect(modelInputAt(t, 0)).toContain('initial.txt')
+    expect(session.history().items.some((item) => item.text?.includes('later.txt'))).toBe(false)
+  })
+
+  it('keeps the named-text allowance after a steer drains into a model request', async () => {
+    const t = setup()
+    const { session, turnDone } = await startSession(t)
+    const firstHeld = Promise.withResolvers<undefined>()
+    const secondHeld = Promise.withResolvers<undefined>()
+    t.api.script(
+      { text: 'first', hold: firstHeld.promise },
+      { text: 'after steering', hold: secondHeld.promise },
+    )
+    const turn = await session.sendTurn([{ type: 'text', text: 'Start' }])
+    await vi.waitFor(() => {
+      expect(t.api.responseBodies()).toHaveLength(1)
+    })
+    await session.steer(turn.turnId, [halfBudgetTextPart('first.txt')])
+    firstHeld.resolve(undefined)
+    await vi.waitFor(() => {
+      expect(t.api.responseBodies()).toHaveLength(2)
+    })
+    await expect(session.steer(turn.turnId, [halfBudgetTextPart('later.txt')])).rejects.toThrow(
+      UI_TEXT.textFilesOverModelApiBudget,
+    )
+    secondHeld.resolve(undefined)
+    await turnDone()
+    expect(modelInputAt(t, 1)).toContain('first.txt')
+    expect(modelInputAt(t, 1)).not.toContain('later.txt')
+  })
+
   it('rejects Muse-admitted text chips after a switch to Model API', async () => {
     const t = setup()
     const { session } = await startSession(t)
@@ -2715,6 +2797,82 @@ describe('ModelApiSession: turns', () => {
     held.resolve(undefined)
     await turnDone()
     expect(JSON.stringify(t.api.responseBodies()[1]?.['input']).includes(imageUrl)).toBe(true)
+  })
+
+  it('reserves a read-file PDF while its PostToolBatch hook holds first delivery', async () => {
+    const entered = Promise.withResolvers<undefined>()
+    const release = Promise.withResolvers<undefined>()
+    const t = setup({
+      hooks: hooksFor('PostToolBatch', 'hold-read-pdf'),
+      runHook: async () => {
+        entered.resolve(undefined)
+        await release.promise
+        return await hookReply()
+      },
+    })
+    const bytes = pdfFixture(50)
+    const pdfData = `data:application/pdf;base64,${Buffer.from(bytes).toString('base64')}`
+    t.io.binaries.set('/ws/docs/report.pdf', bytes)
+    const { session, events, turnDone } = await startSession(t, 'allowAll')
+    t.api.script(
+      {
+        calls: [{ name: 'read_file', arguments: '{"path":"docs/report.pdf"}', callId: 'read_pdf' }],
+      },
+      { text: 'Read received' },
+    )
+    const submitted = await session.sendTurn([{ type: 'text', text: 'Read the PDF' }])
+    await entered.promise
+    let refused: unknown
+    try {
+      await session.steer(submitted.turnId, [pdfTurnPart(1)])
+    } catch (error: unknown) {
+      refused = error
+    }
+    release.resolve(undefined)
+    await turnDone()
+    expect(refused).toMatchObject({ message: UI_TEXT.mediaTotalTooLarge })
+    expect(
+      events.find((event) => event.type === 'itemCompleted' && event.item.tool === 'read_file'),
+    ).toMatchObject({ item: { status: 'completed' } })
+    expect(modelInputAt(t, 1)).toContain(pdfData)
+  })
+
+  it('releases a read-file reservation after its first completed request', async () => {
+    const entered = Promise.withResolvers<undefined>()
+    const release = Promise.withResolvers<undefined>()
+    let postCalls = 0
+    const t = setup({
+      hooks: hooksFor('PostLLMCall', 'hold-after-read-delivery'),
+      runHook: async () => {
+        postCalls += 1
+        if (postCalls === 2) {
+          entered.resolve(undefined)
+          await release.promise
+        }
+        return await hookReply()
+      },
+    })
+    const bytes = pdfFixture(50)
+    const pdfData = `data:application/pdf;base64,${Buffer.from(bytes).toString('base64')}`
+    t.io.binaries.set('/ws/docs/report.pdf', bytes)
+    const { session, turnDone } = await startSession(t, 'allowAll')
+    t.api.script(
+      {
+        calls: [{ name: 'read_file', arguments: '{"path":"docs/report.pdf"}', callId: 'read_pdf' }],
+      },
+      { text: 'PDF arrived' },
+      { text: 'Steer arrived' },
+    )
+    const submitted = await session.sendTurn([{ type: 'text', text: 'Read the PDF' }])
+    await entered.promise
+    const steer = pdfTurnPart(1)
+    await expect(session.steer(submitted.turnId, [steer])).resolves.toMatchObject({
+      disposition: 'steered',
+    })
+    release.resolve(undefined)
+    await turnDone()
+    expect(modelInputAt(t, 1)).toContain(pdfData)
+    expect(modelInputAt(t, 2)).toContain(steer.base64Data)
   })
 
   it('places a workspace PDF read after the function output so the next model call sees it', async () => {
@@ -4130,6 +4288,120 @@ describe('ModelApiSession: environment (M12)', () => {
 })
 
 describe('ModelApiHost: sessions between windows (M11)', () => {
+  it('does not expose or replay a previous Model API key account after replacement', async () => {
+    const store = memorySessionStore()
+    const rawA = 'LLM|1|fake-a'
+    const rawB = 'LLM|1|fake-b'
+    const keyA = createHash('sha256').update(rawA).digest('hex')
+    const keyB = createHash('sha256').update(rawB).digest('hex')
+    const first = setup({
+      store,
+      getAccountId: () => Promise.resolve(keyA),
+      apiKey: () => Promise.resolve(rawA),
+    })
+    const { session, turnDone } = await startSession(first)
+    first.api.script({ text: 'private reply from A' })
+    await session.sendTurn([{ type: 'text', text: 'private prompt from A' }])
+    await turnDone()
+    await first.host.close()
+    expect(store.saved.get(session.sessionId)?.accountId).toBe(keyA)
+
+    let nextBId = 0
+    const second = setup({
+      store,
+      getAccountId: () => Promise.resolve(keyB),
+      apiKey: () => Promise.resolve(rawB),
+      newId: () => `b${String(++nextBId)}`,
+    })
+    await second.host.load()
+    const secondPage = await second.host.listSessions({ workspaceRoot: ROOT, limit: 10 })
+    expect(secondPage.sessions).toEqual([])
+    await expect(second.host.readSession(session.sessionId)).rejects.toThrow()
+    await expect(second.host.resumeSession(session.sessionId, 'muse-spark-1.3')).rejects.toThrow()
+    await expect(second.host.forkSession(session.sessionId, 'muse-spark-1.3')).rejects.toThrow()
+    const fresh = await startSession(second)
+    second.api.script({ text: 'reply to B' })
+    await fresh.session.sendTurn([{ type: 'text', text: 'fresh prompt from B' }])
+    await fresh.turnDone()
+    expect(JSON.stringify(second.api.responseBodies())).not.toContain('private prompt from A')
+    expect(second.api.responseBodies()).toHaveLength(1)
+
+    const restoredA = setup({
+      store,
+      getAccountId: () => Promise.resolve(keyA),
+      apiKey: () => Promise.resolve(rawA),
+    })
+    await restoredA.host.load()
+    const originalPage = await restoredA.host.listSessions({ workspaceRoot: ROOT, limit: 10 })
+    expect(originalPage.sessions).toContainEqual(
+      expect.objectContaining({ sessionId: session.sessionId }),
+    )
+    const oldSession = await restoredA.host.resumeSession(session.sessionId, 'muse-spark-1.3')
+    expect(JSON.stringify(oldSession.history.items)).toContain('private prompt from A')
+    const exposed = JSON.stringify({
+      history: [secondPage.sessions, originalPage.sessions],
+      http: [first.api.responseBodies(), second.api.responseBodies()],
+      logs: [
+        ...first.log.trace.mock.calls,
+        ...first.log.debug.mock.calls,
+        ...first.log.info.mock.calls,
+        ...second.log.trace.mock.calls,
+        ...second.log.debug.mock.calls,
+        ...second.log.info.mock.calls,
+      ],
+    })
+    for (const secret of [rawA, rawB, keyA, keyB]) {
+      expect(exposed).not.toContain(secret)
+    }
+    expect(JSON.stringify(store.saved.get(session.sessionId))).not.toContain(rawA)
+  })
+
+  it('keeps pre-ownership sessions on disk but refuses them to every account', async () => {
+    const store = memorySessionStore()
+    const first = setup({ store })
+    const { session, turnDone } = await startSession(first)
+    await answerFirst(first, session, turnDone)
+    await first.host.close()
+    const legacy = store.saved.get(session.sessionId)
+    if (legacy === undefined) {
+      throw new Error('expected stored session')
+    }
+    const unowned = structuredClone(legacy)
+    Reflect.deleteProperty(unowned, 'accountId')
+    store.saved.set(session.sessionId, unowned)
+    const reopened = setup({ store })
+    await reopened.host.load()
+    const legacyPage = await reopened.host.listSessions({ workspaceRoot: ROOT, limit: 10 })
+    expect(legacyPage.sessions).toEqual([])
+    await expect(reopened.host.resumeSession(session.sessionId, 'muse-spark-1.3')).rejects.toThrow()
+    expect(store.saved.has(session.sessionId)).toBe(true)
+  })
+
+  it('refuses a stored read when the active key changes while storage is pending', async () => {
+    const store = memorySessionStore()
+    const keyA = 'a'.repeat(64)
+    const first = setup({ store, getAccountId: () => Promise.resolve(keyA) })
+    const { session, turnDone } = await startSession(first)
+    await answerFirst(first, session, turnDone)
+    await first.host.close()
+    let active = keyA
+    const second = setup({ store, getAccountId: () => Promise.resolve(active) })
+    await second.host.load()
+    const originalLoad = store.load.bind(store)
+    const started = Promise.withResolvers<undefined>()
+    const release = Promise.withResolvers<undefined>()
+    store.load = async (sessionId) => {
+      started.resolve(undefined)
+      await release.promise
+      return await originalLoad(sessionId)
+    }
+    const reading = second.host.readSession(session.sessionId)
+    await started.promise
+    active = 'b'.repeat(64)
+    release.resolve(undefined)
+    await expect(reading).rejects.toThrow(UI_TEXT.notSignedInReason)
+  })
+
   it('saves after every change and lists, resumes and forks stored sessions in a new host', async () => {
     const store = memorySessionStore()
     const first = setup({ store, files: { 'a.txt': 'alpha\n' } })
