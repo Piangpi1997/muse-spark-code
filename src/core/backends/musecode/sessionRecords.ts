@@ -10,10 +10,11 @@ import {
   type SessionGoal,
   todoItemSchema,
 } from '../../../shared/agentEvents'
-import { IDE_PAID_TOOLS } from '../../../shared/constants'
+import { IDE_PAID_TOOLS, TEXT_ATTACHMENT_MEDIA_TYPE } from '../../../shared/constants'
 
 import { sessionActivityFields } from '../../../shared/sessions'
 import type { SessionHistoryOutcome } from '../../agent/agentBackend'
+import { readTextFileDisplay } from '../../../shared/textFileDisplay'
 
 /**
  * MSP's `Goal` block (M45, PLAN.md D38) as `session/goalChanged` and a
@@ -82,10 +83,28 @@ export type WireItem = z.infer<typeof wireItemSchema>
  */
 export function toSnapshot(item: WireItem): ItemSnapshot {
   const { turnId, displayText, ...rest } = item
+  const marked =
+    typeof displayText === 'string' && item.kind === 'userMessage'
+      ? readTextFileDisplay(displayText)
+      : undefined
+  let syntheticFiles: {
+    readonly type: string
+    readonly mediaType: string
+    readonly name?: string
+  }[] = []
+  if (marked !== undefined && !item.attachments?.some((attachment) => attachment.type === 'file')) {
+    syntheticFiles =
+      marked.length === 0
+        ? [{ type: 'file', mediaType: TEXT_ATTACHMENT_MEDIA_TYPE }]
+        : marked.map((name) => ({ type: 'file', mediaType: TEXT_ATTACHMENT_MEDIA_TYPE, name }))
+  }
   return {
     ...rest,
     ...(typeof turnId === 'string' && { turnId }),
     ...(typeof displayText === 'string' && { text: displayText }),
+    ...(syntheticFiles.length > 0 && {
+      attachments: [...(item.attachments ?? []), ...syntheticFiles],
+    }),
     // An image the extension's own `ide` server bought with the key (M44).
     ...(item.tool !== undefined && IDE_PAID_TOOLS.has(item.tool) && { paid: 'imageGeneration' }),
   }

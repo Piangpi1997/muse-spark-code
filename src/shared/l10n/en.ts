@@ -353,8 +353,35 @@ export const EN = {
   removeAttachment: 'Remove',
   attachmentTooLarge: 'Images must be 10 MB or smaller.',
   attachmentUnsupported: 'Only PNG, JPEG, GIF and WebP images can be attached.',
-  attachmentLimit: 'At most 20 images per message.',
-  attachmentUnreadable: 'The image could not be read.',
+  attachmentLimit: 'At most 20 files per message.',
+  attachmentUnreadable: 'The file could not be read.',
+  documentTooLarge: 'PDFs must be 32 MB or smaller.',
+  documentsOverBudget: 'Files must total at most 50 images and PDF pages per message.',
+  mediaTotalTooLarge: 'Attached images and PDFs exceed the combined media size limit.',
+  olderMediaOmitted:
+    'Older images or PDFs were left out of this request to stay within media limits. They remain in local history.',
+  pdfNeedsModelApi: 'PDF attachments require the Model API backend.',
+  invalidPdf: 'This file is named as a PDF but is not a valid PDF.',
+  pdfLabel: 'PDF',
+  // Model API read_file rows. The separate MODEL_TEXT result stays English.
+  toolReadPdf: 'Read PDF `{path}` ({pages}, {bytes} bytes)',
+  toolReadPdfPages: forms({ one: '{count} page', other: '{count} pages' }),
+  toolReadPdfPagesUnknown: 'page count unknown',
+  toolReadImage: 'Read image `{path}` ({mediaType}, {width}×{height}, {bytes} bytes)',
+  toolReadPdfInvalid: 'The file `{path}` has a PDF name but no PDF header.',
+  toolReadImageInvalid: 'The file `{path}` is not a supported image.',
+  toolVisualFileMissing: 'The file `{path}` was not found.',
+  toolVisualReadFailed: 'The file `{path}` could not be read.',
+  textFileTooLarge: 'Text files must be 1 MB or smaller.',
+  textFilesOverBudget:
+    'Attachments fill Muse Code’s message limit. Remove an attachment or shorten the message.',
+  textFilesOverModelApiBudget:
+    'Text attachments exceed the Model API context allowance. Remove a file or attach a smaller excerpt.',
+  textFileInvalid: 'This file is not valid UTF-8 text.',
+  textFilePrivate: 'This private file cannot be attached.',
+  textFileLabel: 'Text',
+  binaryFileUnsupported:
+    'This binary file type cannot be attached. Use a PDF, image or UTF-8 text file.',
   // Transcript rows.
   thoughtFor: 'Thought for {duration}',
   thinkingNow: 'Thinking',

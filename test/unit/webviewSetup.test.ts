@@ -63,14 +63,14 @@ describe('configureWebview', () => {
 
   it('answers ready with init, then reports the surface as ready', () => {
     const { webview, context, surface } = setup()
-    webview.messages.fire({ type: 'ready' })
+    webview.messages.fire({ type: 'ready', attachmentEpoch: 4 })
     expect(webview.postMessage).toHaveBeenCalledWith({
       type: 'init',
       emptyStateHint: 'Type /model to pick the right tool for the job.',
       composerPlaceholder: 'ctrl esc (ctrl alt esc on Windows) to focus or unfocus Muse',
       settings: testSettings,
     })
-    expect(context.onSurfaceReady).toHaveBeenCalledWith(surface)
+    expect(context.onSurfaceReady).toHaveBeenCalledWith(surface, 4)
   })
 
   it('reports composer focus changes with the originating surface', () => {

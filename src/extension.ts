@@ -9,6 +9,7 @@ import * as vscode from 'vscode'
 import * as z from 'zod/mini'
 import type { AgentHost, BackendKind } from './core/agent/agentBackend'
 import { environmentValue } from './core/backends/musecode/launch'
+import { confineWorkspacePath } from './core/backends/modelapi/tools'
 import { selectBackend } from './core/backendSelection'
 import { personalSkillsRoot } from './core/context/skills'
 import { memoryDataRoot } from './core/memory/memoryLocation'
@@ -45,7 +46,13 @@ import {
   readWorkflowTriggerMode,
 } from './host/backend/museSettings'
 import { shellJobAssembly } from './host/backend/shellJob'
-import { createToolIo, terminalPlatform, withTerminalOverrides } from './host/backend/toolIo'
+import {
+  createToolIo,
+  readPickedFile,
+  toolImagePreviewIo,
+  terminalPlatform,
+  withTerminalOverrides,
+} from './host/backend/toolIo'
 import { EditorContextTracker } from './host/editor/editorContextTracker'
 import { EditReview } from './host/editor/editReview'
 import { IdeMcpServer } from './host/ide/ideMcpServer'
@@ -1043,7 +1050,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         relativePath: relativePathInWorkspace(uri),
       }))
     },
-    readFile: async (fsPath) => await vscode.workspace.fs.readFile(vscode.Uri.file(fsPath)),
+    readFile: readPickedFile,
+    canonicalRelativePath: async (fsPath) => {
+      if (workspaceRoot === undefined) {
+        return
+      }
+      const resolved = await confineWorkspacePath(workspaceRoot, fsPath, process.platform, toolIo)
+      return resolved.ok
+        ? { canonical: resolved.canonical, checkedAbsolute: resolved.checkedAbsolute }
+        : undefined
+    },
     pickMentionFile: () =>
       pickMentionFile({
         createQuickPick: () => vscode.window.createQuickPick(),
@@ -1225,14 +1241,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         openDocument,
         openFile,
         readToolImage: async (imagePath) =>
-          await loadToolImage(imagePath, workspaceRoot, process.platform, {
-            realPath: canonicalPath,
-            fileSize: async (fsPath) => {
+          await loadToolImage(
+            imagePath,
+            workspaceRoot,
+            process.platform,
+            toolImagePreviewIo(toolIo, async (fsPath) => {
               const stat = await vscode.workspace.fs.stat(vscode.Uri.file(fsPath))
               return stat.size
-            },
-            readFile: async (fsPath) => await vscode.workspace.fs.readFile(vscode.Uri.file(fsPath)),
-          }),
+            }),
+          ),
         // A server that failed to start is started again, and the session
         // that asked waits for it, so it gets the tool too (D25).
         ideMcpEndpoint: async () => {
@@ -1309,9 +1326,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         isFocused,
       )
     },
-    onSurfaceReady: (surface) => {
+    onSurfaceReady: (surface, attachmentEpoch) => {
       const controller = controllerFor(surface)
-      controller.surfaceReady()
+      controller.surfaceReady(attachmentEpoch)
       surface.post({ type: 'editorContext', context: editorContext.summary })
       surface.post({ type: 'paidState', state: paid.state() })
       // A rebuilt panel resumes the session it held (D15); the sidebar

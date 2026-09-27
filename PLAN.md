@@ -1920,23 +1920,167 @@ PR #41 review narrows the rewind boundary: a steered user card shares its
 turn with the original prompt, so its fork cut must use the preceding
 distinct completed turn or a fresh conversation. Rewind of a selected turn
 still running is hidden and refused until its steered image replay settles.
-Restored Model API image
-bytes must match the selected user card's persisted item identity, never the
-first user-role replay entry with the same turn ID. Accepted compaction must
-record its actual summarized turn across save and resume; a missing replay
-entry alone does not prove a compaction boundary. A Muse Code side panel may
-resume only its own side fork, never another ordinary session from History.
+Restored Model API image bytes must match the selected user card's persisted
+item identity, never the first user-role replay entry with the same turn ID.
+Accepted compaction must record its actual summarized turn across save and
+resume; a missing replay entry alone does not prove a compaction boundary.
+A Muse Code side panel may resume only its own side fork, never another
+ordinary session from History.
 Live cards retain a webview-local ID until History reload, so Model API turn
 acceptance must also return the backend-reserved replay item ID. Keep the
 local ID for UI reconciliation and use that durable ID for image restoration,
 including steering, queued turns and acknowledgements arriving after a turn
 already completed; never treat a webview-supplied ID as a durable backend ID.
 
+### D47 — File input follows each backend's proven wire (2026-09-25)
+
+Meta's [file handling guide](https://dev.meta.ai/docs/file-handling) permits
+`input_file` with inline `file_data` on Responses requests, and says PDF text
+comes from the first 100 pages, with page images from the first 50 sharing a
+50-image request budget. The pinned Muse Code SDK 1.3.0 defines only text,
+image and skill input parts. Its [file input request](https://github.com/meta-models/muse-code-sdk/issues/48)
+tracks the missing MSP feature. We do not send an invented part to Muse Code.
+The Muse Code attachment store budgets serialized text and image parts together,
+leaving 2 MiB of its 10 MiB MSP frame for the prompt, context and envelope;
+an impossible file combination is refused before it becomes a chip. The
+exact outbound frame check remains the final guard for unusually large
+prompts or selections.
+Muse Code also recomputes this attachment budget at both `turn/start` and
+`turn/steer`: an image accepted under Model API can survive a backend switch,
+so the active backend must refuse its now-incompatible chip before submitting
+a command, with a remove-attachment reason.
+Every known localized attachment refusal keeps its specific banner text in
+the composer, including PDF size/backend, shared media, text context and
+private-file reasons; only an unrecognized host refusal falls back to generic
+unsupported-file guidance. The live announcement still says the actual reason.
+Model API text attachments have a separate 768 KiB aggregate UTF-8 content
+and named-wrapper allowance. This conservative byte bound stays below the
+1,048,576-token context even for dense text and reserves roughly 256K tokens
+for prompt, replay and output (32,768 maximum); a large single file can be
+refused despite its 1 MiB per-file read cap. It does not account for an
+already long replay, which the Model API may still refuse at its context
+limit.
+During an active turn, its initial named text files and every accepted steer
+share that same 768 KiB allowance. A steer that would cross it is refused
+before entering the next replay request. Draining steering into replay does
+not reset the turn's admission count; a separately queued turn validates its
+own parts before it starts.
+
+- **Model API:** PDF bytes, checked by header, may be attached from the file
+  picker, clipboard or drop, up to 32 MB each; the inline base64 stays below
+  Meta's 50 MB limit. No persistent Files API upload or new dependency.
+  Images still work. A bounded UTF-8 text file picked from the trusted workspace and
+  visible in its file index becomes a named `input_text` part after its real
+  path is checked against symlink escapes; read the same checked absolute
+  target after the indexed/private check so a retargeted alias cannot swap in
+  private bytes. Protected/private paths are
+  refused. Binary file types are refused, never decoded as text. The
+  Model API `read_file` tool reads UTF-8 text, PDFs and images from confined
+  workspace paths. A PDF or image read by that tool travels as a user content
+  part after its function-output round, so the model actually sees it. Its
+  function `output` stays English for the model, while the transcript's
+  `visibleOutput` uses the installed `UI_TEXT` language, with page counts,
+  byte sizes and image dimensions formatted in that locale. A known PDF page
+  count takes the language's plural form; an unknown count has its own label.
+  Focused tests check a non-English table and grouped numbers without changing
+  the model-facing text. Invalid PDF/image headers, missing files and bounded
+  read errors keep function `output` English for the model but show a runtime
+  localized failure row and `failureReason`, with a requested path in one
+  template. The invalid file is never sent as media; an aborted read still
+  cancels the turn. Red/green tests cover these refusal shapes and the
+  model/UI split.
+- **Muse Code:** images retain their MSP path. A PDF attachment gets a clear
+  refusal naming the Model API backend, including when its extension is
+  disguised. A bounded text attachment becomes an MSP text part with the
+  file's name and content; no invented file part. Other unsupported types
+  remain path mentions or explicit refusals. Native file parts wait for an
+  MSP release and a captured wire shape.
+- **Budget and history:** attached images and countable PDF page images share
+  50 slots per new message. An uncountable PDF reserves all 50. The Model API
+  page counter reads only the page-tree dictionary's direct `/Count`; a
+  nested dictionary's unrelated `/Count` must not shrink that reservation.
+  If the direct count cannot be established, the PDF is uncountable here.
+  An escaped page-tree `/Pages` or `/Count` name can hide a real count behind
+  an unlinked visible decoy; comments between `/Type` and `/Pages` or after
+  `/Count` can do the same. Treat these ambiguous forms as uncountable and
+  reserve all 50 slots. A visible page-tree candidate with a missing,
+  non-positive or out-of-range direct count is ambiguous too: a separate
+  one-page decoy must never lower the reservation. A `/Count` followed by an
+  indirect-reference suffix (`5 0 R`) names an object, not five pages; treat
+  that tree as uncountable rather than trusting the reference's object number.
+  An indirect `/Type` may name the real `/Pages` tree while a visible direct
+  `/Type /Pages` dictionary is unlinked; reserve all 50 until the real tree
+  can be established without resolving arbitrary objects. Signed object
+  numbers such as `/Type +5 0 R` are equally ambiguous and reserve all 50.
+  The Model API
+  extension also caps base64 media to 48 million characters per new message
+  and replay request. This is a conservative aggregate memory/request bound,
+  separate from Meta's 50 MB **per-file** inline limit. An over-cap new
+  attachment is refused with a localized banner. The Model API replay,
+  including compaction, keeps newest visible media within both budgets and
+  replaces older media with a plain explanation; the panel announces that
+  older media was left out. After a fitted request succeeds, its replacement
+  text becomes the durable replay: omitted PDF/image base64 must not remain in
+  `snapshot()` or a resumed session. Transcript history keeps attachment
+  names, types and counts for the UI without retaining those omitted bytes.
+  A request that has not completed must not prune pending tool-read media;
+  its later Stop/failure still gets the path-only cleanup in this decision.
+  Tool `read_file` batches reserve both encoded characters and the same 50
+  image/page slots before a file reports success. An unknown-page PDF takes
+  all 50 slots. A later file that cannot fit returns the media-budget error
+  before its bytes enter queued replay, so a successful earlier file is not
+  silently replaced during the next request's replay fit.
+  Visual parts from any function-call output in the current tool batch share
+  that admission budget with queued `read_file` media. Count them once until
+  a completed model request carries the parts; a failed request or Stop must
+  not mark them delivered. A later read that would displace an undelivered
+  image fails explicitly before its tool result reports success.
+  Accepted user steering media reserves that same first-delivery budget:
+  a later tool result cannot displace it silently, and a steer that arrives
+  after pending tool media is refused before it enters this turn. The panel
+  can submit that prompt as a later turn after the pending media is delivered.
+  A successful `read_file` stays reserved after its media moves from the
+  current batch into replay, including while `PostToolBatch` runs. The
+  reservation ends only after the first completed request carries or durably
+  omits that media, or Stop/failure scrubs it. A steer arriving during that
+  hook cannot displace the unread PDF or image.
+  Red/green tests bind the fitted request, snapshot, resume and unchanged
+  history chips to that boundary. The
+  `read_file` tool also stops collecting media in one tool round at the same
+  encoded-size cap, returning a failed tool result for the excess file before
+  it is retained; a burst of reads must not fill host memory before replay
+  fitting runs. The
+  UI shows PDF names as file chips and restores them from Model API session
+  history. This does not claim the older bytes remain visible to the model
+  after either budget clips them.
+  A send that awaits autosave, editor context or backend selection binds the
+  session and conversation generation it started with. If the backend stops
+  or the session changes during those waits, the send fails before submitting
+  to its old backend and keeps attachment chips for a fresh attempt. A
+  disposed Model API session independently rejects new sends and steering,
+  so a stale caller cannot initiate a paid HTTP request after release.
+  A late submit acknowledgement is checked again before chips are released
+  or `turnAccepted` is shown. The controller distinguishes its own
+  `sessionNotLoaded` recovery from an external backend stop: only the owned
+  recovery may adopt a new attachment generation, while an external stop
+  always invalidates the original send, even during recovery lookup.
+  Conversation rewind keeps its image-only behavior. PDF and named text file
+  cards hide that choice in the panel, and a forged request is refused before
+  fork or clear: exact file bytes cannot be restored from every backend and
+  older History record, so a filename chip must not imply they came back.
+  If a tool round stops or fails before its media is delivered, replay keeps
+  a path-only explanation. Stop also removes a read-file media message from
+  future replay when it interrupts that message's delivery request. A later
+  stop or failure in the same turn must preserve PDF/image media that reached
+  an earlier successful model response: only still-pending media from a later
+  tool round is replaced by path-only text. Multi-round red/green tests cover
+  both a later Stop and a later failed model request.
+
 ## 3. Open questions (need the owner)
 
 | #   | Question                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            | Default until answered                                                |
 | --- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
-| Q1  | **Resolved 2026-09-22:** owner authorised installing anything needed; Muse Code CLI 1.3.0 installed via the official installer. The owner holds both a Muse Code subscription (CLI signed in by device code) and a pay-as-you-go Model API key; M7 keeps them apart (D1 amendment).                                                                                                                                                                                                                                                                                                                 | Closed.                                                               |
+| Q1  | **Resolved 2026-09-22:** owner authorised installing anything needed; Muse Code CLI 1.3.0 installed via the official installer. The owner reported Muse Code CLI device sign-in and a pay-as-you-go Model API key; M7 keeps them apart (D1 amendment). A separate current Muse Code paid entitlement or tier is unverified; the personal Muse Power/Maximum screenshot is not CLI entitlement proof.                                                                                                                                                                                                | Closed.                                                               |
 | Q2  | **Resolved 2026-09-22:** publisher `RandyNorthrup` read from the signed-in marketplace management page. Display name stays "Muse Spark Code (Unofficial)" unless the owner asks otherwise.                                                                                                                                                                                                                                                                                                                                                                                                          | Closed.                                                               |
 | Q3  | **Resolved 2026-09-22:** owner wants both the CLI (MSP) backend and the Model API backend in the first release. M7 is required for v0.1.0.                                                                                                                                                                                                                                                                                                                                                                                                                                                          | M7 required; see §10.                                                 |
 | Q4  | **Resolved 2026-09-22 (M9, superseding the M8 answer):** voice dictation ships through the operating system's own recogniser, at no API cost and with no third-party code (owner's constraints): Windows PowerShell 5.1 + `System.Speech` on Windows, a Swift helper on Apple's Speech framework on macOS (owner chose this over an `osascript` bridge), and a dimmed button with the reason on Linux (no distribution ships a recogniser; the owner may revisit). The M8 finding stands for the webview itself: Electron's Web Speech recogniser is dead, so recognition runs in a helper process. | Closed; see M9.                                                       |
@@ -3862,8 +4006,10 @@ translations. The order is D36's table:
 
 ### M53 follow-up — Account & usage reset accuracy
 
-**Status 2026-09-26: focused implementation green on an isolated branch;
-fold into M53 after M52, with no separate hosted run.** Certification record:
+**Status 2026-09-26: integrated in M53 PR #41, merged as `be34ee8`
+(tree `5757e29`).** Its seven hosted jobs passed in PR run
+`36298748478`; the follow-up used that M53 gate, with no separate hosted
+run. Certification record:
 `docs/certification/m53-usage-timing.md`.
 
 - Use Muse Code's `usage/read` and `usage/changed` account percentages and
@@ -3871,8 +4017,8 @@ fold into M53 after M52, with no separate hosted run.** Certification record:
   payload, not model-specific quota or plan-name fields. Meta's public Muse
   Code subscription page publishes an Everyday five-hour allowance, with
   High 5× and Power 20× capacity, but no per-model conversion or weekly reset
-  rule. The owner's Muse-account Upgrade screen lists different plan names
-  and weekly token grants; no capture establishes that screen as the CLI's
+  rule. The owner's personal Muse Power/Maximum Upgrade screen is separate
+  from Muse Code CLI usage; its weekly token grants do not establish the CLI's
   `usage/read` entitlement. Do not derive countdowns or usage weights from
   either plan table, selected model or opaque MSP tier.
 - Recompute visible countdowns while Account & usage stays open, at least
@@ -3888,9 +4034,10 @@ fold into M53 after M52, with no separate hosted run.** Certification record:
   live host, prefer the newest `observedAtMs`; an older or empty read begun
   before a newer `usage/changed` must not overwrite that event. Discard
   results from a host stopped or replaced.
-- Prove the timer, expired row, authentication boundary and out-of-order
-  delivery tests fail before the correction; run focused gates, then the
-  exact integrated M53 quality and hosted gates before any PR claim.
+- The timer, expired row, authentication boundary and out-of-order delivery
+  red drills failed before correction and passed after. Exact integrated
+  quality and hosted gates passed before PR #41 merged; the isolated
+  checkpoint alone was never used as certification.
 
 ### M51 — Hooks on the Model API backend (D36)
 
@@ -4805,18 +4952,22 @@ the durable replay uses a different generated ID. Red-test primary, steered,
 queued and late-acceptance paths; carry the generated ID through acceptance
 without replacing the local row ID, then rerun the exact combined gate.
 
-**Status 2026-09-26: M52 join staged; corrected M51 review and certification
+**Status 2026-09-26: M52 and M54 joins staged; combined certification
 pending** (`docs/certification/m53.md`). Focused tests and merge red drills
 passed on the isolated trees: 628 focused tests on M47 main `34002ab` and
 the combined-fork red drill on M46. The pre-move stage is pinned at
 `refs/codex-backups/m53-pre-m47-20260926`. M48–M51 are present in staged
 tree `01fe750c246b16a527ca51eeb989c672571e7eb8`; six focused suites
 passed 561/561 with five TypeScript projects, lint, localization and format
-green. The later M52 join passed eight focused suites 681/681, five-project
-typecheck, localization, lint, formatting and duplication. Side-schedule
-create, cancel and run failed their red tests, then were refused before
-storage, claim, HTTP or paid tally. Corrected M51 PR #39 ancestry and exact
-combined quality and browser gates remain open.
+green. The later M52/M54 join passed 614/614 focused tests, five-project
+typecheck, localization, lint and formatting. Side-schedule create, cancel
+and run first failed their red test, then were refused before storage, claim,
+HTTP or paid tally; a PDF remains in side-fork replay. Corrected M51 ancestry
+and exact combined quality and browser gates remain open.
+The isolated M52/M53 join then passed eight focused suites 681/681 with
+zero duplication; its key-replacement checkpoint also passed full Windows
+quality (`docs/certification/m53.md`). M54's final ordered join still needs
+its own exact-tree gate.
 
 - **Goal**: rewind conversation context to a selected user turn, preserving
   its prompt as a new draft; ask a side question in a separate branch while
@@ -4872,7 +5023,7 @@ combined quality and browser gates remain open.
   save opens no panel or orphan record, and a slow save finishes before the
   source hold is released. History/restart keeps the side label and Plan lock.
   These focused checks passed on the provisional M51 join. The M52 join now
-  refuses schedule create, cancel and run in core before paid admission;
+  refuses schedule create, cancel and run in core before any paid admission;
   red/green tests cover a resumed side fork and a Bypass source. Corrected
   M51 ancestry and exact combined quality still need verification.
 - **Stale action boundary**: a rewind message names the session whose
@@ -4886,6 +5037,271 @@ combined quality and browser gates remain open.
 - **Limit**: Muse Code 1.3.0 on Windows refuses forks. On other Muse Code
   platforms the Plan-mode side fork may inherit allow rules; unlike Model
   API Plan mode, it is not certified as strictly read only.
+
+### M54 — PDFs and other files as input (D47)
+
+**I/O review work:** Picker reads must share the bounded, single-handle file
+reader used by Model API tools, returning the normal oversize refusal even if a
+selected local/remote file grows after metadata is checked. Model API
+`read_file` must read text, images and PDFs through the canonical path that
+passed workspace confinement; a retargeted symlink must not switch the bytes
+to a path outside the workspace after the check. Deterministic race tests and
+focused quality gates precede the final ordered-tree certification.
+The same checked-target rule extends to paid image edit sources (M44) before
+the confirmation/API call and to tool-row images (M43). Tool-row image bytes
+must share the bounded single-handle reader so growth after metadata cannot
+cross the 10 MiB limit. Deterministic link-swap and stale-size red drills
+cover these adjacent paths before final certification.
+Paid image output reservation and Model API `write_file`/`edit_file` also keep
+the canonical target selected at confinement: a link retarget must not create
+or edit outside-workspace files between the check and the write. Text-file
+cards keep the requested relative path, and unsaved-editor checks cover both
+the requested and canonical paths. Link-swap tests must prove the outside
+target is untouched and that an unavailable reservation sends no paid call.
+The checked absolute path itself can change after confinement if a workspace
+directory is renamed and replaced by a junction. Host reads therefore bind
+an opened handle to a fresh canonical-path and file-identity check before
+returning bytes. Atomic writes recheck the canonical target, parent and
+temporary file at the actual write/rename boundaries, including retries;
+changed paths fail closed under the approved target. A real junction-swap
+drill must leave the outside sentinel untouched for read and write tools.
+Paid image output reservations also check the opened file identity before
+fill and before release cleanup, so a changed path cannot delete a different
+file. The operation-time canonical check is applied only when the trusted
+M54 confinement caller passes its checked canonical path; raw memory paths
+retain their separate policy, including macOS `/var` to `/private/var`
+aliases. Node cannot expose a final Windows path by handle or perform a
+handle-relative rename here; adversarial rapid double-swaps remain outside
+these observed-change checks and are not claimed as sandbox protection.
+The indexed UTF-8 native picker forwards that proof through FileAccess to its
+bounded read after the index check. Native PDF and image picks retain their
+existing unrestricted local-path policy. The tool-row image preview adapter
+forwards the same proof from workspace confinement to its bounded read.
+Picker file-size admission follows bytes, not a misleading suffix: peek only
+the first PDF-header window on the already-open handle, then read a detected
+PDF up to the document limit or non-PDF bytes up to the selected image/text
+limit; a `.pdf` name retains its document cap and invalid-PDF refusal.
+An unindexed or outside-workspace text-named file gets only a header probe:
+PDF bytes continue on that same handle, while ordinary text stays a mention
+without reading beyond that header. Return the detected type even on oversize
+refusal so Muse Code gives
+its PDF-specific backend reason. Keep private-name, indexed-text, checked-path
+and conversation-generation checks before any attachment is retained.
+Browser paste/drop admission also peeks the bounded PDF header before applying
+the image cap to a file whose MIME and name claim image content. A real PDF
+named `.png` uses the 32 MB document limit and PDF media type; a non-PDF image
+over 10 MiB is refused without full-file encoding. Preserve the existing
+aggregate encoded-media and in-flight reservation checks before encoding, and
+drop an asynchronous header result after the conversation changes.
+For text-named files, a drop is similarly probed; a paste is probed only when
+the clipboard has no plain text to insert. An ordinary text paste retains its
+native text behavior, and an ordinary text file is not encoded as an image.
+Private attachment names are refused before the header is read.
+
+**Prior checkpoints, 2026-09-27: M51–M53 merged; M54 PR review follow-ups.** The
+isolated M54 worktree is based on `34002ab`; its pre-M46 50-path staged tree
+is pinned at `refs/codex-backups/m54-pre-m46-20260926`. Focused PDF and
+replay checks passed; the M47-base reconciliation passed 724 focused
+attachment, replay, workflow and backend tests, all five TypeScript projects,
+localization and lint. M48–M53 are now merged on main. The combined M54 code
+tree `307157a` passed full Windows VM and Mac gates. PR #42 review found
+file-card identity and Muse History-resume gaps, so those gates are a
+checkpoint only. Corrected code tree `6b18a3e` passed full WIN-11-VM and Mac
+gates; a later review found aggregate browser-admission and localized
+tool-row gaps, making those gates a checkpoint. Combined code tree `f4b3a3e`
+passed full WIN-11-VM and Mac gates. The next review found a stale native
+picker and English invalid-file rows, so those are checkpoint gates too;
+combined code tree `57a2a96` passed full WIN-11-VM and Mac gates. Its
+documentation receipt's local quality and hosted PR CI remain open. A compressed
+or encrypted page tree with
+unknown count still reserves all 50 image slots (D47).
+The raw page-tree inspector also has a fixed candidate limit: excessive
+`/Type /Pages` markers return an unknown count and reserve all 50 slots,
+bounding host CPU work on a crafted document within the accepted byte cap.
+PDF name `#HH` escapes can hide `/Type`, `/ObjStm`, `/Encrypt`, `/Pages` or
+`/Count`; comment-separated type/count tokens are ambiguous too. Those page
+trees reserve all 50 slots. Tool `read_file` and
+the local attachment picker must bind size check and bytes to one open file
+and stop after at most the permitted size plus one byte, even if a workspace
+file grows or its path is replaced between asynchronous operations. The
+picker keeps its existing over-limit refusal and workspace path policy;
+text attachments read the canonical target that passed that policy.
+Paste/drop admission uses each file's byte metadata and existing plus
+in-flight media reservations to enforce the 48-million-character encoded
+budget before `blobToBase64`; a refused second large PDF is never loaded or
+expanded in the webview. Each admitted browser file carries a request ID
+through the host's added/refused result, so only its own reservation is
+released; same-name local refusals cannot release an earlier file. Clearing
+or changing the conversation invalidates pending reads before they can post
+to the new conversation. The host rechecks actual bytes as before.
+The native picker captures that same conversation generation before opening
+its dialog and checks it after path validation and bounded file reads, so an
+old dialog or file read cannot add an attachment or mention after New
+Conversation. Its final add remains bound to the captured generation across
+the backend lookup. The separate mention QuickPick likewise ignores a choice
+that returns after the conversation cleared.
+Browser paste/drop encoding also belongs to the conversation in which it
+started. Resume, fork and conversation rewind advance the browser attachment
+epoch before asynchronous session replacement; the host binds that epoch
+before awaiting the backend and refuses older upload messages. Accepted chips
+and the draft remain available, while only unfinished encodes are invalidated.
+Restored panels report their current epoch on readiness so a host-driven
+session replacement can advance the same boundary before History loads.
+A delayed or debounced webview snapshot may restore an epoch older than the
+host's current session-change guard. `ready` must never lower that host epoch;
+the host returns its current epoch in `surfaceState`, and the panel raises its
+epoch before admitting fresh files. A held old upload followed by resume or
+fork, stale `ready`, and release must be refused; a new upload after sync must
+still be accepted.
+Host-driven panel and recent-session restore follows the same browser epoch
+boundary before its asynchronous resume. A file delivered after session drop
+but before the restored History must be refused, while the panel receives the
+new epoch in time to accept fresh uploads. Same-session host restart keeps
+accepted chips and draft and does not advance this browser boundary.
+An edit or paid image approval binds the canonical target it classified;
+the executing tool must use that target and refuse if a workspace alias
+resolves elsewhere after the card. Paid image sources use the bytes and
+canonical paths approved before the card, with no new private-file read or
+HTTP request after an alias changes.
+File rewind refusal follows the user card's identity, not its turn: a file
+steered into a running turn must not block rewind of an earlier text-only
+card. Muse Code's durable `displayText` carries an extension-owned readable
+text-file annotation; the MSP snapshot mapper keeps the readable line and
+rebuilds a file chip on live events and History resume. A malformed
+annotation is treated as a file card and cannot enable a lossy rewind.
+Before a direct rewind clears or forks, the host checks the card ID, turn,
+text and previous distinct-turn cut against served user items; missing or
+mismatched evidence refuses the action.
+Muse Code `turn/steer` has no captured `displayText` field, so a text-file
+message sent while a turn runs is queued through `turn/start`, where MSP
+persists this annotation. Text-only steering remains as before. Native Muse
+clients and the extension may show the annotation because it is stored in
+MSP's display text. This preserves a user-authored identical line; a false
+file-chip match can only refuse rewind, never discard the prompt.
+After the M54 Stop replay fix, nine focused suites passed 531/531 and all
+five TypeScript projects passed on this tree. M54-on-M47 passed full Windows
+`npm run quality` on staged tree `9b01560` (see receipt below); that result
+does not certify the ordered combined tree. The M51 join passed 533 focused
+tests, all five TypeScript projects, localization and duplication. M50 MCP
+image output now shares the PDF page/encoded-media budget, and M51 hook stop
+paths remove unsent PDF/image bytes from replay without copying those bytes
+to hook stdin. The MCP budget and PostToolBatch Stop red drills failed before
+their fixes and passed after restoration (`docs/certification/m54.md`).
+When a completed Model API request omits older PDF or image parts to fit the
+media budget, durable replay adopts that fitted request after delivery; the
+saved session no longer retains bytes the model will never receive again.
+History keeps attachment names and types. Failed or stopped requests retain
+their prior replay state. Rewind of an image card checks the trusted History
+attachment count and available replay bytes before clear or fork, including
+after resume and when a webview request reports too few images. Model API
+send and steer also check the aggregate UTF-8 size of named text file parts
+against their separate context allowance before accepting a turn. This
+closes the path where text chips admitted under Muse Code are later sent on
+Model API without its admission check.
+The M51-joined pre-review tree `2903468656a370d7d4c9a821a56421f03bacd287`
+passed full WIN-11-VM quality: 2,070 tests, 304 accessibility pages with zero
+findings, audit, Gitleaks and Semgrep clean. It precedes the M51 hook-preview
+fix and later M54 review work, so it does not certify the final tree.
+Independent review built a valid 50-page PDF with its real page tree in an
+object stream and an unlinked visible one-page tree. The bounded raw scanner
+had returned one page, underweighting the request. A red test reproduced it;
+the parser now reserves all 50 slots when object streams or encryption could
+hide the real tree. That review tree still needed a fresh gate.
+The M52-joined staged tree `ad5d89dcd36ffdcf6ead66126bf328fdf3493e60`
+passed full local Windows quality before its commit `5487149`: 2,113 unit
+tests passed, build and audit clean, accessibility and security gates green.
+The M53 join now preserves PDF media in side-fork replay and refuses its
+scheduled paid controls in core; 614 focused tests passed. Earlier source
+tree `2d2d0dc45b31b8b5dcddad9aeae4ca73b126fe2c` passed exact-tree
+Windows VM `npm run quality` and Mac/Kubuntu `npm run quality:gates` after the
+indexed text picker and tool-row preview forwarded their checked path proofs.
+Review then found that a PDF with an image or text suffix could hit the wrong
+read cap before its header was inspected. Corrected source tree
+`cdf62eca10d02f089f3fbb4487e00ced496d42fc` passed exact-tree Mac and
+Kubuntu `npm run quality:gates`; the Windows VM passed 260 focused native
+picker, ToolIo and attachment tests on its runtime-equivalent tree `7f56829d`
+(two platform-specific skips). The only 7f-to-cdf change is a test expectation
+for macOS canonical `/private/var` paths. The final documentation receipt
+was superseded by the browser paste/drop review finding. Final browser and
+native picker source tree `2fbb593cd99b54fc786587e6847ee87b2dffd496`
+passed exact-tree Mac/Kubuntu `npm run quality:gates`; the Windows VM passed
+349 focused Composer, PDF, picker, ToolIo and attachment tests (two skips).
+That documentation receipt was superseded by two further PR review fixes:
+aggregate named-text steering plus undelivered `read_file` reservations, and
+browser upload epochs across session replacement and reload. Corrected staged
+source tree `91d0e2751ba0dd4d2dcd510919692a8a0fbebfc5` passed exact-tree
+Mac and Kubuntu `npm run quality:gates` (2,344 tests on each); WIN-11-VM
+passed 817 focused tests on the same tree. The root checkout passed 817
+combined focused tests, all five TypeScript projects, lint, localization,
+formatting and duplication. The exact receipts are in `docs/certification/m54.md`.
+The documentation receipt tree
+`b1d05e85830875a2a6cb5355a42f15cf1c3c7015` then passed full Windows
+host `npm run quality`: 2,353 unit tests, 312 accessibility pages with zero
+findings, dependency audit, Gitleaks and Semgrep all clean. Its exact log,
+tree and process audit are in `docs/certification/m54.md`. The final gate note
+is documentation-only; the updated PR head needs hosted CI and review. Live
+paid PDF delivery remains unverified; no paid request ran.
+
+- **Goal:** a user can send a PDF to the Model API backend from the picker,
+  paste or drop, then see it in the sent card and restored history; the agent
+  can read a workspace PDF or image through `read_file` and receive its bytes.
+  A bounded UTF-8 file picked from a trusted, indexed workspace can be attached on
+  both backends as a named text part; binary files remain path mentions or
+  explicit refusals. Muse Code gives a direct refusal for a PDF while MSP
+  1.3.0 has no file input part.
+- **Research:** Meta's `input_file` example and page, size and image budgets
+  in the file handling guide; SDK `TurnInputPartType`; SDK issue #48. No live
+  Meta API key is present for a paid live call; test against the fake client.
+- **Acceptance:** valid PDF byte signature and bounded page counting; size,
+  count, aggregate bytes and backend refusal; composer and history chips;
+  exact Responses payload, tool read and replay budget; translated text in fourteen languages;
+  meaningful red drills and `npm run quality` green. Record evidence in
+  `docs/certification/m54.md` before changing status to certified.
+- **Stop edge:** a tool-read PDF or image from a stopped/failed turn is not
+  sent again with the next user turn; replay says why its bytes are absent.
+- **Remaining ordered checks (M48–M53):** check M48 child-session isolation and
+  paid attempt accounting for PDF reads; M49 memory-path protections beside
+  named text attachments; M50 MCP image parts in function outputs against
+  the same page and encoded-media budgets; M51 hook stops after `read_file`
+  and hook previews without media bytes; M52 confirmed paid runs with PDFs
+  already in replay; M53 rewind of PDF/text chips and Plan-mode side chats
+  with inherited PDF context. M52 confirmed paid replay and M53 side-fork PDF
+  replay now have focused tests on the staged join. Conversation rewind of a
+  PDF/text card is explicitly refused until exact file-byte restoration is
+  available. The other cross-checks,
+  exact-tree quality and browser gates still precede final certification.
+- **Kubuntu exact-tree gate attempt:** the private `10.10.11.212` checkout of
+  staged tree `7cd2d8d` passed `npm ci`, then `npm run quality:gates` stopped
+  at its first step: Prettier flagged one formatting line in
+  `test/unit/modelApiHost.test.ts`. Later gates did not run. The test line is
+  formatted in the next staged tree; its remote gate rerun is pending.
+- **Second Kubuntu attempt:** staged tree `8c4f36d` passed formatting, then
+  stopped at JS lint: the new held-PDF test used the forbidden
+  `Promise.withResolvers<void>()` type. Later gates did not run. The test now
+  uses the existing `<undefined>` and `resolve(undefined)` convention; a new
+  exact-tree gate rerun is pending.
+- **Third Kubuntu attempt:** staged tree `ed1035b` passed formatting, lint,
+  all five TypeScript projects, localization, dead-code and cycle checks.
+  Duplication then found the repeated next-turn assertions in M54's two
+  Stop/PDF tests. Their shared request step now lives in one test helper;
+  the remaining gates and a new exact-tree rerun are pending.
+- **Fourth Kubuntu attempt:** staged tree `a1731ff` passed
+  `npm run quality:gates` (exit 0): 1,724 tests passed, 7 skipped, no
+  duplication or localization issues, and no audit advisories. This is
+  M54-on-M47 Linux gate evidence only. PowerShell analysis was skipped on
+  Linux; browser/accessibility, secrets/SAST, live Model API and M48–M53
+  ordered-integration gates remain open. The receipt in the docs was added
+  after the tested tree, so it is not a claim about a later combined tree.
+- **WIN-11-VM full gate:** staged tree `9b01560` passed literal
+  `npm.cmd run quality` on `10.10.11.183` (Windows npm entrypoint, exit 0):
+  1,728 tests passed, 3 skipped; 280 accessibility pages had zero rule
+  violations; PSScriptAnalyzer, Gitleaks and Semgrep found zero issues.
+  A first runner invocation of `npm` was blocked by PowerShell's
+  `npm.ps1` execution policy and falsely appeared to exit 0; it ran no
+  gate and is not counted. The real gate log, independent remote exit 0,
+  unchanged tree and post-gate process audit 0 are in `m54.md`. The green
+  receipt is a later docs-only edit, and M48–M53 integration plus live Model
+  API verification remain open.
 
 ### M41 — Install Muse Code from the panel (folded into M55)
 
@@ -4928,26 +5344,26 @@ build jobs or thresholds change. Update contributor instructions, PR proof
 fields, the README and workflow comments to match. Verify the trigger locally
 with a red drill, then certify the final M52 tree and PR run before merge.
 
-| Gate                  | Command                                                                                                                                                                                                         | Status                                                                                                                                                                                                     |
-| --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Format                | `prettier --check .`                                                                                                                                                                                            | M0 ✓                                                                                                                                                                                                       |
-| Lint (type-aware)     | `eslint . --max-warnings=0`                                                                                                                                                                                     | M0 ✓                                                                                                                                                                                                       |
-| CSS lint              | `stylelint "src/**/*.css" --max-warnings=0`                                                                                                                                                                     | M0 ✓                                                                                                                                                                                                       |
-| Types                 | `tsc --noEmit` over five projects: host, webview, unit, e2e, integration (`npm run typecheck`)                                                                                                                  | M0 ✓                                                                                                                                                                                                       |
-| Dead code             | `knip` (not `--strict`; see knip.jsonc)                                                                                                                                                                         | M0 ✓                                                                                                                                                                                                       |
-| Cycles                | `dpdm --no-warning --no-tree --exit-code circular:1 -T src/extension.ts src/webview/main.tsx`                                                                                                                   | M0 ✓                                                                                                                                                                                                       |
-| Duplication           | `jscpd` (config `.jscpd.json`: threshold 0 over `src` and `test`)                                                                                                                                               | M0 ✓                                                                                                                                                                                                       |
-| Unit tests + coverage | `vitest run --coverage`                                                                                                                                                                                         | M0 ✓                                                                                                                                                                                                       |
-| Integration tests     | `vscode-test` (two configurations: `stable` and `minimum`, the `engines.vscode` floor)                                                                                                                          | M0 ✓ (9 passing locally since M18; CI: ubuntu xvfb + windows); M26 ✓ on 1.139.0 and 1.125.0, downloads cached in CI                                                                                        |
-| Build + bundle budget | `node scripts/build.mjs --production && node scripts/check-bundle-size.mjs`                                                                                                                                     | M0 ✓                                                                                                                                                                                                       |
-| Host globals          | `node scripts/check-host-globals.mjs` (part of `npm run build`): no `navigator` in the host bundles                                                                                                             | M26 ✓ (proof R)                                                                                                                                                                                            |
-| Third-party notices   | `node scripts/third-party-notices.mjs` (part of `npm run build`; `npm run notices` regenerates)                                                                                                                 | M26 ✓ (proofs P, Q; CI's package job requires the file in the .vsix)                                                                                                                                       |
-| Dependency audit      | `node scripts/audit.mjs` (`npm audit --json`, high and critical block; reviewed exceptions in `.github/audit-exceptions.json`, 90 days at most)                                                                 | M0 ✓; M26 ✓ (proofs S–W)                                                                                                                                                                                   |
-| Secrets               | `gitleaks git --redact` (history, `security:secrets`, also a CI job) and `gitleaks git --pre-commit --staged` (hook)                                                                                            | M0 ✓ (staged-scan proof; the history scan runs locally and in CI)                                                                                                                                          |
-| SAST                  | `node scripts/sast.mjs` (`npm run security:sast`): `semgrep scan --config auto --error`, with semgrep found on PATH or, failing that, in a Python's user Scripts folder                                         | M2 ✓ locally (pip-installed on Windows 2026-09-22, its Scripts folder added to the user PATH) and in the CI `sast` job. M26: CI pins semgrep 1.177.0 (`.github/semgrep/requirements.txt`, Dependabot pip). |
-| PowerShell lint       | `node scripts/lint-ps.mjs` (PSScriptAnalyzer over `native/windows`, `npm run lint:ps`)                                                                                                                          | M9 ✓ on Windows (exit = finding count; a reported skip on other platforms; installed on the CI Windows runner). M26: pinned to 1.25.0 (`-RequiredVersion`), the version CI installs.                       |
-| Accessibility         | `node scripts/a11y.mjs` (`npm run test:a11y`, in `quality` after the build; in CI on Linux and Windows): axe-core over every harness scenario in the four default themes, WCAG 2.2 AA                           | M37 ✓ (proofs A–G, J–M); Lighthouse itself is not run (D32)                                                                                                                                                |
-| Localization          | `node scripts/check-l10n.mjs` (`npm run check:l10n`, in `quality:gates`): every table in `l10n/` against the English table, strictly; the manifest against `package.nls.json`; no `UI_TEXT` read at module load | M40 ✓ (drills in `docs/certification/m40.md`)                                                                                                                                                              |
+| Gate                  | Command                                                                                                                                                                                                         | Status                                                                                                                                                                                                                                                                                                                                                            |
+| --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Format                | `prettier --check .`                                                                                                                                                                                            | M0 ✓                                                                                                                                                                                                                                                                                                                                                              |
+| Lint (type-aware)     | `eslint . --max-warnings=0`                                                                                                                                                                                     | M0 ✓                                                                                                                                                                                                                                                                                                                                                              |
+| CSS lint              | `stylelint "src/**/*.css" --max-warnings=0`                                                                                                                                                                     | M0 ✓                                                                                                                                                                                                                                                                                                                                                              |
+| Types                 | `tsc --noEmit` over five projects: host, webview, unit, e2e, integration (`npm run typecheck`)                                                                                                                  | M0 ✓                                                                                                                                                                                                                                                                                                                                                              |
+| Dead code             | `knip` (not `--strict`; see knip.jsonc)                                                                                                                                                                         | M0 ✓                                                                                                                                                                                                                                                                                                                                                              |
+| Cycles                | `dpdm --no-warning --no-tree --exit-code circular:1 -T src/extension.ts src/webview/main.tsx`                                                                                                                   | M0 ✓                                                                                                                                                                                                                                                                                                                                                              |
+| Duplication           | `jscpd` (config `.jscpd.json`: threshold 0 over `src` and `test`)                                                                                                                                               | M0 ✓                                                                                                                                                                                                                                                                                                                                                              |
+| Unit tests + coverage | `vitest run --coverage`                                                                                                                                                                                         | M0 ✓                                                                                                                                                                                                                                                                                                                                                              |
+| Integration tests     | `vscode-test` (two configurations: `stable` and `minimum`, the `engines.vscode` floor)                                                                                                                          | M0 ✓ (9 passing locally since M18; CI: ubuntu xvfb + windows); M26 ✓ on 1.139.0 and 1.125.0, downloads cached in CI                                                                                                                                                                                                                                               |
+| Build + bundle budget | `node scripts/build.mjs --production && node scripts/check-bundle-size.mjs`                                                                                                                                     | M0 ✓                                                                                                                                                                                                                                                                                                                                                              |
+| Host globals          | `node scripts/check-host-globals.mjs` (part of `npm run build`): no `navigator` in the host bundles                                                                                                             | M26 ✓ (proof R)                                                                                                                                                                                                                                                                                                                                                   |
+| Third-party notices   | `node scripts/third-party-notices.mjs` (part of `npm run build`; `npm run notices` regenerates)                                                                                                                 | M26 ✓ (proofs P, Q; CI's package job requires the file in the .vsix)                                                                                                                                                                                                                                                                                              |
+| Dependency audit      | `node scripts/audit.mjs` (`npm audit --json`, high and critical block; reviewed exceptions in `.github/audit-exceptions.json`, 90 days at most)                                                                 | M0 ✓; M26 ✓ (proofs S–W)                                                                                                                                                                                                                                                                                                                                          |
+| Secrets               | `gitleaks git --redact` (history, `security:secrets`, also a CI job) and `gitleaks git --pre-commit --staged` (hook)                                                                                            | M0 ✓ (staged-scan proof; the history scan runs locally and in CI)                                                                                                                                                                                                                                                                                                 |
+| SAST                  | `node scripts/sast.mjs` (`npm run security:sast`): `semgrep scan --config auto --error`, with semgrep found on PATH or, failing that, in a Python's user Scripts folder                                         | M2 ✓ locally (pip-installed on Windows 2026-09-22, its Scripts folder added to the user PATH) and in the CI `sast` job. M26: CI pins semgrep 1.177.0 (`.github/semgrep/requirements.txt`, Dependabot pip).                                                                                                                                                        |
+| PowerShell lint       | `node scripts/lint-ps.mjs` (PSScriptAnalyzer over `native/windows`, `npm run lint:ps`)                                                                                                                          | M9 ✓ on Windows (exit = finding count; a reported skip on other platforms; installed on the CI Windows runner). M26: pinned to 1.25.0 (`-RequiredVersion`), the version CI installs. CI falls back to the Gallery's package endpoint, checked against the pinned SHA-512, when its search answers "No match" (2026-09-27; drill: a wrong hash stops the install). |
+| Accessibility         | `node scripts/a11y.mjs` (`npm run test:a11y`, in `quality` after the build; in CI on Linux and Windows): axe-core over every harness scenario in the four default themes, WCAG 2.2 AA                           | M37 ✓ (proofs A–G, J–M); Lighthouse itself is not run (D32)                                                                                                                                                                                                                                                                                                       |
+| Localization          | `node scripts/check-l10n.mjs` (`npm run check:l10n`, in `quality:gates`): every table in `l10n/` against the English table, strictly; the manifest against `package.nls.json`; no `UI_TEXT` read at module load | M40 ✓ (drills in `docs/certification/m40.md`)                                                                                                                                                                                                                                                                                                                     |
 
 The pre-commit hook runs `lint-staged` tasks serially, keeping the same lint
 and format checks with fewer simultaneous children. On 2026-09-25 Windows

@@ -1,8 +1,9 @@
 # M53 follow-up certification — Account & usage reset accuracy
 
-Status: focused implementation complete on isolated branch
-`codex/usage-timing`. This patch joins M53 after M52; no full local or
-hosted certification is claimed here.
+Status: integrated in M53 PR #41, merged as `be34ee8` with exact tree
+`5757e29`. All seven required PR jobs passed in GitHub run `36298748478`;
+the isolated `codex/usage-timing` proof below is a historical checkpoint.
+The follow-up had no separate hosted run.
 
 ## Authority
 
@@ -15,11 +16,11 @@ hosted certification is claimed here.
 - The live M8 frame in `docs/certification/m8.md` observed
   `1790108487971`, with window reset `1790126464000` (300 minutes)
   and weekly reset `1790553600000`; these timestamps remain unmodified.
-- The owner's 2026-09-26 Muse-account Upgrade screenshot instead lists
-  Power at $16/month with 500M weekly Muse tokens and Maximum at $80/month
-  with 3B weekly Muse tokens. It is account-specific evidence for that
-  Upgrade screen, not proof that those grants govern the Muse Code CLI's
-  `usage/read` payload. Neither product UI nor this fix maps its opaque
+- The owner's 2026-09-26 personal Muse-account Upgrade screenshot instead
+  lists Power at $16/month with 500M weekly Muse tokens and Maximum at
+  $80/month with 3B weekly Muse tokens. Personal Muse is separate from Muse
+  Code CLI subscription usage. That screen does not establish grants for the
+  CLI's `usage/read` payload; neither product UI nor this fix maps its opaque
   `tier` ID to those names or token budgets.
 - A read-only probe against the installed Muse Code 1.3.0-R3401.1 CLI on
   2026-09-26 initialized `muse serve`, called only `usage/read`, and closed
@@ -45,7 +46,8 @@ hosted certification is claimed here.
   sign-out, backend change, unchanged provider usage after model selection,
   and opaque tiers with verbatim percentages and reset times.
 - All five TypeScript projects, ESLint JS, Prettier for edited files, and
-  `check:l10n` for all 14 tables passed locally. The exact integrated
-  M53 quality and hosted CI results remain open before any PR claim.
+  `check:l10n` for all 14 tables passed locally. The final M53 PR later
+  passed its exact-tree local and hosted gates before merge; the seven hosted
+  checks are recorded in [run 36298748478](https://github.com/RandyNorthrup/muse-spark-code/actions/runs/36298748478).
 
 No live subscription turn or paid Model API call is needed for this fix.

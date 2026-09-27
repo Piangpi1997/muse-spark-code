@@ -133,16 +133,45 @@ export interface StartSessionOptions {
   readonly sideChat?: boolean
 }
 
-/** One ordered content part of a turn (MSP `TurnInputPart`). */
+/**
+ * A PDF sent whole (M54, PLAN.md D47): the Model API's `input_file`. MSP
+ * 1.3.0 has no such part (meta-models/muse-code-sdk#48), so the Muse Code
+ * host refuses it rather than send what `turn/start` rejects.
+ */
+export interface DocumentPart {
+  readonly type: 'file'
+  readonly base64Data: string
+  readonly mediaType: string
+  readonly name: string
+  readonly sizeBytes: number
+  /** Read from the page tree when cheap (core/pdf.ts); undefined when unknown. */
+  readonly pageCount: number | undefined
+}
+
+/** An image part (MSP `TurnInputPart` of type `image`). */
+export interface ImagePart {
+  readonly type: 'image'
+  readonly base64Data: string
+  readonly mediaType: string
+  readonly width: number
+  readonly height: number
+}
+
+/** An explicitly picked, bounded UTF-8 file, carried as named text (M54). */
+export interface TextFilePart {
+  readonly type: 'textFile'
+  readonly name: string
+  readonly mediaType: string
+  readonly text: string
+  readonly sizeBytes: number
+}
+
+/** One ordered content part of a turn (MSP `TurnInputPart`, and the Model API's document). */
 export type TurnPart =
+  | ImagePart
+  | DocumentPart
+  | TextFilePart
   | { readonly type: 'text'; readonly text: string }
-  | {
-      readonly type: 'image'
-      readonly base64Data: string
-      readonly mediaType: string
-      readonly width: number
-      readonly height: number
-    }
   | { readonly type: 'skill'; readonly selector: string; readonly arguments?: string }
 
 /** An image a turn sent, as the backend kept it (M53): what a rewind puts back in the composer. */

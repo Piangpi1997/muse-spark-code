@@ -6,6 +6,7 @@
 import path from 'node:path'
 import { Buffer } from 'node:buffer'
 import { AttachmentStore } from '../../core/attachments'
+import { isProtectedPath } from '../../core/backends/modelapi/permissions'
 import {
   type AgentHost,
   type AgentSession,
@@ -31,6 +32,7 @@ import {
   type ShellSandboxPosture,
 } from '../../core/backends/musecode/sandbox'
 import { chatReferenceText } from '../../core/chatReference'
+import { textFileDisplay } from '../../shared/textFileDisplay'
 import { type EditorContext, editorContextText } from '../../core/editorContext'
 import type { ToolImageResult } from '../../core/toolImages'
 import type { DictationHandle, DictationStatus } from '../../core/voice/dictation'
@@ -48,6 +50,12 @@ import {
   type GoalCommandVerb,
   IDE_MCP_SERVER_NAME,
   IMAGE_EXTENSIONS,
+  MAX_DOCUMENT_BYTES,
+  MAX_IMAGE_BYTES,
+  MAX_TEXT_ATTACHMENT_BYTES,
+  PDF_EXTENSION,
+  PRIVATE_ATTACHMENT_EXTENSIONS,
+  PRIVATE_ATTACHMENT_NAMES,
   MENTION_RESULT_LIMIT,
   MSP_REQUESTED_CAPABILITIES,
   OUTPUT_DOCUMENT_MAX_PAGES,
@@ -63,6 +71,8 @@ import {
   SESSION_RESTORE_WINDOW_MS,
   SHELL_TOOLS,
   type SubagentAction,
+  TEXT_ATTACHMENT_EXTENSIONS,
+  UNSUPPORTED_BINARY_ATTACHMENT_EXTENSIONS,
   UI_TEXT,
   USER_SHELL_ITEM_KIND,
   USER_SHELL_SANDBOX_FAILURE_MARKER,
@@ -131,7 +141,16 @@ export interface PickedFile {
 export interface FileAccess {
   /** Native open dialog; resolves to [] when cancelled. */
   showOpenDialog(): Promise<readonly PickedFile[]>
-  readFile(fsPath: string): Promise<Uint8Array>
+  /** Reads no file that is already over the attachment limit. */
+  readFile(
+    fsPath: string,
+    maxBytes: number,
+    expectedCanonicalPath?: string,
+  ): Promise<{ readonly bytes: Uint8Array | undefined; readonly isPdf: boolean }>
+  /** Indexed relative path and the same checked target for reading; undefined on an escape. */
+  canonicalRelativePath(
+    fsPath: string,
+  ): Promise<{ readonly canonical: string; readonly checkedAbsolute: string } | undefined>
   /** QuickPick over the mention index; resolves to the chosen relative path. */
   pickMentionFile(): Promise<string | undefined>
   /** Relative path for a dropped `file:` URI; undefined outside the workspace. */
@@ -281,6 +300,11 @@ const APPROVED_DECISION = 'approved'
 const ONCE_SCOPE = 'once'
 const [IDE_MCP_CAPABILITY] = MSP_REQUESTED_CAPABILITIES
 const HISTORY_MODE_NONE = 'none'
+const REWIND_HISTORY_MODES: ReadonlySet<string> = new Set([
+  'inline',
+  'snapshot',
+  'anchoredSnapshot',
+])
 const NOT_LOADED_STATUS = 'notLoaded'
 // Events that mark a hidden surface unread (Claude Code's dot): the turn is
 // done, or the agent is waiting on a decision or an answer.
@@ -413,6 +437,20 @@ export class ConversationController {
   private skills: readonly SkillOption[] | undefined
   private skillsRefresh: Promise<void> | undefined
   private readonly attachments: AttachmentStore
+  /** A clear or session replacement invalidates pending browser file admission. */
+  private attachmentGeneration = 0
+  /** External session drops invalidate in-flight sends; owned not-loaded recovery does not. */
+  private sendInvalidationEpoch = 0
+  /** The latest composer generation seen on this surface's file messages. */
+  private webviewAttachmentEpoch = 0
+
+  /** User cards whose file bytes rewind cannot restore across every backend/history path. */
+  private readonly fileMessageIds = new Set<string>()
+  /** Fresh cards use local IDs until Muse Code serves their durable user item IDs. */
+  private readonly acceptedUserCards = new Map<
+    string,
+    { readonly turnId: string; readonly text: string }
+  >()
   private modelId: string
   private permissionMode: PermissionMode
   private isSideChat: boolean
@@ -650,7 +688,11 @@ export class ConversationController {
    * the caller says the host is already gone or has been told (PLAN.md D25):
    * a dropped turn would otherwise run on, unwatched and billed.
    */
-  private dropSession(isTurnCancelled = true): void {
+  private dropSession(isTurnCancelled = true, isOwnedRecovery = false): void {
+    this.attachmentGeneration += 1
+    if (!isOwnedRecovery) {
+      this.sendInvalidationEpoch += 1
+    }
     const { session } = this
     if (isTurnCancelled && session !== undefined && this.activeTurnId !== undefined) {
       void this.cancelQuietly(session)
@@ -674,6 +716,8 @@ export class ConversationController {
     session?.dispose()
     this.session = undefined
     this.activeTurnId = undefined
+    this.fileMessageIds.clear()
+    this.acceptedUserCards.clear()
     this.childSessionIds.clear()
     this.finishedTurns.clear()
     this.forgetForegroundShells()
@@ -839,6 +883,15 @@ export class ConversationController {
     this.gapReload ??= this.reloadAfterGaps()
   }
 
+  private noteFileCard(item: ItemSnapshot): void {
+    if (
+      item.kind === 'userMessage' &&
+      item.attachments?.some((attachment) => attachment.type === 'file')
+    ) {
+      this.fileMessageIds.add(item.itemId)
+    }
+  }
+
   private onEvent(event: AgentEvent): void {
     // The controller's own events (D26): never forwarded to the webview.
     if (event.type === 'viewGap') {
@@ -967,12 +1020,14 @@ export class ConversationController {
         break
       }
       case 'itemStarted': {
+        this.noteFileCard(event.item)
         this.noteForegroundShell(event.item)
         this.noteSubagentRow(event.item)
         break
       }
       case 'itemUpdated':
       case 'itemCompleted': {
+        this.noteFileCard(event.item)
         if (event.type === 'itemCompleted' || event.item.status !== IN_PROGRESS_STATUS) {
           this.pendingShellApprovals.delete(event.item.itemId)
           this.pausedForegroundShells.delete(event.item.itemId)
@@ -1778,6 +1833,7 @@ export class ConversationController {
   ): void {
     for (const item of history.items) {
       this.noteSubagentRow(item)
+      this.noteFileCard(item)
     }
     this.restoreForegroundShells(history.items, activeTurnId)
     this.post({
@@ -1954,7 +2010,60 @@ export class ConversationController {
       if (message.turnId === this.activeTurnId) {
         return
       }
+      // Model API replay may hold PDF bytes, but a named text file is stored
+      // only as model-facing text. Muse Code echoes file metadata without
+      // bytes. Never clear/fork on a file card while its chips cannot be
+      // restored exactly in both paths.
+      if (this.fileMessageIds.has(message.itemId)) {
+        this.notice('warning', UI_TEXT.attachmentUnreadable)
+        return
+      }
+      const history = await host.readSession(source.sessionId)
+      if (this.session !== source || message.turnId === this.activeTurnId) {
+        return
+      }
+      // A webview request may be forged or stale. Bind every field and the
+      // fork cut to one served user card before discarding any conversation.
+      const users = history.items.filter((item) => item.kind === 'userMessage')
+      let selectedIndex = users.findIndex((item) => item.itemId === message.itemId)
+      if (selectedIndex < 0) {
+        const accepted = this.acceptedUserCards.get(message.itemId)
+        const candidates =
+          accepted === undefined
+            ? []
+            : users.filter((item) => item.turnId === accepted.turnId && item.text === accepted.text)
+        const candidate = candidates[0]
+        if (candidate !== undefined && candidates.length === 1) {
+          selectedIndex = users.indexOf(candidate)
+        }
+      }
+      const selected = users[selectedIndex]
+      const preceding = selectedIndex < 0 ? [] : users.slice(0, selectedIndex)
+      const earlierDistinct = preceding.findLast(
+        (item) => item.turnId !== undefined && item.turnId !== selected?.turnId,
+      )
+      const hasEarlierTurn = preceding.some((item) => item.turnId !== undefined)
+      if (selected === undefined || !REWIND_HISTORY_MODES.has(history.mode)) {
+        this.notice('warning', UI_TEXT.attachmentUnreadable)
+        return
+      }
+      if (
+        selected.turnId !== message.turnId ||
+        (selected.text ?? '') !== message.text ||
+        (hasEarlierTurn && earlierDistinct === undefined) ||
+        earlierDistinct?.turnId !== message.lastTurnId ||
+        selected.attachments?.some((attachment) => attachment.type === 'file')
+      ) {
+        this.notice('warning', UI_TEXT.attachmentUnreadable)
+        return
+      }
       const images = source.sentImages?.(message.turnId, message.itemId) ?? []
+      const recordedImageCount =
+        selected.attachments?.filter((attachment) => attachment.type === 'image').length ?? 0
+      if (images.length < Math.max(recordedImageCount, message.imageCount)) {
+        this.notice('warning', UI_TEXT.rewindImagesUnavailable)
+        return
+      }
       if (message.lastTurnId === undefined) {
         this.clear()
       } else {
@@ -1972,9 +2081,6 @@ export class ConversationController {
         if (added.ok) {
           this.post({ type: 'attachmentAdded', attachment: added.attachment })
         }
-      }
-      if (images.length < message.imageCount) {
-        this.notice('warning', UI_TEXT.rewindImagesUnavailable)
       }
       this.post({ type: 'restoreDraft', text: message.text })
     } catch (error: unknown) {
@@ -2072,13 +2178,24 @@ export class ConversationController {
     session: AgentSession,
     parts: readonly TurnPart[],
     displayText: string | undefined,
+    shouldQueueForDisplayText: boolean,
+    isCurrent: () => boolean,
   ): Promise<TurnSubmission> {
-    if (this.activeTurnId !== undefined) {
+    if (!isCurrent()) {
+      throw new Error(UI_TEXT.turnStoppedByRestart)
+    }
+    if (!shouldQueueForDisplayText && this.activeTurnId !== undefined) {
       try {
         return await session.steer(this.activeTurnId, parts)
       } catch (error: unknown) {
+        if (!isCurrent()) {
+          throw new Error(UI_TEXT.turnStoppedByRestart, { cause: error })
+        }
         this.deps.log.warn(`turn/steer failed (${describe(error)}); submitting as a new turn`)
       }
+    }
+    if (!isCurrent()) {
+      throw new Error(UI_TEXT.turnStoppedByRestart)
     }
     return await session.sendTurn(parts, displayText)
   }
@@ -2149,7 +2266,22 @@ export class ConversationController {
       if (session === undefined) {
         return
       }
+      const sendEpoch = this.sendInvalidationEpoch
+      let expectedGeneration = this.attachmentGeneration
+      let submittedSession = session
+      const requireCurrent = (current: AgentSession): void => {
+        if (
+          this.isDisposed ||
+          this.sendInvalidationEpoch !== sendEpoch ||
+          this.session !== current ||
+          this.attachmentGeneration !== expectedGeneration
+        ) {
+          throw new Error(UI_TEXT.turnStoppedByRestart)
+        }
+      }
+      requireCurrent(session)
       await this.autosave()
+      requireCurrent(session)
       const typed = this.buildParts(text, attachmentIds)
       if (typed.length === 0) {
         this.post({
@@ -2167,23 +2299,62 @@ export class ConversationController {
       const context = await this.contextPart(
         isEditorContextIncluded ? this.deps.editorContext() : undefined,
       )
+      requireCurrent(session)
       // The CLI backend also gets the choice-steering note (M14); the Model
       // API backend carries it in its system prompt.
       const host = await this.deps.ensureHost()
+      requireCurrent(session)
+      if (this.sessionKind !== host.info.kind) {
+        throw new Error(UI_TEXT.turnStoppedByRestart)
+      }
       const note: readonly TurnPart[] =
         host.info.kind === 'museCode' ? [{ type: 'text', text: CHOICE_STEERING_NOTE }] : []
       const parts = [...typed, ...referenced, ...(context === undefined ? [] : [context]), ...note]
-      // With extra parts the durable transcript keeps the typed text only.
-      const displayText = parts.length === typed.length ? undefined : text
-      const submission = await this.runResuming(host, session, (current) =>
-        this.submit(current, parts, displayText),
-      )
+      // MSP stores no text-file attachment metadata: keep each name in the
+      // durable card while the full content travels only to the model (M54).
+      const textFileNames = typed.flatMap((part) => (part.type === 'textFile' ? [part.name] : []))
+      const contextText = parts.length === typed.length ? undefined : text
+      let displayText = contextText
+      if (textFileNames.length > 0) {
+        displayText =
+          host.info.kind === 'museCode'
+            ? textFileDisplay(text, textFileNames)
+            : [text, ...textFileNames].filter((line) => line !== '').join('\n')
+      }
+      const submission = await this.runResuming(host, session, (current) => {
+        // runResuming may replace a not-loaded session itself; that recovery
+        // owns the new generation. An unrelated restart still fails admission.
+        if (current !== session) {
+          expectedGeneration = this.attachmentGeneration
+        }
+        requireCurrent(current)
+        submittedSession = current
+        return this.submit(
+          current,
+          parts,
+          displayText,
+          host.info.kind === 'museCode' && textFileNames.length > 0,
+          () =>
+            !this.isDisposed &&
+            this.sendInvalidationEpoch === sendEpoch &&
+            this.session === current &&
+            this.attachmentGeneration === expectedGeneration,
+        )
+      })
+      requireCurrent(submittedSession)
       // The images go only once the host has the message (D26).
       this.attachments.release(attachmentIds)
       if (this.isDisposed) {
         return
       }
       const { turnId } = submission
+      this.acceptedUserCards.set(localId, { turnId, text })
+      if (submission.userMessageId !== undefined) {
+        this.acceptedUserCards.set(submission.userMessageId, { turnId, text })
+      }
+      if (typed.some((part) => part.type === 'file' || part.type === 'textFile')) {
+        this.fileMessageIds.add(submission.userMessageId ?? localId)
+      }
       // A queued turn is not the running one, and an ack that lands after its
       // own turn completed must not mark it running again (D26).
       if (submission.disposition !== QUEUED_DISPOSITION && !this.finishedTurns.has(turnId)) {
@@ -2224,12 +2395,12 @@ export class ConversationController {
       }
       // A late refusal from an old session must not replace the session
       // the user opened while that command was in flight.
-      if (this.session?.sessionId !== session.sessionId) {
+      if (this.session !== session) {
         throw error
       }
       this.deps.log.info(`Session ${error.sessionId} was not loaded; resuming it`)
       this.resumeTarget = { sessionId: error.sessionId, kind: host.info.kind }
-      this.dropSession(false)
+      this.dropSession(false, true)
       const resumed = await this.ensureSession(this.deps.workspaceRoot)
       return await run(resumed)
     }
@@ -2515,7 +2686,13 @@ export class ConversationController {
     this.postComposerState()
   }
 
+  /** A pending browser encode belongs to the session before this replacement request. */
+  private beginBrowserSessionChange(attachmentEpoch?: number): void {
+    this.webviewAttachmentEpoch = Math.max(this.webviewAttachmentEpoch + 1, attachmentEpoch ?? 0)
+  }
+
   private clear(): void {
+    this.webviewAttachmentEpoch += 1
     const wasSideChat = this.isSideChat
     this.dropSession()
     this.isSideChat = this.deps.surface.isSideChat === true
@@ -2580,12 +2757,61 @@ export class ConversationController {
     }
   }
 
-  private addImage(name: string, bytes: Uint8Array): void {
-    const result = this.attachments.add(name, bytes)
+  private async addAttachment(
+    name: string,
+    bytes: Uint8Array,
+    canAcceptText = false,
+    requestId?: string,
+    requestEpoch?: number,
+    expectedGeneration?: number,
+  ): Promise<void> {
+    const generation = expectedGeneration ?? this.attachmentGeneration
+    if (!this.isCurrentAttachmentGeneration(generation)) {
+      return
+    }
+    let host: AgentHost
+    try {
+      host = await this.deps.ensureHost()
+    } catch (error: unknown) {
+      if (
+        this.isDisposed ||
+        generation !== this.attachmentGeneration ||
+        (requestEpoch !== undefined && requestEpoch !== this.webviewAttachmentEpoch)
+      ) {
+        return
+      }
+      if (requestId === undefined) {
+        throw error
+      }
+      this.post({
+        type: 'attachmentRejected',
+        name,
+        reason: UI_TEXT.attachmentUnreadable,
+        requestId,
+      })
+      return
+    }
+    if (
+      this.isDisposed ||
+      generation !== this.attachmentGeneration ||
+      (requestEpoch !== undefined && requestEpoch !== this.webviewAttachmentEpoch)
+    ) {
+      return
+    }
+    const result = this.attachments.add(name, bytes, host.info.kind === 'modelApi', canAcceptText)
     if (result.ok) {
-      this.post({ type: 'attachmentAdded', attachment: result.attachment })
+      this.post({
+        type: 'attachmentAdded',
+        attachment: result.attachment,
+        ...(requestId !== undefined && { requestId }),
+      })
     } else {
-      this.post({ type: 'attachmentRejected', name, reason: result.reason })
+      this.post({
+        type: 'attachmentRejected',
+        name,
+        reason: result.reason,
+        ...(requestId !== undefined && { requestId }),
+      })
     }
   }
 
@@ -2593,21 +2819,196 @@ export class ConversationController {
     this.post({ type: 'insertText', text: `${formatMention(relativePath)} ` })
   }
 
+  private isCurrentAttachmentGeneration(generation: number): boolean {
+    return !this.isDisposed && generation === this.attachmentGeneration
+  }
+
+  /** Text bytes need a trusted, indexed, canonical workspace path; path mentions stay available. */
+  private async textFileDisposition(
+    file: PickedFile,
+    generation: number,
+  ): Promise<
+    | { readonly kind: 'attach'; readonly checkedAbsolute: string }
+    | { readonly kind: 'mention' }
+    | { readonly kind: 'refuse' }
+    | { readonly kind: 'stale' }
+  > {
+    if (!this.isCurrentAttachmentGeneration(generation)) {
+      return { kind: 'stale' }
+    }
+    if (!this.deps.isWorkspaceTrusted()) {
+      return { kind: 'mention' }
+    }
+    let checked: Awaited<ReturnType<FileAccess['canonicalRelativePath']>>
+    try {
+      checked = await this.deps.files.canonicalRelativePath(file.fsPath)
+    } catch (error: unknown) {
+      if (!this.isCurrentAttachmentGeneration(generation)) {
+        return { kind: 'stale' }
+      }
+      this.deps.log.warn(`text attachment path check failed: ${describe(error)}`)
+      return { kind: 'mention' }
+    }
+    if (!this.isCurrentAttachmentGeneration(generation)) {
+      return { kind: 'stale' }
+    }
+    if (checked === undefined) {
+      return { kind: 'mention' }
+    }
+    const { canonical } = checked
+    const segments = canonical.toLowerCase().split('/')
+    const name = segments.at(-1) ?? ''
+    if (
+      isProtectedPath(canonical) ||
+      name.startsWith('.env.') ||
+      PRIVATE_ATTACHMENT_NAMES.has(name) ||
+      PRIVATE_ATTACHMENT_EXTENSIONS.has(path.extname(name))
+    ) {
+      this.post({ type: 'attachmentRejected', name: file.name, reason: UI_TEXT.textFilePrivate })
+      return { kind: 'refuse' }
+    }
+    let isIndexed: boolean
+    try {
+      isIndexed = await this.deps.mentions.contains(canonical)
+    } catch (error: unknown) {
+      if (!this.isCurrentAttachmentGeneration(generation)) {
+        return { kind: 'stale' }
+      }
+      throw error
+    }
+    if (!this.isCurrentAttachmentGeneration(generation)) {
+      return { kind: 'stale' }
+    }
+    return isIndexed
+      ? { kind: 'attach', checkedAbsolute: checked.checkedAbsolute }
+      : { kind: 'mention' }
+  }
+
   private async pickFile(): Promise<void> {
-    const picked = await this.deps.files.showOpenDialog()
+    const generation = this.attachmentGeneration
+    let picked: readonly PickedFile[]
+    try {
+      picked = await this.deps.files.showOpenDialog()
+    } catch (error: unknown) {
+      if (!this.isCurrentAttachmentGeneration(generation)) {
+        return
+      }
+      throw error
+    }
+    if (!this.isCurrentAttachmentGeneration(generation)) {
+      return
+    }
     for (const file of picked) {
+      if (!this.isCurrentAttachmentGeneration(generation)) {
+        return
+      }
       const extension = path.extname(file.name).toLowerCase()
-      if (Object.hasOwn(IMAGE_EXTENSIONS, extension)) {
-        this.addImage(file.name, await this.deps.files.readFile(file.fsPath))
+      const lowerName = file.name.toLowerCase()
+      if (
+        lowerName.startsWith('.env.') ||
+        PRIVATE_ATTACHMENT_NAMES.has(lowerName) ||
+        PRIVATE_ATTACHMENT_EXTENSIONS.has(extension)
+      ) {
+        this.post({ type: 'attachmentRejected', name: file.name, reason: UI_TEXT.textFilePrivate })
+        continue
+      }
+      const isTextFile = TEXT_ATTACHMENT_EXTENSIONS.has(extension)
+      let pathToRead = file.fsPath
+      let shouldMentionUnlessPdf = false
+      if (isTextFile) {
+        const disposition = await this.textFileDisposition(file, generation)
+        if (disposition.kind === 'stale') {
+          return
+        }
+        if (disposition.kind === 'refuse') {
+          continue
+        }
+        if (disposition.kind === 'mention') {
+          shouldMentionUnlessPdf = true
+        } else {
+          pathToRead = disposition.checkedAbsolute
+        }
+      }
+      if (isTextFile || extension === PDF_EXTENSION || Object.hasOwn(IMAGE_EXTENSIONS, extension)) {
+        let maxBytes = MAX_IMAGE_BYTES
+        if (isTextFile) {
+          maxBytes = MAX_TEXT_ATTACHMENT_BYTES
+        } else if (extension === PDF_EXTENSION) {
+          maxBytes = MAX_DOCUMENT_BYTES
+        }
+        let read: Awaited<ReturnType<FileAccess['readFile']>>
+        try {
+          if (shouldMentionUnlessPdf) {
+            read = await this.deps.files.readFile(pathToRead, 0)
+          } else if (isTextFile) {
+            read = await this.deps.files.readFile(pathToRead, maxBytes, pathToRead)
+          } else {
+            read = await this.deps.files.readFile(pathToRead, maxBytes)
+          }
+        } catch (error: unknown) {
+          if (!this.isCurrentAttachmentGeneration(generation)) {
+            return
+          }
+          this.deps.log.warn(`attachment read failed: ${describe(error)}`)
+          this.post({
+            type: 'attachmentRejected',
+            name: file.name,
+            reason: UI_TEXT.attachmentUnreadable,
+          })
+          continue
+        }
+        if (!this.isCurrentAttachmentGeneration(generation)) {
+          return
+        }
+        if (shouldMentionUnlessPdf && !read.isPdf) {
+          this.insertMention(file.relativePath ?? file.fsPath.replaceAll('\\', '/'))
+          continue
+        }
+        const limit = read.isPdf ? MAX_DOCUMENT_BYTES : maxBytes
+        if (read.bytes === undefined || read.bytes.byteLength > limit) {
+          const otherTooLarge = isTextFile ? UI_TEXT.textFileTooLarge : UI_TEXT.attachmentTooLarge
+          this.post({
+            type: 'attachmentRejected',
+            name: file.name,
+            reason:
+              extension === PDF_EXTENSION || read.isPdf ? UI_TEXT.documentTooLarge : otherTooLarge,
+          })
+        } else {
+          await this.addAttachment(
+            file.name,
+            read.bytes,
+            isTextFile,
+            undefined,
+            undefined,
+            generation,
+          )
+        }
       } else {
-        this.insertMention(file.relativePath ?? file.fsPath.replaceAll('\\', '/'))
+        if (UNSUPPORTED_BINARY_ATTACHMENT_EXTENSIONS.has(extension)) {
+          this.post({
+            type: 'attachmentRejected',
+            name: file.name,
+            reason: UI_TEXT.binaryFileUnsupported,
+          })
+        } else {
+          this.insertMention(file.relativePath ?? file.fsPath.replaceAll('\\', '/'))
+        }
       }
     }
   }
 
   private async pickMentionFile(): Promise<void> {
-    const relativePath = await this.deps.files.pickMentionFile()
-    if (relativePath !== undefined) {
+    const generation = this.attachmentGeneration
+    let relativePath: string | undefined
+    try {
+      relativePath = await this.deps.files.pickMentionFile()
+    } catch (error: unknown) {
+      if (!this.isCurrentAttachmentGeneration(generation)) {
+        return
+      }
+      throw error
+    }
+    if (relativePath !== undefined && this.isCurrentAttachmentGeneration(generation)) {
       this.insertMention(relativePath)
     }
   }
@@ -3007,6 +3408,7 @@ export class ConversationController {
         break
       }
       case 'rewindConversation': {
+        this.beginBrowserSessionChange(message.attachmentEpoch)
         await this.rewindConversation(message)
         break
       }
@@ -3032,6 +3434,12 @@ export class ConversationController {
       }
       case 'clearConversation': {
         this.clear()
+        if (message.attachmentEpoch !== undefined) {
+          this.webviewAttachmentEpoch = Math.max(
+            this.webviewAttachmentEpoch,
+            message.attachmentEpoch,
+          )
+        }
         break
       }
       case 'compact': {
@@ -3079,7 +3487,19 @@ export class ConversationController {
         break
       }
       case 'attachImageData': {
-        this.addImage(message.name, new Uint8Array(Buffer.from(message.base64, 'base64')))
+        if (message.attachmentEpoch !== undefined) {
+          if (message.attachmentEpoch < this.webviewAttachmentEpoch) {
+            break
+          }
+          this.webviewAttachmentEpoch = message.attachmentEpoch
+        }
+        await this.addAttachment(
+          message.name,
+          new Uint8Array(Buffer.from(message.base64, 'base64')),
+          false,
+          message.requestId,
+          message.attachmentEpoch,
+        )
         break
       }
       case 'removeAttachment': {
@@ -3111,6 +3531,7 @@ export class ConversationController {
         break
       }
       case 'resumeSession': {
+        this.beginBrowserSessionChange(message.attachmentEpoch)
         await this.resumeSession(message.sessionId)
         break
       }
@@ -3119,6 +3540,7 @@ export class ConversationController {
         break
       }
       case 'forkSession': {
+        this.beginBrowserSessionChange(message.attachmentEpoch)
         await this.forkSession(message.lastTurnId)
         break
       }
@@ -3141,14 +3563,23 @@ export class ConversationController {
     }
   }
 
-  public surfaceReady(): void {
-    // First, so a reloaded webview keeps the conversation it saved only when
-    // that session is still the live one here, with its running turn (M25, D28).
+  private postSurfaceState(): void {
     this.post({
       type: 'surfaceState',
+      attachmentEpoch: this.webviewAttachmentEpoch,
       ...(this.session !== undefined && { sessionId: this.session.sessionId }),
       ...(this.activeTurnId !== undefined && { activeTurnId: this.activeTurnId }),
     })
+  }
+
+  public surfaceReady(attachmentEpoch?: number): void {
+    if (attachmentEpoch !== undefined) {
+      // Saved webview state may lag an in-flight session change.
+      this.webviewAttachmentEpoch = Math.max(this.webviewAttachmentEpoch, attachmentEpoch)
+    }
+    // First, so a reloaded webview keeps the conversation it saved only when
+    // that session is still the live one here, with its running turn (M25, D28).
+    this.postSurfaceState()
     this.post(this.deps.auth.toMessage())
     this.postComposerState()
     this.postDictationState()
@@ -3200,6 +3631,8 @@ export class ConversationController {
       await this.deps.sessions.setLastSession(undefined)
       return
     }
+    this.beginBrowserSessionChange()
+    this.postSurfaceState()
     await this.resumeSession(last.sessionId)
   }
 
@@ -3215,6 +3648,8 @@ export class ConversationController {
     ) {
       return
     }
+    this.beginBrowserSessionChange()
+    this.postSurfaceState()
     await this.resumeSession(sessionId)
   }
 
@@ -3289,6 +3724,8 @@ export class ConversationController {
    * out, shutdown), the session is resumed by the next message.
    */
   public async backendStopping(isConversationEnding: boolean): Promise<void> {
+    // Invalidate a pending send before a running turn's cancel can await.
+    this.sendInvalidationEpoch += 1
     const { session } = this
     if (session !== undefined && this.activeTurnId !== undefined) {
       try {

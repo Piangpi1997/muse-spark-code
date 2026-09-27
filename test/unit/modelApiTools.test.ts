@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 import {
   classifyTool,
   confineWorkspacePath,
@@ -10,6 +10,8 @@ import {
   toolDefinitions,
 } from '../../src/core/backends/modelapi/tools'
 import { parsePatchFiles } from '../../src/shared/patchDocument'
+import { EN } from '../../src/shared/l10n/en'
+import { BASE_LOCALE, setUiText } from '../../src/shared/l10n/text'
 import { revertHunks } from '../../src/core/patchApply'
 import {
   MODEL_TEXT,
@@ -112,6 +114,7 @@ describe('confineWorkspacePath: links (D24)', () => {
       absolute: '/ws/inner/a.ts',
       relative: 'inner/a.ts',
       canonical: 'src/a.ts',
+      checkedAbsolute: '/ws/src/a.ts',
     })
   })
 
@@ -136,6 +139,270 @@ describe('confineWorkspacePath: links (D24)', () => {
     expect(read.failureReason).toContain('through a link')
     expect(files.files.size).toBe(1)
     expect(files.files.get('/ws/a.txt')).toBe('x')
+  })
+})
+
+function retargetedIo(base: ReturnType<typeof memoryToolIo>) {
+  let target = '/ws/safe'
+  const pointedPath = (absolutePath: string) =>
+    absolutePath.startsWith('/ws/link/')
+      ? `${target}${absolutePath.slice('/ws/link'.length)}`
+      : absolutePath
+  return {
+    ...base,
+    realPath: (absolutePath: string) => {
+      const checked = pointedPath(absolutePath)
+      if (absolutePath.startsWith('/ws/link/')) {
+        target = '/ws/outside'
+      }
+      return Promise.resolve(checked)
+    },
+    readFile: (absolutePath: string) => base.readFile(pointedPath(absolutePath)),
+    readBytes: (absolutePath: string, maxBytes: number) =>
+      base.readBytes(pointedPath(absolutePath), maxBytes),
+  }
+}
+
+describe('read_file: retargeted links (M54)', () => {
+  it('reads the checked canonical text target after a link retargets', async () => {
+    const base = memoryToolIo({ 'safe/note.txt': 'inside', 'outside/note.txt': 'outside' }, ROOT)
+    const io = retargetedIo(base)
+    const result = await executeTool('read_file', '{"path":"link/note.txt"}', {
+      workspaceRoot: ROOT,
+      platform: 'linux',
+      io,
+      seen: new Map(),
+    })
+    expect(result.output).toContain('inside')
+    expect(result.output).not.toContain('outside')
+  })
+
+  it('reads the checked canonical PDF target after a link retargets', async () => {
+    const base = memoryToolIo({}, ROOT)
+    const inside = Buffer.from('%PDF-1.4\ninside\n')
+    const outside = Buffer.from('%PDF-1.4\noutside\n')
+    base.binaries.set('/ws/safe/report.pdf', inside)
+    base.binaries.set('/ws/outside/report.pdf', outside)
+    const io = retargetedIo(base)
+    const result = await executeTool('read_file', '{"path":"link/report.pdf"}', {
+      workspaceRoot: ROOT,
+      platform: 'linux',
+      io,
+      seen: new Map(),
+    })
+    expect(result.visibleFile?.part.base64Data).toBe(inside.toString('base64'))
+  })
+})
+
+describe('read_file: localized visual summaries (M54)', () => {
+  afterEach(() => {
+    setUiText(EN, BASE_LOCALE)
+  })
+
+  it('keeps PDF function output English while the row translates known and unknown pages', async () => {
+    setUiText(
+      {
+        ...EN,
+        toolReadPdf: 'PDF gelesen: `{path}` ({pages}, {bytes} Byte)',
+        toolReadPdfPages: { one: '{count} Seite', other: '{count} Seiten' },
+        toolReadPdfPagesUnknown: 'Seitenzahl unbekannt',
+      },
+      'de',
+    )
+    const { io, run } = context()
+    const known = Buffer.alloc(12_345, 0x20)
+    known.write('%PDF-1.4\n<< /Type /Pages /Count 1234 >>\n', 0, 'ascii')
+    io.binaries.set('/ws/docs/report.pdf', known)
+
+    const result = await run('read_file', { path: 'docs/report.pdf' })
+    expect(result.output).toBe(
+      'Read PDF `docs/report.pdf` (page count 1234, 12345 bytes). The file itself follows in the next message; you see its text and page images.',
+    )
+    expect(result.visibleOutput).toBe('PDF gelesen: `docs/report.pdf` (1.234 Seiten, 12.345 Byte)')
+    expect(result.visibleFile?.part).toMatchObject({ pageCount: 1234, sizeBytes: 12_345 })
+
+    io.binaries.set('/ws/docs/one.pdf', Buffer.from('%PDF-1.4\n<< /Type /Pages /Count 1 >>'))
+    const singular = await run('read_file', { path: 'docs/one.pdf' })
+    expect(singular.visibleOutput).toContain('1 Seite')
+
+    io.binaries.set('/ws/docs/uncounted.pdf', Buffer.from('%PDF-1.4\nno page tree'))
+    const unknown = await run('read_file', { path: 'docs/uncounted.pdf' })
+    expect(unknown.output).toContain('page count unknown')
+    expect(unknown.visibleOutput).toContain('Seitenzahl unbekannt')
+  })
+
+  it('keeps image function output English while the row groups dimensions and bytes', async () => {
+    setUiText(
+      {
+        ...EN,
+        toolReadImage: 'Bild gelesen: `{path}` ({mediaType}, {width}×{height}, {bytes} Byte)',
+      },
+      'de',
+    )
+    const { io, run } = context()
+    const png = Buffer.alloc(12_345)
+    Buffer.from('89504e470d0a1a0a', 'hex').copy(png)
+    png.write('IHDR', 12, 'ascii')
+    png.writeUInt32BE(1234, 16)
+    png.writeUInt32BE(2345, 20)
+    io.binaries.set('/ws/img/large.png', png)
+
+    const result = await run('read_file', { path: 'img/large.png' })
+    expect(result.output).toBe(
+      'Read image `img/large.png` (image/png, 1234×2345, 12345 bytes). The image itself follows in the next message.',
+    )
+    expect(result.visibleOutput).toBe(
+      'Bild gelesen: `img/large.png` (image/png, 1.234×2.345, 12.345 Byte)',
+    )
+    expect(result.visibleFile?.part).toMatchObject({ width: 1234, height: 2345 })
+  })
+
+  it('localizes invalid PDF and image rows without changing model errors', async () => {
+    setUiText(
+      {
+        ...EN,
+        toolReadPdfInvalid: 'PDF-Datei `{path}` ist ungültig',
+        toolReadImageInvalid: 'Bilddatei `{path}` ist ungültig',
+      },
+      'de',
+    )
+    const { io, run } = context()
+    io.binaries.set('/ws/docs/fake.pdf', Buffer.from('not a PDF'))
+    io.binaries.set('/ws/img/fake.png', Buffer.from('not an image'))
+
+    const pdf = await run('read_file', { path: 'docs/fake.pdf' })
+    expect(pdf.output).toBe(
+      'Error: docs/fake.pdf is named as a PDF but is not one (it has no %PDF- header)',
+    )
+    expect(pdf.visibleOutput).toBe('PDF-Datei `docs/fake.pdf` ist ungültig')
+    expect(pdf.failureReason).toBe(pdf.visibleOutput)
+    expect(pdf.visibleFile).toBeUndefined()
+
+    const image = await run('read_file', { path: 'img/fake.png' })
+    expect(image.output).toBe(
+      'Error: img/fake.png is named as an image but is not a PNG, JPEG, GIF or WebP image',
+    )
+    expect(image.visibleOutput).toBe('Bilddatei `img/fake.png` ist ungültig')
+    expect(image.failureReason).toBe(image.visibleOutput)
+    expect(image.visibleFile).toBeUndefined()
+  })
+
+  it('localizes a missing PDF or image while retaining the English model result', async () => {
+    setUiText({ ...EN, toolVisualFileMissing: 'Datei `{path}` fehlt' }, 'de')
+    const { run } = context()
+    for (const file of ['docs/missing.pdf', 'img/missing.png']) {
+      const result = await run('read_file', { path: file })
+      expect(result.output).toBe(`Error: file not found: ${file}`)
+      expect(result.visibleOutput).toBe(`Datei \`${file}\` fehlt`)
+      expect(result.failureReason).toBe(result.visibleOutput)
+      expect(result.visibleFile).toBeUndefined()
+    }
+  })
+
+  it('localizes visual read exceptions and preserves their English model error', async () => {
+    setUiText({ ...EN, toolVisualReadFailed: 'Datei `{path}` kann nicht gelesen werden' }, 'de')
+    const { io, ctx } = context()
+    const failures: readonly { readonly file: string; readonly reason: string }[] = [
+      { file: 'img/huge.png', reason: 'huge.png is 12345 bytes, over the 10000 allowed' },
+      { file: 'docs/unreadable.pdf', reason: 'EIO: disk unavailable' },
+    ]
+    for (const { file, reason } of failures) {
+      io.readBytes = () => Promise.reject(new Error(reason))
+      const result = await executeTool('read_file', JSON.stringify({ path: file }), ctx)
+      expect(result.output).toBe(`Error: ${reason}`)
+      expect(result.visibleOutput).toBe(`Datei \`${file}\` kann nicht gelesen werden`)
+      expect(result.failureReason).toBe(result.visibleOutput)
+      expect(result.visibleFile).toBeUndefined()
+    }
+  })
+
+  it('still propagates an aborted visual read to the turn cancellation boundary', async () => {
+    const { io, ctx } = context()
+    const abort = new AbortController()
+    abort.abort()
+    io.readBytes = () => Promise.reject(new Error('stopped read'))
+    await expect(
+      executeTool('read_file', '{"path":"img/stopped.png"}', { ...ctx, signal: abort.signal }),
+    ).rejects.toThrow('stopped read')
+  })
+})
+
+function retargetedWritablePath(absolutePath: string): string {
+  return absolutePath.startsWith('/ws/link/')
+    ? `/etc/${absolutePath.slice('/ws/link/'.length)}`
+    : absolutePath
+}
+
+function retargetedWritableIo(initial: Record<string, string>) {
+  const base = memoryToolIo(initial, ROOT)
+  const io = {
+    ...base,
+    realPath: (absolutePath: string) =>
+      Promise.resolve(
+        absolutePath.startsWith('/ws/link/')
+          ? `/ws/safe/${absolutePath.slice('/ws/link/'.length)}`
+          : absolutePath,
+      ),
+    readFile: (absolutePath: string) => base.readFile(retargetedWritablePath(absolutePath)),
+    writeFile: (absolutePath: string, content: string) =>
+      base.writeFile(retargetedWritablePath(absolutePath), content),
+  }
+  return { base, io }
+}
+
+describe('write_file and edit_file: retargeted links (M54)', () => {
+  it('creates at the checked target instead of a retargeted outside path', async () => {
+    const { base, io } = retargetedWritableIo({})
+    const result = await executeTool('write_file', '{"path":"link/new.txt","content":"safe"}', {
+      workspaceRoot: ROOT,
+      platform: 'linux',
+      io,
+      seen: new Map(),
+    })
+    expect(result.failureReason).toBeUndefined()
+    expect(base.files.get('/ws/safe/new.txt')).toBe('safe')
+    expect(base.files.has('/etc/new.txt')).toBe(false)
+  })
+
+  it('edits the checked text and keeps the outside file untouched', async () => {
+    const { base, io } = retargetedWritableIo({ 'safe/note.txt': 'before' })
+    base.files.set('/etc/note.txt', 'before')
+    const result = await executeTool(
+      'edit_file',
+      '{"path":"link/note.txt","find":"before","replace":"after"}',
+      { workspaceRoot: ROOT, platform: 'linux', io, seen: new Map() },
+    )
+    expect(result.failureReason).toBeUndefined()
+    expect(base.files.get('/ws/safe/note.txt')).toBe('after')
+    expect(base.files.get('/etc/note.txt')).toBe('before')
+  })
+
+  it('replaces the checked text the model read through the requested path', async () => {
+    const { base, io } = retargetedWritableIo({ 'safe/note.txt': 'before' })
+    base.files.set('/etc/note.txt', 'before')
+    const ctx: ToolContext = { workspaceRoot: ROOT, platform: 'linux', io, seen: new Map() }
+    const read = await executeTool('read_file', '{"path":"link/note.txt"}', ctx)
+    expect(read.output).toContain('before')
+    const written = await executeTool(
+      'write_file',
+      '{"path":"link/note.txt","content":"after"}',
+      ctx,
+    )
+    expect(written.failureReason).toBeUndefined()
+    expect(base.files.get('/ws/safe/note.txt')).toBe('after')
+    expect(base.files.get('/etc/note.txt')).toBe('before')
+  })
+
+  it('refuses an unsaved canonical editor file even when the alias is not open', async () => {
+    const { base, io } = retargetedWritableIo({ 'safe/note.txt': 'before' })
+    base.unsaved.add('/ws/safe/note.txt')
+    const result = await executeTool(
+      'edit_file',
+      '{"path":"link/note.txt","find":"before","replace":"after"}',
+      { workspaceRoot: ROOT, platform: 'linux', io, seen: new Map() },
+    )
+    expect(result.failureReason).toContain(MODEL_TEXT.fileHasUnsavedChanges)
+    expect(base.files.get('/ws/safe/note.txt')).toBe('before')
   })
 })
 

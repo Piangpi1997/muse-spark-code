@@ -23,6 +23,7 @@ import {
   EFFORT_LEVELS,
   EXPORT_FORMATS,
   GOAL_COMMANDS,
+  MAX_ATTACHMENT_BASE64_CHARS,
   PAID_FEATURES,
   PERMISSION_MODES,
   PREFERRED_LOCATIONS,
@@ -157,13 +158,16 @@ const skillOptionSchema = z.object({
 })
 export type SkillOption = z.infer<typeof skillOptionSchema>
 
+// An image, or (M54, PLAN.md D47) a PDF: no pixel size, and its page count
+// when the page tree could be read.
 const attachmentSchema = z.object({
   id: z.string(),
   name: z.string(),
   mediaType: z.string(),
-  width: z.number(),
-  height: z.number(),
+  width: z.optional(z.number()),
+  height: z.optional(z.number()),
   sizeBytes: z.number(),
+  pageCount: z.optional(z.number()),
 })
 export type AttachmentSummary = z.infer<typeof attachmentSchema>
 
@@ -192,7 +196,7 @@ const composerStateSchema = z.object({
 
 const webviewToHostMessageSchema = z.discriminatedUnion('type', [
   // Sent once when the React app has mounted and is listening for messages.
-  z.object({ type: z.literal('ready') }),
+  z.object({ type: z.literal('ready'), attachmentEpoch: z.optional(z.number()) }),
   // The composer gained or lost keyboard focus; drives the
   // `museSpark.inputFocused` context key behind Ctrl+Esc.
   z.object({ type: z.literal('inputFocusChanged'), focused: z.boolean() }),
@@ -233,7 +237,7 @@ const webviewToHostMessageSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('setThinking'), enabled: z.boolean() }),
   z.object({ type: z.literal('setPermissionMode'), mode: z.enum(PERMISSION_MODES) }),
   // "/clear": forget this surface's session; the next send starts a new one.
-  z.object({ type: z.literal('clearConversation') }),
+  z.object({ type: z.literal('clearConversation'), attachmentEpoch: z.optional(z.number()) }),
   // "/compact": ask the host to summarise older context.
   z.object({ type: z.literal('compact') }),
   // The session goal (M45, PLAN.md D38): `/goal …` in the prompt or the goal
@@ -259,17 +263,20 @@ const webviewToHostMessageSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('listSkills') }),
   // @-mention menu: `requestId` lets the webview drop stale answers.
   z.object({ type: z.literal('searchMentions'), requestId: z.number(), query: z.string() }),
-  // "+" / "Attach file…": native open dialog; images become attachments,
-  // other files become `@path` mentions.
+  // "+" / "Attach file…": native open dialog; images (and, on the Model API
+  // backend, PDFs: M54) become attachments, other files `@path` mentions.
   z.object({ type: z.literal('pickFile') }),
   // "Mention file from this project…": QuickPick over the workspace index.
   z.object({ type: z.literal('pickMentionFile') }),
-  // An image pasted or dropped into the composer.
+  // An image pasted or dropped into the composer, or (M54) a PDF: the name
+  // stays for the wire's sake; the host tells them apart by their bytes.
   z.object({
     type: z.literal('attachImageData'),
     name: z.string(),
     mediaType: z.string(),
-    base64: z.string(),
+    base64: z.string().check(z.maxLength(MAX_ATTACHMENT_BASE64_CHARS)),
+    requestId: z.optional(z.string()),
+    attachmentEpoch: z.optional(z.number()),
   }),
   z.object({ type: z.literal('removeAttachment'), id: z.string() }),
   // Editor resources dropped onto the composer (`text/uri-list`).
@@ -353,6 +360,7 @@ const webviewToHostMessageSchema = z.discriminatedUnion('type', [
     lastTurnId: z.optional(z.string()),
     text: z.string(),
     imageCount: z.number(),
+    attachmentEpoch: z.optional(z.number()),
   }),
   // Session history (M6).
   z.object({ type: z.literal('listSessions') }),
@@ -371,14 +379,22 @@ const webviewToHostMessageSchema = z.discriminatedUnion('type', [
     body: z.string(),
     isFollowup: z.boolean(),
   }),
-  z.object({ type: z.literal('resumeSession'), sessionId: z.string() }),
+  z.object({
+    type: z.literal('resumeSession'),
+    sessionId: z.string(),
+    attachmentEpoch: z.optional(z.number()),
+  }),
   z.object({
     type: z.literal('setSessionArchived'),
     sessionId: z.string(),
     isArchived: z.boolean(),
   }),
   /** Fork the current session through `lastTurnId` (all turns when absent). */
-  z.object({ type: z.literal('forkSession'), lastTurnId: z.optional(z.string()) }),
+  z.object({
+    type: z.literal('forkSession'),
+    lastTurnId: z.optional(z.string()),
+    attachmentEpoch: z.optional(z.number()),
+  }),
   z.object({
     type: z.literal('openSideChat'),
     sourceSessionId: z.string().check(z.minLength(1)),
@@ -423,6 +439,8 @@ const hostToWebviewMessageSchema = z.discriminatedUnion('type', [
     type: z.literal('surfaceState'),
     sessionId: z.optional(z.string()),
     activeTurnId: z.optional(z.string()),
+    /** The host's monotonic browser-file guard; older saved webviews raise their epoch. */
+    attachmentEpoch: z.optional(z.number()),
   }),
   // Insert text at the composer caret (Alt+K mention reference).
   z.object({ type: z.literal('insertText'), text: z.string() }),
@@ -544,8 +562,17 @@ const hostToWebviewMessageSchema = z.discriminatedUnion('type', [
     requestId: z.number(),
     items: z.array(mentionItemSchema),
   }),
-  z.object({ type: z.literal('attachmentAdded'), attachment: attachmentSchema }),
-  z.object({ type: z.literal('attachmentRejected'), name: z.string(), reason: z.string() }),
+  z.object({
+    type: z.literal('attachmentAdded'),
+    attachment: attachmentSchema,
+    requestId: z.optional(z.string()),
+  }),
+  z.object({
+    type: z.literal('attachmentRejected'),
+    name: z.string(),
+    reason: z.string(),
+    requestId: z.optional(z.string()),
+  }),
   z.object({ type: z.literal('attachmentsCleared') }),
   // A one-line message for the transcript (failed host command, warnings).
   z.object({ type: z.literal('notice'), level: z.enum(NOTICE_LEVELS), text: z.string() }),

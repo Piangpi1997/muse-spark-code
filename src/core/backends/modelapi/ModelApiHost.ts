@@ -17,6 +17,7 @@ import {
   AUTH_REQUIRED_ERROR_KIND,
   BACKGROUND_INITIATOR_USER,
   CLARIFICATION_MAX_CHARS,
+  BASE64_DATA_URL_OVERHEAD_CHARS,
   CONTEXT_PRESSURE_HIGH,
   CONTEXT_PRESSURE_MEDIUM,
   DEFAULT_EFFORT,
@@ -36,6 +37,10 @@ import {
   MODEL_API_MAX_OUTPUT_TOKENS,
   MODEL_API_MAX_RETRIES,
   MODEL_API_MAX_TOOL_ROUNDS,
+  MAX_ENCODED_MEDIA_CHARS,
+  MAX_MODEL_API_TEXT_ATTACHMENT_BYTES,
+  MODEL_API_MEDIA_PER_REQUEST,
+  MODEL_API_PDF_PAGE_IMAGES,
   MODEL_API_HOOK_PROVIDER,
   MODEL_API_RETRYABLE_STREAM_CODES,
   MODEL_API_MODEL_PREFIX,
@@ -96,12 +101,14 @@ import {
   type AgentSession,
   type ApprovalDecision,
   type CompactOutcome,
+  type DocumentPart,
   type GoalCommand,
   type GoalCommandOutcome,
   type GoalRefusal,
   GoalRefusedError,
   type HostExit,
   type HostInfo,
+  type ImagePart,
   type ListSessionsOptions,
   type LoadedSession,
   type ModelSummary,
@@ -123,6 +130,7 @@ import type { ContextIo } from '../../context/contextFiles'
 import { type SkillDefinition } from '../../context/skills'
 import { WorkspaceContext } from '../../context/workspaceContext'
 import type { CoreLogger } from '../../logging'
+import { textFileInput } from '../../textAttachment'
 import type { McpTool } from '../../mcp'
 import type { MemoryStore } from '../../memory/memoryStore'
 import {
@@ -157,6 +165,7 @@ import { postModelCallFields, preModelCallFields } from './modelCallHooks'
 import { nextScheduleFire } from './schedules'
 import { toolHookInput, toolHookOutput } from './toolHookPayload'
 import { type ImagePlan, prepareImageCall, runImageCall } from './imageGeneration'
+import { MediaBudget } from './mediaBudget'
 import { mcpFunctionDefinition, mcpFunctionName } from './mcp/functions'
 import type { McpPoolSnapshot, McpToolRef, McpToolSource } from './mcp/pool'
 import { isMemoryTool, placeMemoryCall, runMemoryCall } from './memoryTools'
@@ -184,6 +193,7 @@ import {
   citationsOf,
   type CreateResponseBody,
   type FunctionCallItem,
+  type FunctionOutputPart,
   type IncludeField,
   type InputContentPart,
   type InputItem,
@@ -204,7 +214,6 @@ import {
   confineWorkspacePath,
   executeTool,
   parseQuestions,
-  type PathResolution,
   readSkillArgs,
   type ShellResult,
   shellOutcome,
@@ -215,6 +224,7 @@ import {
   toolDefinitions,
   type ToolIo,
   type ToolOutcome,
+  type VisibleFile,
 } from './tools'
 import {
   isSubagentTool,
@@ -257,6 +267,12 @@ export interface ModelApiHostDeps extends ModelApiPaidHooks {
   readonly store?: SessionStore | undefined
   /** The git facts for the prompt's environment section (D15), read once per session. */
   readonly describeEnvironment: () => Promise<EnvironmentFacts>
+  /** Whether a paid feature is on (M33–M35, PLAN.md D30): its setting, and its price accepted. */
+  readonly isPaidFeatureOn: (feature: PaidFeature) => boolean
+  /** Counts paid uses for the window's tally: searches made, images returned. */
+  readonly notePaidUse: (feature: PaidFeature, units: number) => void
+  /** A smaller replay cap for focused media-budget verification. */
+  readonly mediaBudgetMaxEncodedChars?: number
   /** Extension-owned, workspace-local schedules; absent without workspace storage. */
   readonly scheduleStore?: ScheduleStore | undefined
   /** A digest of the current SecretStorage key, never its plaintext. */
@@ -289,6 +305,27 @@ interface ReplayItem {
   readonly userMessageId?: string
   /** The background task whose terminal context this note carries (M46). */
   readonly backgroundTaskId?: string
+}
+
+/** A tool-read file until a completed model request has actually carried its media part. */
+interface PendingReadFile {
+  readonly path: string
+  readonly lead: InputContentPart
+  readonly media: InputContentPart
+  readonly encodedChars: number
+  readonly slots: number
+}
+
+type FunctionImagePart = Extract<FunctionOutputPart, { readonly type: 'input_image' }>
+
+function turnMediaEncodedChars(part: ImagePart | DocumentPart): number {
+  return BASE64_DATA_URL_OVERHEAD_CHARS + part.mediaType.length + part.base64Data.length
+}
+
+function turnMediaSlots(part: ImagePart | DocumentPart): number {
+  return part.type === 'image'
+    ? 1
+    : Math.min(part.pageCount ?? MODEL_API_PDF_PAGE_IMAGES, MODEL_API_PDF_PAGE_IMAGES)
 }
 
 interface PendingNote {
@@ -370,6 +407,8 @@ interface ActiveTurn {
   readonly confirmedRequest?: ConfirmedModelRequest
   /** Steered input, appended before the next model call. */
   readonly steered: { readonly parts: readonly TurnPart[]; readonly userMessageId: string }[]
+  /** Named text accepted for this turn, including steers already drained into replay. */
+  acceptedTextAttachmentBytes: number
   modelFailure?: unknown
   /** A goal accepted after the current model request began needs another round. */
   goalWakePending: boolean
@@ -798,6 +837,43 @@ function skillInvocationText(skill: SkillDefinition, args: string | undefined): 
   return `${MODEL_TEXT.skillInvoked} "${skill.id}". ${MODEL_TEXT.skillArguments} ${args ?? MODEL_TEXT.skillNoArguments}\n\n${skill.body}`
 }
 
+/** An image or a PDF as Meta reads it: inline, as a data URL (M54 for the PDF). */
+function mediaPartFor(part: ImagePart | DocumentPart): InputContentPart {
+  const dataUrl = `data:${part.mediaType};base64,${part.base64Data}`
+  return part.type === 'image'
+    ? { type: 'input_image', image_url: dataUrl, detail: 'auto' }
+    : { type: 'input_file', filename: part.name, file_data: dataUrl }
+}
+
+/** What the user card lists for a message's images and PDFs (no bytes). */
+function attachmentsOf(parts: readonly TurnPart[]): NonNullable<ItemSnapshot['attachments']> {
+  return parts.flatMap((part): NonNullable<ItemSnapshot['attachments']> => {
+    switch (part.type) {
+      case 'image': {
+        return [
+          { type: 'image', mediaType: part.mediaType, width: part.width, height: part.height },
+        ]
+      }
+      case 'file':
+      case 'textFile': {
+        return [
+          {
+            type: 'file',
+            mediaType: part.mediaType,
+            name: part.name,
+            sizeBytes: part.sizeBytes,
+            ...(part.type === 'file' &&
+              part.pageCount !== undefined && { pageCount: part.pageCount }),
+          },
+        ]
+      }
+      default: {
+        return []
+      }
+    }
+  })
+}
+
 function contentPartsFor(
   parts: readonly TurnPart[],
   resolveSkill: (selector: string) => SkillDefinition | undefined,
@@ -807,12 +883,12 @@ function contentPartsFor(
       case 'text': {
         return { type: 'input_text', text: part.text }
       }
-      case 'image': {
-        return {
-          type: 'input_image',
-          image_url: `data:${part.mediaType};base64,${part.base64Data}`,
-          detail: 'auto',
-        }
+      case 'textFile': {
+        return { type: 'input_text', text: textFileInput(part) }
+      }
+      case 'image':
+      case 'file': {
+        return mediaPartFor(part)
       }
       case 'skill': {
         // An unknown selector (the catalogue changed under the palette) goes as typed.
@@ -829,6 +905,25 @@ function contentPartsFor(
   })
 }
 
+/** Model-facing named text, including its file-name wrapper. */
+function textAttachmentBytes(parts: readonly TurnPart[]): number {
+  let bytes = 0
+  for (const part of parts) {
+    if (part.type !== 'textFile') {
+      continue
+    }
+    bytes += Buffer.byteLength(textFileInput(part))
+  }
+  return bytes
+}
+
+/** Reject an aggregate named-text payload before it can enter replay or an HTTP request. */
+function textAttachmentBudgetError(bytes: number): Error | undefined {
+  return bytes > MAX_MODEL_API_TEXT_ATTACHMENT_BYTES
+    ? new Error(UI_TEXT.textFilesOverModelApiBudget)
+    : undefined
+}
+
 function typedText(parts: readonly TurnPart[]): string {
   return parts
     .flatMap((part) => {
@@ -839,21 +934,15 @@ function typedText(parts: readonly TurnPart[]): string {
         case 'skill': {
           return [typedInvocation(part.selector, part.arguments)]
         }
-        case 'image': {
+        case 'image':
+        case 'file':
+        case 'textFile': {
           return []
         }
       }
     })
     .join('\n')
     .trim()
-}
-
-function userImageAttachments(parts: readonly TurnPart[]) {
-  return parts.flatMap((part) =>
-    part.type === 'image'
-      ? [{ type: 'image', mediaType: part.mediaType, width: part.width, height: part.height }]
-      : [],
-  )
 }
 
 /** A tool's argument JSON as an object; an empty one when it is not an object. */
@@ -1114,6 +1203,18 @@ export class ModelApiSession implements AgentSession {
   private active: ActiveTurn | undefined
   /** Each file as the model last read or wrote it, for `write_file`'s check (D27). */
   private readonly seenFiles = new Map<string, string>()
+  /** Keeps each request within the page and encoded-media budgets (M54, PLAN.md D47). */
+  private readonly budget: MediaBudget
+  private mediaNoticeSent = false
+  /**
+   * The PDFs and images `read_file` read this round (M54): they follow the
+   * round's outputs in a user message, where Meta reads them.
+   */
+  private readonly readFiles: VisibleFile[] = []
+  /** Synthetic tool-read media still waiting for a completed model request. */
+  private readonly readFileMessages = new WeakMap<ReplayItem, readonly PendingReadFile[]>()
+  /** Function-output images awaiting their first completed model request. */
+  private readonly pendingOutputMedia = new Map<ReplayItem, readonly FunctionImagePart[]>()
   /** The MCP notices this session has shown (M50): each is said once. */
   private readonly announcedMcp = new Set<string>()
   /** The compaction in flight (D26): it holds the session like a turn. */
@@ -1167,6 +1268,7 @@ export class ModelApiSession implements AgentSession {
   ) {
     this.modelId = modelId
     this.permissions = new PermissionEngine(approvalMode)
+    this.budget = new MediaBudget(deps.mediaBudgetMaxEncodedChars)
     const { memory } = deps
     this.context = new WorkspaceContext({
       io: deps.contextIo,
@@ -1345,9 +1447,14 @@ export class ModelApiSession implements AgentSession {
     const hasMemory = hasShell && this.deps.memory !== undefined
     const context = this.context.sections()
     const goalSection = goalInstructions(this.goal, this.goalSteps)
+    const input = this.budget.fit(this.replay.map((entry) => entry.item))
+    if (this.budget.omitted && !this.mediaNoticeSent) {
+      this.emit({ type: 'backendNotice', level: 'warning', text: UI_TEXT.olderMediaOmitted })
+      this.mediaNoticeSent = true
+    }
     return {
       model: this.modelId,
-      input: this.replay.map((entry) => entry.item),
+      input,
       instructions: instructionsFor({
         workspaceRoot: this.deps.workspaceRoot,
         platform: this.deps.platform,
@@ -1373,6 +1480,34 @@ export class ModelApiSession implements AgentSession {
       max_output_tokens: MODEL_API_MAX_OUTPUT_TOKENS,
       prompt_cache_key: this.sessionId,
     }
+  }
+
+  /** Retain only what a completed request carried; History keeps its file chips separately. */
+  private commitFittedReplay(
+    requestReplay: readonly ReplayItem[],
+    fittedInput: readonly InputItem[],
+  ): boolean {
+    if (requestReplay.length !== fittedInput.length) {
+      this.deps.log.warn('Model API media fit changed replay length; durable replacement skipped')
+      return false
+    }
+    let hasChanged = false
+    for (const [index, entry] of requestReplay.entries()) {
+      const fitted = fittedInput[index]
+      if (fitted === undefined || fitted === entry.item) {
+        continue
+      }
+      const currentIndex = this.replay.indexOf(entry)
+      if (currentIndex === -1) {
+        continue
+      }
+      this.replay[currentIndex] = { ...entry, item: fitted }
+      // Any tracked media not sent was replaced by budget text, so it has no
+      // bytes left for a later Stop to scrub from this replay entry.
+      this.readFileMessages.delete(entry)
+      hasChanged = true
+    }
+    return hasChanged
   }
 
   /** In-process, IDE, MCP and paid search tools offered to this request. */
@@ -1495,7 +1630,7 @@ export class ModelApiSession implements AgentSession {
     })
     const text = displayText ?? typedText(parts)
     this.firstPrompt ??= text
-    const attachments = userImageAttachments(parts)
+    const attachments = attachmentsOf(parts)
     this.recordTranscript(turnId, {
       itemId,
       kind: 'userMessage',
@@ -1970,6 +2105,7 @@ export class ModelApiSession implements AgentSession {
       })
     }
     const body = this.body()
+    const requestReplay = [...this.replay]
     let final: ResponseObject | undefined
     const admitAttempt = this.responseAttemptGuard(body)
     const responseStream = this.deps.client.streamResponse(
@@ -1991,7 +2127,13 @@ export class ModelApiSession implements AgentSession {
         undefined,
       )
     }
+    this.markReadFileMediaDelivered(turnId, body.input)
+    const wasFitted = this.commitFittedReplay(requestReplay, body.input)
+    this.markOutputMediaDelivered(requestReplay, body.input)
     const calls = this.adoptOutput(turnId, final, open, chargedGoalId)
+    if (wasFitted) {
+      this.touch()
+    }
     const post = await this.runHooks(
       'PostLLMCall',
       turnId,
@@ -2261,7 +2403,225 @@ export class ModelApiSession implements AgentSession {
   }
 
   private contentParts(parts: readonly TurnPart[]): InputContentPart[] {
-    return contentPartsFor(parts, (selector) => this.context.skill(selector))
+    const content = contentPartsFor(parts, (selector) => this.context.skill(selector))
+    // The budget learns each PDF's pages from its attachment, not its bytes (M54).
+    for (const [index, part] of parts.entries()) {
+      const sent = content[index]
+      if (part.type === 'file' && sent?.type === 'input_file') {
+        this.budget.note(sent, part.pageCount)
+      }
+    }
+    return content
+  }
+
+  /**
+   * The PDFs and images `read_file` read this round, in one user message
+   * after the round's outputs (M54, PLAN.md D47): Meta reads images only in
+   * user messages (image-understanding), and a message there between two
+   * of a response's outputs would split them.
+   */
+  private appendReadFiles(turnId: string, isRoundComplete: boolean): void {
+    const files = this.readFiles.splice(0)
+    if (files.length === 0) {
+      return
+    }
+    const pending: PendingReadFile[] = []
+    const content = files.flatMap((file): InputContentPart[] => {
+      if (!isRoundComplete) {
+        return [
+          {
+            type: 'input_text',
+            text: fill(MODEL_TEXT.toolFileNotDelivered, { path: file.path }),
+          },
+        ]
+      }
+      const [sent] = this.contentParts([file.part])
+      if (sent === undefined) {
+        return []
+      }
+      const lead: InputContentPart = {
+        type: 'input_text',
+        text: fill(MODEL_TEXT.toolFileFollows, { path: file.path }),
+      }
+      pending.push({
+        path: file.path,
+        lead,
+        media: sent,
+        encodedChars: turnMediaEncodedChars(file.part),
+        slots: turnMediaSlots(file.part),
+      })
+      return [lead, sent]
+    })
+    const replay: ReplayItem = { turnId, item: { type: 'message', role: 'user', content } }
+    this.replay.push(replay)
+    if (pending.length > 0) {
+      this.readFileMessages.set(replay, pending)
+    }
+  }
+
+  /** Only media present in a completed request has reached the model. */
+  private markReadFileMediaDelivered(turnId: string, input: readonly InputItem[]): void {
+    const sent = new Set(
+      input.flatMap((item) =>
+        item.type === 'message' && item.role === 'user' ? item.content : [],
+      ),
+    )
+    for (const replay of this.replay) {
+      if (replay.turnId !== turnId) {
+        continue
+      }
+      const pending = this.readFileMessages.get(replay)
+      if (pending === undefined) {
+        continue
+      }
+      const remaining = pending.filter((file) => !sent.has(file.media))
+      if (remaining.length === 0) {
+        this.readFileMessages.delete(replay)
+      } else {
+        this.readFileMessages.set(replay, remaining)
+      }
+    }
+  }
+
+  /** A completed request delivers or durably omits pending function-output images. */
+  private markOutputMediaDelivered(
+    requestReplay: readonly ReplayItem[],
+    input: readonly InputItem[],
+  ): void {
+    const sent = new Set(
+      input.flatMap((item) =>
+        item.type === 'function_call_output' && typeof item.output !== 'string' ? item.output : [],
+      ),
+    )
+    for (const entry of requestReplay) {
+      const pending = this.pendingOutputMedia.get(entry)
+      if (pending === undefined) {
+        continue
+      }
+      const remaining = pending.filter((part) => !sent.has(part))
+      if (remaining.length === 0 || !this.replay.includes(entry)) {
+        this.pendingOutputMedia.delete(entry)
+      } else {
+        this.pendingOutputMedia.set(entry, remaining)
+      }
+    }
+  }
+
+  /** A stopped or failed turn replaces only media no completed request carried. */
+  private dropUndeliveredMedia(turnId: string): void {
+    for (const [index, replay] of this.replay.entries()) {
+      if (replay.turnId !== turnId || replay.item.type !== 'message') {
+        continue
+      }
+      const pending = this.readFileMessages.get(replay)
+      if (pending === undefined) {
+        continue
+      }
+      const leads = new Map(pending.map((file) => [file.lead, file.path]))
+      const media = new Set(pending.map((file) => file.media))
+      const content = replay.item.content.flatMap((part): InputContentPart[] => {
+        const filePath = leads.get(part)
+        if (filePath !== undefined) {
+          return [
+            { type: 'input_text', text: fill(MODEL_TEXT.toolFileNotDelivered, { path: filePath }) },
+          ]
+        }
+        return media.has(part) ? [] : [part]
+      })
+      this.replay[index] = {
+        ...replay,
+        item: {
+          ...replay.item,
+          content,
+        },
+      }
+      this.readFileMessages.delete(replay)
+    }
+    for (const [replay, pending] of this.pendingOutputMedia) {
+      if (replay.turnId !== turnId) {
+        continue
+      }
+      const index = this.replay.indexOf(replay)
+      if (
+        index !== -1 &&
+        replay.item.type === 'function_call_output' &&
+        typeof replay.item.output !== 'string'
+      ) {
+        const media = new Set<FunctionOutputPart>(pending)
+        const output = replay.item.output.map((part): FunctionOutputPart =>
+          media.has(part)
+            ? { type: 'input_text', text: MODEL_TEXT.toolOutputImageNotDelivered }
+            : part,
+        )
+        this.replay[index] = { ...replay, item: { ...replay.item, output } }
+      }
+      this.pendingOutputMedia.delete(replay)
+    }
+  }
+
+  /** Media awaiting the next request: tool outputs, read files and accepted steering. */
+  private queuedMediaUsage(): { readonly chars: number; readonly slots: number } {
+    let chars = 0
+    let slots = 0
+    for (const file of this.readFiles) {
+      chars += turnMediaEncodedChars(file.part)
+      slots += turnMediaSlots(file.part)
+    }
+    for (const replay of this.replay) {
+      const pending = this.readFileMessages.get(replay) ?? []
+      for (const file of pending) {
+        chars += file.encodedChars
+        slots += file.slots
+      }
+    }
+    for (const images of this.pendingOutputMedia.values()) {
+      for (const image of images) {
+        chars += image.image_url.length
+        slots += 1
+      }
+    }
+    const steers = this.active?.steered ?? []
+    for (const steer of steers) {
+      for (const part of steer.parts) {
+        if (part.type !== 'image' && part.type !== 'file') {
+          continue
+        }
+        chars += turnMediaEncodedChars(part)
+        slots += turnMediaSlots(part)
+      }
+    }
+    return { chars, slots }
+  }
+
+  private canQueueMedia(chars: number, slots: number): boolean {
+    const queued = this.queuedMediaUsage()
+    const limit = this.deps.mediaBudgetMaxEncodedChars ?? MAX_ENCODED_MEDIA_CHARS
+    return queued.chars + chars <= limit && queued.slots + slots <= MODEL_API_MEDIA_PER_REQUEST
+  }
+
+  /** Reserve all current-batch visual outputs before their tool row reports success. */
+  private canQueueToolMedia(outcome: ToolOutcome): boolean {
+    const newImages = outcome.outputParts?.filter((part) => part.type === 'input_image') ?? []
+    const chars =
+      (outcome.visibleFile === undefined ? 0 : turnMediaEncodedChars(outcome.visibleFile.part)) +
+      newImages.reduce((total, image) => total + image.image_url.length, 0)
+    const slots =
+      (outcome.visibleFile === undefined ? 0 : turnMediaSlots(outcome.visibleFile.part)) +
+      newImages.length
+    return this.canQueueMedia(chars, slots)
+  }
+
+  private canQueueSteeredMedia(parts: readonly TurnPart[]): boolean {
+    let chars = 0
+    let slots = 0
+    for (const part of parts) {
+      if (part.type !== 'image' && part.type !== 'file') {
+        continue
+      }
+      chars += turnMediaEncodedChars(part)
+      slots += turnMediaSlots(part)
+    }
+    return slots === 0 || this.canQueueMedia(chars, slots)
   }
 
   /** `read_skill`: the body of a catalogue skill, by id; never a path. */
@@ -2302,13 +2662,20 @@ export class ModelApiSession implements AgentSession {
     })
   }
 
-  /** `generate_image` and `edit_image`, after the card: the image, written as a new file, and counted. */
-  private async makeImage(call: FunctionCallItem, signal: AbortSignal): Promise<ToolOutcome> {
-    const prepared = await this.imagePlan(call)
-    if (!prepared.ok) {
-      return toolFailure(prepared.reason)
+  /** `generate_image` and `edit_image`, using the approved source bytes and destination. */
+  private async makeImage(plan: ImagePlan, signal: AbortSignal): Promise<ToolOutcome> {
+    for (const path of [plan.target, ...plan.sources]) {
+      const current = await confineWorkspacePath(
+        this.deps.workspaceRoot,
+        path.absolute,
+        this.deps.platform,
+        this.deps.io,
+      )
+      if (!current.ok || current.checkedAbsolute !== path.checkedAbsolute) {
+        return toolFailure(MODEL_TEXT.pathChangedAfterApproval)
+      }
     }
-    return await runImageCall(prepared.plan, {
+    return await runImageCall(plan, {
       client: this.deps.client,
       io: this.deps.io,
       signal,
@@ -2320,7 +2687,9 @@ export class ModelApiSession implements AgentSession {
   }
 
   /** Where an edit-family call writes, confined (links resolved), or why it cannot. */
-  private async editTarget(call: FunctionCallItem): Promise<PathResolution | undefined> {
+  private async editTarget(
+    call: FunctionCallItem,
+  ): Promise<Awaited<ReturnType<typeof confineWorkspacePath>> | undefined> {
     const given = pick(argumentsOf(call), 'path')
     return given === undefined
       ? undefined
@@ -3017,6 +3386,8 @@ export class ModelApiSession implements AgentSession {
     signal: AbortSignal,
     goalCommandRevision: number,
     childGrant?: ChildTaskGrant,
+    approvedTarget?: { readonly absolute: string; readonly checkedAbsolute: string },
+    approvedImagePlan?: ImagePlan,
   ): Promise<Performed> {
     const external = this.externalTool(call.name)
     if (external !== undefined) {
@@ -3037,7 +3408,12 @@ export class ModelApiSession implements AgentSession {
       }
       case MODEL_API_TOOLS.generateImage:
       case MODEL_API_TOOLS.editImage: {
-        return { outcome: await this.makeImage(call, signal) }
+        return {
+          outcome:
+            approvedImagePlan === undefined
+              ? toolFailure(MODEL_TEXT.imageGenerationOff)
+              : await this.makeImage(approvedImagePlan, signal),
+        }
       }
       case MODEL_API_TOOLS.createGoal:
       case MODEL_API_TOOLS.updateGoal:
@@ -3067,6 +3443,7 @@ export class ModelApiSession implements AgentSession {
             io: this.deps.io,
             signal,
             seen: this.seenFiles,
+            ...(approvedTarget !== undefined && { approvedTarget }),
           }),
         }
       }
@@ -3224,14 +3601,15 @@ export class ModelApiSession implements AgentSession {
         toolClass === 'mcp' ? MODEL_TEXT.mcpRestrictedMode : MODEL_TEXT.shellRestrictedMode
       return { outcome: toolFailure(reason), isRejected: true }
     }
+    let approvedImagePlan: ImagePlan | undefined
     if (toolClass === 'paid') {
       const prepared = await this.imagePlan(call)
       if (!prepared.ok) {
         return { outcome: toolFailure(prepared.reason), isRejected: false }
       }
+      approvedImagePlan = prepared.plan
     }
-    const target =
-      toolClass === 'edit' || toolClass === 'paid' ? await this.editTarget(call) : undefined
+    const target = toolClass === 'edit' ? await this.editTarget(call) : undefined
     if (target?.ok === false) {
       // A path the tool would refuse anyway is refused before any card.
       return { outcome: toolFailure(target.reason), isRejected: false }
@@ -3240,7 +3618,10 @@ export class ModelApiSession implements AgentSession {
       toolName: call.name,
       toolClass: childTask === undefined ? toolClass : 'spawn',
       command: toolClass === 'shell' ? pick(argumentsOf(call), 'command') : undefined,
-      isProtected: target?.ok === true && isProtectedPath(target.canonical),
+      isProtected:
+        target?.ok === true
+          ? isProtectedPath(target.canonical)
+          : approvedImagePlan !== undefined && isProtectedPath(approvedImagePlan.target.canonical),
       isReadOnly: external?.kind === 'mcp' && external.ref.isReadOnly,
     }
     const verdict = this.verdictWithHook(query, shouldForceApproval)
@@ -3289,7 +3670,16 @@ export class ModelApiSession implements AgentSession {
       }
     }
     return {
-      ...(await this.perform(turnId, itemId, call, signal, goalCommandRevision, childGrant)),
+      ...(await this.perform(
+        turnId,
+        itemId,
+        call,
+        signal,
+        goalCommandRevision,
+        childGrant,
+        target?.ok === true ? target : undefined,
+        approvedImagePlan,
+      )),
       isRejected: false,
     }
   }
@@ -3325,14 +3715,22 @@ export class ModelApiSession implements AgentSession {
     }
     this.emit({ type: 'itemCompleted', item: completed })
     this.rerecordTranscript(completed)
-    this.replay.push({
+    const replay: ReplayItem = {
       turnId,
       item: {
         type: 'function_call_output',
         call_id: call.call_id,
         output: outcome.outputParts ?? outcome.output,
       },
-    })
+    }
+    this.replay.push(replay)
+    const outputImages = outcome.outputParts?.filter((part) => part.type === 'input_image') ?? []
+    if (outputImages.length > 0) {
+      this.pendingOutputMedia.set(replay, outputImages)
+    }
+    if (outcome.visibleFile !== undefined) {
+      this.readFiles.push(outcome.visibleFile)
+    }
   }
 
   /** Permission check, execution and the transcript row for one tool call. */
@@ -3402,8 +3800,16 @@ export class ModelApiSession implements AgentSession {
     if (this.externalTool(effectiveCall.name) === undefined) {
       await this.touchPath(effectiveCall)
     }
-    const { outcome, isRejected, running } = result
+    let { outcome } = result
+    const { isRejected, running } = result
     if (running === undefined) {
+      if (!this.canQueueToolMedia(outcome)) {
+        outcome = {
+          output: `Error: ${MODEL_TEXT.toolMediaBudgetExceeded}`,
+          visibleOutput: UI_TEXT.mediaTotalTooLarge,
+          failureReason: UI_TEXT.mediaTotalTooLarge,
+        }
+      }
       let status = COMPLETED
       if (outcome.failureReason !== undefined) {
         status = isRejected ? REJECTED : FAILED
@@ -3626,7 +4032,6 @@ export class ModelApiSession implements AgentSession {
     this.settleNotes(turn.turnId)
     for (const { parts, userMessageId: itemId } of turn.steered.splice(0)) {
       const text = typedText(parts)
-      const attachments = userImageAttachments(parts)
       this.replay.push({
         turnId: turn.turnId,
         userMessageId: itemId,
@@ -3639,6 +4044,7 @@ export class ModelApiSession implements AgentSession {
           ],
         },
       })
+      const attachments = attachmentsOf(parts)
       this.recordTranscript(turn.turnId, {
         itemId,
         kind: 'userMessage',
@@ -3776,6 +4182,7 @@ export class ModelApiSession implements AgentSession {
         }
         continue
       }
+      let isRoundComplete = false
       const batch: Readonly<Record<string, unknown>>[] = []
       try {
         for (const [index, call] of calls.entries()) {
@@ -3797,6 +4204,7 @@ export class ModelApiSession implements AgentSession {
                 throw requiredAfterCall
               }
               this.skipCalls(turn.turnId, calls.slice(index + 1), finished.stopReason)
+              this.dropUndeliveredMedia(turn.turnId)
               return
             }
           } catch (error: unknown) {
@@ -3804,10 +4212,14 @@ export class ModelApiSession implements AgentSession {
             throw error
           }
         }
+        isRoundComplete = true
       } finally {
         // A user message between a function call and its output is invalid
         // replay. Post-model context follows the whole tool batch instead.
         this.appendHookContexts(turn.turnId, postContexts)
+        // A stopped or failed round names its read files without replaying
+        // bytes that no model request saw (M54).
+        this.appendReadFiles(turn.turnId, isRoundComplete && !isAbortRequested(signal))
       }
       const afterBatch = await this.runHooks(
         'PostToolBatch',
@@ -3831,6 +4243,9 @@ export class ModelApiSession implements AgentSession {
         throw requiredAfterCalls
       }
       if (afterBatch.stopReason !== undefined) {
+        // Hooks can stop a completed tool batch without a cancelled terminal.
+        // Those read-file bytes were queued, not delivered to a model request.
+        this.dropUndeliveredMedia(turn.turnId)
         return
       }
     }
@@ -3848,10 +4263,12 @@ export class ModelApiSession implements AgentSession {
   }
 
   private async runTurn(queued: QueuedTurn): Promise<void> {
+    this.mediaNoticeSent = false
     const turn: ActiveTurn = {
       turnId: queued.turnId,
       abort: new AbortController(),
       steered: [],
+      acceptedTextAttachmentBytes: textAttachmentBytes(queued.parts),
       modelFailure: undefined,
       goalWakePending: false,
       ...(queued.confirmedRequest !== undefined && {
@@ -3971,6 +4388,9 @@ export class ModelApiSession implements AgentSession {
         }
       }
     }
+    if (terminal !== COMPLETED) {
+      this.dropUndeliveredMedia(turn.turnId)
+    }
     // `loop` returns only with nothing steered left (D26), and `steer` is
     // refused once `active` is cleared, so no input is lost between the two.
     // A note that arrived during the last reply is kept for the next request (M46).
@@ -4089,14 +4509,15 @@ export class ModelApiSession implements AgentSession {
   private async runCompaction(signal: AbortSignal): Promise<CompactOutcome> {
     const compactionBody = (): CreateResponseBody => ({
       ...this.body(),
-      input: [
+      // Within Meta's image budget too (M54): a conversation past it can still be compacted.
+      input: this.budget.fit([
         ...this.replay.map((entry) => entry.item),
         {
           type: 'message',
           role: 'user',
           content: [{ type: 'input_text', text: MODEL_TEXT.compactionPrompt }],
         },
-      ],
+      ]),
       tools: [],
       include: ['reasoning.encrypted_content'],
     })
@@ -4426,6 +4847,13 @@ export class ModelApiSession implements AgentSession {
     displayText?: string,
     requestFor?: (turnId: string) => ConfirmedModelRequest,
   ): Promise<TurnSubmission> {
+    if (this.isDisposed) {
+      return Promise.reject(new Error(UI_TEXT.turnStoppedByRestart))
+    }
+    const textBudgetError = textAttachmentBudgetError(textAttachmentBytes(parts))
+    if (textBudgetError !== undefined) {
+      return Promise.reject(textBudgetError)
+    }
     const turnId = this.isSubagent ? `${this.sessionId}:${this.deps.newId()}` : this.deps.newId()
     const userMessageId = this.deps.newId()
     const confirmedRequest = requestFor?.(turnId)
@@ -4447,10 +4875,24 @@ export class ModelApiSession implements AgentSession {
   }
 
   public steer(expectedTurnId: string, parts: readonly TurnPart[]): Promise<TurnSubmission> {
+    if (this.isDisposed) {
+      return Promise.reject(new Error(UI_TEXT.turnStoppedByRestart))
+    }
     if (this.active?.turnId !== expectedTurnId || this.active.abort.signal.aborted) {
       return Promise.reject(new Error(TURN_NOT_RUNNING))
     }
+    const addedTextBytes = textAttachmentBytes(parts)
+    const textBudgetError = textAttachmentBudgetError(
+      this.active.acceptedTextAttachmentBytes + addedTextBytes,
+    )
+    if (textBudgetError !== undefined) {
+      return Promise.reject(textBudgetError)
+    }
+    if (!this.canQueueSteeredMedia(parts)) {
+      return Promise.reject(new Error(UI_TEXT.mediaTotalTooLarge))
+    }
     const userMessageId = this.deps.newId()
+    this.active.acceptedTextAttachmentBytes += addedTextBytes
     this.active.steered.push({ parts, userMessageId })
     return Promise.resolve({ turnId: expectedTurnId, disposition: 'steered', userMessageId })
   }
@@ -4521,6 +4963,7 @@ export class ModelApiSession implements AgentSession {
     if (this.active !== undefined || this.compacting !== undefined) {
       throw new Error(TURN_RUNNING)
     }
+    this.mediaNoticeSent = false
     // Running like a turn (D26): Stop ends it, and messages sent meanwhile queue.
     const abort = new AbortController()
     this.compacting = abort

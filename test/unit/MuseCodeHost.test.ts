@@ -1,6 +1,7 @@
 import { Buffer } from 'node:buffer'
 import { describe, expect, it, vi } from 'vitest'
 import { GoalRefusedError, SessionNotLoadedError } from '../../src/core/agent/agentBackend'
+import { AttachmentStore } from '../../src/core/attachments'
 import {
   type CommandTimeouts,
   describeExit,
@@ -1150,6 +1151,31 @@ describe('MuseCodeHost: prompts, receipts and resume (D26)', () => {
       UI_TEXT.commandTooLarge,
     )
     expect(server.requestsFor('turn/start')).toHaveLength(0)
+  })
+
+  it('refuses a Model API image retained across a switch before Muse turn or steer submission', async () => {
+    const imageBytes = new Uint8Array(8 * 1024 * 1024)
+    imageBytes.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+    imageBytes.set([0, 0, 0, 1], 16)
+    imageBytes.set([0, 0, 0, 1], 20)
+    const attachments = new AttachmentStore(() => 'model-api-image')
+    const admitted = attachments.add('large.png', imageBytes, true, true)
+    expect(admitted.ok).toBe(true)
+    if (!admitted.ok) {
+      return
+    }
+    const parts = [
+      { type: 'text' as const, text: 'Look at this' },
+      ...attachments.partsFor([admitted.attachment.id]),
+    ]
+    const { host, server } = setup()
+    const session = await host.startSession(startOptions)
+    await expect(session.sendTurn(parts)).rejects.toThrow(UI_TEXT.textFilesOverBudget)
+    expect(server.requestsFor('turn/start')).toHaveLength(0)
+    await session.sendTurn([{ type: 'text', text: 'Small turn' }])
+    await expect(session.steer('turn-1', parts)).rejects.toThrow(UI_TEXT.textFilesOverBudget)
+    expect(server.requestsFor('turn/start')).toHaveLength(1)
+    expect(server.requestsFor('turn/steer')).toHaveLength(0)
   })
 
   it('clamps a session/list page to the host maximum', async () => {

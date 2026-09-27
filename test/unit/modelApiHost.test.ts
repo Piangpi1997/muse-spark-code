@@ -11,18 +11,20 @@ import {
   MODEL_API_MAX_RETRIES,
   MODEL_API_MAX_TOOL_ROUNDS,
   GOAL_OBJECTIVE_MAX_CHARS,
+  MAX_MODEL_API_TEXT_ATTACHMENT_BYTES,
   MODEL_TEXT,
   SCHEDULE_LIFETIME_MS,
   type PaidFeature,
   UI_TEXT,
 } from '../../src/shared/constants'
-import type { AgentSession } from '../../src/core/agent/agentBackend'
+import type { AgentSession, DocumentPart, TurnPart } from '../../src/core/agent/agentBackend'
+import { AttachmentStore } from '../../src/core/attachments'
 import { ModelApiClient } from '../../src/core/backends/modelapi/client'
 import type { SubagentTaskConfirmation } from '../../src/shared/paid'
 import {
   ModelApiHost,
+  ModelApiSession,
   type ModelApiHostDeps,
-  type ModelApiSession,
 } from '../../src/core/backends/modelapi/ModelApiHost'
 import { FakeLogOutputChannel } from './helpers/fakes'
 import { EN } from '../../src/shared/l10n/en'
@@ -41,6 +43,7 @@ import {
   type StoredSession,
 } from '../../src/core/backends/modelapi/sessionStore'
 import { heldShellToolIo, type MemoryToolIo, memoryToolIo } from './helpers/fakeToolIo'
+import { pdfFixture } from './helpers/pdfFixture'
 import { createFileScheduleStore } from '../../src/host/backend/fileScheduleStore'
 import type {
   ScheduledPrompt,
@@ -51,6 +54,7 @@ import { removeFolder } from './helpers/temporaryFolders'
 import { parseHookConfig, type HookDefinition } from '../../src/core/backends/modelapi/hooks'
 import type { ToolIo } from '../../src/core/backends/modelapi/tools'
 import { type FakeMcpSource, fakeMcpSource } from './helpers/fakeMcpSource'
+import type { McpCallOutcome } from '../../src/core/backends/modelapi/mcp/functions'
 import { countLogged } from './helpers/logText'
 import type { McpTool } from '../../src/core/mcp'
 import { memoryStoreOver, PERSONAL } from './helpers/fakeMemoryIo'
@@ -159,6 +163,7 @@ function setup(
     apiKey?: () => Promise<string | undefined>
     /** The tools' files and shell, when a test needs its own (M46: a held shell). */
     io?: MemoryToolIo
+    mediaBudgetMaxEncodedChars?: number
     scheduleStore?: ScheduleStore
     getAccountId?: () => Promise<string | undefined>
     hooks?: readonly HookDefinition[]
@@ -235,6 +240,9 @@ function setup(
     notePaidUse: (feature, units) => {
       paidUses.push({ feature, units })
     },
+    ...(options.mediaBudgetMaxEncodedChars !== undefined && {
+      mediaBudgetMaxEncodedChars: options.mediaBudgetMaxEncodedChars,
+    }),
     mcpServers: options.mcpServers,
     ideTools: options.ideTools,
     confirmSubagentTask: options.confirmSubagentTask ?? (() => Promise.resolve(true)),
@@ -323,6 +331,38 @@ async function answerFirst(
   return submitted.turnId
 }
 
+async function openSideFork(t: ReturnType<typeof setup>, session: AgentSession) {
+  const side = await t.host.forkSession(session.sessionId, session.modelId, undefined, {
+    sideChat: true,
+  })
+  expect(side.record.sideChat).toBe(true)
+  return side
+}
+
+async function answerWithPdf(
+  t: ReturnType<typeof setup>,
+  session: ModelApiSession,
+  turnDone: () => Promise<void>,
+  pageCount: number,
+): Promise<string> {
+  const bytes = pdfFixture(pageCount)
+  const base64Data = Buffer.from(bytes).toString('base64')
+  t.api.script({ text: 'I read it' })
+  await session.sendTurn([
+    { type: 'text', text: 'Read the report' },
+    {
+      type: 'file',
+      name: 'report.pdf',
+      mediaType: 'application/pdf',
+      base64Data,
+      sizeBytes: bytes.length,
+      pageCount,
+    },
+  ])
+  await turnDone()
+  return base64Data
+}
+
 /** One turn that reads a.txt and answers, with the fake API scripted for it. */
 async function readAlphaTurn(
   t: ReturnType<typeof setup>,
@@ -370,6 +410,158 @@ async function awaitQuestion(events: readonly AgentEvent[]) {
     throw new Error('expected a question')
   }
   return question
+}
+
+/** One more request after Stop, so a tool-read file cannot hide in later replay (M54). */
+async function nextInputAfterStop(
+  t: ReturnType<typeof setup>,
+  session: ModelApiSession,
+  turnDone: () => Promise<void>,
+): Promise<string> {
+  t.api.script({ text: 'fresh' })
+  await session.sendTurn([{ type: 'text', text: 'Next request' }])
+  await turnDone()
+  const input = t.api.responseBodies().at(-1)?.['input']
+  if (!Array.isArray(input)) {
+    throw new TypeError('expected the next Model API request input')
+  }
+  return JSON.stringify(input)
+}
+
+/** Two different PDFs so replay proves which round's bytes were delivered. */
+function twoToolPdfs(t: ReturnType<typeof setup>): {
+  readonly firstData: string
+  readonly laterData: string
+} {
+  const first = pdfFixture(1)
+  const later = pdfFixture(2)
+  t.io.binaries.set('/ws/docs/first.pdf', first)
+  t.io.binaries.set('/ws/docs/later.pdf', later)
+  return {
+    firstData: `data:application/pdf;base64,${Buffer.from(first).toString('base64')}`,
+    laterData: `data:application/pdf;base64,${Buffer.from(later).toString('base64')}`,
+  }
+}
+
+/** One model round that asks to read two workspace PDFs in call order. */
+function requestTwoToolPdfs(t: ReturnType<typeof setup>, answer: string): void {
+  t.api.script(
+    {
+      calls: [
+        { name: 'read_file', arguments: '{"path":"docs/first.pdf"}', callId: 'read_first' },
+        { name: 'read_file', arguments: '{"path":"docs/second.pdf"}', callId: 'read_second' },
+      ],
+    },
+    { text: answer },
+  )
+}
+
+function mcpImages(...urls: readonly string[]): McpCallOutcome {
+  return {
+    output: 'picture result',
+    visibleOutput: 'picture result',
+    outputParts: urls.map((url) => ({ type: 'input_image', image_url: url, detail: 'auto' })),
+  }
+}
+
+function pictureSource(...outcomes: readonly McpCallOutcome[]): FakeMcpSource {
+  const mcp = fakeMcpSource([{ server: 'docs', tool: 'picture', isReadOnly: true }])
+  mcp.outcomes = [...outcomes]
+  return mcp
+}
+
+function twoImageBudgetFixture(isOneOutcome: boolean) {
+  const firstUrl = `data:image/png;base64,${TINY_PNG_BASE64}`
+  const secondUrl = 'data:image/png;base64,AAAA'
+  const outcomes = isOneOutcome
+    ? [mcpImages(firstUrl, secondUrl)]
+    : [mcpImages(firstUrl), mcpImages(secondUrl)]
+  const t = setup({
+    mcpServers: pictureSource(...outcomes),
+    mediaBudgetMaxEncodedChars: firstUrl.length + secondUrl.length - 1,
+  })
+  return { t, firstUrl, secondUrl }
+}
+
+function pdfPictureFixture() {
+  const pdf = pdfFixture(50)
+  const pdfData = `data:application/pdf;base64,${Buffer.from(pdf).toString('base64')}`
+  const imageUrl = `data:image/png;base64,${TINY_PNG_BASE64}`
+  const t = setup({ mcpServers: pictureSource(mcpImages(imageUrl)) })
+  t.io.binaries.set('/ws/docs/report.pdf', pdf)
+  return { t, pdfData, imageUrl }
+}
+
+function expectFailedTool(events: readonly AgentEvent[], tool: string): void {
+  expect(
+    events.find((event) => event.type === 'itemCompleted' && event.item.tool === tool),
+  ).toMatchObject({ item: { status: 'failed' } })
+}
+
+async function expectNoPictureAfterStop(
+  t: ReturnType<typeof setup>,
+  session: ModelApiSession,
+  turnDone: () => Promise<void>,
+  imageUrl: string,
+): Promise<void> {
+  expect(JSON.stringify(session.snapshot().replay).includes(imageUrl)).toBe(false)
+  const nextInput = await nextInputAfterStop(t, session, turnDone)
+  expect(nextInput.includes(imageUrl)).toBe(false)
+}
+
+function modelInputAt(t: ReturnType<typeof setup>, index: number): string {
+  return JSON.stringify(t.api.responseBodies()[index]?.['input'])
+}
+
+async function completeToolCalls(
+  t: ReturnType<typeof setup>,
+  session: ModelApiSession,
+  turnDone: () => Promise<void>,
+  calls: NonNullable<ScriptedReply['calls']>,
+  prompt: string,
+  followup?: ScriptedReply,
+): Promise<void> {
+  t.api.script({ calls }, ...(followup === undefined ? [] : [followup]))
+  await session.sendTurn([{ type: 'text', text: prompt }])
+  await turnDone()
+}
+
+function pdfTurnPart(pages: number): DocumentPart {
+  const bytes = pdfFixture(pages)
+  return {
+    type: 'file',
+    name: 'steered.pdf',
+    mediaType: 'application/pdf',
+    base64Data: Buffer.from(bytes).toString('base64'),
+    sizeBytes: bytes.length,
+    pageCount: pages,
+  }
+}
+
+function namedTextPart(name: string, text: string): TurnPart {
+  return {
+    type: 'textFile',
+    name,
+    mediaType: 'text/plain',
+    text,
+    sizeBytes: Buffer.byteLength(text),
+  }
+}
+
+function halfBudgetTextPart(name: string): TurnPart {
+  return namedTextPart(name, 'x'.repeat(Math.ceil(MAX_MODEL_API_TEXT_ATTACHMENT_BYTES / 2)))
+}
+
+/** Earlier bytes stay, while a later undelivered file becomes path-only context. */
+function expectOnlyFirstPdfDelivered(
+  nextInput: string,
+  firstData: string,
+  laterData: string,
+): void {
+  expect(nextInput).toContain(firstData)
+  expect(nextInput).not.toContain(laterData)
+  expect(nextInput).toContain('docs/later.pdf')
+  expect(nextInput).toContain('was not delivered because that tool round ended early')
 }
 
 describe('ModelApiHost: catalogue and sessions', () => {
@@ -644,10 +836,7 @@ describe('ModelApiHost: catalogue and sessions', () => {
     await t.host.flush()
     runHook.mockClear()
 
-    const side = await t.host.forkSession(session.sessionId, 'muse-spark-1.3', undefined, {
-      sideChat: true,
-    })
-    expect(side.record.sideChat).toBe(true)
+    const side = await openSideFork(t, session)
     expect(store.saved.get(side.record.sessionId)).toMatchObject({
       sideChat: true,
       approvalMode: 'denyUnmatched',
@@ -828,6 +1017,27 @@ describe('ModelApiHost: catalogue and sessions', () => {
     const reopened = await t.host.resumeSession(side.record.sessionId, 'muse-spark-1.3')
     await expect(reopened.session.controlSubagent('subagent-1', 'reopen')).rejects.toThrow()
     expect(t.paidUses).toHaveLength(chargedBefore)
+  })
+
+  it('keeps an earlier PDF in side-fork replay while preserving its Plan marker (M53/M54)', async () => {
+    const store = memorySessionStore()
+    const t = setup({ store })
+    const { session, turnDone } = await startSession(t)
+    const base64Data = await answerWithPdf(t, session, turnDone, 2)
+
+    const side = await openSideFork(t, session)
+    expect(store.saved.get(side.record.sessionId)?.approvalMode).toBe('denyUnmatched')
+    expect(side.history.items[0]).toMatchObject({
+      kind: 'userMessage',
+      attachments: [{ type: 'file', name: 'report.pdf', mediaType: 'application/pdf' }],
+    })
+    const { turnDone: sideTurnDone } = watchTurns(side.session)
+    t.api.script({ text: 'The side answer' })
+    await side.session.sendTurn([{ type: 'text', text: 'One more question' }])
+    await sideTurnDone()
+    const input = JSON.stringify(t.api.responseBodies().at(-1)?.['input'])
+    expect(input).toContain(`data:application/pdf;base64,${base64Data}`)
+    expect(input).toContain('One more question')
   })
 })
 
@@ -1031,6 +1241,35 @@ describe('Model API scheduled prompts (M52)', () => {
       schedules.run(job.id, job.nextFireAtMs, confirmedRun(job, session)),
     ).rejects.toThrow(UI_TEXT.scheduleNotDue)
     expect(t.api.responseBodies()).toHaveLength(1)
+    await t.host.close()
+  })
+
+  it('keeps an earlier PDF in the confirmed paid run within the replay media budget', async () => {
+    let now = 1_000_000
+    const t = setup({
+      store: memorySessionStore(),
+      scheduleStore: createFileScheduleStore({
+        directory: path.join(scheduleRoot, 'pdf-replay'),
+        now: () => now,
+        log: new FakeLogOutputChannel(),
+      }),
+      getAccountId: () => Promise.resolve(FAKE_MODEL_API_ACCOUNT_ID),
+      paid: ['scheduledPrompts'],
+    })
+    const { session, turnDone } = await startSession(t)
+    const base64Data = await answerWithPdf(t, session, turnDone, 50)
+
+    const { schedules, job } = await dueSchedule(t, session)
+    now = job.nextFireAtMs + 1
+    t.api.script({ text: 'Scheduled review complete' })
+    const completed = turnDone()
+    await schedules.run(job.id, job.nextFireAtMs, confirmedRun(job, session))
+    await completed
+
+    const scheduledInput = JSON.stringify(t.api.responseBodies()[1]?.['input'])
+    expect(scheduledInput).toContain(`data:application/pdf;base64,${base64Data}`)
+    expect(scheduledInput).toContain(job.prompt)
+    expect(t.paidUses).toEqual([{ feature: 'scheduledPrompts', units: 1 }])
     await t.host.close()
   })
 
@@ -1406,6 +1645,20 @@ describe('ModelApiHost: usage (M8)', () => {
 })
 
 describe('ModelApiSession: turns', () => {
+  it('refuses a send or steer on a disposed session before any Model API request', async () => {
+    const t = setup()
+    const { session } = await startSession(t)
+    session.dispose()
+    await expect(session.sendTurn([{ type: 'text', text: 'Stale paid turn' }])).rejects.toThrow(
+      UI_TEXT.turnStoppedByRestart,
+    )
+    await expect(
+      session.steer('old-turn', [{ type: 'text', text: 'Stale steer' }]),
+    ).rejects.toThrow(UI_TEXT.turnStoppedByRestart)
+    expect(t.api.responseBodies()).toEqual([])
+    expect(session.history().items).toEqual([])
+  })
+
   it('streams a reply with reasoning into the transcript and replays it with usage', async () => {
     const t = setup()
     const { session, events, turnDone } = await startSession(t)
@@ -1672,6 +1925,26 @@ describe('ModelApiSession: turns', () => {
     })
   })
 
+  it('refuses a write whose checked target changes while its ordinary card is open', async () => {
+    const links: Record<string, string> = { 'alias.txt': `${ROOT}/regular.txt` }
+    const io = memoryToolIo({}, ROOT, undefined, links)
+    const t = setup({ io })
+    const { session, events, turnDone } = await startSession(t)
+    scriptWriteCalls(t, { path: 'alias.txt', content: 'secret', callId: 'alias_race' })
+    await session.sendTurn([{ type: 'text', text: 'write' }])
+    const request = await approvalRequest(events, 0)
+    expect(request.isProtectedWrite).toBe(false)
+    links['alias.txt'] = `${ROOT}/.muse/hooks.json`
+    await session.decideApproval({
+      approvalId: request.approvalId,
+      choiceId: 'allow_once',
+      requirementId: request.requirementId,
+    })
+    await turnDone()
+    expect(t.files.has(`${ROOT}/.muse/hooks.json`)).toBe(false)
+    expect(toolOutput(t, 'alias_race')).toContain('path changed after approval')
+  })
+
   it('asks for a protected write even in Auto, and refuses a choice it never offered (D24)', async () => {
     const t = setup({ files: { 'a.txt': 'alpha\n' } })
     const { session, events, turnDone } = await startSession(t, 'onRequest')
@@ -1934,6 +2207,901 @@ describe('ModelApiSession: turns', () => {
     session.dispose()
     expect(t.host.sessionCount).toBe(0)
   })
+
+  it('sends a PDF as input_file and keeps its name in durable history', async () => {
+    const t = setup()
+    const { session, turnDone } = await startSession(t)
+    const bytes = pdfFixture(2)
+    t.api.script({ text: 'I can read it' })
+    await session.sendTurn([
+      { type: 'text', text: 'Summarize the report' },
+      {
+        type: 'file',
+        name: 'report.pdf',
+        mediaType: 'application/pdf',
+        base64Data: Buffer.from(bytes).toString('base64'),
+        sizeBytes: bytes.length,
+        pageCount: 2,
+      },
+    ])
+    await turnDone()
+    expect(t.api.responseBodies()[0]).toMatchObject({
+      input: [
+        {
+          type: 'message',
+          role: 'user',
+          content: [
+            { type: 'input_text', text: 'Summarize the report' },
+            {
+              type: 'input_file',
+              filename: 'report.pdf',
+              file_data: `data:application/pdf;base64,${Buffer.from(bytes).toString('base64')}`,
+            },
+          ],
+        },
+      ],
+    })
+    expect(session.history().items[0]).toMatchObject({
+      kind: 'userMessage',
+      attachments: [
+        { type: 'file', name: 'report.pdf', mediaType: 'application/pdf', pageCount: 2 },
+      ],
+    })
+  })
+
+  it('keeps PDF data URLs out of pre- and post-model hook input', async () => {
+    const payloads: string[] = []
+    const t = setup({
+      hooks: [...hooksFor('PreLLMCall', 'observe'), ...hooksFor('PostLLMCall', 'observe')],
+      runHook: (_command, payload) => {
+        payloads.push(payload)
+        return hookReply()
+      },
+    })
+    const { session, turnDone } = await startSession(t)
+    const bytes = pdfFixture(1)
+    const base64Data = Buffer.from(bytes).toString('base64')
+    t.api.script({ text: 'I read it' })
+    await session.sendTurn([
+      { type: 'text', text: 'Summarize' },
+      {
+        type: 'file',
+        name: 'private.pdf',
+        mediaType: 'application/pdf',
+        base64Data,
+        sizeBytes: bytes.length,
+        pageCount: 1,
+      },
+    ])
+    await turnDone()
+    expect(payloads).toHaveLength(2)
+    expect(payloads.join('\n')).not.toContain(base64Data)
+    expect(payloads.join('\n')).not.toContain('data:application/pdf')
+  })
+
+  it('notices when replay leaves older media out while preserving local history', async () => {
+    const imageUrl = 'data:image/png;base64,AAAA'
+    const store = memorySessionStore()
+    const t = setup({ mediaBudgetMaxEncodedChars: imageUrl.length, store })
+    const { session, events, turnDone } = await startSession(t)
+    t.api.script({ text: 'first image seen' })
+    await session.sendTurn([
+      { type: 'text', text: 'First image' },
+      { type: 'image', base64Data: 'AAAA', mediaType: 'image/png', width: 1, height: 1 },
+    ])
+    await turnDone()
+    expect(events.some((event) => event.type === 'backendNotice')).toBe(false)
+    t.api.script({ text: 'second image seen' })
+    await session.sendTurn([
+      { type: 'text', text: 'Second image' },
+      { type: 'image', base64Data: 'AQ==', mediaType: 'image/png', width: 1, height: 1 },
+    ])
+    await turnDone()
+    expect(events.filter((event) => event.type === 'backendNotice')).toEqual([
+      { type: 'backendNotice', level: 'warning', text: UI_TEXT.olderMediaOmitted },
+    ])
+    expect(t.api.responseBodies()[1]).toMatchObject({
+      input: [
+        {
+          type: 'message',
+          role: 'user',
+          content: [
+            { type: 'input_text', text: 'First image' },
+            { type: 'input_text', text: MODEL_TEXT.imageLeftOut },
+          ],
+        },
+        expect.anything(),
+        {
+          type: 'message',
+          role: 'user',
+          content: [
+            { type: 'input_text', text: 'Second image' },
+            { type: 'input_image', image_url: 'data:image/png;base64,AQ==' },
+          ],
+        },
+      ],
+    })
+    expect(session.history().items.filter((item) => item.kind === 'userMessage')).toMatchObject([
+      { attachments: [{ type: 'image' }] },
+      { attachments: [{ type: 'image' }] },
+    ])
+    const firstCard = session.history().items.find((item) => item.kind === 'userMessage')
+    if (firstCard?.kind !== 'userMessage' || firstCard.turnId === undefined) {
+      throw new Error('expected first image card')
+    }
+    expect(session.sentImages(firstCard.turnId, firstCard.itemId)).toEqual([])
+    const saved = session.snapshot()
+    expect(JSON.stringify(saved.replay)).not.toContain(imageUrl)
+    expect(JSON.stringify(saved.replay)).toContain(MODEL_TEXT.imageLeftOut)
+    await t.host.close()
+    const restored = setup({ mediaBudgetMaxEncodedChars: imageUrl.length, store })
+    await restored.host.load()
+    const resumed = await restored.host.resumeSession(session.sessionId, session.modelId)
+    if (!(resumed.session instanceof ModelApiSession)) {
+      throw new TypeError('expected Model API session')
+    }
+    expect(JSON.stringify(resumed.session.snapshot().replay)).not.toContain(imageUrl)
+    expect(resumed.history.items.filter((item) => item.kind === 'userMessage')).toMatchObject([
+      { attachments: [{ type: 'image' }] },
+      { attachments: [{ type: 'image' }] },
+    ])
+    expect(resumed.session.sentImages(firstCard.turnId, firstCard.itemId)).toEqual([])
+  })
+
+  it('keeps old image bytes when the fitted request fails before delivery', async () => {
+    const imageUrl = 'data:image/png;base64,AAAA'
+    const t = setup({ mediaBudgetMaxEncodedChars: imageUrl.length })
+    const { session, turnDone } = await startSession(t)
+    t.api.script({ text: 'first image seen' })
+    await session.sendTurn([
+      { type: 'image', base64Data: 'AAAA', mediaType: 'image/png', width: 1, height: 1 },
+    ])
+    await turnDone()
+    t.api.script({ failed: { code: 'invalid_request_error', message: 'request failed' } })
+    await session.sendTurn([
+      { type: 'image', base64Data: 'AQ==', mediaType: 'image/png', width: 1, height: 1 },
+    ])
+    await turnDone()
+    expect(JSON.stringify(t.api.responseBodies()[1])).not.toContain(imageUrl)
+    expect(JSON.stringify(session.snapshot().replay)).toContain(imageUrl)
+  })
+
+  it('sends a named text attachment as input_text with a file chip in history', async () => {
+    const t = setup()
+    const { session, turnDone } = await startSession(t)
+    t.api.script({ text: 'It declares a value' })
+    await session.sendTurn([
+      { type: 'text', text: 'Explain this' },
+      {
+        type: 'textFile',
+        name: 'a.ts',
+        mediaType: 'text/plain',
+        text: 'const a = 1',
+        sizeBytes: 11,
+      },
+    ])
+    await turnDone()
+    expect(t.api.responseBodies()[0]).toMatchObject({
+      input: [
+        {
+          type: 'message',
+          role: 'user',
+          content: [
+            { type: 'input_text', text: 'Explain this' },
+            { type: 'input_text', text: 'Attached text file "a.ts":\n\nconst a = 1' },
+          ],
+        },
+      ],
+    })
+    expect(session.history().items[0]).toMatchObject({
+      attachments: [{ type: 'file', name: 'a.ts', mediaType: 'text/plain' }],
+    })
+  })
+
+  it('rejects aggregate named text over the Model API allowance before HTTP', async () => {
+    const t = setup()
+    const { session, turnDone } = await startSession(t)
+    const largeText = 'x'.repeat(Math.ceil(MAX_MODEL_API_TEXT_ATTACHMENT_BYTES / 2))
+    const file = (name: string) => ({
+      type: 'textFile' as const,
+      name,
+      mediaType: 'text/plain',
+      text: largeText,
+      sizeBytes: Buffer.byteLength(largeText),
+    })
+    await expect(
+      session.sendTurn([{ type: 'text', text: 'Read both' }, file('a.txt'), file('b.txt')]),
+    ).rejects.toThrow(UI_TEXT.textFilesOverModelApiBudget)
+    expect(t.api.responseBodies()).toEqual([])
+    expect(session.history().items).toEqual([])
+
+    t.api.script({ text: 'Small file read' })
+    await session.sendTurn([
+      { type: 'text', text: 'Read one excerpt' },
+      { type: 'textFile', name: 'small.txt', mediaType: 'text/plain', text: 'ok', sizeBytes: 2 },
+    ])
+    await turnDone()
+    expect(t.api.responseBodies()).toHaveLength(1)
+  })
+
+  it('refuses a steer when earlier accepted steering already uses the text allowance', async () => {
+    const t = setup()
+    const { session, turnDone } = await startSession(t)
+    const held = Promise.withResolvers<undefined>()
+    t.api.script({ text: 'first', hold: held.promise }, { text: 'after first steer' })
+    const turn = await session.sendTurn([{ type: 'text', text: 'Read the next file' }])
+    await session.steer(turn.turnId, [halfBudgetTextPart('first.txt')])
+    await expect(session.steer(turn.turnId, [halfBudgetTextPart('second.txt')])).rejects.toThrow(
+      UI_TEXT.textFilesOverModelApiBudget,
+    )
+    held.resolve(undefined)
+    await turnDone()
+    expect(t.api.responseBodies().length).toBeGreaterThan(0)
+    expect(JSON.stringify(t.api.responseBodies())).toContain('first.txt')
+    expect(JSON.stringify(t.api.responseBodies())).not.toContain('second.txt')
+    expect(session.history().items.some((item) => item.text?.includes('second.txt'))).toBe(false)
+  })
+
+  it('counts the active turn text file before accepting a steer', async () => {
+    const t = setup()
+    const { session, turnDone } = await startSession(t)
+    const held = Promise.withResolvers<undefined>()
+    t.api.script({ text: 'first', hold: held.promise })
+    const turn = await session.sendTurn([
+      { type: 'text', text: 'Read this' },
+      halfBudgetTextPart('initial.txt'),
+    ])
+    await expect(session.steer(turn.turnId, [halfBudgetTextPart('later.txt')])).rejects.toThrow(
+      UI_TEXT.textFilesOverModelApiBudget,
+    )
+    held.resolve(undefined)
+    await turnDone()
+    expect(t.api.responseBodies()).toHaveLength(1)
+    expect(modelInputAt(t, 0)).toContain('initial.txt')
+    expect(session.history().items.some((item) => item.text?.includes('later.txt'))).toBe(false)
+  })
+
+  it('keeps the named-text allowance after a steer drains into a model request', async () => {
+    const t = setup()
+    const { session, turnDone } = await startSession(t)
+    const firstHeld = Promise.withResolvers<undefined>()
+    const secondHeld = Promise.withResolvers<undefined>()
+    t.api.script(
+      { text: 'first', hold: firstHeld.promise },
+      { text: 'after steering', hold: secondHeld.promise },
+    )
+    const turn = await session.sendTurn([{ type: 'text', text: 'Start' }])
+    await vi.waitFor(() => {
+      expect(t.api.responseBodies()).toHaveLength(1)
+    })
+    await session.steer(turn.turnId, [halfBudgetTextPart('first.txt')])
+    firstHeld.resolve(undefined)
+    await vi.waitFor(() => {
+      expect(t.api.responseBodies()).toHaveLength(2)
+    })
+    await expect(session.steer(turn.turnId, [halfBudgetTextPart('later.txt')])).rejects.toThrow(
+      UI_TEXT.textFilesOverModelApiBudget,
+    )
+    secondHeld.resolve(undefined)
+    await turnDone()
+    expect(modelInputAt(t, 1)).toContain('first.txt')
+    expect(modelInputAt(t, 1)).not.toContain('later.txt')
+  })
+
+  it('rejects Muse-admitted text chips after a switch to Model API', async () => {
+    const t = setup()
+    const { session } = await startSession(t)
+    let nextId = 0
+    const attachments = new AttachmentStore(() => `att-${String(++nextId)}`)
+    const bytes = Buffer.from('x'.repeat(700 * 1024))
+    expect(attachments.add('first.txt', bytes, false, true).ok).toBe(true)
+    expect(attachments.add('second.txt', bytes, false, true).ok).toBe(true)
+    await expect(session.sendTurn(attachments.partsFor(['att-1', 'att-2']))).rejects.toThrow(
+      UI_TEXT.textFilesOverModelApiBudget,
+    )
+    expect(t.api.responseBodies()).toEqual([])
+    expect(session.history().items).toEqual([])
+    expect(JSON.stringify(session.snapshot().replay)).not.toContain(bytes.toString('utf8'))
+  })
+
+  it('fits an MCP result image ahead of an older 50-page PDF in the next request', async () => {
+    const mcp = fakeMcpSource([{ server: 'docs', tool: 'picture', isReadOnly: true }])
+    const imageUrl = `data:image/png;base64,${TINY_PNG_BASE64}`
+    mcp.outcomes = [
+      {
+        output: 'a picture',
+        visibleOutput: 'a picture',
+        outputParts: [
+          { type: 'input_text', text: 'a picture' },
+          { type: 'input_image', image_url: imageUrl, detail: 'auto' },
+        ],
+      },
+    ]
+    const t = setup({ mcpServers: mcp })
+    const { session, events, turnDone } = await startSession(t, 'allowAll')
+    const pdf = pdfFixture(50)
+    t.api.script(
+      { calls: [{ name: 'mcp__docs__picture', arguments: '{}', callId: 'mcp_picture' }] },
+      { text: 'done' },
+    )
+    await session.sendTurn([
+      { type: 'text', text: 'Compare the PDF and picture' },
+      {
+        type: 'file',
+        name: 'report.pdf',
+        mediaType: 'application/pdf',
+        base64Data: Buffer.from(pdf).toString('base64'),
+        sizeBytes: pdf.length,
+        pageCount: 50,
+      },
+    ])
+    await turnDone()
+    expect(t.api.responseBodies()[1]).toMatchObject({
+      input: expect.arrayContaining([
+        expect.objectContaining({
+          type: 'message',
+          role: 'user',
+          content: [
+            { type: 'input_text', text: 'Compare the PDF and picture' },
+            { type: 'input_text', text: expect.stringContaining('report.pdf') },
+          ],
+        }),
+        expect.objectContaining({
+          type: 'function_call_output',
+          call_id: 'mcp_picture',
+          output: [
+            { type: 'input_text', text: 'a picture' },
+            { type: 'input_image', image_url: imageUrl, detail: 'auto' },
+          ],
+        }),
+      ]),
+    })
+    expect(events).toContainEqual({
+      type: 'backendNotice',
+      level: 'warning',
+      text: UI_TEXT.olderMediaOmitted,
+    })
+  })
+
+  it.each([
+    { name: 'page slots', pages: 50, limit: 'slots' },
+    { name: 'encoded characters', pages: 1, limit: 'encoded' },
+  ])('refuses a visual read after undelivered MCP image fills $name', async ({ pages, limit }) => {
+    const imageUrl = `data:image/png;base64,${TINY_PNG_BASE64}`
+    const pdf = pdfFixture(pages)
+    const pdfData = `data:application/pdf;base64,${Buffer.from(pdf).toString('base64')}`
+    const mcp = pictureSource(mcpImages(imageUrl))
+    const t = setup({
+      mcpServers: mcp,
+      ...(limit === 'encoded' && {
+        mediaBudgetMaxEncodedChars: imageUrl.length + pdfData.length - 1,
+      }),
+    })
+    t.io.binaries.set('/ws/docs/report.pdf', pdf)
+    const { session, events, turnDone } = await startSession(t, 'allowAll')
+    await completeToolCalls(
+      t,
+      session,
+      turnDone,
+      [
+        { name: 'mcp__docs__picture', arguments: '{}', callId: 'picture' },
+        { name: 'read_file', arguments: '{"path":"docs/report.pdf"}', callId: 'read_pdf' },
+      ],
+      'Read the picture and PDF',
+      { text: 'Picture received' },
+    )
+    const delivered = modelInputAt(t, 1)
+    expect(delivered).toContain(imageUrl)
+    expect(delivered).not.toContain(pdfData)
+    expect(delivered).toContain(MODEL_TEXT.toolMediaBudgetExceeded)
+    const read = events.find(
+      (event) => event.type === 'itemCompleted' && event.item.tool === 'read_file',
+    )
+    expect(read).toMatchObject({ item: { status: 'failed' } })
+    const replay = JSON.stringify(session.snapshot().replay)
+    expect(replay).toContain(imageUrl)
+    expect(replay).not.toContain(pdfData)
+  })
+
+  it('keeps the earlier MCP image when a second tool image exceeds the encoded budget', async () => {
+    const { t, firstUrl, secondUrl } = twoImageBudgetFixture(false)
+    const { session, events, turnDone } = await startSession(t, 'allowAll')
+    await completeToolCalls(
+      t,
+      session,
+      turnDone,
+      [
+        { name: 'mcp__docs__picture', arguments: '{}', callId: 'first_picture' },
+        { name: 'mcp__docs__picture', arguments: '{}', callId: 'second_picture' },
+      ],
+      'Look at both pictures',
+      { text: 'First picture received' },
+    )
+    const delivered = modelInputAt(t, 1)
+    expect(delivered.includes(firstUrl)).toBe(true)
+    expect(delivered.includes(secondUrl)).toBe(false)
+    expect(delivered).toContain(MODEL_TEXT.toolMediaBudgetExceeded)
+    expect(
+      events.flatMap((event) =>
+        event.type === 'itemCompleted' && event.item.tool === 'mcp__docs__picture'
+          ? [event.item.status]
+          : [],
+      ),
+    ).toEqual(['completed', 'failed'])
+    const replay = JSON.stringify(session.snapshot().replay)
+    expect(replay.includes(firstUrl)).toBe(true)
+    expect(replay.includes(secondUrl)).toBe(false)
+  })
+
+  it('fails one MCP result whose two images exceed the aggregate encoded budget', async () => {
+    const { t, firstUrl, secondUrl } = twoImageBudgetFixture(true)
+    const { session, events, turnDone } = await startSession(t, 'allowAll')
+    await completeToolCalls(
+      t,
+      session,
+      turnDone,
+      [{ name: 'mcp__docs__picture', arguments: '{}', callId: 'both_pictures' }],
+      'Look at this result',
+      { text: 'No pictures received' },
+    )
+    const delivered = modelInputAt(t, 1)
+    expect(delivered.includes(firstUrl)).toBe(false)
+    expect(delivered.includes(secondUrl)).toBe(false)
+    expect(delivered).toContain(MODEL_TEXT.toolMediaBudgetExceeded)
+    expectFailedTool(events, 'mcp__docs__picture')
+    expect(JSON.stringify(session.snapshot().replay).includes(firstUrl)).toBe(false)
+  })
+
+  it('keeps a queued 50-page PDF when a later MCP image cannot fit', async () => {
+    const { t, pdfData, imageUrl } = pdfPictureFixture()
+    const { session, events, turnDone } = await startSession(t, 'allowAll')
+    await completeToolCalls(
+      t,
+      session,
+      turnDone,
+      [
+        { name: 'read_file', arguments: '{"path":"docs/report.pdf"}', callId: 'read_pdf' },
+        { name: 'mcp__docs__picture', arguments: '{}', callId: 'picture' },
+      ],
+      'Read PDF and picture',
+      { text: 'PDF received' },
+    )
+    const delivered = modelInputAt(t, 1)
+    expect(delivered.includes(pdfData)).toBe(true)
+    expect(delivered.includes(imageUrl)).toBe(false)
+    expect(delivered).toContain(MODEL_TEXT.toolMediaBudgetExceeded)
+    expectFailedTool(events, 'mcp__docs__picture')
+    expect(JSON.stringify(session.snapshot().replay).includes(pdfData)).toBe(true)
+  })
+
+  it('scrubs an undelivered MCP image when a PostToolBatch hook stops the turn', async () => {
+    const imageUrl = `data:image/png;base64,${TINY_PNG_BASE64}`
+    const mcp = pictureSource(mcpImages(imageUrl))
+    const t = setup({
+      mcpServers: mcp,
+      hooks: hooksFor('PostToolBatch', 'stop-picture'),
+      runHook: () => hookReply(JSON.stringify({ continue: false, stopReason: 'stop picture' })),
+    })
+    const { session, turnDone } = await startSession(t, 'allowAll')
+    await completeToolCalls(
+      t,
+      session,
+      turnDone,
+      [{ name: 'mcp__docs__picture', arguments: '{}', callId: 'picture' }],
+      'Look at the picture',
+    )
+    expect(t.api.responseBodies()).toHaveLength(1)
+    await expectNoPictureAfterStop(t, session, turnDone, imageUrl)
+  })
+
+  it('releases an MCP image reservation after its first completed delivery', async () => {
+    const { t, pdfData, imageUrl } = pdfPictureFixture()
+    const { session, events, turnDone } = await startSession(t, 'allowAll')
+    t.api.script(
+      { calls: [{ name: 'mcp__docs__picture', arguments: '{}', callId: 'picture' }] },
+      {
+        calls: [{ name: 'read_file', arguments: '{"path":"docs/report.pdf"}', callId: 'read_pdf' }],
+      },
+      { text: 'Both arrived in their own requests' },
+    )
+    await session.sendTurn([{ type: 'text', text: 'Read the picture, then the PDF' }])
+    await turnDone()
+    expect(JSON.stringify(t.api.responseBodies()[1]?.['input']).includes(imageUrl)).toBe(true)
+    expect(JSON.stringify(t.api.responseBodies()[2]?.['input']).includes(pdfData)).toBe(true)
+    expect(
+      events.find((event) => event.type === 'itemCompleted' && event.item.tool === 'read_file'),
+    ).toMatchObject({ item: { status: 'completed' } })
+  })
+
+  it('scrubs an MCP image when its first delivery request fails', async () => {
+    const imageUrl = `data:image/png;base64,${TINY_PNG_BASE64}`
+    const mcp = pictureSource(mcpImages(imageUrl))
+    const t = setup({ mcpServers: mcp })
+    const { session, turnDone } = await startSession(t, 'allowAll')
+    await completeToolCalls(
+      t,
+      session,
+      turnDone,
+      [{ name: 'mcp__docs__picture', arguments: '{}', callId: 'picture' }],
+      'Look at the picture',
+      { failed: { code: 'server_error', message: 'delivery failed' } },
+    )
+    expect(JSON.stringify(t.api.responseBodies()[1]?.['input']).includes(imageUrl)).toBe(true)
+    await expectNoPictureAfterStop(t, session, turnDone, imageUrl)
+  })
+
+  it('fails a held MCP image when a steered 50-page PDF took the last slots first', async () => {
+    const imageUrl = `data:image/png;base64,${TINY_PNG_BASE64}`
+    const mcp = pictureSource(mcpImages(imageUrl))
+    const held = Promise.withResolvers<undefined>()
+    mcp.gate = held.promise
+    const t = setup({ mcpServers: mcp })
+    const { session, events, turnDone } = await startSession(t, 'allowAll')
+    t.api.script(
+      { calls: [{ name: 'mcp__docs__picture', arguments: '{}', callId: 'picture' }] },
+      { text: 'PDF received' },
+    )
+    const submitted = await session.sendTurn([{ type: 'text', text: 'Review the picture' }])
+    await vi.waitFor(() => {
+      expect(mcp.calls).toHaveLength(1)
+    })
+    const pdf = pdfTurnPart(50)
+    await expect(session.steer(submitted.turnId, [pdf])).resolves.toMatchObject({
+      disposition: 'steered',
+    })
+    held.resolve(undefined)
+    await turnDone()
+    expect(
+      events.find(
+        (event) => event.type === 'itemCompleted' && event.item.tool === 'mcp__docs__picture',
+      ),
+    ).toMatchObject({ item: { status: 'failed' } })
+    const delivered = JSON.stringify(t.api.responseBodies()[1]?.['input'])
+    expect(delivered.includes(imageUrl)).toBe(false)
+    expect(delivered).toContain(pdf.base64Data)
+    expect(delivered).toContain(MODEL_TEXT.toolMediaBudgetExceeded)
+  })
+
+  it('refuses a steer that would hide an already completed MCP image', async () => {
+    const imageUrl = `data:image/png;base64,${TINY_PNG_BASE64}`
+    const mcp = pictureSource(mcpImages(imageUrl))
+    const held = Promise.withResolvers<undefined>()
+    const t = setup({
+      mcpServers: mcp,
+      hooks: hooksFor('PostToolBatch', 'hold-picture'),
+      runHook: async () => {
+        await held.promise
+        return await hookReply()
+      },
+    })
+    const { session, events, turnDone } = await startSession(t, 'allowAll')
+    t.api.script(
+      { calls: [{ name: 'mcp__docs__picture', arguments: '{}', callId: 'picture' }] },
+      { text: 'Picture received' },
+    )
+    const submitted = await session.sendTurn([{ type: 'text', text: 'Review the picture' }])
+    await vi.waitFor(() => {
+      expect(
+        events.some(
+          (event) => event.type === 'itemCompleted' && event.item.tool === 'mcp__docs__picture',
+        ),
+      ).toBe(true)
+    })
+    await expect(session.steer(submitted.turnId, [pdfTurnPart(50)])).rejects.toThrow(
+      UI_TEXT.mediaTotalTooLarge,
+    )
+    held.resolve(undefined)
+    await turnDone()
+    expect(JSON.stringify(t.api.responseBodies()[1]?.['input']).includes(imageUrl)).toBe(true)
+  })
+
+  it('reserves a read-file PDF while its PostToolBatch hook holds first delivery', async () => {
+    const entered = Promise.withResolvers<undefined>()
+    const release = Promise.withResolvers<undefined>()
+    const t = setup({
+      hooks: hooksFor('PostToolBatch', 'hold-read-pdf'),
+      runHook: async () => {
+        entered.resolve(undefined)
+        await release.promise
+        return await hookReply()
+      },
+    })
+    const bytes = pdfFixture(50)
+    const pdfData = `data:application/pdf;base64,${Buffer.from(bytes).toString('base64')}`
+    t.io.binaries.set('/ws/docs/report.pdf', bytes)
+    const { session, events, turnDone } = await startSession(t, 'allowAll')
+    t.api.script(
+      {
+        calls: [{ name: 'read_file', arguments: '{"path":"docs/report.pdf"}', callId: 'read_pdf' }],
+      },
+      { text: 'Read received' },
+    )
+    const submitted = await session.sendTurn([{ type: 'text', text: 'Read the PDF' }])
+    await entered.promise
+    let refused: unknown
+    try {
+      await session.steer(submitted.turnId, [pdfTurnPart(1)])
+    } catch (error: unknown) {
+      refused = error
+    }
+    release.resolve(undefined)
+    await turnDone()
+    expect(refused).toMatchObject({ message: UI_TEXT.mediaTotalTooLarge })
+    expect(
+      events.find((event) => event.type === 'itemCompleted' && event.item.tool === 'read_file'),
+    ).toMatchObject({ item: { status: 'completed' } })
+    expect(modelInputAt(t, 1)).toContain(pdfData)
+  })
+
+  it('releases a read-file reservation after its first completed request', async () => {
+    const entered = Promise.withResolvers<undefined>()
+    const release = Promise.withResolvers<undefined>()
+    let postCalls = 0
+    const t = setup({
+      hooks: hooksFor('PostLLMCall', 'hold-after-read-delivery'),
+      runHook: async () => {
+        postCalls += 1
+        if (postCalls === 2) {
+          entered.resolve(undefined)
+          await release.promise
+        }
+        return await hookReply()
+      },
+    })
+    const bytes = pdfFixture(50)
+    const pdfData = `data:application/pdf;base64,${Buffer.from(bytes).toString('base64')}`
+    t.io.binaries.set('/ws/docs/report.pdf', bytes)
+    const { session, turnDone } = await startSession(t, 'allowAll')
+    t.api.script(
+      {
+        calls: [{ name: 'read_file', arguments: '{"path":"docs/report.pdf"}', callId: 'read_pdf' }],
+      },
+      { text: 'PDF arrived' },
+      { text: 'Steer arrived' },
+    )
+    const submitted = await session.sendTurn([{ type: 'text', text: 'Read the PDF' }])
+    await entered.promise
+    const steer = pdfTurnPart(1)
+    await expect(session.steer(submitted.turnId, [steer])).resolves.toMatchObject({
+      disposition: 'steered',
+    })
+    release.resolve(undefined)
+    await turnDone()
+    expect(modelInputAt(t, 1)).toContain(pdfData)
+    expect(modelInputAt(t, 2)).toContain(steer.base64Data)
+  })
+
+  it('places a workspace PDF read after the function output so the next model call sees it', async () => {
+    const t = setup()
+    const { session, turnDone } = await startSession(t)
+    const bytes = pdfFixture(1)
+    t.io.binaries.set('/ws/docs/report.pdf', bytes)
+    t.api.script(
+      {
+        calls: [{ name: 'read_file', arguments: '{"path":"docs/report.pdf"}', callId: 'read_pdf' }],
+      },
+      { text: 'The PDF has one page' },
+    )
+    await session.sendTurn([{ type: 'text', text: 'Read docs/report.pdf' }])
+    await turnDone()
+    expect(t.api.responseBodies()[1]).toMatchObject({
+      input: expect.arrayContaining([
+        expect.objectContaining({ type: 'function_call_output', call_id: 'read_pdf' }),
+        expect.objectContaining({
+          type: 'message',
+          role: 'user',
+          content: [
+            { type: 'input_text', text: expect.stringContaining('docs/report.pdf') },
+            {
+              type: 'input_file',
+              filename: 'report.pdf',
+              file_data: `data:application/pdf;base64,${Buffer.from(bytes).toString('base64')}`,
+            },
+          ],
+        }),
+      ]),
+    })
+  })
+
+  it.each([
+    {
+      name: 'two known 30-page PDFs',
+      first: pdfFixture(30, '/Review (first)'),
+      second: pdfFixture(30, '/Review (second)'),
+    },
+    {
+      name: 'an unknown-page PDF and another PDF',
+      first: pdfFixture(1, '/Review /Encr#79pt'),
+      second: pdfFixture(1),
+    },
+  ])('refuses the second tool-read PDF before replay omits the first: $name', async (files) => {
+    const firstData = `data:application/pdf;base64,${Buffer.from(files.first).toString('base64')}`
+    const secondData = `data:application/pdf;base64,${Buffer.from(files.second).toString('base64')}`
+    const t = setup()
+    t.io.binaries.set('/ws/docs/first.pdf', files.first)
+    t.io.binaries.set('/ws/docs/second.pdf', files.second)
+    const { session, events, turnDone } = await startSession(t)
+    requestTwoToolPdfs(t, 'First PDF received')
+    await session.sendTurn([{ type: 'text', text: 'Read these PDFs in order' }])
+    await turnDone()
+    const delivered = JSON.stringify(t.api.responseBodies()[1]?.['input'])
+    expect(delivered).toContain(firstData)
+    expect(delivered).not.toContain(secondData)
+    expect(delivered).toContain(MODEL_TEXT.toolMediaBudgetExceeded)
+    const statuses = events.flatMap((event) =>
+      event.type === 'itemCompleted' && event.item.tool === 'read_file' ? [event.item.status] : [],
+    )
+    expect(statuses).toEqual(['completed', 'failed'])
+    const durableReplay = JSON.stringify(session.snapshot().replay)
+    expect(durableReplay).toContain(firstData)
+    expect(durableReplay).not.toContain(secondData)
+  })
+
+  it('refuses excess PDF tool reads before retaining a batch of encoded files', async () => {
+    const bytes = pdfFixture(1)
+    const encoded = `data:application/pdf;base64,${Buffer.from(bytes).toString('base64')}`
+    const t = setup({ mediaBudgetMaxEncodedChars: encoded.length + 1 })
+    t.io.binaries.set('/ws/docs/first.pdf', bytes)
+    t.io.binaries.set('/ws/docs/second.pdf', bytes)
+    const { session, events, turnDone } = await startSession(t)
+    requestTwoToolPdfs(t, 'I read the first PDF')
+    await session.sendTurn([{ type: 'text', text: 'Read both PDFs' }])
+    await turnDone()
+    expect(t.api.responseBodies()[1]).toMatchObject({
+      input: expect.arrayContaining([
+        expect.objectContaining({
+          type: 'function_call_output',
+          call_id: 'read_second',
+          output: expect.stringContaining(MODEL_TEXT.toolMediaBudgetExceeded),
+        }),
+        expect.objectContaining({
+          type: 'message',
+          role: 'user',
+          content: [
+            { type: 'input_text', text: expect.stringContaining('docs/first.pdf') },
+            { type: 'input_file', filename: 'first.pdf', file_data: encoded },
+          ],
+        }),
+      ]),
+    })
+    const readStatuses = events.flatMap((event) =>
+      event.type === 'itemCompleted' && event.item.tool === 'read_file' ? [event.item.status] : [],
+    )
+    expect(readStatuses).toEqual(['completed', 'failed'])
+  })
+
+  it('does not replay a PDF read when Stop cancels its tool round before model delivery', async () => {
+    const t = setup()
+    t.io.binaries.set('/ws/docs/report.pdf', pdfFixture(1))
+    const { session, events, turnDone } = await startSession(t)
+    t.api.script({
+      calls: [
+        { name: 'read_file', arguments: '{"path":"docs/report.pdf"}', callId: 'read_pdf' },
+        ASK_USER_CALL,
+      ],
+    })
+    await session.sendTurn([{ type: 'text', text: 'Read then ask' }])
+    await awaitQuestion(events)
+    await session.cancel()
+    await turnDone()
+    const nextInput = await nextInputAfterStop(t, session, turnDone)
+    expect(nextInput).not.toContain('input_file')
+    expect(nextInput).toContain('was not delivered because that tool round ended early')
+  })
+
+  it('removes a read-file PDF from future replay when Stop interrupts its delivery', async () => {
+    const t = setup()
+    t.io.binaries.set('/ws/docs/report.pdf', pdfFixture(1))
+    const { session, turnDone } = await startSession(t)
+    const held = Promise.withResolvers<undefined>()
+    t.api.script(
+      {
+        calls: [{ name: 'read_file', arguments: '{"path":"docs/report.pdf"}', callId: 'read_pdf' }],
+      },
+      { hold: held.promise, text: 'held response' },
+    )
+    await session.sendTurn([{ type: 'text', text: 'Read the PDF' }])
+    await vi.waitFor(() => {
+      expect(t.api.responseBodies()).toHaveLength(2)
+    })
+    expect(JSON.stringify(t.api.responseBodies()[1]?.['input'])).toContain('input_file')
+    await session.cancel()
+    held.resolve(undefined)
+    await turnDone()
+    expect(await nextInputAfterStop(t, session, turnDone)).not.toContain('input_file')
+  })
+
+  it('keeps an earlier delivered PDF when Stop interrupts a later PDF delivery in the same turn', async () => {
+    const t = setup()
+    const { firstData, laterData } = twoToolPdfs(t)
+    const { session, turnDone } = await startSession(t)
+    const held = Promise.withResolvers<undefined>()
+    t.api.script(
+      { calls: [{ name: 'read_file', arguments: '{"path":"docs/first.pdf"}' }] },
+      { calls: [{ name: 'read_file', arguments: '{"path":"docs/later.pdf"}' }] },
+      { hold: held.promise, text: 'held later answer' },
+    )
+    await session.sendTurn([{ type: 'text', text: 'Read both in order' }])
+    await vi.waitFor(() => {
+      expect(t.api.responseBodies()).toHaveLength(3)
+    })
+    expect(JSON.stringify(t.api.responseBodies()[1]?.['input'])).toContain(firstData)
+    expect(JSON.stringify(t.api.responseBodies()[2]?.['input'])).toContain(laterData)
+
+    await session.cancel()
+    held.resolve(undefined)
+    await turnDone()
+    const nextInput = await nextInputAfterStop(t, session, turnDone)
+    expectOnlyFirstPdfDelivered(nextInput, firstData, laterData)
+  })
+
+  it('keeps an earlier delivered PDF when a later PDF delivery request fails', async () => {
+    const t = setup()
+    const { firstData, laterData } = twoToolPdfs(t)
+    const { session, turnDone } = await startSession(t)
+    t.api.script(
+      { calls: [{ name: 'read_file', arguments: '{"path":"docs/first.pdf"}' }] },
+      { calls: [{ name: 'read_file', arguments: '{"path":"docs/later.pdf"}' }] },
+      { failed: { code: 'server_error', message: 'later request failed' } },
+    )
+    await session.sendTurn([{ type: 'text', text: 'Read both in order' }])
+    await turnDone()
+    expect(JSON.stringify(t.api.responseBodies()[1]?.['input'])).toContain(firstData)
+    expect(JSON.stringify(t.api.responseBodies()[2]?.['input'])).toContain(laterData)
+
+    const nextInput = await nextInputAfterStop(t, session, turnDone)
+    expectOnlyFirstPdfDelivered(nextInput, firstData, laterData)
+  })
+
+  it('keeps an earlier delivered PDF when a later PostToolBatch hook stops the turn', async () => {
+    let batches = 0
+    const t = setup({
+      hooks: hooksFor('PostToolBatch', 'stop-later-pdf'),
+      runHook: () => {
+        batches += 1
+        return hookReply(
+          batches === 2 ? JSON.stringify({ continue: false, stopReason: 'stop later PDF' }) : '{}',
+        )
+      },
+    })
+    const { firstData, laterData } = twoToolPdfs(t)
+    const { session, turnDone } = await startSession(t, 'allowAll')
+    t.api.script(
+      { calls: [{ name: 'read_file', arguments: '{"path":"docs/first.pdf"}' }] },
+      { calls: [{ name: 'read_file', arguments: '{"path":"docs/later.pdf"}' }] },
+      { text: 'should not run' },
+    )
+    await session.sendTurn([{ type: 'text', text: 'Read both before the hook stops' }])
+    await turnDone()
+    expect(batches).toBe(2)
+    expect(t.api.responseBodies()).toHaveLength(2)
+    expect(JSON.stringify(t.api.responseBodies()[1]?.['input'])).toContain(firstData)
+
+    const nextInput = await nextInputAfterStop(t, session, turnDone)
+    expectOnlyFirstPdfDelivered(nextInput, firstData, laterData)
+  })
+
+  it.each(['PostToolUse', 'PostToolBatch'] as const)(
+    'does not replay a PDF when a %s hook stops its tool round',
+    async (event) => {
+      const t = setup({
+        hooks: hooksFor(event, 'stop-pdf'),
+        runHook: () => hookReply(JSON.stringify({ continue: false, stopReason: 'stop PDF' })),
+      })
+      t.io.binaries.set('/ws/docs/report.pdf', pdfFixture(1))
+      const { session, turnDone } = await startSession(t, 'allowAll')
+      t.api.script(
+        { calls: [{ name: 'read_file', arguments: '{"path":"docs/report.pdf"}' }] },
+        { text: 'should not run' },
+      )
+      await session.sendTurn([{ type: 'text', text: 'Read the PDF' }])
+      await turnDone()
+      expect(t.api.responseBodies()).toHaveLength(1)
+      const nextInput = await nextInputAfterStop(t, session, turnDone)
+      expect(nextInput).not.toContain('input_file')
+      expect(nextInput).toContain('was not delivered because that tool round ended early')
+    },
+  )
 })
 
 describe('ModelApiSession: hook boundaries (M51)', () => {
@@ -5990,7 +7158,66 @@ function editSetup(sources: Readonly<Record<string, Uint8Array>> = {}) {
 
 const SOURCE_PNG = Buffer.from(TINY_PNG_BASE64, 'base64')
 
+/** Hold a paid image edit at its card so a workspace link can change. */
+async function pendingEditApproval(
+  t: ReturnType<typeof setup>,
+  args: Record<string, unknown>,
+  callId: string,
+) {
+  const { session, events, turnDone } = await startSession(t, 'allowAll')
+  t.api.script({ calls: [editCall(args, callId)] }, { text: 'ok' })
+  await session.sendTurn([{ type: 'text', text: 'edit' }])
+  const request = await approvalRequest(events, 0)
+  return { session, turnDone, request }
+}
+
+/** Answer a paid card and wait until its call has finished. */
+async function acceptImageApproval(pending: Awaited<ReturnType<typeof pendingEditApproval>>) {
+  await pending.session.decideApproval({
+    approvalId: pending.request.approvalId,
+    choiceId: 'allow_once',
+    requirementId: pending.request.requirementId,
+  })
+  await pending.turnDone()
+}
+
 describe('ModelApiSession: image edits, paid and asked every time (M44)', () => {
+  it('refuses an edit when a source link changes while the paid card is open', async () => {
+    const links: Record<string, string> = { 'source.png': `${ROOT}/safe.png` }
+    const io = memoryToolIo({}, ROOT, undefined, links)
+    io.binaries.set(`${ROOT}/safe.png`, SOURCE_PNG)
+    io.binaries.set(`${ROOT}/.muse/private.png`, SOURCE_PNG)
+    const t = setup({ io, paid: ['imageGeneration'] })
+    const pending = await pendingEditApproval(
+      t,
+      { prompt: 'edit', images: ['source.png'], path: 'out.png' },
+      'source_race',
+    )
+    links['source.png'] = `${ROOT}/.muse/private.png`
+    await acceptImageApproval(pending)
+    expect(t.api.editBodies()).toEqual([])
+    expect(t.paidUses).toEqual([])
+    expect(toolOutput(t, 'source_race')).toContain('path changed after approval')
+  })
+
+  it('refuses an image output whose link changes to a protected target during approval', async () => {
+    const links: Record<string, string> = { 'output.png': `${ROOT}/safe-output.png` }
+    const io = memoryToolIo({}, ROOT, undefined, links)
+    const t = setup({ io, paid: ['imageGeneration'] })
+    io.binaries.set(`${ROOT}/source.png`, SOURCE_PNG)
+    const pending = await pendingEditApproval(
+      t,
+      { prompt: 'edit', images: ['source.png'], path: 'output.png' },
+      'output_race',
+    )
+    links['output.png'] = `${ROOT}/.muse/output.png`
+    await acceptImageApproval(pending)
+    expect(t.api.editBodies()).toEqual([])
+    expect(t.paidUses).toEqual([])
+    expect(t.io.binaries.has(`${ROOT}/.muse/output.png`)).toBe(false)
+    expect(toolOutput(t, 'output_race')).toContain('path changed after approval')
+  })
+
   it('offers edit_image beside generate_image only while image generation is on', async () => {
     for (const paid of [[], ['imageGeneration']] as const) {
       const t = setup({ paid: [...paid] })

@@ -20,6 +20,7 @@ import {
   type DictationUiStatus,
   type EffortLevel,
   HIDDEN_ITEM_KINDS,
+  MAX_ATTACHMENTS_PER_MESSAGE,
   MILLISECONDS_PER_SECOND,
   type PermissionMode,
   type TaskRequest,
@@ -181,6 +182,10 @@ export interface UiState {
   readonly isThinkingEnabled: boolean
   readonly permissionMode: PermissionMode
   readonly attachments: readonly AttachmentSummary[]
+  /** Invalidates browser reads when the composer changes conversations or clears. */
+  readonly attachmentEpoch: number
+  /** Recent host replies to browser attachment attempts, bounded to outstanding capacity. */
+  readonly attachmentSettlements: readonly string[]
   readonly mentionResults: MentionResults | undefined
   readonly transcript: readonly TranscriptEntry[]
   readonly activeTurnId: string | undefined
@@ -277,6 +282,8 @@ export type UiAction =
   | { readonly type: 'referenceSet'; readonly reference: ChatReference }
   | { readonly type: 'referenceCleared' }
   | { readonly type: 'attachmentRemoved'; readonly id: string }
+  /** Invalidate unfinished browser encodes before a session replacement waits on the host. */
+  | { readonly type: 'sessionChangeRequested' }
   /** The panel's own New Conversation; the host echoes it back (M25). */
   | { readonly type: 'conversationCleared' }
   /** The × on the composer banner (M14). */
@@ -326,6 +333,8 @@ export const initialUiState: UiState = {
   isThinkingEnabled: true,
   permissionMode: 'manual',
   attachments: [],
+  attachmentEpoch: 0,
+  attachmentSettlements: [],
   mentionResults: undefined,
   transcript: [],
   activeTurnId: undefined,
@@ -367,20 +376,39 @@ const REJECTED = 'rejected'
 const CANCELLED = 'cancelled'
 const USER_MESSAGE_KIND = 'userMessage'
 const SUBAGENT_KIND = 'subagent'
-// A refusal that is about the image's size or count (M25), or a read that
-// failed (M39), not its type: the banner says so instead of "Unsupported
-// file type". Read per refusal, so the reasons are the installed table's.
+// Show known localized attachment refusals verbatim; an unknown host reason
+// keeps the generic file-type guidance. Read at runtime for the installed language.
 function isStatedRefusal(reason: string): boolean {
   return [
     UI_TEXT.attachmentTooLarge,
+    UI_TEXT.attachmentUnsupported,
     UI_TEXT.attachmentLimit,
     UI_TEXT.attachmentUnreadable,
+    UI_TEXT.documentTooLarge,
+    UI_TEXT.documentsOverBudget,
+    UI_TEXT.mediaTotalTooLarge,
+    UI_TEXT.pdfNeedsModelApi,
+    UI_TEXT.invalidPdf,
+    UI_TEXT.textFileTooLarge,
+    UI_TEXT.textFilesOverBudget,
+    UI_TEXT.textFilesOverModelApiBudget,
+    UI_TEXT.textFileInvalid,
+    UI_TEXT.textFilePrivate,
+    UI_TEXT.binaryFileUnsupported,
+    UI_TEXT.commandTooLarge,
   ].includes(reason)
 }
 
 /** A record's own value for `key`; never one of `Object.prototype`'s members. */
 function own<T>(record: Readonly<Record<string, T>>, key: string): T | undefined {
   return Object.hasOwn(record, key) ? record[key] : undefined
+}
+
+function settledAttachmentRequest(
+  ids: readonly string[],
+  requestId: string | undefined,
+): readonly string[] {
+  return requestId === undefined ? ids : [...ids, requestId].slice(-MAX_ATTACHMENTS_PER_MESSAGE * 2)
 }
 
 /** The record without `key`. */
@@ -959,7 +987,8 @@ function replayedUserEntry(item: ItemSnapshot, seq: number): TranscriptEntry {
     status: 'sent',
     attachments: (item.attachments ?? []).map((attachment, index) => ({
       id: `${item.itemId}:${String(index)}`,
-      name: attachment.mediaType,
+      name: attachment.name ?? attachment.mediaType,
+      mediaType: attachment.mediaType,
       ...(attachment.width !== undefined && { width: attachment.width }),
       ...(attachment.height !== undefined && { height: attachment.height }),
     })),
@@ -1526,6 +1555,8 @@ function applyAgentEvent(state: UiState, event: AgentEvent, at: number): UiState
 function clearedConversation(state: UiState): UiState {
   return {
     ...state,
+    attachmentEpoch: state.attachmentEpoch + 1,
+    attachmentSettlements: [],
     pendingGoalCommand: undefined,
     goalEdit: undefined,
     childTranscripts: {},
@@ -1607,7 +1638,12 @@ function reconcile(
   at: number,
 ): UiState {
   const restore = state.pendingRestore
-  const live: UiState = { ...state, pendingRestore: undefined, activeTurnId: message.activeTurnId }
+  const live: UiState = {
+    ...state,
+    attachmentEpoch: Math.max(state.attachmentEpoch, message.attachmentEpoch ?? 0),
+    pendingRestore: undefined,
+    activeTurnId: message.activeTurnId,
+  }
   if (restore === undefined) {
     return live
   }
@@ -1804,6 +1840,8 @@ function applyHostMessage(state: UiState, message: HostToWebviewMessage, at: num
       return announce(
         {
           ...state,
+          attachmentEpoch: isSameSession ? state.attachmentEpoch : state.attachmentEpoch + 1,
+          attachmentSettlements: isSameSession ? state.attachmentSettlements : [],
           isSideChat: message.sideChat ?? state.isSideChat,
           sessionId: message.sessionId,
           restoredSessionId: undefined,
@@ -1933,15 +1971,33 @@ function applyHostMessage(state: UiState, message: HostToWebviewMessage, at: num
     }
     case 'attachmentAdded': {
       const others = state.attachments.filter((entry) => entry.id !== message.attachment.id)
-      return { ...state, attachments: [...others, message.attachment] }
+      return {
+        ...state,
+        attachments: [...others, message.attachment],
+        attachmentSettlements: settledAttachmentRequest(
+          state.attachmentSettlements,
+          message.requestId,
+        ),
+      }
     }
     case 'attachmentRejected': {
       // The composer banner (M14), as Claude Code shows it; the reason the
       // host gave is read out.
-      return withBanner(state, message.name, message.reason)
+      return {
+        ...withBanner(state, message.name, message.reason),
+        attachmentSettlements: settledAttachmentRequest(
+          state.attachmentSettlements,
+          message.requestId,
+        ),
+      }
     }
     case 'attachmentsCleared': {
-      return { ...state, attachments: [] }
+      return {
+        ...state,
+        attachments: [],
+        attachmentEpoch: state.attachmentEpoch + 1,
+        attachmentSettlements: [],
+      }
     }
     case 'notice': {
       // Warnings and errors are read out; informational notices stay visual.
@@ -2146,6 +2202,9 @@ export function uiReducer(state: UiState, action: UiAction): UiState {
     }
     case 'attachmentRefused': {
       return withBanner(state, action.name, action.reason)
+    }
+    case 'sessionChangeRequested': {
+      return { ...state, attachmentEpoch: state.attachmentEpoch + 1, attachmentSettlements: [] }
     }
     case 'attachmentsReleased': {
       return {

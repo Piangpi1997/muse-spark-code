@@ -7,6 +7,100 @@ happened, not what was planned; superseded entries are kept.
 
 ## [Unreleased]
 
+Model API steering now counts named text files from the active turn and all
+accepted steers against the same 768 KiB allowance, including steers already
+drained into replay. An over-budget steer is refused before its card or file
+bytes join the next request.
+
+Successful Model API `read_file` PDFs and images keep their media reservation
+after moving into replay. Steering during a post-tool hook cannot displace an
+unread file before its first completed model request.
+Browser PDF/image encodes started before History resume, fork or conversation
+rewind are discarded when that session change begins. The host also refuses
+late upload messages during backend lookup and before replacement history
+arrives. Accepted file chips and draft text remain available; a reloaded panel
+retains its upload epoch. A stale saved epoch cannot lower the host guard;
+host-driven session restore raises the guard and syncs the panel before new
+uploads.
+
+Pasted and dropped PDFs now receive the PDF byte limit after a 1 KiB header
+check, even when named `.png` or `.txt`. Real images above 10 MiB still stop
+before full-file encoding; pending checks cannot attach to a cleared
+conversation. Ordinary clipboard text keeps native paste behavior, private
+file names are refused, and the combined media budget remains enforced.
+
+Native picker limits now follow a detected PDF header within the first 1 KiB,
+including a PDF named `.png` or `.txt`. A valid PDF up to 32 MB can attach on
+the Model API backend; Muse Code names its PDF backend refusal. Ordinary
+images and text keep their smaller limits, and an invalid `.pdf` keeps its
+existing refusal. Unindexed text stays a path mention.
+
+Indexed UTF-8 picker reads now recheck their selected canonical file when
+loading bytes, and tool-row image previews keep their checked-path proof
+through the VS Code adapter. A workspace junction swap now refuses these
+reads before outside-workspace bytes become an attachment or preview.
+Native PDF and image picker paths retain their existing local selection policy.
+
+Muse Code now refuses a combination of text attachments whose serialized
+message would exceed its frame limit, before retaining the last file chip.
+Escaped text and existing images count; removing a file frees room. Model API
+uses the separate context allowance below.
+Muse Code also rechecks retained attachment size before send or steer after a
+backend switch, so a Model API image too large for its frame gets an immediate
+remove-attachment reason.
+
+Model API text attachments now have a 768 KiB combined UTF-8 content and
+file-name wrapper allowance. A large single file may be refused before it
+becomes a chip, leaving context room for the prompt, replay and output.
+
+Indirect PDF page-tree `/Count` and `/Type` references now reserve the full
+50 image slots instead of trusting an object number or an unlinked visible
+decoy. A signed indirect `/Type` also reserves all 50. Valid 50-page
+strict-reader fixtures cover each form.
+
+Model API host file reads now verify the opened file's identity and checked
+canonical path before exposing bytes. Atomic tool writes recheck the approved
+target and their temporary file before rename, refusing observed parent
+junction swaps instead of reading or writing an outside-workspace file. Paid
+image output reservations also recheck their opened file before fill and
+release cleanup. The guard uses a trusted confinement proof, leaving raw
+memory-file paths and macOS `/var` aliases to their existing policy.
+
+After a completed Model API request omits older PDF or image bytes to fit its
+media budget, saved replay now adopts the fitted text-only version. History
+retains attachment metadata, and failed requests keep prior replay bytes.
+Image rewind refuses missing bytes before clearing or forking, using the
+History card's image count even if the webview reports zero. Model API sends
+and steers reject aggregate named text over its allowance before retaining a
+turn or issuing HTTP, including chips admitted under Muse Code before a
+backend switch.
+
+Model API tool batches now reserve visual media returned by tools alongside
+queued `read_file` images and PDF pages. A later tool result that would hide
+an earlier undelivered image fails explicitly, including multiple images in
+one result. A completed model request releases its reservation; Stop or a
+failed delivery removes undelivered image bytes from saved replay.
+Steered images and PDFs share the first-delivery reservation: if steering
+arrives first, excess tool media fails; if a tool result is already pending,
+an over-budget steer is refused for this turn so the composer can send it as
+a later turn.
+
+Attachment refusal banners now show known localized PDF, media-budget,
+backend, text and private-file reasons instead of generic image-only
+unsupported-file guidance. Unknown reasons keep that generic fallback.
+
+Model API `read_file` now reserves PDF page slots as well as encoded bytes
+for a batch of visual reads. A second small PDF that would exceed the
+50-image/page request limit fails its tool row before success or replay; an
+unknown-page PDF reserves all 50 slots. The earlier accepted file stays in
+the next model request and saved replay.
+
+A send waiting for autosave, editor context or a backend lookup now stops if
+its session is replaced. A late turn acknowledgement cannot clear attachment
+chips or mark the new conversation as accepted. Owned recovery from a
+not-loaded session still retries normally. Disposed Model API sessions reject
+new sends and steering before a paid request can start.
+
 Three paid extras of Meta's Model API, off until you turn them on, and loud
 while they are (PLAN.md D30, D34).
 
@@ -115,11 +209,51 @@ while they are (PLAN.md D30, D34).
   Its locked Plan mode leaves `Shift+Tab` available for keyboard navigation.
   Muse Code's Windows 1.3.0 fork limitation still hides these actions.
 
+- **PDF input on the Model API backend** (M54, PLAN.md D47). Pick, paste or
+  drop a PDF up to 32 MB; its name appears in the composer and sent history.
+  The Model API agent can also read workspace PDFs and images through
+  `read_file`. The request stays within Meta's shared 50 image and PDF-page
+  budget and a local 48-million-character combined encoded-media limit;
+  excess new attachments are refused, and omitted older replay media is
+  announced while its local history remains. Excess `read_file` media in one
+  tool round gets a failed tool result before the host retains it. Muse Code's
+  MSP 1.3.0 has no file input part, so PDF attachments
+  give a clear refusal there. A picked UTF-8 text file in a trusted, indexed
+  workspace becomes a named text attachment on both backends, subject to its
+  1 MiB per-file read cap and each backend's aggregate allowance; excluded
+  and outside files stay path mentions, and private files are refused. The
+  PDF page budget reads the page tree's own count even
+  when nested metadata has another count, preventing an oversized request.
+  A document with too many page-tree markers gets the conservative full
+  50-slot reservation, keeping host inspection bounded. Escaped PDF object
+  stream, encryption or page-tree names, comments obscuring page-tree
+  tokens, or a missing/out-of-range page count also reserve 50 slots.
+  Workspace PDF, image and
+  text tool reads check size and read through one bounded file handle, so a
+  growing or replaced file cannot bypass the host byte cap.
+  Picked files use that bounded reader too; text, image and PDF `read_file`
+  calls read the checked canonical target when a link is retargeted after
+  workspace confinement. Model API `write_file` and `edit_file` now read and
+  write that checked target as well, while retaining their requested paths
+  on cards and checking unsaved changes under both path names. An indexed text
+  attachment also reads its checked target. Write and paid image approvals
+  bind that target and the image source bytes before the card; changed links
+  are refused before a protected write or paid request.
+  Conversation rewind is hidden for each PDF and named text file card; a
+  direct request must match its served card and fork cut before clear or
+  fork. Earlier text-only cards in the same turn remain rewindable. Muse Code
+  queues picked text-file messages during a running turn and retains a
+  readable file-name annotation for History resume. Image-only rewind remains
+  available.
+  Stop removes tool-read media from future replay if its turn ends early.
+
 - **Image edits** (M44, PLAN.md D37). With image generation on, the model
   can also change one workspace image, or combine up to four, by a prompt,
   into a new PNG (`edit_image`, Meta's `/images/edits`, $0.01 per image).
   The card names the images it starts from; everything that could fail is
-  checked before anything is asked or billed.
+  checked before anything is asked or billed. Image-edit sources now read
+  their checked canonical targets if a workspace link retargets. New image
+  output is reserved at its checked target before any paid request.
 - **Images and Muse Voice on the Muse Code backend** (M44). While a Model
   API key is stored, the extension's own `ide` tool server offers Muse Code
   an image and an image-edit tool, and the microphone can use Muse Voice:
@@ -187,6 +321,9 @@ while they are (PLAN.md D30, D34).
   the Model API backend made, shows in its row. Every other tool in Muse
   Code's list has a name, an MCP tool reads "tool (server)", and any other
   result is indented JSON. All built from a live capture of Muse Code 1.3.0.
+  Tool-row pictures now use the checked workspace target and a bounded,
+  single-handle read, so a changing link or growing file cannot bypass the
+  10 MiB preview limit.
 - **MCP servers on the Model API backend** (M50, PLAN.md D42). The window
   runs the MCP servers of Muse Code's settings file itself, local (stdio)
   and remote (streamable HTTP), with a client of its own: their tools are
@@ -279,6 +416,23 @@ while they are (PLAN.md D30, D34).
 
 ### Fixed
 
+- **Bounded paste and drop admission (M54).** The composer checks the shared
+  encoded-media limit against existing and pending files before reading a
+  pasted or dropped PDF. Host replies settle only their own request ID;
+  identical filenames cannot release another file's reservation. New
+  Conversation cancels deferred browser reads and host admissions from the
+  old conversation, including native file and mention pickers still waiting
+  on a dialog, path check or file read.
+- **Localized file-read rows (M54).** Model API PDF and image `read_file`
+  transcript rows use the installed panel language and grouped page counts,
+  byte sizes and image dimensions. The function result sent to the model
+  remains English. Invalid PDF or image bytes, missing visual files and file
+  read errors now show localized failure rows and reasons too, while their
+  model-facing error text stays English.
+- **Delivered file-read media survives a later Stop (M54).** A PDF or image
+  already sent in a completed Model API request stays in future replay when
+  a later tool round in the same turn stops or fails. Only media still waiting
+  for its first successful delivery becomes a path-only note.
 - **Account & usage reset timing (M53 follow-up).** The open modal updates
   its countdown each minute and stops treating an expired report as current.
   It uses Muse Code's reported account-level percentages and reset timestamps

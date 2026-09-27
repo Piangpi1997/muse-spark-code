@@ -1,5 +1,5 @@
 import { mkdtempSync, realpathSync } from 'node:fs'
-import { mkdtemp, readdir, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readdir, readFile, rename, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
@@ -18,10 +18,13 @@ import {
   shellEnvironment,
   shellInterpreter,
   terminalPlatform,
+  toolImagePreviewIo,
   withTerminalOverrides,
 } from '../../src/host/backend/toolIo'
 import { shellJobAssembly } from '../../src/host/backend/shellJob'
-import { ShellTimeLimit } from '../../src/core/backends/modelapi/tools'
+import { canonicalPath } from '../../src/host/canonicalPath'
+import { confineWorkspacePath, ShellTimeLimit } from '../../src/core/backends/modelapi/tools'
+import { loadToolImage } from '../../src/core/toolImages'
 import { posixQuoted } from '../../src/core/shellQuote'
 import type { RunProgram } from '../../src/host/processTree'
 import { removeFolder } from './helpers/temporaryFolders'
@@ -244,6 +247,123 @@ describe('createToolIo (real file system and shell)', () => {
     root = await mkdtemp(path.join(tmpdir(), 'muse-toolio-'))
   })
   afterAll(() => removeFolder(root))
+
+  async function retargetedCheckedFile(
+    label: string,
+    isNew = false,
+    shouldSwap = true,
+    fileName = isNew ? 'new.png' : 'file.txt',
+  ) {
+    const base = path.join(root, label)
+    const workspace = path.join(base, 'ws')
+    const allowed = path.join(workspace, 'allowed')
+    const outside = path.join(base, 'outside')
+    const outsideFile = path.join(outside, fileName)
+    await mkdir(allowed, { recursive: true })
+    await mkdir(outside, { recursive: true })
+    if (!isNew) {
+      await writeFile(path.join(allowed, fileName), 'allowed')
+      await writeFile(outsideFile, 'sentinel-private')
+    }
+    const resolved = await confineWorkspacePath(
+      workspace,
+      `allowed/${fileName}`,
+      process.platform,
+      {
+        realPath: canonicalPath,
+      },
+    )
+    if (!resolved.ok) {
+      throw new Error(resolved.reason)
+    }
+    const swap = async () => {
+      await rename(allowed, path.join(workspace, 'moved'))
+      await symlink(outside, allowed, process.platform === 'win32' ? 'junction' : 'dir')
+    }
+    if (shouldSwap) {
+      await swap()
+    }
+    return { checkedAbsolute: resolved.checkedAbsolute, outsideFile, workspace, swap }
+  }
+
+  it('refuses a new checked reservation after its parent becomes a junction', async () => {
+    const { checkedAbsolute, outsideFile } = await retargetedCheckedFile('swapped-reserve', true)
+    await expect(io().reserveFile(checkedAbsolute, checkedAbsolute)).rejects.toThrow(
+      MODEL_TEXT.pathChangedAfterApproval,
+    )
+    await expect(readFile(outsideFile)).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
+  // Windows locks the parent while the reservation handle is open; POSIX permits this swap.
+  it.runIf(process.platform !== 'win32')(
+    'refuses a reserved image fill after its parent becomes a link',
+    async () => {
+      const { checkedAbsolute, outsideFile, swap } = await retargetedCheckedFile(
+        'swapped-fill',
+        true,
+        false,
+      )
+      const reservation = await io().reserveFile(checkedAbsolute, checkedAbsolute)
+      await writeFile(outsideFile, 'sentinel-private')
+      await swap()
+      await expect(reservation.fill(Uint8Array.from([1, 2, 3]))).rejects.toThrow(
+        MODEL_TEXT.pathChangedAfterApproval,
+      )
+      await expect(readFile(outsideFile, 'utf8')).resolves.toBe('sentinel-private')
+    },
+  )
+
+  it.runIf(process.platform !== 'win32')(
+    'does not release a different file after its parent becomes a link',
+    async () => {
+      const { checkedAbsolute, outsideFile, swap } = await retargetedCheckedFile(
+        'swapped-release',
+        true,
+        false,
+      )
+      const reservation = await io().reserveFile(checkedAbsolute, checkedAbsolute)
+      await writeFile(outsideFile, 'sentinel-private')
+      await swap()
+      await expect(reservation.release()).rejects.toThrow(MODEL_TEXT.pathChangedAfterApproval)
+      await expect(readFile(outsideFile, 'utf8')).resolves.toBe('sentinel-private')
+    },
+  )
+
+  it('refuses a checked read after its parent is replaced by a junction', async () => {
+    const { checkedAbsolute, outsideFile } = await retargetedCheckedFile('swapped-read')
+    await expect(io().readFile(checkedAbsolute, checkedAbsolute)).rejects.toThrow(
+      MODEL_TEXT.pathChangedAfterApproval,
+    )
+    await expect(io().readBytes(checkedAbsolute, 100, checkedAbsolute)).rejects.toThrow(
+      MODEL_TEXT.pathChangedAfterApproval,
+    )
+    await expect(readFile(outsideFile, 'utf8')).resolves.toBe('sentinel-private')
+  })
+
+  it('keeps a tool-row image preview on its checked target after a junction swap', async () => {
+    const { workspace, outsideFile, swap } = await retargetedCheckedFile(
+      'swapped-preview',
+      false,
+      false,
+      'picture.png',
+    )
+    const previewIo = toolImagePreviewIo(io(), async () => {
+      await swap()
+      return 16
+    })
+    await expect(
+      loadToolImage('allowed/picture.png', workspace, process.platform, previewIo),
+    ).rejects.toThrow(MODEL_TEXT.pathChangedAfterApproval)
+    await expect(readFile(outsideFile, 'utf8')).resolves.toBe('sentinel-private')
+  })
+
+  it('refuses an atomic tool write after its checked parent becomes a junction', async () => {
+    const { checkedAbsolute, outsideFile } = await retargetedCheckedFile('swapped-write')
+    await expect(io().writeFile(checkedAbsolute, 'changed', checkedAbsolute)).rejects.toThrow(
+      MODEL_TEXT.pathChangedAfterApproval,
+    )
+    await expect(readFile(outsideFile, 'utf8')).resolves.toBe('sentinel-private')
+  })
 
   it('reads undefined for a missing file, writes and reads back, lists through the lister', async () => {
     const target = path.join(root, 'a.txt')

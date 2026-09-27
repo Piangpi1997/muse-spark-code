@@ -100,7 +100,7 @@ Every change is in the [CHANGELOG](CHANGELOG.md).
   CLI, or a Meta Model API key (pay as you go) with the extension's own
   tools. The pasted key is never handed to the CLI.
 - **Context the way you work.** `@` mentions with `.gitignore`-aware fuzzy
-  search, the open file or selection as a chip, images pasted or dropped, and
+  search, the open file or selection as a chip, images and PDFs pasted or dropped, and
   `Alt+K` to mention the editor selection. On the CLI backend the agent can
   also read the Problems panel.
 - **History that survives the window.** Every conversation in the workspace,
@@ -369,7 +369,8 @@ the ones that answer in JSON are shown as what they mean:
   under The panel for moving one there yourself and stopping it.
 - **Pictures**: when the agent reads an image, or the Model API backend
   generates one, the row shows it; click it to open the file. Only images
-  inside the workspace are shown.
+  inside the workspace are shown. The preview reads the checked target with
+  the same 10 MiB file cap if a workspace link or file changes meanwhile.
 - **MCP tools** read "tool (server)", and any tool the panel has no special
   view for shows its arguments and result as indented JSON.
 
@@ -573,11 +574,59 @@ panel cannot present an authoritative native job list or direct cancel.
   through a setting). The box grows with your draft up to ten rows, then
   scrolls inside.
 - While a turn runs, `Enter` steers it and Stop cancels it; Stop also drops
-  messages still queued, which read "Not sent".
-- The `+` button uploads images (PNG, JPEG, GIF, WebP; other files become `@`
-  mentions) or starts a mention; images also paste and drop. An upload the
-  panel cannot take shows a dismissible banner: other files go in as `@`
-  mentions, or by absolute path for files outside the workspace.
+  messages still queued, which read "Not sent". A picked text file on Muse
+  Code queues a new turn so its file annotation survives History resume.
+- The `+` button attaches images (PNG, JPEG, GIF, WebP), PDFs on the Model
+  API backend, and UTF-8 text files up to 1 MiB from trusted, indexed workspace
+  paths. Text files travel with their names as text on both backends. Files
+  attached to Muse Code share its 10 MiB message limit; the composer counts
+  their serialized content, including escaping, and refuses combinations
+  that leave too little room for the prompt. Remove an attachment or shorten
+  the message if that happens. Switching backends keeps visible chips; Muse
+  Code checks them again before a send or steer and may require removal of an
+  image attached under Model API. Model API text attachments share a separate
+  768 KiB allowance for their UTF-8 content and file-name wrappers. A large
+  single file can be refused despite the 1 MiB per-file read cap; attach a
+  shorter excerpt or remove another text attachment. A long conversation may
+  still exceed the Model API context limit. Files outside that set
+  become `@` path mentions; known binary types and private
+  files are refused. A PDF picked under a `.png` or `.txt` name follows its
+  detected PDF header and 32 MB limit; Muse Code gives its PDF refusal.
+  Ordinary unindexed text remains a path mention, and private filenames are
+  refused before any PDF check.
+  Images and PDFs also paste and drop. A dismissible banner gives the specific
+  size, media, backend, text or private-file refusal; unknown file reasons
+  keep generic unsupported-type guidance. Muse Code's MSP 1.3.0 cannot take a PDF part, so a PDF attachment
+  there names the Model API backend instead. The Model API agent can read a
+  workspace PDF or image through `read_file`; other workspace files use its
+  existing UTF-8 text reader. Excluded text files share only a path mention,
+  and the Model API reader confines paths to the workspace. Picker reads stop
+  at the file's size cap even if it grows during the read. A native picker
+  still open after New Conversation or sign-out cannot add an old file or
+  mention to the new draft. Model API text,
+  image and PDF reads use the checked canonical workspace target if a link
+  changes after confinement. Host file I/O also rejects an observed change
+  to that checked path when a parent directory becomes a junction after the
+  first check; paid image output reservations recheck before fill and cleanup.
+  Combined image
+  and PDF data URLs are capped at 48 million encoded characters per message;
+  an excess pasted or dropped attachment is refused before the browser reads
+  and encodes it. Replayed requests use the same cap and
+  keep newer media, announcing when older media is omitted from the request.
+  Paste/drop checks the first 1 KiB of image-labelled files: a PDF named
+  `.png` or `.txt` uses the 32 MB PDF limit and PDF media type, while a real image over
+  10 MiB is refused without encoding its full bytes. The check is discarded
+  if the conversation changes before it finishes. Plain text clipboard content
+  keeps its normal paste behavior; text-named files without clipboard text are
+  probed and ignored when they are not PDFs. Private names are refused first.
+  A PDF whose page tree cannot be counted without ambiguity reserves all 50
+  image slots, including when comments, escaped names or indirect `/Count` or
+  `/Type` references obscure the real tree beside a visible decoy.
+  The original attachments remain in local history. A batch of Model API
+  `read_file` tool calls uses the same media cap; a file over that batch cap
+  gets a failed tool result before its bytes are retained. PDF and image
+  tool rows use the installed panel language and number format; the model
+  receives its English result.
 - A path with a space, `#` or `"` is written in quotes,
   `@"my notes/a b.md"#5-10`, and the menu searches what you type after `@"`.
 - The model pill reads `model effort` (effort tiers Minimal to Max, each
@@ -658,6 +707,11 @@ rewind button on any sent message (on hover):
   their branch point; if none exists, the conversation rewind choice is hidden.
   Wait for the selected turn to finish before rewinding its conversation.
   A just-sent Model API image can be restored before History is reopened.
+  Conversation rewind is hidden for each PDF or named text file card because
+  its bytes cannot be restored reliably on every backend and History path;
+  an earlier text-only card in the same turn keeps its rewind choice. A
+  request made outside the menu is checked against the served card and cut
+  before the conversation changes.
 - **Rewind code to here** reverts every edit made after that message, the
   conversation's and its subagents', in the reverse of the order they
   landed. A file the edit created goes to the trash, unless you have added
@@ -696,7 +750,8 @@ not see. On the Model API backend the file tools also refuse a file an
 editor holds unsaved changes to, keep a file's BOM, line breaks and final
 line break, refuse files that are not UTF-8 text rather than rewrite them,
 and replace an existing file with `write_file` only after reading it (as
-Claude Code does).
+Claude Code does). A linked path checks both its requested and canonical
+editor locations for unsaved changes.
 
 **History.** The clock icon lists the workspace's conversations by day with
 search, resume (full transcript), archive and **Show archived**. Archive with
@@ -845,7 +900,8 @@ backend runs no workflows.
   reset countdown. Each observation is dated "as of". The numbers are the
   CLI's account-level percentages and reset times: changing the selected
   model does not create a separate local quota or reset calculation, and an
-  opaque plan ID is shown as "Muse Code subscription".
+  opaque plan ID is shown as "Muse Code subscription". Personal Muse
+  Power/Maximum plan grants are separate from this CLI usage report.
 - **This conversation:** token totals (on Muse Code, prompt tokens as it
   counts them once). On the Model API also the cached tokens, the cache-hit
   rate and a dollar estimate from Meta's published per-token prices
@@ -990,7 +1046,9 @@ While one is on, you can always tell:
   card and no "always allow". Plan refuses it (it writes a file), and a
   path that is taken, outside the workspace, or not a `.png`, or a source
   that is missing, outside the workspace, not a PNG, JPEG or WebP image, or
-  over 10 MB, is refused before anything is asked or billed.
+  over 10 MB, is refused before anything is asked or billed. Edit sources
+  are read from their checked canonical workspace targets, even if a link
+  changes after the check.
 - **Every new child task asks first**, in every mode, Bypass included; Plan
   refuses it. The decision shows its objective, model, published rates and
   four-request ceiling. Retries count; a running note spends the same grant.
@@ -1070,16 +1128,19 @@ What stays in English:
 
 ## Limits
 
-| What                             | Limit                                                                                                            |
-| -------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| Images                           | 10 MB each, 20 per message                                                                                       |
-| A message to Muse Code           | 10 MiB, images counting a third more than their file size                                                        |
-| Model API: tool rounds           | 50 per turn                                                                                                      |
-| Model API: shell commands        | 2 minutes by default, 10 at most                                                                                 |
-| Model API: retries               | Up to 5 attempts on 429, 500 and 503, honouring `Retry-After`, shown in the transcript; Stop cuts the wait short |
-| Model API: a silent reply stream | Ended after 5 minutes with nothing from the server; send again to retry                                          |
-| Model API: file tools            | Files up to 10 MiB; the search tool skips files over 1 MiB                                                       |
-| Opened tool outputs              | 16 MiB each; the latest 20, and 32 million characters together                                                   |
+| What                             | Limit                                                                                                                                                                                    |
+| -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Images                           | 10 MB each, 20 per message                                                                                                                                                               |
+| PDFs on the Model API backend    | 32 MB each locally (Meta allows 50 MB per inline file); images and PDF page images together: 50 per message. Meta reads text from the first 100 pages and page images from the first 50. |
+| Model API encoded media          | 48 million data URL characters total per new message and replay request; older replayed media is named but omitted when over the cap.                                                    |
+| Picked UTF-8 text attachments    | 1 MiB per-file read cap from trusted and indexed workspace paths; Model API also caps combined text and file-name wrappers at 768 KiB to leave context room.                             |
+| A message to Muse Code           | 10 MiB. Attachment admission reserves 2 MiB for the prompt, context and frame; serialized text and base64 images count toward the rest. The exact outbound frame is checked at send.     |
+| Model API: tool rounds           | 50 per turn                                                                                                                                                                              |
+| Model API: shell commands        | 2 minutes by default, 10 at most                                                                                                                                                         |
+| Model API: retries               | Up to 5 attempts on 429, 500 and 503, honouring `Retry-After`, shown in the transcript; Stop cuts the wait short                                                                         |
+| Model API: a silent reply stream | Ended after 5 minutes with nothing from the server; send again to retry                                                                                                                  |
+| Model API: file tools            | Text and images up to 10 MiB, PDFs up to 32 MB; the search tool skips files over 1 MiB                                                                                                   |
+| Opened tool outputs              | 16 MiB each; the latest 20, and 32 million characters together                                                                                                                           |
 
 ## Commands and keybindings
 
@@ -1228,6 +1289,9 @@ message resumes the same session.
   system before touching it: a path that leaves the workspace, directly or
   through a link, is refused, and Windows names that would be reinterpreted
   (alternate data streams, device names, trailing dots) are refused too.
+  Text reads and writes use the checked canonical target if a workspace
+  link changes between the check and the operation. Paid image output is
+  reserved at that same checked target before the API request.
   Its shell tool starts PowerShell or bash by absolute path with the
   environment VS Code's own terminal would give (the editor's internal
   variables removed). Stop and a timeout end everything a command started:

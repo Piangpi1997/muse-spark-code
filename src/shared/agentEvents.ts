@@ -16,12 +16,19 @@ export type CitationSummary = z.infer<typeof citationSchema>
 /** A stored-output handle (`item/readOutput` fetches the bytes by `id`). */
 export const outputRefSchema = z.object({ id: z.string(), byteLen: z.number() })
 
-/** A user message's image, as the durable log echoes it (MSP `MessageAttachment`). */
+/**
+ * A user message's image, as the durable log echoes it (MSP
+ * `MessageAttachment`, whose vocabulary "grows additively"), or a PDF the
+ * Model API backend sent (M54, `type: "file"`): its name, size and pages.
+ */
 const messageAttachmentSchema = z.object({
   type: z.string(),
   mediaType: z.string(),
   width: z.optional(z.number()),
   height: z.optional(z.number()),
+  name: z.optional(z.string()),
+  sizeBytes: z.optional(z.number()),
+  pageCount: z.optional(z.number()),
 })
 
 /** Server-authored edit summary: line counts, never hunks or bytes. */

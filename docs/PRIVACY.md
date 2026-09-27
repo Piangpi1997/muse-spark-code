@@ -8,7 +8,8 @@ security notes for contributors are in `PLAN.md` §9.
 ## What the extension sends, and to whom
 
 - **Your prompts, attachments and mentioned files.** Everything you type into
-  the panel, every image you paste or drop, the contents of files you
+  the panel, every image or PDF you attach or drop, text files you explicitly
+  pick for attachment in a trusted, indexed workspace, the contents of files you
   `@`-mention, the open file or selection when the "attach open file" setting
   is on, and the outputs of the tools the agent runs (file contents,
   command output, Problems-panel diagnostics) are sent to Meta so the model
@@ -24,10 +25,21 @@ security notes for contributors are in `PLAN.md` §9.
   to Meta with the credential from its own `muse login`. What the CLI sends
   beyond your messages (its system prompt, its own telemetry, if any) is
   governed by Meta's Muse Code terms, not by this extension.
+  A picked text file is sent as named text. Muse Code retains a readable
+  `[Muse Spark Code attached text files: …]` annotation in the message's
+  display text so the extension can mark its file card after History resume;
+  the annotation contains file names only, no file contents. Native Muse Code
+  clients may show this line.
 - **Through the Meta Model API** (when you paste a key), the extension calls
   `https://api.meta.ai/v1` directly with your key. Each turn re-sends the
   conversation so far, because requests are made with `store: false`; Meta's
-  Model API terms govern retention on their side.
+  Model API terms govern retention on their side. PDF bytes travel inline in
+  the request, without a persistent Files API upload. When older media would
+  exceed Meta's 50-image and PDF-page budget or the extension's 48-million-
+  character combined encoded-media cap, the request names what is left out;
+  the panel announces this, and local history still keeps the original bytes.
+  Media read by a tool in a stopped or failed turn is removed from later
+  replay; the next request gets a path-only explanation instead of its bytes.
 - **MCP servers on the Model API backend.** In a trusted workspace, the
   extension starts the servers configured in Muse Code's settings when a
   conversation starts. A local server runs as a child process; a remote
@@ -146,7 +158,8 @@ tools. On macOS, dictation may contact Apple as described above.
   `storageUri` VS Code assigns; outside the repository, under your user
   profile). A file holds the messages, the tool calls and their outputs,
   the edit patches, the task list, the model and the settings of that
-  conversation; never the API key. Archiving a conversation in the
+  conversation, including attached image and PDF bytes; never the API key.
+  Archiving a conversation in the
   History dialog hides it; deleting the directory removes them all.
 - Settings (`museSpark.*`), the archived-session list and the "last session"
   memory per panel are stored by VS Code's settings and state APIs.

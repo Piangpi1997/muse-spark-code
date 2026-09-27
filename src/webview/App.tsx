@@ -52,6 +52,7 @@ import { TodoPanel } from './components/TodoPanel'
 import { Transcript } from './components/Transcript'
 import { type ErrorReporter, webviewErrorReport } from './errorReport'
 import { createUiStore, listenToHost, type UiStore } from './state/store'
+import { hasFileAttachment } from './state/transcriptEntries'
 import {
   canSend,
   agentsOf,
@@ -239,6 +240,7 @@ export function App({
   const bodyRef = useRef<HTMLElement>(null)
   const [isPinnedToEnd, setIsPinnedToEnd] = useState(true)
   const nextGoalRequestId = useRef(0)
+  const nextAttachmentRequestId = useRef(0)
   const isPinnedRef = useRef(isPinnedToEnd)
   const [seenTranscript, setSeenTranscript] = useState(state.transcript)
   const hasNewBelow =
@@ -276,7 +278,7 @@ export function App({
       postMessage(webviewErrorReport(source, error))
     }
     const stop = isOwnStore ? listenToHost(store, window, now, report) : undefined
-    postMessage({ type: 'ready' })
+    postMessage({ type: 'ready', attachmentEpoch: store.getState().attachmentEpoch })
     return () => {
       stop?.()
     }
@@ -327,8 +329,8 @@ export function App({
   // The host echoes the clear back; the reducer spends that echo (M25).
   const onNewConversation = useCallback(() => {
     dispatch({ type: 'conversationCleared' })
-    postMessage({ type: 'clearConversation' })
-  }, [dispatch, postMessage])
+    postMessage({ type: 'clearConversation', attachmentEpoch: store.getState().attachmentEpoch })
+  }, [dispatch, postMessage, store])
   // The session goal's verbs (M45, PLAN.md D38): the strip's buttons and `/goal …`.
   const onGoalCommand = useCallback(
     (verb: GoalCommandVerb, objective?: string, source?: 'composer' | 'inline') => {
@@ -781,10 +783,15 @@ export function App({
   )
   const onResumeSession = useCallback(
     (sessionId: string) => {
-      postMessage({ type: 'resumeSession', sessionId })
+      dispatch({ type: 'sessionChangeRequested' })
+      postMessage({
+        type: 'resumeSession',
+        sessionId,
+        attachmentEpoch: store.getState().attachmentEpoch,
+      })
       closeOverlay()
     },
-    [postMessage, closeOverlay],
+    [dispatch, postMessage, closeOverlay, store],
   )
   const onSetSessionArchived = useCallback(
     (sessionId: string, isArchived: boolean) => {
@@ -810,9 +817,14 @@ export function App({
         onNewConversation()
         return
       }
-      postMessage({ type: 'forkSession', lastTurnId: cut.lastTurnId })
+      dispatch({ type: 'sessionChangeRequested' })
+      postMessage({
+        type: 'forkSession',
+        lastTurnId: cut.lastTurnId,
+        attachmentEpoch: store.getState().attachmentEpoch,
+      })
     },
-    [store, onNewConversation, postMessage],
+    [store, onNewConversation, dispatch, postMessage],
   )
   // "Rewind code to here": the host reverts the edits after that message,
   // newest first, and says so (or that there was nothing to revert).
@@ -832,10 +844,12 @@ export function App({
         current.sessionId === undefined ||
         entry?.kind !== 'user' ||
         entry.turnId === undefined ||
-        entry.turnId === current.activeTurnId
+        entry.turnId === current.activeTurnId ||
+        hasFileAttachment(entry.attachments)
       ) {
         return
       }
+      dispatch({ type: 'sessionChangeRequested' })
       postMessage({
         type: 'rewindConversation',
         sourceSessionId: current.sessionId,
@@ -844,9 +858,10 @@ export function App({
         ...(cut.type === 'afterTurn' && { lastTurnId: cut.lastTurnId }),
         text: entry.text,
         imageCount: entry.attachments.length,
+        attachmentEpoch: store.getState().attachmentEpoch,
       })
     },
-    [store, postMessage],
+    [store, dispatch, postMessage],
   )
   const onRemoveAttachment = useCallback(
     (id: string) => {
@@ -863,9 +878,13 @@ export function App({
   )
   const onAttachImage = useCallback(
     (image: ImageData) => {
-      postMessage({ type: 'attachImageData', ...image })
+      const { attachmentEpoch, ...data } = image
+      if (attachmentEpoch !== store.getState().attachmentEpoch) {
+        return
+      }
+      postMessage({ type: 'attachImageData', ...data, attachmentEpoch })
     },
-    [postMessage],
+    [store, postMessage],
   )
   const onDroppedUris = useCallback(
     (uris: readonly string[]) => {
@@ -1472,6 +1491,11 @@ export function App({
           focusRequests={state.focusRequests}
           pendingInsert={state.pendingInsert}
           attachments={state.attachments}
+          attachmentEpoch={state.attachmentEpoch}
+          attachmentSettlements={state.attachmentSettlements}
+          newAttachmentRequestId={() =>
+            `attachment:${newLocalId()}:${String(++nextAttachmentRequestId.current)}`
+          }
           mentionResults={state.mentionResults}
           editorContextLabel={
             editorContext === undefined ? undefined : editorContextLabel(editorContext)

@@ -16,6 +16,7 @@ import {
   GOAL_RECOVERY_PAGE_LIMIT,
   JSON_RPC_ERRORS,
   MILLISECONDS_PER_SECOND,
+  MSP_ATTACHMENT_FRAME_BUDGET_BYTES,
   MSP_COMMAND_ATTEMPTS,
   MSP_COMMAND_TIMEOUT_MS,
   MSP_FRAME_LIMIT_BYTES,
@@ -33,6 +34,7 @@ import {
 } from '../../../shared/constants'
 import { fill } from '../../../shared/l10n/text'
 import { withDeadline } from '../../timeouts'
+import { textFileInput } from '../../textAttachment'
 import {
   type SubscriptionUsage,
   subscriptionUsageSchema,
@@ -299,6 +301,35 @@ function pause(ms: number): Promise<void> {
 }
 
 /**
+ * A turn's parts as MSP takes them. `TurnInputPart` is text, image or skill
+ * in 1.3.0. Text files are named text parts; PDFs are refused because an
+ * unknown type is `invalidParams` (msp.d.ts, M54, sdk issue #48).
+ */
+function mspInput(parts: readonly TurnPart[]): readonly TurnPart[] {
+  const input: TurnPart[] = []
+  let attachmentBytes = 0
+  for (const part of parts) {
+    if (part.type === 'file') {
+      throw new Error(UI_TEXT.pdfNeedsModelApi)
+    }
+    const inputPart: TurnPart =
+      part.type === 'textFile' ? { type: 'text', text: textFileInput(part) } : part
+    if (part.type === 'image' || part.type === 'textFile') {
+      attachmentBytes +=
+        part.type === 'image'
+          ? Buffer.byteLength(part.base64Data) +
+            Buffer.byteLength(JSON.stringify({ ...part, base64Data: '' }))
+          : Buffer.byteLength(JSON.stringify(inputPart))
+      if (attachmentBytes > MSP_ATTACHMENT_FRAME_BUDGET_BYTES) {
+        throw new Error(UI_TEXT.textFilesOverBudget)
+      }
+    }
+    input.push(inputPart)
+  }
+  return input
+}
+
+/**
  * `Connection.command` without its memory (PLAN.md D26). The SDK keeps the
  * canonical payload of every command for the connection's life, an image
  * turn's base64 included, to check replays across reconnects this
@@ -506,7 +537,7 @@ export class MuseSession implements AgentSession {
   public async sendTurn(parts: readonly TurnPart[], displayText?: string): Promise<TurnSubmission> {
     const result = turnStartResultSchema.parse(
       await this.command('turn/start', {
-        input: parts,
+        input: mspInput(parts),
         ...(displayText !== undefined && { displayText }),
       }),
     )
@@ -519,7 +550,7 @@ export class MuseSession implements AgentSession {
    * turn never leaks into the next; callers fall back to `sendTurn`.
    */
   public async steer(expectedTurnId: string, parts: readonly TurnPart[]): Promise<TurnSubmission> {
-    const result = await this.command('turn/steer', { expectedTurnId, input: parts })
+    const result = await this.command('turn/steer', { expectedTurnId, input: mspInput(parts) })
     return { turnId: turnSteerResultSchema.parse(result).turnId, disposition: 'steered' }
   }
 

@@ -89,6 +89,38 @@ describe('toSnapshot', () => {
     expect(toSnapshot({ ...userItem, displayText: null }).text).toBe(userItem.text)
   })
 
+  it('rebuilds a picked text-file chip from the durable Muse display marker', () => {
+    const displayText = 'Inspect this\n[Muse Spark Code attached text files: ["notes.txt"]]'
+    expect(toSnapshot({ ...userItem, displayText })).toMatchObject({
+      text: displayText,
+      attachments: [
+        { type: 'image', mediaType: 'image/png', width: 2, height: 3 },
+        { type: 'file', mediaType: 'text/plain', name: 'notes.txt' },
+      ],
+    })
+  })
+
+  it('keeps ordinary or malformed suffix text visible while flagging a damaged marker', () => {
+    const ordinary = 'I typed [Attached text files: ["notes.txt"]]'
+    expect(toSnapshot({ ...userItem, displayText: ordinary }).text).toBe(ordinary)
+    const identical = 'I typed this\n[Muse Spark Code attached text files: ["notes.txt"]]'
+    expect(toSnapshot({ ...userItem, text: identical, displayText: identical })).toMatchObject({
+      text: identical,
+      attachments: [
+        { type: 'image', mediaType: 'image/png', width: 2, height: 3 },
+        { type: 'file', mediaType: 'text/plain', name: 'notes.txt' },
+      ],
+    })
+    const malformed = 'Inspect this\n[Muse Spark Code attached text files: broken]'
+    expect(toSnapshot({ ...userItem, displayText: malformed })).toMatchObject({
+      text: malformed,
+      attachments: [
+        { type: 'image', mediaType: 'image/png', width: 2, height: 3 },
+        { type: 'file', mediaType: 'text/plain' },
+      ],
+    })
+  })
+
   it('marks paid the images the extension’s ide server made with the key (M44)', () => {
     const call = { itemId: 'i', kind: 'toolCall', status: 'completed' }
     expect(toSnapshot({ ...call, tool: 'mcp__ide__generateImage' }).paid).toBe('imageGeneration')

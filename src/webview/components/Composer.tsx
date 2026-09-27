@@ -5,8 +5,8 @@
 // button and Send/Stop. The "+" button and the mode button open menus the
 // parent renders above the composer. Keys an input method is composing with
 // (CJK) belong to the composition: Enter commits the candidate, it never
-// sends or picks a mention (M25). An image over the host's limits is refused
-// before it is read, not encoded and posted to be refused (M25).
+// sends or picks a mention (M25). A bounded header read identifies pasted or
+// dropped PDFs before their size cap is chosen; refused media is not encoded.
 //
 // "/" (M38): a prompt that is just `/` shows the palette above the box; one
 // character more turns it into the slash-command list, narrowed as the name
@@ -30,13 +30,25 @@ import {
 } from 'react'
 import {
   COMPOSER_MAX_ROWS,
+  BASE64_DATA_URL_OVERHEAD_CHARS,
+  BASE64_INPUT_BLOCK_BYTES,
+  BASE64_OUTPUT_BLOCK_CHARS,
   DICTATION_KEY,
   type DictationAction,
   GOAL_SLASH_COMMAND,
   LOOP_SLASH_COMMAND,
   IME_PROCESS_KEY,
   MAX_ATTACHMENTS_PER_MESSAGE,
+  MAX_DOCUMENT_BYTES,
+  MAX_ENCODED_MEDIA_CHARS,
   MAX_IMAGE_BYTES,
+  PDF_EXTENSION,
+  PDF_HEADER_WINDOW_BYTES,
+  PDF_MEDIA_TYPE,
+  PRIVATE_ATTACHMENT_EXTENSIONS,
+  PRIVATE_ATTACHMENT_NAMES,
+  TEXT_ATTACHMENT_EXTENSIONS,
+  TEXT_ATTACHMENT_MEDIA_TYPE,
   type PermissionMode,
   UI_TEXT,
 } from '../../shared/constants'
@@ -47,6 +59,7 @@ import {
   slashFilterOf,
 } from '../../shared/mentions'
 import { fill } from '../../shared/l10n/text'
+import { hasPdfHeader } from '../../shared/pdfHeader'
 import { paidFeaturePrice } from '../../shared/paid'
 import type { AttachmentSummary, MentionItem, SettingsSnapshot } from '../../shared/protocol'
 import { rankSlashCommands, type SlashCommand } from '../../shared/slashCommands'
@@ -74,6 +87,8 @@ export interface ImageData {
   readonly name: string
   readonly mediaType: string
   readonly base64: string
+  readonly requestId: string
+  readonly attachmentEpoch: number
 }
 
 /** What the composer hands the attached palette it asks the parent to render (M38). */
@@ -100,6 +115,9 @@ export interface ComposerProps {
   readonly focusRequests: number
   readonly pendingInsert: string | undefined
   readonly attachments: readonly AttachmentSummary[]
+  readonly attachmentEpoch: number
+  readonly attachmentSettlements: readonly string[]
+  readonly newAttachmentRequestId: () => string
   readonly mentionResults: MentionResults | undefined
   /** The open-file chip ("PLAN.md L5-10"); undefined hides it (M5). */
   readonly editorContextLabel: string | undefined
@@ -214,8 +232,43 @@ function keepMenuFocus(event: MouseEvent<HTMLButtonElement>): void {
   event.preventDefault()
 }
 
-function imageFiles(list: FileList | undefined): readonly File[] {
-  return [...(list ?? [])].filter((file) => file.type.startsWith(IMAGE_TYPE_PREFIX))
+function fileExtension(name: string): string {
+  const dot = name.lastIndexOf('.')
+  return dot === -1 ? '' : name.slice(dot).toLowerCase()
+}
+
+function isPrivateAttachmentName(name: string): boolean {
+  const lower = name.toLowerCase()
+  return (
+    lower === '.env' ||
+    lower.startsWith('.env.') ||
+    PRIVATE_ATTACHMENT_NAMES.has(lower) ||
+    PRIVATE_ATTACHMENT_EXTENSIONS.has(fileExtension(lower))
+  )
+}
+
+function attachableFiles(list: FileList | undefined, shouldIncludeText = false): readonly File[] {
+  return [...(list ?? [])].filter(
+    (file) =>
+      file.type.startsWith(IMAGE_TYPE_PREFIX) ||
+      file.type === PDF_MEDIA_TYPE ||
+      file.name.toLowerCase().endsWith(PDF_EXTENSION) ||
+      (shouldIncludeText && TEXT_ATTACHMENT_EXTENSIONS.has(fileExtension(file.name))),
+  )
+}
+
+/** The same conservative data-URL budget the host checks after decoding. */
+function encodedMediaChars(sizeBytes: number, mediaType: string): number {
+  return (
+    BASE64_DATA_URL_OVERHEAD_CHARS +
+    mediaType.length +
+    BASE64_OUTPUT_BLOCK_CHARS * Math.ceil(sizeBytes / BASE64_INPUT_BLOCK_BYTES)
+  )
+}
+
+interface PendingMediaReservation {
+  readonly requestId: string
+  readonly encodedChars: number
 }
 
 /** Ctrl+D (Cmd+D on a Mac): the microphone from the keyboard. */
@@ -299,6 +352,9 @@ export function Composer(props: ComposerProps) {
     focusRequests,
     pendingInsert,
     attachments,
+    attachmentEpoch,
+    attachmentSettlements,
+    newAttachmentRequestId,
     mentionResults,
     editorContextLabel,
     referenceLabel,
@@ -333,6 +389,25 @@ export function Composer(props: ComposerProps) {
     onSlashMenuOpen,
   } = props
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  /** Admission stays reserved until the host echoes acceptance or a refusal. */
+  const pendingFiles = useRef<PendingMediaReservation[]>([])
+  const currentAttachments = useRef(attachments)
+  useLayoutEffect(() => {
+    currentAttachments.current = attachments
+  }, [attachments])
+  const currentAttachmentEpoch = useRef(attachmentEpoch)
+  useLayoutEffect(() => {
+    currentAttachmentEpoch.current = attachmentEpoch
+    pendingFiles.current = []
+    return () => {
+      currentAttachmentEpoch.current = -1
+      pendingFiles.current = []
+    }
+  }, [attachmentEpoch])
+  useEffect(() => {
+    const settled = new Set(attachmentSettlements)
+    pendingFiles.current = pendingFiles.current.filter((pending) => !settled.has(pending.requestId))
+  }, [attachmentSettlements])
   const [caret, setCaret] = useState(0)
   const [mentionIndex, setMentionIndex] = useState(0)
   const [dismissedMention, setDismissedMention] = useState<number | undefined>(undefined)
@@ -697,42 +772,115 @@ export function Composer(props: ComposerProps) {
   }
 
   const attachFiles = (files: readonly File[]) => {
-    let count = attachments.length
-    for (const file of files) {
-      const name = file.name === '' ? PASTED_IMAGE_NAME : file.name
-      if (file.size > MAX_IMAGE_BYTES) {
-        onRefuseFile(name, UI_TEXT.attachmentTooLarge)
-        continue
+    const admit = (file: File, name: string, mediaType: string) => {
+      const current = currentAttachments.current
+      const count = current.length + pendingFiles.current.length
+      const mediaChars =
+        current.reduce(
+          (total, attachment) =>
+            total +
+            (attachment.mediaType === TEXT_ATTACHMENT_MEDIA_TYPE
+              ? 0
+              : encodedMediaChars(attachment.sizeBytes, attachment.mediaType)),
+          0,
+        ) + pendingFiles.current.reduce((total, pending) => total + pending.encodedChars, 0)
+      const isDocument = mediaType === PDF_MEDIA_TYPE
+      if (file.size > (isDocument ? MAX_DOCUMENT_BYTES : MAX_IMAGE_BYTES)) {
+        onRefuseFile(name, isDocument ? UI_TEXT.documentTooLarge : UI_TEXT.attachmentTooLarge)
+        return
       }
       if (count >= MAX_ATTACHMENTS_PER_MESSAGE) {
         onRefuseFile(name, UI_TEXT.attachmentLimit)
-        continue
+        return
       }
-      count += 1
+      const estimate = encodedMediaChars(file.size, mediaType)
+      if (mediaChars + estimate > MAX_ENCODED_MEDIA_CHARS) {
+        onRefuseFile(name, UI_TEXT.mediaTotalTooLarge)
+        return
+      }
+      const requestId = newAttachmentRequestId()
+      const admittedEpoch = attachmentEpoch
+      const reservation: PendingMediaReservation = {
+        requestId,
+        encodedChars: estimate,
+      }
+      pendingFiles.current.push(reservation)
       void blobToBase64(file)
         .then((base64) => {
-          onAttachImage({ name, mediaType: file.type, base64 })
+          if (currentAttachmentEpoch.current !== admittedEpoch) {
+            pendingFiles.current = pendingFiles.current.filter((pending) => pending !== reservation)
+            return
+          }
+          onAttachImage({
+            name,
+            mediaType,
+            base64,
+            requestId,
+            attachmentEpoch: admittedEpoch,
+          })
         })
         .catch((error: unknown) => {
+          pendingFiles.current = pendingFiles.current.filter((pending) => pending !== reservation)
           onRefuseFile(name, UI_TEXT.attachmentUnreadable)
           // Unhandled on purpose: the page reports it to the log (M39).
           throw error
         })
     }
+    for (const file of files) {
+      const name = file.name === '' ? PASTED_IMAGE_NAME : file.name
+      if (isPrivateAttachmentName(name)) {
+        onRefuseFile(name, UI_TEXT.textFilePrivate)
+        continue
+      }
+      const isDocument = file.type === PDF_MEDIA_TYPE || name.toLowerCase().endsWith(PDF_EXTENSION)
+      if (isDocument) {
+        admit(file, name, PDF_MEDIA_TYPE)
+        continue
+      }
+      const admittedEpoch = attachmentEpoch
+      // MIME and suffix can both lie. Only the first 1 KiB is read before
+      // deciding whether this is a 32 MB PDF or a 10 MiB image.
+      void file
+        .slice(0, PDF_HEADER_WINDOW_BYTES)
+        .arrayBuffer()
+        .then((header) => {
+          if (currentAttachmentEpoch.current !== admittedEpoch) {
+            return
+          }
+          if (hasPdfHeader(new Uint8Array(header))) {
+            admit(file, name, PDF_MEDIA_TYPE)
+          } else if (file.type.startsWith(IMAGE_TYPE_PREFIX)) {
+            admit(file, name, file.type)
+          }
+        })
+        .catch(() => {
+          if (currentAttachmentEpoch.current === admittedEpoch) {
+            onRefuseFile(name, UI_TEXT.attachmentUnreadable)
+          }
+        })
+    }
   }
 
   const handlePaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
-    const images = imageFiles(event.clipboardData.files)
-    if (images.length === 0) {
+    const files = attachableFiles(event.clipboardData.files, true)
+    if (files.length === 0) {
+      return
+    }
+    // A clipboard text representation belongs in the textarea. A text-named
+    // file with no text representation can be probed for PDF bytes instead.
+    if (
+      attachableFiles(event.clipboardData.files).length === 0 &&
+      event.clipboardData.getData(TEXT_ATTACHMENT_MEDIA_TYPE) !== ''
+    ) {
       return
     }
     event.preventDefault()
-    attachFiles(images)
+    attachFiles(files)
   }
 
   const handleDrop = (event: DragEvent<HTMLElement>) => {
     event.preventDefault()
-    attachFiles(imageFiles(event.dataTransfer.files))
+    attachFiles(attachableFiles(event.dataTransfer.files, true))
     const uris = parseUriList(event.dataTransfer.getData(URI_LIST_TYPE))
     if (uris.length > 0) {
       onDroppedUris(uris)

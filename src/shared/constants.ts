@@ -344,7 +344,99 @@ export const IMAGE_EXTENSIONS: Readonly<Record<string, ImageMediaType>> = {
   '.webp': 'image/webp',
 }
 export const MAX_IMAGE_BYTES = 10 * 1024 * 1024
+// Images and PDFs together (M54).
 export const MAX_ATTACHMENTS_PER_MESSAGE = 20
+
+// PDFs as input (M54, PLAN.md D47): the one document type Meta's Responses
+// API reads for inference (dev.meta.ai/docs/file-handling, read
+// 2026-09-25), sent inline as `input_file`, never uploaded. 32 MB encodes
+// to 42.7 MB of base64, under Meta's 50 MB inline limit whether that counts
+// the file or the encoded text, so the Files API is never needed.
+export const PDF_MEDIA_TYPE = 'application/pdf'
+export const PDF_EXTENSION = '.pdf'
+export const MAX_DOCUMENT_BYTES = 32_000_000
+// A conservative aggregate cap on base64 media in one message and in a
+// replayed Model API request. Meta's 50 MB inline limit is per file; this
+// separate bound keeps a long session from serializing gigabytes of PDFs.
+export const MAX_ENCODED_MEDIA_CHARS = 48_000_000
+export const BASE64_DATA_URL_OVERHEAD_CHARS = 'data:;base64,'.length
+export const BASE64_INPUT_BLOCK_BYTES = 3
+export const BASE64_OUTPUT_BLOCK_CHARS = 4
+export const MAX_TEXT_ATTACHMENT_BYTES = 1024 * 1024
+export const TEXT_ATTACHMENT_MEDIA_TYPE = 'text/plain'
+/** A readable MSP display-text suffix carrying picked-file names for History replay. */
+export const TEXT_FILE_DISPLAY_MARKER = '\n[Muse Spark Code attached text files: '
+export const TEXT_ATTACHMENT_EXTENSIONS: ReadonlySet<string> = new Set([
+  '.txt',
+  '.md',
+  '.markdown',
+  '.csv',
+  '.tsv',
+  '.json',
+  '.jsonl',
+  '.yaml',
+  '.yml',
+  '.xml',
+  '.log',
+  '.html',
+  '.css',
+  '.js',
+  '.jsx',
+  '.ts',
+  '.tsx',
+  '.py',
+  '.ps1',
+  '.sh',
+])
+export const PRIVATE_ATTACHMENT_NAMES: ReadonlySet<string> = new Set([
+  '.env',
+  '.env.local',
+  'credentials.json',
+  'auth.json',
+  'id_rsa',
+  'id_ed25519',
+])
+export const PRIVATE_ATTACHMENT_EXTENSIONS: ReadonlySet<string> = new Set([
+  '.key',
+  '.pem',
+  '.p12',
+  '.pfx',
+])
+export const UNSUPPORTED_BINARY_ATTACHMENT_EXTENSIONS: ReadonlySet<string> = new Set([
+  '.doc',
+  '.docx',
+  '.bmp',
+  '.avif',
+  '.heic',
+  '.xls',
+  '.xlsx',
+  '.ppt',
+  '.pptx',
+  '.zip',
+  '.7z',
+  '.rar',
+  '.exe',
+  '.dll',
+  '.mp3',
+  '.mp4',
+  '.wav',
+  '.sqlite',
+  '.db',
+])
+// A base64 attachment crossing webview postMessage (M54): cap before decode.
+export const MAX_ATTACHMENT_BASE64_CHARS =
+  BASE64_OUTPUT_BLOCK_CHARS * Math.ceil(MAX_DOCUMENT_BYTES / BASE64_INPUT_BLOCK_BYTES)
+// Meta reads at most 50 images in one request, and a PDF's page images
+// (its first 50 pages) count toward them (file-handling, image-understanding).
+export const MODEL_API_MEDIA_PER_REQUEST = 50
+export const MODEL_API_PDF_PAGE_IMAGES = 50
+// The page count is read from a directly visible PDF page tree when cheap.
+export const PDF_HEADER_WINDOW_BYTES = 1024
+export const PDF_HEADER_SIGNATURE = '%PDF-'
+export const PDF_DICTIONARY_SCAN_CHARS = 4096
+export const PDF_PAGE_TREE_SCAN_LIMIT = 1024
+// A page count past this is a misread, not a document.
+export const PDF_PAGE_COUNT_MAX = 100_000
 
 // --- @-mentions ---
 
@@ -486,6 +578,12 @@ export const TOKENS_PER_MILLION = 1_000_000
 // output cap is well under the documented 131,072 maximum.
 export const MODEL_API_CONTEXT_WINDOW = 1_048_576
 export const MODEL_API_MAX_OUTPUT_TOKENS = 32_768
+// Conservatively bound named text attachments by UTF-8 bytes. The reserve
+// covers output and leaves room for prompt/replay; already long replay still
+// needs the backend's request/context handling.
+export const MODEL_API_TEXT_CONTEXT_RESERVE_TOKENS = 256 * 1024
+export const MAX_MODEL_API_TEXT_ATTACHMENT_BYTES =
+  MODEL_API_CONTEXT_WINDOW - MODEL_API_TEXT_CONTEXT_RESERVE_TOKENS
 // dev.meta.ai/docs/error-handling: 429 and the server errors are retryable
 // with exponential backoff and jitter, honouring Retry-After; 3–5 attempts.
 // A 504 is not: the guide says to stream instead, which every long request
@@ -513,6 +611,7 @@ export const MODEL_API_STREAM_IDLE_MS = 300_000
 export const BYTES_PER_MIB = 1024 * 1024
 export const TOOL_FILE_MAX_MIB = 10
 export const TOOL_FILE_MAX_BYTES = TOOL_FILE_MAX_MIB * BYTES_PER_MIB
+export const BOUNDED_FILE_READ_CHUNK_BYTES = 64 * 1024
 export const HTTP_UNAUTHORIZED = 401
 // Refused before any work was done: the one status a per-call-billed request retries (M34).
 export const HTTP_TOO_MANY_REQUESTS = 429
@@ -1001,6 +1100,10 @@ export const MSP_LONG_COMMANDS: ReadonlySet<string> = new Set([
 // DEFAULT_FRAME_LIMIT_BYTES): a command larger than this is refused here with
 // a message, where the host would drop the frame and never answer (D26).
 export const MSP_FRAME_LIMIT_BYTES = 10 * 1024 * 1024
+// Leave room for the user's prompt, selected context, and command envelope.
+export const MSP_ATTACHMENT_FRAME_HEADROOM_BYTES = 2 * 1024 * 1024
+export const MSP_ATTACHMENT_FRAME_BUDGET_BYTES =
+  MSP_FRAME_LIMIT_BYTES - MSP_ATTACHMENT_FRAME_HEADROOM_BYTES
 // `session/list` refuses a larger page (msp.d.ts SessionListParams.limit).
 export const MSP_SESSION_LIST_MAX_LIMIT = 200
 // Muse Code versions that refuse `session/rename` and `session/fork` on
@@ -1397,6 +1500,7 @@ export const MODEL_TEXT = {
   imageGenerationOff:
     'image generation is off; the user turns it on (it is paid) in the palette or the museSpark.modelApiImageGeneration setting',
   imagePathTaken: 'something already exists at that path; choose a new file name',
+  pathChangedAfterApproval: 'path changed after approval; request a new approval',
   // The user said no in the price confirmation (M44): nothing was bought.
   imageDeclined: 'the user declined to buy this image; nothing was bought or written',
   // M45 (PLAN.md D38): the goal loop on the Model API backend, in Muse Code's
@@ -1444,6 +1548,31 @@ export const MODEL_TEXT = {
   userShellLead:
     '[The user ran this shell command in the workspace themselves. Its output is context for you, not a request]',
   clarificationLead: 'The user chose none of the options and explained instead:',
+  // M54 (PLAN.md D47): `read_file` on a PDF or an image. The file itself
+  // follows in a user message after the round's outputs, since Meta reads
+  // images only in user messages (image-understanding).
+  readPdf:
+    'Read PDF `{path}` ({pages}, {bytes} bytes). The file itself follows in the next message; you see its text and page images.',
+  readImage:
+    'Read image `{path}` ({mediaType}, {width}×{height}, {bytes} bytes). The image itself follows in the next message.',
+  pagesUnknown: 'page count unknown',
+  pagesKnown: 'page count {count}',
+  toolFileFollows: 'The file read_file read at `{path}`:',
+  toolFileNotDelivered:
+    'The file read_file read at `{path}` was not delivered because that tool round ended early.',
+  toolOutputImageNotDelivered:
+    'An image returned by a tool was not delivered to the model before the turn ended.',
+  notPdf: 'is named as a PDF but is not one (it has no %PDF- header)',
+  notImage: 'is named as an image but is not a PNG, JPEG, GIF or WebP image',
+  // Replays keep newer media within page and encoded-size budgets, naming
+  // older media instead of sending the bytes again.
+  imageLeftOut:
+    '[An image attached earlier is left out of this request because newer media fill the request limit.]',
+  pdfLeftOut:
+    '[The PDF {name}, attached earlier, is left out of this request because newer media fill the request limit.]',
+  toolMediaBudgetExceeded:
+    'Visual media was not attached: images and PDFs returned or read in this tool round exceed the combined media limit. Use fewer images or files at once.',
+  attachedTextFile: 'Attached text file {name}:\n\n{text}',
   // M50: MCP tools on the Model API backend.
   mcpRestrictedMode:
     'MCP servers do not run while the workspace is in Restricted Mode; trust the workspace to enable them',

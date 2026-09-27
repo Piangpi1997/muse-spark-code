@@ -266,7 +266,19 @@ export interface InputMessageItem {
   readonly phase?: MessagePhase | undefined
 }
 
+/**
+ * A PDF sent inline (M54, PLAN.md D47; file-handling, "Send a file inline"):
+ * the bytes as a base64 data URL, never uploaded, with the name the model
+ * sees.
+ */
+export interface InputFilePart {
+  readonly type: 'input_file'
+  readonly filename: string
+  readonly file_data: string
+}
+
 export type InputContentPart =
+  | InputFilePart
   | { readonly type: 'input_text'; readonly text: string }
   | { readonly type: 'input_image'; readonly image_url: string; readonly detail: 'auto' }
   | { readonly type: 'output_text'; readonly text: string }

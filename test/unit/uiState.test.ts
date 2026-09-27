@@ -451,6 +451,17 @@ describe('uiReducer: composer state', () => {
     expect(uiReducer(added, host({ type: 'attachmentsCleared' })).attachments).toEqual([])
   })
 
+  it('records both same-name host refusal IDs and invalidates them on clear', () => {
+    const state = reduceAll([
+      host({ type: 'attachmentRejected', name: 'same.png', reason: 'unsupported', requestId: 'a' }),
+      host({ type: 'attachmentRejected', name: 'same.png', reason: 'unsupported', requestId: 'b' }),
+    ])
+    expect(state.attachmentSettlements).toEqual(['a', 'b'])
+    const cleared = uiReducer(state, { type: 'conversationCleared' })
+    expect(cleared.attachmentSettlements).toEqual([])
+    expect(cleared.attachmentEpoch).toBe(state.attachmentEpoch + 1)
+  })
+
   it('keeps the latest mention results and queues inserts and focus requests', () => {
     const state = reduceAll([
       host({ type: 'mentionResults', requestId: 1, items: [{ path: 'a.ts', isFolder: false }] }),
@@ -1123,7 +1134,7 @@ describe('uiReducer: session history (M6)', () => {
       id: 'u1',
       text: 'what does this do?',
       status: 'sent',
-      attachments: [{ id: 'u1:0', name: 'image/png', width: 2, height: 3 }],
+      attachments: [{ id: 'u1:0', name: 'image/png', mediaType: 'image/png', width: 2, height: 3 }],
       turnId: 't1',
     })
     expect(state.transcript[1]).toMatchObject({ parts: ['why'], isStreaming: false })
@@ -1154,6 +1165,37 @@ describe('uiReducer: session history (M6)', () => {
       attachments: [],
     })
     expect(state.title).toBeUndefined()
+  })
+
+  it('restores a PDF name from the stored user message', () => {
+    const state = reduceAll([
+      host({
+        type: 'historyLoaded',
+        sessionId: 'pdf-session',
+        todos: [],
+        items: [
+          {
+            itemId: 'pdf-user',
+            kind: 'userMessage',
+            status: 'completed',
+            text: 'Summarize this',
+            attachments: [
+              {
+                type: 'file',
+                mediaType: 'application/pdf',
+                name: 'report.pdf',
+                sizeBytes: 1024,
+                pageCount: 2,
+              },
+            ],
+          },
+        ],
+      }),
+    ])
+    expect(state.transcript[0]).toMatchObject({
+      kind: 'user',
+      attachments: [{ name: 'report.pdf' }],
+    })
   })
 
   it('keeps the turn id on a sent card so a fork can cut before it', () => {
@@ -2054,6 +2096,31 @@ describe('clears, restores and refusals (M25)', () => {
     ).toBe('t9')
   })
 
+  it('raises a stale restored upload epoch from surface state without losing draft or chips', () => {
+    const stale: UiState = {
+      ...initialUiState,
+      draft: 'keep typing',
+      attachments: [attachment],
+      pendingRestore: { sessionId: 's1', isTranscriptOmitted: false },
+    }
+    const synced = uiReducer(
+      stale,
+      host({ type: 'surfaceState', sessionId: 's1', attachmentEpoch: 3 }),
+    )
+    expect(synced.attachmentEpoch).toBe(3)
+    expect(synced.draft).toBe('keep typing')
+    expect(synced.attachments).toEqual([attachment])
+    expect(
+      uiReducer(synced, host({ type: 'surfaceState', sessionId: 's1', attachmentEpoch: 1 }))
+        .attachmentEpoch,
+    ).toBe(3)
+    const mismatched = uiReducer(
+      stale,
+      host({ type: 'surfaceState', sessionId: 's2', attachmentEpoch: 3 }),
+    )
+    expect(mismatched.attachmentEpoch).toBe(4)
+  })
+
   it('brings the chips of a refused message back when the host still holds them', () => {
     const sent: readonly UiAction[] = [
       host({ type: 'attachmentAdded', attachment }),
@@ -2134,6 +2201,28 @@ describe('clears, restores and refusals (M25)', () => {
     const noticed = reduceAll([{ type: 'noticeRaised', level: 'warning', text: 'careful' }])
     expect(noticed.transcript).toMatchObject([{ kind: 'notice', level: 'warning' }])
     expect(noticed.announcement?.text).toBe('careful')
+  })
+
+  it.each([
+    ['large.pdf', UI_TEXT.documentTooLarge],
+    ['many.pdf', UI_TEXT.documentsOverBudget],
+    ['packed.png', UI_TEXT.mediaTotalTooLarge],
+    ['large-muse.png', UI_TEXT.commandTooLarge],
+    ['report.pdf', UI_TEXT.pdfNeedsModelApi],
+    ['invalid.pdf', UI_TEXT.invalidPdf],
+    ['source.ts', UI_TEXT.textFilesOverModelApiBudget],
+    ['private.txt', UI_TEXT.textFilePrivate],
+  ])('shows the specific attachment refusal for %s', (name, reason) => {
+    const rejected = reduceAll([host({ type: 'attachmentRejected', name, reason })])
+    expect(rejected.banner).toBe(`${name}: ${reason}`)
+    expect(rejected.announcement?.text).toBe(`${name}: ${reason}`)
+  })
+
+  it('shows a local PDF-size refusal in the composer banner', () => {
+    const rejected = reduceAll([
+      { type: 'attachmentRefused', name: 'large.pdf', reason: UI_TEXT.documentTooLarge },
+    ])
+    expect(rejected.banner).toBe(`large.pdf: ${UI_TEXT.documentTooLarge}`)
   })
 
   it('chains output pages by offset and drops a page that does not follow', () => {

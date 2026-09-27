@@ -1,10 +1,11 @@
-import { afterAll, describe, expect, it, vi } from 'vitest'
+import { Buffer } from 'node:buffer'
+import { randomUUID } from 'node:crypto'
 import { mkdtempSync } from 'node:fs'
-import { writeFile } from 'node:fs/promises'
+import { mkdir, rename, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { randomUUID } from 'node:crypto'
-import type { SessionMcpHttpServer } from '../../src/core/agent/agentBackend'
+import { afterAll, describe, expect, it, vi } from 'vitest'
+import type { AgentHost, SessionMcpHttpServer } from '../../src/core/agent/agentBackend'
 import { ModelApiHost, type ModelApiHostDeps } from '../../src/core/backends/modelapi/ModelApiHost'
 import { MuseCodeHost } from '../../src/core/backends/musecode/MuseCodeHost'
 import type { ShellSandboxPosture } from '../../src/core/backends/musecode/sandbox'
@@ -20,7 +21,13 @@ import {
 } from '../../src/host/conversation/conversationController'
 import type { DictationListener } from '../../src/core/voice/dictation'
 import type { DictationSetup } from '../../src/host/voice/dictationHost'
-import { CHOICE_STEERING_NOTE, type GoalCommandVerb, UI_TEXT } from '../../src/shared/constants'
+import {
+  CHOICE_STEERING_NOTE,
+  MAX_DOCUMENT_BYTES,
+  MAX_IMAGE_BYTES,
+  type GoalCommandVerb,
+  UI_TEXT,
+} from '../../src/shared/constants'
 import type { HostAction, LineRange, MentionItem } from '../../src/shared/protocol'
 import type { SubscriptionUsage } from '../../src/shared/usage'
 import { FakeLogOutputChannel, fakeSurface } from './helpers/fakes'
@@ -29,8 +36,12 @@ import { disabledPaidFeatures } from './helpers/fakePaidFeatures'
 import { memoryContextIo } from './helpers/fakeContextIo'
 import { heldShellToolIo, memoryToolIo, type MemoryToolIo, noopToolIo } from './helpers/fakeToolIo'
 import { createFileScheduleStore } from '../../src/host/backend/fileScheduleStore'
+import { readPickedFile } from '../../src/host/backend/toolIo'
+import { canonicalPath } from '../../src/host/canonicalPath'
+import { confineWorkspacePath } from '../../src/core/backends/modelapi/tools'
 import { removeFolder } from './helpers/temporaryFolders'
 import { memorySessionStore } from './helpers/fakeSessionStore'
+import { pdfFixture } from './helpers/pdfFixture'
 import {
   fakeInitializeResult,
   fakeMspHost,
@@ -95,6 +106,13 @@ const PNG = Uint8Array.from([
   0, 0, 0, 3,
 ])
 
+async function writeTwentyMiBPdf(file: string): Promise<Buffer> {
+  const small = Buffer.from(pdfFixture(1))
+  const bytes = Buffer.concat([small, Buffer.alloc(MAX_IMAGE_BYTES * 2 - small.length, 0x20)])
+  await writeFile(file, bytes)
+  return bytes
+}
+
 const NOW = Date.parse('2026-09-22T12:00:00Z')
 /** The choice-steering note every CLI turn carries (M14), hidden by displayText. */
 const NOTE = { type: 'text', text: CHOICE_STEERING_NOTE }
@@ -131,6 +149,18 @@ function attachPng(t: { controller: ConversationController }): Promise<void> {
     mediaType: 'image/png',
     base64: Buffer.from(PNG).toString('base64'),
   })
+}
+
+function pickedTextFixture() {
+  const t = setup({ indexed: ['a.ts'] })
+  t.setPicked([{ name: 'a.ts', fsPath: '/ws/a.ts', relativePath: 'a.ts' }])
+  return t
+}
+
+async function heldPickerAt(t: ReturnType<typeof setup>, stage: () => void) {
+  const picking = t.controller.handle({ type: 'pickFile' })
+  await vi.waitFor(stage)
+  return { picking }
 }
 
 function setup(
@@ -359,7 +389,15 @@ function setup(
     files: {
       showOpenDialog: () => Promise.resolve(picked),
       readFile: (fsPath: string) =>
-        fsPath.endsWith('.png') ? Promise.resolve(PNG) : Promise.resolve(Uint8Array.from([1])),
+        fsPath.endsWith('.png')
+          ? Promise.resolve({ bytes: PNG, isPdf: false })
+          : Promise.resolve({ bytes: new TextEncoder().encode('example text'), isPdf: false }),
+      canonicalRelativePath: (fsPath: string) =>
+        Promise.resolve(
+          fsPath.startsWith('/ws/')
+            ? { canonical: fsPath.slice('/ws/'.length), checkedAbsolute: fsPath }
+            : undefined,
+        ),
       pickMentionFile: () => Promise.resolve(mentionChoice),
       toRelativePath: (uri: string) =>
         uri.startsWith('file:///ws/') ? uri.slice('file:///ws/'.length) : undefined,
@@ -500,7 +538,7 @@ describe('ConversationController.surfaceReady', () => {
     t.controller.surfaceReady()
     expect(t.surface.posted).toEqual([
       // M25: first, the live session and turn a reloaded webview checks its saved state against.
-      { type: 'surfaceState' },
+      { type: 'surfaceState', attachmentEpoch: 0 },
       { type: 'authState', status: 'signedIn' },
       composerState,
       {
@@ -516,7 +554,7 @@ describe('ConversationController.surfaceReady', () => {
     t.surface.posted.length = 0
     t.controller.surfaceReady()
     expect(t.surface.posted).toEqual([
-      { type: 'surfaceState', sessionId: 's1', activeTurnId: 't1' },
+      { type: 'surfaceState', attachmentEpoch: 0, sessionId: 's1', activeTurnId: 't1' },
       { type: 'authState', status: 'signedIn' },
       composerState,
       {
@@ -1007,6 +1045,7 @@ describe('ConversationController: context', () => {
 
   it('attaches picked images and mentions other picked files', async () => {
     const t = setup()
+    const read = vi.spyOn(t.deps.files, 'readFile')
     t.setPicked([
       { name: 'shot.png', fsPath: '/tmp/shot.png', relativePath: undefined },
       { name: 'notes.md', fsPath: '/ws/docs/notes.md', relativePath: 'docs/notes.md' },
@@ -1015,6 +1054,7 @@ describe('ConversationController: context', () => {
       { name: 'x#1.md', fsPath: '/ws/my docs/x#1.md', relativePath: 'my docs/x#1.md' },
     ])
     await t.controller.handle({ type: 'pickFile' })
+    expect(read).toHaveBeenCalledWith('/tmp/shot.png', expect.any(Number))
     expect(t.surface.posted).toEqual([
       {
         type: 'attachmentAdded',
@@ -1035,6 +1075,255 @@ describe('ConversationController: context', () => {
     ])
   })
 
+  it('attaches an indexed UTF-8 file as named text, while refusing a private file', async () => {
+    const t = setup()
+    t.setPicked([{ name: 'a.ts', fsPath: '/ws/src/a.ts', relativePath: 'src/a.ts' }])
+    await t.controller.handle({ type: 'pickFile' })
+    expect(t.surface.posted).toMatchObject([
+      { type: 'attachmentAdded', attachment: { name: 'a.ts', mediaType: 'text/plain' } },
+    ])
+    await t.send('text-file', 'Explain this', ['att-1'])
+    expect(t.server.requestsFor('turn/start')[0]?.params).toMatchObject({
+      input: [
+        { type: 'text', text: 'Explain this' },
+        { type: 'text', text: expect.stringContaining('Attached text file "a.ts"') },
+        NOTE,
+      ],
+      displayText: 'Explain this\n[Muse Spark Code attached text files: ["a.ts"]]',
+    })
+    const privateFile = setup({ indexed: ['credentials.json'] })
+    privateFile.setPicked([
+      {
+        name: 'credentials.json',
+        fsPath: '/ws/credentials.json',
+        relativePath: 'credentials.json',
+      },
+    ])
+    await privateFile.controller.handle({ type: 'pickFile' })
+    expect(privateFile.surface.posted).toEqual([
+      {
+        type: 'attachmentRejected',
+        name: 'credentials.json',
+        reason: UI_TEXT.textFilePrivate,
+      },
+    ])
+  })
+
+  it('queues a Muse text-file card while a turn runs so its display annotation is durable', async () => {
+    const t = setup({ indexed: ['notes.txt'] })
+    await t.send('first', 'Working')
+    t.server.notify('turn/started', { sessionId: 's1', turnId: 't1' })
+    await settle()
+    t.setPicked([{ name: 'notes.txt', fsPath: '/ws/notes.txt', relativePath: 'notes.txt' }])
+    await t.controller.handle({ type: 'pickFile' })
+    t.server.handle('turn/start', (params) => ({
+      turnId: 't2',
+      status: 'accepted',
+      disposition: 'queued',
+      commandId: params['commandId'],
+    }))
+    await t.send('file-local', 'Read the note', ['att-1'])
+    expect(t.server.requestsFor('turn/steer')).toHaveLength(0)
+    expect(t.server.requestsFor('turn/start')).toHaveLength(2)
+    expect(t.server.requestsFor('turn/start')[1]?.params).toMatchObject({
+      displayText: 'Read the note\n[Muse Spark Code attached text files: ["notes.txt"]]',
+    })
+  })
+
+  it('reads an indexed text attachment from the checked target after its alias retargets', async () => {
+    const t = setup({ indexed: ['allowed.txt'] })
+    vi.spyOn(t.deps.files, 'canonicalRelativePath').mockResolvedValue({
+      canonical: 'allowed.txt',
+      checkedAbsolute: '/ws/allowed.txt',
+    })
+    const read = vi.spyOn(t.deps.files, 'readFile').mockImplementation((fsPath) =>
+      Promise.resolve({
+        bytes: new TextEncoder().encode(
+          fsPath === '/ws/picked.txt' ? 'PRIVATE_MARKER' : 'SAFE_MARKER',
+        ),
+        isPdf: false,
+      }),
+    )
+    t.setPicked([{ name: 'picked.txt', fsPath: '/ws/picked.txt', relativePath: 'picked.txt' }])
+    await t.controller.handle({ type: 'pickFile' })
+    expect(read).toHaveBeenCalledWith('/ws/allowed.txt', expect.any(Number), '/ws/allowed.txt')
+    await t.send('text-file', 'Explain this', ['att-1'])
+    const turn = t.server.requestsFor('turn/start')[0]
+    if (turn?.params === undefined) {
+      throw new Error('expected text attachment turn')
+    }
+    const input = JSON.stringify(turn.params['input'])
+    expect(input).toContain('SAFE_MARKER')
+    expect(input).not.toContain('PRIVATE_MARKER')
+  })
+
+  it('refuses an indexed text picker read after its checked parent becomes a junction', async () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'muse-picked-proof-'))
+    try {
+      const workspace = path.join(root, 'ws')
+      const allowed = path.join(workspace, 'allowed')
+      const outside = path.join(root, 'outside')
+      const picked = path.join(allowed, 'note.txt')
+      await mkdir(allowed, { recursive: true })
+      await mkdir(outside)
+      await writeFile(picked, 'safe text')
+      await writeFile(path.join(outside, 'note.txt'), 'private sentinel')
+      const t = setup({ workspaceRoot: workspace, indexed: ['allowed/note.txt'] })
+      vi.spyOn(t.deps.files, 'canonicalRelativePath').mockImplementation(async (fsPath) => {
+        const result = await confineWorkspacePath(workspace, fsPath, process.platform, {
+          realPath: canonicalPath,
+        })
+        return result.ok
+          ? { canonical: result.canonical, checkedAbsolute: result.checkedAbsolute }
+          : undefined
+      })
+      vi.spyOn(t.deps.mentions, 'contains').mockImplementation(async () => {
+        await rename(allowed, path.join(workspace, 'moved'))
+        await symlink(outside, allowed, process.platform === 'win32' ? 'junction' : 'dir')
+        return true
+      })
+      vi.spyOn(t.deps.files, 'readFile').mockImplementation(readPickedFile)
+      t.setPicked([{ name: 'note.txt', fsPath: picked, relativePath: 'allowed/note.txt' }])
+      await t.controller.handle({ type: 'pickFile' })
+      expect(t.surface.posted).toEqual([
+        { type: 'attachmentRejected', name: 'note.txt', reason: UI_TEXT.attachmentUnreadable },
+      ])
+    } finally {
+      await removeFolder(root)
+    }
+  })
+
+  it.each(['modelApi', 'museCode'] as const)(
+    'sniffs a 20 MiB PDF named like an image before %s picker admission',
+    async (backend) => {
+      const root = mkdtempSync(path.join(tmpdir(), 'muse-picked-pdf-image-name-'))
+      try {
+        const file = path.join(root, 'report.png')
+        const largePdf = await writeTwentyMiBPdf(file)
+        const t = setup()
+        const controller = backend === 'modelApi' ? modelApiController(t).controller : t.controller
+        vi.spyOn(t.deps.files, 'readFile').mockImplementation(readPickedFile)
+        t.setPicked([{ name: 'report.png', fsPath: file, relativePath: undefined }])
+        await controller.handle({ type: 'pickFile' })
+        expect(t.surface.posted).toContainEqual(
+          backend === 'modelApi'
+            ? expect.objectContaining({
+                type: 'attachmentAdded',
+                attachment: expect.objectContaining({
+                  mediaType: 'application/pdf',
+                  sizeBytes: largePdf.length,
+                }),
+              })
+            : { type: 'attachmentRejected', name: 'report.png', reason: UI_TEXT.pdfNeedsModelApi },
+        )
+      } finally {
+        await removeFolder(root)
+      }
+    },
+  )
+
+  it('keeps indexed text proof and detects a PDF named like text before the 1 MiB cap', async () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'muse-picked-pdf-text-name-'))
+    try {
+      const file = path.join(root, 'report.txt')
+      await writeTwentyMiBPdf(file)
+      const t = setup({ workspaceRoot: root, indexed: ['report.txt'] })
+      const { controller } = modelApiController(t, { workspaceRoot: root })
+      vi.spyOn(t.deps.files, 'canonicalRelativePath').mockImplementation(async (fsPath) => {
+        const result = await confineWorkspacePath(root, fsPath, process.platform, {
+          realPath: canonicalPath,
+        })
+        return result.ok
+          ? { canonical: result.canonical, checkedAbsolute: result.checkedAbsolute }
+          : undefined
+      })
+      const read = vi.spyOn(t.deps.files, 'readFile').mockImplementation(readPickedFile)
+      t.setPicked([{ name: 'report.txt', fsPath: file, relativePath: 'report.txt' }])
+      await controller.handle({ type: 'pickFile' })
+      const checkedFile = await canonicalPath(file)
+      expect(read).toHaveBeenCalledWith(checkedFile, expect.any(Number), checkedFile)
+      expect(t.surface.posted).toContainEqual(
+        expect.objectContaining({
+          type: 'attachmentAdded',
+          attachment: expect.objectContaining({ mediaType: 'application/pdf' }),
+        }),
+      )
+    } finally {
+      await removeFolder(root)
+    }
+  })
+
+  it.each(['modelApi', 'museCode'] as const)(
+    'applies PDF policy to an unindexed outside-workspace .txt on %s',
+    async (backend) => {
+      const root = mkdtempSync(path.join(tmpdir(), 'muse-picked-pdf-outside-text-'))
+      try {
+        const file = path.join(root, 'report.txt')
+        await writeTwentyMiBPdf(file)
+        const t = setup({ indexed: [] })
+        const controller = backend === 'modelApi' ? modelApiController(t).controller : t.controller
+        const read = vi.spyOn(t.deps.files, 'readFile').mockImplementation(readPickedFile)
+        t.setPicked([{ name: 'report.txt', fsPath: file, relativePath: undefined }])
+        await controller.handle({ type: 'pickFile' })
+        expect(read).toHaveBeenCalledWith(file, 0)
+        expect(t.surface.posted).toContainEqual(
+          backend === 'modelApi'
+            ? expect.objectContaining({
+                type: 'attachmentAdded',
+                attachment: expect.objectContaining({ mediaType: 'application/pdf' }),
+              })
+            : { type: 'attachmentRejected', name: 'report.txt', reason: UI_TEXT.pdfNeedsModelApi },
+        )
+      } finally {
+        await removeFolder(root)
+      }
+    },
+  )
+
+  it('preserves the .pdf filename cap and invalid-PDF refusal for non-PDF bytes', async () => {
+    const t = setup()
+    const { controller } = modelApiController(t)
+    const read = vi.spyOn(t.deps.files, 'readFile').mockResolvedValue({
+      bytes: new Uint8Array(MAX_IMAGE_BYTES + 1),
+      isPdf: false,
+    })
+    t.setPicked([{ name: 'report.pdf', fsPath: '/tmp/report.pdf', relativePath: undefined }])
+    await controller.handle({ type: 'pickFile' })
+    expect(read).toHaveBeenCalledWith('/tmp/report.pdf', MAX_DOCUMENT_BYTES)
+    expect(t.surface.posted).toContainEqual({
+      type: 'attachmentRejected',
+      name: 'report.pdf',
+      reason: UI_TEXT.invalidPdf,
+    })
+    read.mockResolvedValue({ bytes: undefined, isPdf: false })
+    await controller.handle({ type: 'pickFile' })
+    expect(t.surface.posted.at(-1)).toEqual({
+      type: 'attachmentRejected',
+      name: 'report.pdf',
+      reason: UI_TEXT.documentTooLarge,
+    })
+  })
+
+  it('keeps untrusted ordinary text as a mention after a header-only PDF probe', async () => {
+    const t = setup({ isWorkspaceTrusted: false, indexed: ['src/a.ts'] })
+    const read = vi.spyOn(t.deps.files, 'readFile')
+    t.setPicked([{ name: 'a.ts', fsPath: '/ws/src/a.ts', relativePath: 'src/a.ts' }])
+    await t.controller.handle({ type: 'pickFile' })
+    expect(t.surface.posted).toEqual([{ type: 'insertText', text: '@src/a.ts ' }])
+    expect(read).toHaveBeenCalledWith('/ws/src/a.ts', 0)
+  })
+
+  it('refuses a picked binary type without reading its bytes', async () => {
+    const t = setup()
+    const read = vi.spyOn(t.deps.files, 'readFile')
+    t.setPicked([{ name: 'draft.docx', fsPath: '/ws/draft.docx', relativePath: 'draft.docx' }])
+    await t.controller.handle({ type: 'pickFile' })
+    expect(t.surface.posted).toEqual([
+      { type: 'attachmentRejected', name: 'draft.docx', reason: UI_TEXT.binaryFileUnsupported },
+    ])
+    expect(read).not.toHaveBeenCalled()
+  })
+
   it('rejects unsupported image data with the reason', async () => {
     const t = setup()
     await t.controller.handle({
@@ -1050,6 +1339,393 @@ describe('ConversationController: context', () => {
         reason: 'Only PNG, JPEG, GIF and WebP images can be attached.',
       },
     ])
+  })
+
+  it('does not add a pasted image after its host lookup outlives New Conversation', async () => {
+    const gate = Promise.withResolvers<undefined>()
+    let shouldHold = false
+    const t = setup({ beforeEnsureHost: () => (shouldHold ? gate.promise : Promise.resolve()) })
+    shouldHold = true
+    const attaching = t.controller.handle({
+      type: 'attachImageData',
+      name: 'old.png',
+      mediaType: 'image/png',
+      base64: Buffer.from(PNG).toString('base64'),
+      requestId: 'old-paste',
+    })
+    await Promise.resolve()
+    await t.controller.handle({ type: 'clearConversation' })
+    gate.resolve(undefined)
+    await attaching
+    expect(t.surface.posted).not.toContainEqual(
+      expect.objectContaining({ type: 'attachmentAdded', requestId: 'old-paste' }),
+    )
+  })
+
+  it('ignores an old composer generation delivered after New Conversation', async () => {
+    const t = setup()
+    await t.controller.handle({ type: 'clearConversation', attachmentEpoch: 1 })
+    await t.controller.handle({
+      type: 'attachImageData',
+      name: 'late.png',
+      mediaType: 'image/png',
+      base64: Buffer.from(PNG).toString('base64'),
+      requestId: 'late-paste',
+      attachmentEpoch: 0,
+    })
+    expect(t.surface.posted).not.toContainEqual(
+      expect.objectContaining({ type: 'attachmentAdded', requestId: 'late-paste' }),
+    )
+  })
+
+  it.each(['resumeSession', 'forkSession'] as const)(
+    'rejects an old browser upload while %s waits for the backend',
+    async (action) => {
+      const gate = Promise.withResolvers<undefined>()
+      let shouldHoldNextLookup = false
+      const t = withHistory({
+        beforeEnsureHost: () => {
+          if (shouldHoldNextLookup) {
+            shouldHoldNextLookup = false
+            return gate.promise
+          }
+          return Promise.resolve()
+        },
+      })
+      await completeFirstTurn(t)
+      shouldHoldNextLookup = true
+      const changing = t.controller.handle(
+        action === 'resumeSession'
+          ? { type: action, sessionId: 'old', attachmentEpoch: 1 }
+          : { type: action, lastTurnId: 't1', attachmentEpoch: 1 },
+      )
+      await Promise.resolve()
+      await t.controller.handle({
+        type: 'attachImageData',
+        name: 'stale.png',
+        mediaType: 'image/png',
+        base64: Buffer.from(PNG).toString('base64'),
+        requestId: 'stale-upload',
+        attachmentEpoch: 0,
+      })
+      gate.resolve(undefined)
+      await changing
+      expect(t.surface.posted).not.toContainEqual(
+        expect.objectContaining({ type: 'attachmentAdded', requestId: 'stale-upload' }),
+      )
+    },
+  )
+
+  it('rejects a late browser upload after fork drops the source but before History loads', async () => {
+    const t = withHistory()
+    await completeFirstTurn(t)
+    const held = holdNextModelList(t)
+    const changing = t.controller.handle({
+      type: 'forkSession',
+      lastTurnId: 't1',
+      attachmentEpoch: 1,
+    })
+    await held.waitBeforeHistory()
+    await t.controller.handle({
+      type: 'attachImageData',
+      name: 'late.png',
+      mediaType: 'image/png',
+      base64: Buffer.from(PNG).toString('base64'),
+      requestId: 'late-upload',
+      attachmentEpoch: 0,
+    })
+    held.release()
+    await changing
+    expect(t.surface.posted).not.toContainEqual(
+      expect.objectContaining({ type: 'attachmentAdded', requestId: 'late-upload' }),
+    )
+    await t.controller.handle({
+      type: 'attachImageData',
+      name: 'fresh.png',
+      mediaType: 'image/png',
+      base64: Buffer.from(PNG).toString('base64'),
+      requestId: 'fresh-upload',
+      attachmentEpoch: 1,
+    })
+    expect(t.surface.posted).toContainEqual(
+      expect.objectContaining({ type: 'attachmentAdded', requestId: 'fresh-upload' }),
+    )
+  })
+
+  it('uses a restored panel epoch before accepting browser uploads', async () => {
+    const t = setup()
+    t.controller.surfaceReady(4)
+    await t.controller.handle({
+      type: 'attachImageData',
+      name: 'previous.png',
+      mediaType: 'image/png',
+      base64: Buffer.from(PNG).toString('base64'),
+      requestId: 'previous-upload',
+      attachmentEpoch: 3,
+    })
+    expect(t.surface.posted).not.toContainEqual(
+      expect.objectContaining({ type: 'attachmentAdded', requestId: 'previous-upload' }),
+    )
+    await t.controller.handle({
+      type: 'attachImageData',
+      name: 'current.png',
+      mediaType: 'image/png',
+      base64: Buffer.from(PNG).toString('base64'),
+      requestId: 'current-upload',
+      attachmentEpoch: 4,
+    })
+    expect(t.surface.posted).toContainEqual(
+      expect.objectContaining({ type: 'attachmentAdded', requestId: 'current-upload' }),
+    )
+  })
+
+  it.each(['resumeSession', 'forkSession'] as const)(
+    'does not lower the upload guard for stale ready during %s',
+    async (action) => {
+      const uploadGate = Promise.withResolvers<undefined>()
+      const actionGate = Promise.withResolvers<undefined>()
+      let shouldHoldLookups = false
+      let heldLookups = 0
+      const t = withHistory({
+        beforeEnsureHost: () => {
+          if (!shouldHoldLookups) {
+            return Promise.resolve()
+          }
+          heldLookups += 1
+          return heldLookups === 1 ? uploadGate.promise : actionGate.promise
+        },
+      })
+      await completeFirstTurn(t)
+      shouldHoldLookups = true
+      const uploading = t.controller.handle({
+        type: 'attachImageData',
+        name: 'held-old.png',
+        mediaType: 'image/png',
+        base64: Buffer.from(PNG).toString('base64'),
+        requestId: 'held-old-upload',
+        attachmentEpoch: 0,
+      })
+      await vi.waitFor(() => {
+        expect(heldLookups).toBe(1)
+      })
+      const changing = t.controller.handle(
+        action === 'resumeSession'
+          ? { type: action, sessionId: 'old', attachmentEpoch: 1 }
+          : { type: action, lastTurnId: 't1', attachmentEpoch: 1 },
+      )
+      await vi.waitFor(() => {
+        expect(heldLookups).toBe(2)
+      })
+      t.controller.surfaceReady(0)
+      uploadGate.resolve(undefined)
+      await uploading
+      actionGate.resolve(undefined)
+      await changing
+      expect(t.surface.posted).not.toContainEqual(
+        expect.objectContaining({ type: 'attachmentAdded', requestId: 'held-old-upload' }),
+      )
+      expect(t.surface.posted).toContainEqual(
+        expect.objectContaining({ type: 'surfaceState', attachmentEpoch: 1 }),
+      )
+      shouldHoldLookups = false
+      await t.controller.handle({
+        type: 'attachImageData',
+        name: 'fresh-after-ready.png',
+        mediaType: 'image/png',
+        base64: Buffer.from(PNG).toString('base64'),
+        requestId: 'fresh-after-ready',
+        attachmentEpoch: 1,
+      })
+      expect(t.surface.posted).toContainEqual(
+        expect.objectContaining({ type: 'attachmentAdded', requestId: 'fresh-after-ready' }),
+      )
+    },
+  )
+
+  it.each(['restoreSession', 'restoreRecentSession'] as const)(
+    'rejects an old browser upload after host-driven %s drops the session',
+    async (action) => {
+      const t = withHistory({ isRestorable: true, lastSession: { sessionId: 'old', at: NOW } })
+      t.controller.surfaceReady(0)
+      await settle()
+      const held = holdNextModelList(t)
+      const restoring =
+        action === 'restoreSession'
+          ? t.controller.restoreSession('old')
+          : t.controller.restoreRecentSession()
+      await held.waitBeforeHistory()
+      await t.controller.handle({
+        type: 'attachImageData',
+        name: 'pre-restore.png',
+        mediaType: 'image/png',
+        base64: Buffer.from(PNG).toString('base64'),
+        requestId: 'pre-restore',
+        attachmentEpoch: 0,
+      })
+      held.release()
+      await restoring
+      expect(t.surface.posted).not.toContainEqual(
+        expect.objectContaining({ type: 'attachmentAdded', requestId: 'pre-restore' }),
+      )
+      expect(t.surface.posted).toContainEqual(
+        expect.objectContaining({ type: 'surfaceState', attachmentEpoch: 1 }),
+      )
+      await t.controller.handle({
+        type: 'attachImageData',
+        name: 'post-restore.png',
+        mediaType: 'image/png',
+        base64: Buffer.from(PNG).toString('base64'),
+        requestId: 'post-restore',
+        attachmentEpoch: 1,
+      })
+      expect(t.surface.posted).toContainEqual(
+        expect.objectContaining({ type: 'attachmentAdded', requestId: 'post-restore' }),
+      )
+    },
+  )
+
+  it('syncs the upload epoch when host-driven restore fails before History', async () => {
+    const t = withHistory()
+    t.controller.surfaceReady(0)
+    await settle()
+    t.server.handle('session/resume', () => {
+      throw new Error('offline')
+    })
+    await t.controller.restoreSession('old')
+    expect(t.surface.posted).toContainEqual(
+      expect.objectContaining({ type: 'surfaceState', attachmentEpoch: 1 }),
+    )
+    expect(t.surface.posted.some((message) => message.type === 'historyLoaded')).toBe(false)
+    await t.controller.handle({
+      type: 'attachImageData',
+      name: 'after-failed-restore.png',
+      mediaType: 'image/png',
+      base64: Buffer.from(PNG).toString('base64'),
+      requestId: 'after-failed-restore',
+      attachmentEpoch: 1,
+    })
+    expect(t.surface.posted).toContainEqual(
+      expect.objectContaining({ type: 'attachmentAdded', requestId: 'after-failed-restore' }),
+    )
+  })
+
+  it('settles a browser file request when the backend cannot be reached', async () => {
+    const t = setup({ beforeEnsureHost: () => Promise.reject(new Error('offline')) })
+    await t.controller.handle({
+      type: 'attachImageData',
+      name: 'offline.png',
+      mediaType: 'image/png',
+      base64: Buffer.from(PNG).toString('base64'),
+      requestId: 'offline-paste',
+    })
+    expect(t.surface.posted).toContainEqual({
+      type: 'attachmentRejected',
+      name: 'offline.png',
+      reason: UI_TEXT.attachmentUnreadable,
+      requestId: 'offline-paste',
+    })
+  })
+
+  it.each(['clearConversation', 'signOut'] as const)(
+    'does not attach a native-picked file from a dialog that outlived %s',
+    async (action) => {
+      const t = setup()
+      const dialog = Promise.withResolvers<readonly PickedFile[]>()
+      vi.spyOn(t.deps.files, 'showOpenDialog').mockReturnValue(dialog.promise)
+      const picking = t.controller.handle({ type: 'pickFile' })
+      await t.controller.handle({ type: action })
+      dialog.resolve([
+        { name: 'old.png', fsPath: '/ws/old.png', relativePath: 'old.png' },
+        { name: '.env', fsPath: '/ws/.env', relativePath: '.env' },
+      ])
+      await picking
+      expect(t.surface.posted).not.toContainEqual(
+        expect.objectContaining({
+          type: 'attachmentAdded',
+          attachment: expect.objectContaining({ name: 'old.png' }),
+        }),
+      )
+      expect(t.surface.posted).not.toContainEqual(
+        expect.objectContaining({ type: 'attachmentRejected', name: '.env' }),
+      )
+    },
+  )
+
+  it('does not attach a native-picked file read after clear', async () => {
+    const t = setup()
+    t.setPicked([{ name: 'old.png', fsPath: '/ws/old.png', relativePath: 'old.png' }])
+    const readGate = Promise.withResolvers<{
+      readonly bytes: Uint8Array
+      readonly isPdf: boolean
+    }>()
+    const read = vi.spyOn(t.deps.files, 'readFile').mockReturnValue(readGate.promise)
+    const picking = t.controller.handle({ type: 'pickFile' })
+    await vi.waitFor(() => {
+      expect(read).toHaveBeenCalledOnce()
+    })
+    await t.controller.handle({ type: 'clearConversation' })
+    readGate.resolve({ bytes: PNG, isPdf: false })
+    await picking
+    expect(t.surface.posted).not.toContainEqual(
+      expect.objectContaining({
+        type: 'attachmentAdded',
+        attachment: expect.objectContaining({ name: 'old.png' }),
+      }),
+    )
+  })
+
+  it('does not continue a text picker after canonical validation outlives clear', async () => {
+    const t = pickedTextFixture()
+    const gate = Promise.withResolvers<{ canonical: string; checkedAbsolute: string }>()
+    const check = vi.spyOn(t.deps.files, 'canonicalRelativePath').mockReturnValue(gate.promise)
+    const { picking } = await heldPickerAt(t, () => {
+      expect(check).toHaveBeenCalledOnce()
+    })
+    await t.controller.handle({ type: 'clearConversation' })
+    gate.resolve({ canonical: 'a.ts', checkedAbsolute: '/ws/a.ts' })
+    await picking
+    expect(t.surface.posted).not.toContainEqual(
+      expect.objectContaining({ type: 'attachmentAdded' }),
+    )
+    expect(t.surface.posted).not.toContainEqual(expect.objectContaining({ type: 'insertText' }))
+  })
+
+  it('does not insert a stale path mention after the index lookup outlives clear', async () => {
+    const t = pickedTextFixture()
+    const gate = Promise.withResolvers<boolean>()
+    const check = vi.spyOn(t.deps.mentions, 'contains').mockReturnValue(gate.promise)
+    const { picking } = await heldPickerAt(t, () => {
+      expect(check).toHaveBeenCalledOnce()
+    })
+    await t.controller.handle({ type: 'clearConversation' })
+    gate.resolve(false)
+    await picking
+    expect(t.surface.posted).not.toContainEqual(expect.objectContaining({ type: 'insertText' }))
+  })
+
+  it('does not insert a native mention choice after New Conversation', async () => {
+    const t = setup()
+    const gate = Promise.withResolvers<string>()
+    vi.spyOn(t.deps.files, 'pickMentionFile').mockReturnValue(gate.promise)
+    const picking = t.controller.handle({ type: 'pickMentionFile' })
+    await t.controller.handle({ type: 'clearConversation' })
+    gate.resolve('src/old.ts')
+    await picking
+    expect(t.surface.posted).not.toContainEqual(expect.objectContaining({ type: 'insertText' }))
+  })
+
+  it('refuses a PDF on Muse Code before turn/start can receive an unsupported part', async () => {
+    const t = setup()
+    await t.controller.handle({
+      type: 'attachImageData',
+      name: 'report.pdf',
+      mediaType: 'application/pdf',
+      base64: Buffer.from('%PDF-1.4').toString('base64'),
+    })
+    expect(t.surface.posted).toEqual([
+      { type: 'attachmentRejected', name: 'report.pdf', reason: UI_TEXT.pdfNeedsModelApi },
+    ])
+    expect(t.server.requestsFor('turn/start')).toEqual([])
   })
 
   it('removes attachments and drops the parts from later sends', async () => {
@@ -1728,6 +2404,14 @@ function withHistory(
       ...sessionOverrides,
     }),
   )
+  t.server.handle('session/read', (params) =>
+    envelope({
+      ...storedSession,
+      sessionId: params['sessionId'],
+      status: 'idle',
+      ...sessionOverrides,
+    }),
+  )
   t.server.handle('session/fork', () =>
     envelope({ ...storedSession, sessionId: 'forked', forkedFrom: { sessionId: 'old' } }),
   )
@@ -1740,11 +2424,125 @@ function withHistory(
   return t
 }
 
+/** Serve the same trusted user items for resume and a later rewind validation. */
+function serveHistoryItems(
+  t: ReturnType<typeof withHistory>,
+  items: readonly Record<string, unknown>[],
+  mode: 'inline' | 'anchoredSnapshot' = 'inline',
+): void {
+  const loaded = (params: Record<string, unknown>) => ({
+    ...envelope({ ...storedSession, sessionId: params['sessionId'], status: 'idle' }),
+    history:
+      mode === 'inline'
+        ? { mode, items: [...items], snapshot: null }
+        : { mode, items: null, snapshot: { state: { items: [...items] } } },
+  })
+  t.server.handle('session/resume', loaded)
+  t.server.handle('session/read', loaded)
+}
+
+function historyUserItem(itemId: string, turnId: string, text: string) {
+  return { itemId, kind: 'userMessage', status: 'completed', turnId, text }
+}
+
+async function requestRewind(
+  t: ReturnType<typeof withHistory>,
+  card: {
+    readonly itemId: string
+    readonly turnId: string
+    readonly text: string
+    readonly lastTurnId?: string
+    readonly imageCount?: number
+    readonly sourceSessionId?: string
+  },
+): Promise<void> {
+  await t.controller.handle({
+    type: 'rewindConversation',
+    sourceSessionId: card.sourceSessionId ?? 'old',
+    itemId: card.itemId,
+    turnId: card.turnId,
+    text: card.text,
+    imageCount: card.imageCount ?? 0,
+    ...(card.lastTurnId !== undefined && { lastTurnId: card.lastTurnId }),
+  })
+}
+
+async function expectForkBeforeCardAfterT1(
+  t: ReturnType<typeof withHistory>,
+  card: { readonly itemId: string; readonly turnId: string; readonly text: string },
+): Promise<void> {
+  await t.controller.handle({ type: 'resumeSession', sessionId: 'old' })
+  t.surface.posted.length = 0
+  await requestRewind(t, { ...card, lastTurnId: 't1' })
+  expect(t.server.requestsFor('session/fork')[0]?.params).toMatchObject({
+    sessionId: 'old',
+    cutPoint: { lastTurnId: 't1' },
+  })
+  expect(t.surface.posted).toContainEqual({ type: 'restoreDraft', text: card.text })
+}
+
+function expectFileRewindRefused(t: ReturnType<typeof setup>): void {
+  expect(t.surface.posted).not.toContainEqual({ type: 'conversationCleared' })
+  expect(t.surface.posted).not.toContainEqual({ type: 'restoreDraft', text: 'Inspect this file' })
+  expect(t.surface.posted).toContainEqual({
+    type: 'notice',
+    level: 'warning',
+    text: UI_TEXT.attachmentUnreadable,
+  })
+}
+
+function latestAcceptedModelTurn(t: ReturnType<typeof setup>) {
+  const accepted = t.surface.posted.findLast((message) => message.type === 'turnAccepted')
+  const info = t.surface.posted.findLast((message) => message.type === 'sessionInfo')
+  if (accepted?.type !== 'turnAccepted' || info?.type !== 'sessionInfo') {
+    throw new Error('expected live turn acceptance')
+  }
+  return { accepted, info }
+}
+
+async function sendPickedAttachmentTurn(
+  t: ReturnType<typeof setup>,
+  controller: ConversationController,
+  attachmentId: string,
+  localId: string,
+  text: string,
+): Promise<void> {
+  await controller.handle({
+    type: 'sendMessage',
+    localId,
+    text,
+    attachmentIds: [attachmentId],
+  })
+  await vi.waitFor(() => {
+    expect(agentEvents(t).some((event) => event.type === 'turnCompleted')).toBe(true)
+  })
+}
+
 /** One completed source turn for fork and side-chat tests (M53). */
 async function completeFirstTurn(t: ReturnType<typeof withHistory>): Promise<void> {
   await t.send('l1', 'first')
   t.finishTurn()
   await settle()
+}
+
+function holdNextModelList(t: ReturnType<typeof withHistory>) {
+  const gate = Promise.withResolvers<undefined>()
+  const listModels = t.host.listModels.bind(t.host)
+  const listing = vi.spyOn(t.host, 'listModels').mockImplementationOnce(async (sessionId) => {
+    await gate.promise
+    return await listModels(sessionId)
+  })
+  return {
+    waitBeforeHistory: async () => {
+      await vi.waitFor(() => {
+        expect(listing).toHaveBeenCalled()
+      })
+      expect(t.surface.posted.some((message) => message.type === 'historyLoaded')).toBe(false)
+    },
+    release: () => {
+      gate.resolve(undefined)
+    },
+  }
 }
 
 const historyLoaded = {
@@ -2000,39 +2798,238 @@ describe('ConversationController: session history (M6)', () => {
 
   it('rewinds by forking before the chosen turn and restores its draft; the first turn clears (M53)', async () => {
     const t = withHistory()
-    await t.send('l1', 'first')
-    t.finishTurn()
-    await settle()
-    await t.controller.handle({
-      type: 'rewindConversation',
-      sourceSessionId: 's1',
-      itemId: 'u2',
-      turnId: 't2',
-      lastTurnId: 't1',
-      text: 'second',
-      imageCount: 0,
+    const first = historyUserItem('u1', 't1', 'first')
+    const second = { ...first, itemId: 'u2', turnId: 't2', text: 'second' }
+    const loaded = (sessionId: string, items: readonly (typeof first)[]) => ({
+      ...envelope({ ...storedSession, sessionId, status: 'idle' }),
+      history: { mode: 'inline', items: [...items], snapshot: null },
     })
-    expect(t.server.requestsFor('session/fork')[0]?.params).toMatchObject({
-      sessionId: 's1',
-      cutPoint: { lastTurnId: 't1' },
-    })
-    expect(t.surface.posted).toContainEqual({ type: 'restoreDraft', text: 'second' })
-    await t.controller.handle({
-      type: 'rewindConversation',
+    t.server.handle('session/resume', () => loaded('old', [first, second]))
+    t.server.handle('session/read', (params) =>
+      params['sessionId'] === 'forked' ? loaded('forked', [first]) : loaded('old', [first, second]),
+    )
+    t.server.handle('session/fork', () => loaded('forked', [first]))
+    await expectForkBeforeCardAfterT1(t, { itemId: 'u2', turnId: 't2', text: 'second' })
+    t.surface.posted.length = 0
+    await requestRewind(t, {
       sourceSessionId: 'forked',
       itemId: 'u1',
       turnId: 't1',
       text: 'first',
       imageCount: 1,
     })
-    expect(t.surface.posted).toContainEqual({ type: 'conversationCleared' })
-    expect(t.surface.posted).toContainEqual({ type: 'restoreDraft', text: 'first' })
+    expect(t.surface.posted).not.toContainEqual({ type: 'conversationCleared' })
+    expect(t.surface.posted).not.toContainEqual({ type: 'restoreDraft', text: 'first' })
     expect(t.surface.posted).toContainEqual({
       type: 'notice',
       level: 'warning',
       text: UI_TEXT.rewindImagesUnavailable,
     })
   })
+
+  it('refuses a History image rewind with missing replay bytes even when the caller claims zero images', async () => {
+    const t = withHistory()
+    serveHistoryItems(t, [
+      {
+        ...historyUserItem('image-card', 't1', 'Look at this'),
+        attachments: [{ type: 'image', mediaType: 'image/png' }],
+      },
+    ])
+    await t.controller.handle({ type: 'resumeSession', sessionId: 'old' })
+    t.surface.posted.length = 0
+    await requestRewind(t, {
+      itemId: 'image-card',
+      turnId: 't1',
+      text: 'Look at this',
+      imageCount: 0,
+    })
+    expect(t.server.requestsFor('session/fork')).toHaveLength(0)
+    expect(
+      t.surface.posted.filter((message) =>
+        ['conversationCleared', 'restoreDraft', 'notice'].includes(message.type),
+      ),
+    ).toEqual([{ type: 'notice', level: 'warning', text: UI_TEXT.rewindImagesUnavailable }])
+  })
+
+  it.each([
+    { name: 'report.pdf', mediaType: 'application/pdf' },
+    { name: 'notes.txt', mediaType: 'text/plain' },
+  ])(
+    'refuses a forged rewind of a History file card before clearing: $name',
+    async ({ name, mediaType }) => {
+      const t = withHistory()
+      t.server.handle('session/resume', (params) => ({
+        ...envelope({ ...storedSession, sessionId: params['sessionId'], status: 'idle' }),
+        history: {
+          mode: 'inline',
+          items: [
+            {
+              itemId: 'file-card',
+              kind: 'userMessage',
+              status: 'completed',
+              turnId: 't1',
+              text: 'Inspect this file',
+              attachments: [{ type: 'file', mediaType, name, sizeBytes: 9 }],
+            },
+          ],
+          snapshot: null,
+        },
+      }))
+      await t.controller.handle({ type: 'resumeSession', sessionId: 'old' })
+      t.surface.posted.length = 0
+      await t.controller.handle({
+        type: 'rewindConversation',
+        sourceSessionId: 'old',
+        itemId: 'file-card',
+        turnId: 't1',
+        text: 'Inspect this file',
+        imageCount: 1,
+      })
+      expect(t.server.requestsFor('session/fork')).toHaveLength(0)
+      expectFileRewindRefused(t)
+    },
+  )
+
+  it('allows the earlier text card when a later file steer shares its turn', async () => {
+    const t = withHistory()
+    serveHistoryItems(t, [
+      historyUserItem('plain-card', 't1', 'First'),
+      {
+        ...historyUserItem('file-card', 't1', 'Then this file'),
+        attachments: [{ type: 'file', mediaType: 'text/plain', name: 'notes.txt' }],
+      },
+    ])
+    await t.controller.handle({ type: 'resumeSession', sessionId: 'old' })
+    t.surface.posted.length = 0
+    await requestRewind(t, {
+      itemId: 'file-card',
+      turnId: 't1',
+      text: 'Then this file',
+    })
+    expectFileRewindRefused(t)
+    t.surface.posted.length = 0
+    await requestRewind(t, {
+      itemId: 'plain-card',
+      turnId: 't1',
+      text: 'Then this file',
+    })
+    expect(t.surface.posted).not.toContainEqual({ type: 'conversationCleared' })
+    expect(t.surface.posted).toContainEqual({
+      type: 'notice',
+      level: 'warning',
+      text: UI_TEXT.attachmentUnreadable,
+    })
+    t.surface.posted.length = 0
+    await requestRewind(t, {
+      itemId: 'plain-card',
+      turnId: 't1',
+      lastTurnId: 'not-the-prior-turn',
+      text: 'First',
+    })
+    expect(t.server.requestsFor('session/fork')).toHaveLength(0)
+    expect(t.surface.posted).not.toContainEqual({ type: 'conversationCleared' })
+    t.surface.posted.length = 0
+    await requestRewind(t, {
+      itemId: 'plain-card',
+      turnId: 't1',
+      text: 'First',
+    })
+    expect(t.surface.posted).toContainEqual({ type: 'conversationCleared' })
+    expect(t.surface.posted).toContainEqual({ type: 'restoreDraft', text: 'First' })
+  })
+
+  it('rewinds a plain steer after the last preceding distinct turn', async () => {
+    const t = withHistory()
+    serveHistoryItems(t, [
+      historyUserItem('u1', 't1', 'first'),
+      historyUserItem('u2', 't2', 'second'),
+      historyUserItem('u3', 't2', 'steered'),
+    ])
+    await expectForkBeforeCardAfterT1(t, { itemId: 'u3', turnId: 't2', text: 'steered' })
+  })
+
+  it('rewinds a card served from an anchored snapshot with an exact prior cut', async () => {
+    const t = withHistory()
+    serveHistoryItems(
+      t,
+      [historyUserItem('u1', 't1', 'first'), historyUserItem('u2', 't2', 'second')],
+      'anchoredSnapshot',
+    )
+    await expectForkBeforeCardAfterT1(t, { itemId: 'u2', turnId: 't2', text: 'second' })
+  })
+
+  it('refuses a Muse text-file History card restored from its display marker', async () => {
+    const t = withHistory()
+    serveHistoryItems(t, [
+      {
+        ...historyUserItem(
+          'muse-file-card',
+          't1',
+          'Attached text file "notes.txt":\n\nprivate contents',
+        ),
+        displayText: 'Inspect this\n[Muse Spark Code attached text files: ["notes.txt"]]',
+      },
+    ])
+    await t.controller.handle({ type: 'resumeSession', sessionId: 'old' })
+    expect(t.surface.posted).toContainEqual(
+      expect.objectContaining({
+        type: 'historyLoaded',
+        items: [
+          expect.objectContaining({
+            text: 'Inspect this\n[Muse Spark Code attached text files: ["notes.txt"]]',
+            attachments: [{ type: 'file', mediaType: 'text/plain', name: 'notes.txt' }],
+          }),
+        ],
+      }),
+    )
+    t.surface.posted.length = 0
+    await requestRewind(t, {
+      itemId: 'muse-file-card',
+      turnId: 't1',
+      text: 'Inspect this\n[Muse Spark Code attached text files: ["notes.txt"]]',
+    })
+    expectFileRewindRefused(t)
+  })
+
+  it.each([
+    { name: 'report.pdf', bytes: pdfFixture(1) },
+    { name: 'notes.txt', bytes: new TextEncoder().encode('A picked note') },
+  ])(
+    'refuses a forged rewind of a fresh file card before clearing: $name',
+    async ({ name, bytes }) => {
+      const t = setup({ indexed: ['notes.txt'] })
+      const { api, controller } = modelApiController(t)
+      vi.spyOn(t.deps.files, 'readFile').mockResolvedValue({
+        bytes,
+        isPdf: name === 'report.pdf',
+      })
+      t.setPicked([{ name, fsPath: `/ws/${name}`, relativePath: name }])
+      await controller.handle({ type: 'pickFile' })
+      const attachment = t.surface.posted.findLast((message) => message.type === 'attachmentAdded')
+      if (attachment?.type !== 'attachmentAdded') {
+        throw new Error('expected picked file')
+      }
+      api.script({ text: 'File read' })
+      await sendPickedAttachmentTurn(
+        t,
+        controller,
+        attachment.attachment.id,
+        'file-local',
+        'Inspect this file',
+      )
+      const { accepted, info } = latestAcceptedModelTurn(t)
+      t.surface.posted.length = 0
+      await controller.handle({
+        type: 'rewindConversation',
+        sourceSessionId: info.sessionId ?? '',
+        itemId: accepted.userMessageId ?? '',
+        turnId: accepted.turnId,
+        text: 'Inspect this file',
+        imageCount: 1,
+      })
+      expectFileRewindRefused(t)
+    },
+  )
 
   it('restores a completed live Model API image before History reload (M53)', async () => {
     const t = setup()
@@ -2048,20 +3045,14 @@ describe('ConversationController: session history (M6)', () => {
       throw new Error('expected attachment')
     }
     api.script({ text: 'I saw the image' })
-    await controller.handle({
-      type: 'sendMessage',
-      localId: 'live-card',
-      text: 'look at this',
-      attachmentIds: [attachment.attachment.id],
-    })
-    await vi.waitFor(() => {
-      expect(agentEvents(t).some((event) => event.type === 'turnCompleted')).toBe(true)
-    })
-    const accepted = t.surface.posted.findLast((message) => message.type === 'turnAccepted')
-    const info = t.surface.posted.findLast((message) => message.type === 'sessionInfo')
-    if (accepted?.type !== 'turnAccepted' || info?.type !== 'sessionInfo') {
-      throw new Error('expected live turn acceptance')
-    }
+    await sendPickedAttachmentTurn(
+      t,
+      controller,
+      attachment.attachment.id,
+      'live-card',
+      'look at this',
+    )
+    const { accepted, info } = latestAcceptedModelTurn(t)
     expect(accepted.userMessageId).toEqual(expect.any(String))
     const attachmentCount = t.surface.posted.filter(
       (message) => message.type === 'attachmentAdded',
@@ -3434,6 +4425,94 @@ describe('ConversationController: permission hardening (D24)', () => {
 })
 
 describe('ConversationController: lifecycle (D25)', () => {
+  it('ignores a turn ack from a dropped session and keeps its image chip', async () => {
+    const t = setup()
+    await attachPng(t)
+    t.server.silence('turn/start')
+    const pending = t.send('late-ack', 'Look here', ['att-1'])
+    await vi.waitFor(() => {
+      expect(t.server.requestsFor('turn/start')).toHaveLength(1)
+    })
+    const request = t.server.requestsFor('turn/start')[0]
+    await t.controller.backendStopping(false)
+    t.server.incoming.push(
+      `${JSON.stringify({
+        jsonrpc: '2.0',
+        id: request?.id,
+        result: {
+          turnId: 't1',
+          status: 'accepted',
+          commandId: request?.params?.['commandId'],
+        },
+      })}\n`,
+    )
+    await pending
+    expect(t.surface.posted).not.toContainEqual(
+      expect.objectContaining({ type: 'turnAccepted', localId: 'late-ack' }),
+    )
+    expect(t.surface.posted).toContainEqual(
+      expect.objectContaining({ type: 'sendFailed', localId: 'late-ack', attachmentsKept: true }),
+    )
+    const before = t.surface.posted.filter((message) => message.type === 'attachmentAdded').length
+    t.controller.surfaceReady()
+    expect(t.surface.posted.filter((message) => message.type === 'attachmentAdded')).toHaveLength(
+      before + 1,
+    )
+  })
+
+  it('does not submit an old Model API send after autosave spans a backend switch', async () => {
+    const t = setup({ isAutosaveEnabled: true })
+    const { api, host: modelHost } = modelApiController(t)
+    let selectedHost: AgentHost = modelHost
+    const controller = new ConversationController({
+      ...t.deps,
+      ensureHost: () => Promise.resolve(selectedHost),
+    })
+    await attachPng({ controller })
+    const added = t.surface.posted.findLast((message) => message.type === 'attachmentAdded')
+    if (added?.type !== 'attachmentAdded') {
+      throw new Error('expected image chip')
+    }
+    const saving = Promise.withResolvers<undefined>()
+    t.saveAll.mockImplementationOnce(() => saving.promise)
+    api.script({ text: 'stale paid answer' })
+    const pending = controller.handle({
+      type: 'sendMessage',
+      localId: 'old-paid-send',
+      text: 'Look at this image',
+      attachmentIds: [added.attachment.id],
+    })
+    await vi.waitFor(() => {
+      expect(t.saveAll).toHaveBeenCalledOnce()
+    })
+    await controller.backendStopping(false)
+    selectedHost = t.host
+    saving.resolve(undefined)
+    await pending
+    await settle()
+    expect(api.responseBodies()).toEqual([])
+    expect(t.surface.posted).not.toContainEqual(
+      expect.objectContaining({ type: 'turnAccepted', localId: 'old-paid-send' }),
+    )
+    expect(t.surface.posted).toContainEqual(
+      expect.objectContaining({
+        type: 'sendFailed',
+        localId: 'old-paid-send',
+        attachmentsKept: true,
+      }),
+    )
+    await controller.handle({
+      type: 'sendMessage',
+      localId: 'fresh-muse-send',
+      text: 'Look at this image',
+      attachmentIds: [added.attachment.id],
+    })
+    expect(t.server.requestsFor('turn/start')).toHaveLength(1)
+    expect(t.surface.posted).toContainEqual(
+      expect.objectContaining({ type: 'turnAccepted', localId: 'fresh-muse-send' }),
+    )
+  })
+
   it('cancels the running turn before a restart and resumes the session on the next message', async () => {
     const t = setup()
     await t.send('l1', 'hi')
@@ -3509,6 +4588,50 @@ describe('ConversationController: lifecycle (D25)', () => {
     await t.send('l2', 'again')
     expect(t.server.requestsFor('session/resume')[0]?.params).toMatchObject({ sessionId: 's1' })
     expect(t.surface.posted).toContainEqual({ type: 'turnAccepted', localId: 'l2', turnId: 't2' })
+  })
+
+  it('does not retry a stale send when backend stopping crosses recovery lookup', async () => {
+    const recovery = Promise.withResolvers<undefined>()
+    let isRecoveryHeld = false
+    const t = setup({
+      beforeEnsureHost: () => (isRecoveryHeld ? recovery.promise : Promise.resolve()),
+    })
+    await t.send('first', 'First turn')
+    t.finishTurn()
+    await settle()
+    await attachPng(t)
+    let starts = 0
+    t.server.handle('turn/start', (params) => {
+      starts += 1
+      if (starts === 1) {
+        isRecoveryHeld = true
+        throw Object.assign(new Error('not loaded'), { kind: 'sessionNotLoaded' })
+      }
+      return {
+        turnId: 'retried',
+        status: 'accepted',
+        commandId: params['commandId'],
+      }
+    })
+    t.server.handle('session/resume', () => envelope({ ...storedSession, sessionId: 's1' }))
+    const pending = t.send('stale-recovery', 'Look here', ['att-1'])
+    await vi.waitFor(() => {
+      expect(isRecoveryHeld).toBe(true)
+    })
+    await t.controller.backendStopping(false)
+    recovery.resolve(undefined)
+    await pending
+    expect(starts).toBe(1)
+    expect(t.surface.posted).not.toContainEqual(
+      expect.objectContaining({ type: 'turnAccepted', localId: 'stale-recovery' }),
+    )
+    expect(t.surface.posted).toContainEqual(
+      expect.objectContaining({
+        type: 'sendFailed',
+        localId: 'stale-recovery',
+        attachmentsKept: true,
+      }),
+    )
   })
 
   it('hears the host close this session and resumes it on the next message', async () => {
@@ -3930,6 +5053,7 @@ describe('ConversationController: protocol semantics (D26)', () => {
     t.controller.surfaceReady()
     expect(t.surface.posted[0]).toEqual({
       type: 'surfaceState',
+      attachmentEpoch: 1,
       sessionId: 'old',
       activeTurnId: 'tr',
     })

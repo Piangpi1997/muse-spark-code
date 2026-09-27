@@ -59,9 +59,20 @@ export type PatchSummary = z.infer<typeof patchSummarySchema>
 const userAttachmentSchema = z.object({
   id: z.string(),
   name: z.string(),
+  mediaType: z.optional(z.string()),
   width: z.optional(z.number()),
   height: z.optional(z.number()),
 })
+
+export function hasFileAttachment(
+  attachments: readonly z.infer<typeof userAttachmentSchema>[],
+): boolean {
+  return attachments.some((attachment) =>
+    attachment.mediaType === undefined
+      ? attachment.width === undefined && attachment.height === undefined
+      : !attachment.mediaType.startsWith('image/'),
+  )
+}
 
 const userEntrySchema = z.object({
   kind: z.literal('user'),

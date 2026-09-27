@@ -35,6 +35,7 @@
       "composerShellMode",
       "onboardingShortcuts.shell",
       "onboardingShortcuts.moveToBackground",
+      "pdfLabel",
       "loopItem"
     ],
     "cs": [

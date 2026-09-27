@@ -12,6 +12,7 @@ import { memo, type ReactNode, useDeferredValue, useRef, useState } from 'react'
 import type { CitationSummary, QuestionAnswer } from '../../shared/agentEvents'
 import { UI_TEXT } from '../../shared/constants'
 import { plural } from '../../shared/l10n/text'
+import { hasFileAttachment } from '../state/transcriptEntries'
 import {
   forkCutBefore,
   type OutputPage,
@@ -206,7 +207,7 @@ const UserCard = memo(function UserCard({
           )}
           {entry.attachments.map((attachment) => (
             <li key={attachment.id} className="chip">
-              <ImageIcon />
+              {attachment.width === undefined ? <FileIcon /> : <ImageIcon />}
               <span className="chip-name">{attachment.name}</span>
               {attachment.width === undefined || attachment.height === undefined ? null : (
                 <span className="chip-size">
@@ -601,7 +602,9 @@ function TranscriptList(props: TranscriptProps) {
             onFork={canForkHere ? onFork : undefined}
             onRewind={onRewind}
             onRewindConversation={
-              canForkHere && entry.turnId !== activeTurnId ? onRewindConversation : undefined
+              canForkHere && entry.turnId !== activeTurnId && !hasFileAttachment(entry.attachments)
+                ? onRewindConversation
+                : undefined
             }
             quoteMenu={quoteMenuFor(entry.id)}
           />
