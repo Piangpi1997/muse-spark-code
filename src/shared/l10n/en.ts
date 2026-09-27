@@ -363,6 +363,11 @@ export const EN = {
   pdfNeedsModelApi: 'PDF attachments require the Model API backend.',
   invalidPdf: 'This file is named as a PDF but is not a valid PDF.',
   pdfLabel: 'PDF',
+  // Model API read_file rows. The separate MODEL_TEXT result stays English.
+  toolReadPdf: 'Read PDF `{path}` ({pages}, {bytes} bytes)',
+  toolReadPdfPages: forms({ one: '{count} page', other: '{count} pages' }),
+  toolReadPdfPagesUnknown: 'page count unknown',
+  toolReadImage: 'Read image `{path}` ({mediaType}, {width}×{height}, {bytes} bytes)',
   textFileTooLarge: 'Text files must be 1 MB or smaller.',
   textFileInvalid: 'This file is not valid UTF-8 text.',
   textFilePrivate: 'This private file cannot be attached.',

@@ -433,6 +433,10 @@ export class ConversationController {
   private skills: readonly SkillOption[] | undefined
   private skillsRefresh: Promise<void> | undefined
   private readonly attachments: AttachmentStore
+  /** A clear or session replacement invalidates pending browser file admission. */
+  private attachmentGeneration = 0
+  /** The latest composer generation seen on this surface's file messages. */
+  private webviewAttachmentEpoch = 0
   /** User cards whose file bytes rewind cannot restore across every backend/history path. */
   private readonly fileMessageIds = new Set<string>()
   /** Fresh cards use local IDs until Muse Code serves their durable user item IDs. */
@@ -678,6 +682,7 @@ export class ConversationController {
    * a dropped turn would otherwise run on, unwatched and billed.
    */
   private dropSession(isTurnCancelled = true): void {
+    this.attachmentGeneration += 1
     const { session } = this
     if (isTurnCancelled && session !== undefined && this.activeTurnId !== undefined) {
       void this.cancelQuietly(session)
@@ -2626,6 +2631,7 @@ export class ConversationController {
   }
 
   private clear(): void {
+    this.webviewAttachmentEpoch += 1
     const wasSideChat = this.isSideChat
     this.dropSession()
     this.isSideChat = this.deps.surface.isSideChat === true
@@ -2694,13 +2700,53 @@ export class ConversationController {
     name: string,
     bytes: Uint8Array,
     canAcceptText = false,
+    requestId?: string,
+    requestEpoch?: number,
   ): Promise<void> {
-    const host = await this.deps.ensureHost()
+    const generation = this.attachmentGeneration
+    let host: AgentHost
+    try {
+      host = await this.deps.ensureHost()
+    } catch (error: unknown) {
+      if (
+        this.isDisposed ||
+        generation !== this.attachmentGeneration ||
+        (requestEpoch !== undefined && requestEpoch !== this.webviewAttachmentEpoch)
+      ) {
+        return
+      }
+      if (requestId === undefined) {
+        throw error
+      }
+      this.post({
+        type: 'attachmentRejected',
+        name,
+        reason: UI_TEXT.attachmentUnreadable,
+        requestId,
+      })
+      return
+    }
+    if (
+      this.isDisposed ||
+      generation !== this.attachmentGeneration ||
+      (requestEpoch !== undefined && requestEpoch !== this.webviewAttachmentEpoch)
+    ) {
+      return
+    }
     const result = this.attachments.add(name, bytes, host.info.kind === 'modelApi', canAcceptText)
     if (result.ok) {
-      this.post({ type: 'attachmentAdded', attachment: result.attachment })
+      this.post({
+        type: 'attachmentAdded',
+        attachment: result.attachment,
+        ...(requestId !== undefined && { requestId }),
+      })
     } else {
-      this.post({ type: 'attachmentRejected', name, reason: result.reason })
+      this.post({
+        type: 'attachmentRejected',
+        name,
+        reason: result.reason,
+        ...(requestId !== undefined && { requestId }),
+      })
     }
   }
 
@@ -3239,6 +3285,12 @@ export class ConversationController {
       }
       case 'clearConversation': {
         this.clear()
+        if (message.attachmentEpoch !== undefined) {
+          this.webviewAttachmentEpoch = Math.max(
+            this.webviewAttachmentEpoch,
+            message.attachmentEpoch,
+          )
+        }
         break
       }
       case 'compact': {
@@ -3286,9 +3338,18 @@ export class ConversationController {
         break
       }
       case 'attachImageData': {
+        if (message.attachmentEpoch !== undefined) {
+          if (message.attachmentEpoch < this.webviewAttachmentEpoch) {
+            break
+          }
+          this.webviewAttachmentEpoch = message.attachmentEpoch
+        }
         await this.addAttachment(
           message.name,
           new Uint8Array(Buffer.from(message.base64, 'base64')),
+          false,
+          message.requestId,
+          message.attachmentEpoch,
         )
         break
       }

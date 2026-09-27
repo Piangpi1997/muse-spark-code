@@ -322,6 +322,15 @@
   "pdfNeedsModelApi": "Załączniki PDF wymagają backendu Model API.",
   "invalidPdf": "Ten plik ma nazwę PDF, ale nie jest prawidłowym plikiem PDF.",
   "pdfLabel": "PDF",
+  "toolReadPdf": "Odczytano PDF `{path}` ({pages}, {bytes} B)",
+  "toolReadPdfPages": {
+    "one": "{count} strona",
+    "few": "{count} strony",
+    "many": "{count} stron",
+    "other": "{count} strony"
+  },
+  "toolReadPdfPagesUnknown": "Liczba stron nieznana",
+  "toolReadImage": "Odczytano obraz `{path}` ({mediaType}, {width}×{height}, {bytes} B)",
   "textFileTooLarge": "Pliki tekstowe mogą mieć najwyżej 1 MB.",
   "textFileInvalid": "Ten plik nie zawiera prawidłowego tekstu UTF-8.",
   "textFilePrivate": "Tego prywatnego pliku nie można dołączyć.",

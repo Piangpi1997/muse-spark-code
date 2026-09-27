@@ -170,9 +170,28 @@ describe('App shell', () => {
     fireEvent.keyDown(textarea(), { key: 'Enter' })
     expect(screen.getByText('hello')).toBeInTheDocument()
     fireEvent.click(screen.getByLabelText('New conversation'))
-    expect(postMessage).toHaveBeenLastCalledWith({ type: 'clearConversation' })
+    expect(postMessage).toHaveBeenLastCalledWith(
+      expect.objectContaining({ type: 'clearConversation' }),
+    )
     expect(screen.queryByText('hello')).toBeNull()
     expect(screen.getByText(init.emptyStateHint)).toBeInTheDocument()
+  })
+
+  it('does not attach a deferred pasted PDF after New Conversation clears its source', async () => {
+    const postMessage = renderReady()
+    const pdf = new File([Uint8Array.from([1])], 'stale.pdf', { type: 'application/pdf' })
+    const heldRead = Promise.withResolvers<ArrayBuffer>()
+    vi.spyOn(pdf, 'arrayBuffer').mockImplementation(() => heldRead.promise)
+    fireEvent.paste(textarea(), { clipboardData: { files: [pdf] } })
+    fireEvent.click(screen.getByLabelText('New conversation'))
+    heldRead.resolve(Uint8Array.from([1]).buffer)
+    await act(async () => {
+      await heldRead.promise
+      await Promise.resolve()
+    })
+    expect(postMessage).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'attachImageData', name: 'stale.pdf' }),
+    )
   })
 
   it('inserts host-provided text at the caret', () => {
@@ -816,7 +835,7 @@ describe('App palette', () => {
     const filter = openPalette()
     fireEvent.change(filter, { target: { value: 'Clear conversation' } })
     fireEvent.keyDown(filter, { key: 'Enter' })
-    expect(postMessage).toHaveBeenCalledWith({ type: 'clearConversation' })
+    expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({ type: 'clearConversation' }))
     expect(screen.queryByText('hello')).toBeNull()
     expect(screen.getByText(init.emptyStateHint)).toBeInTheDocument()
   })
@@ -1022,7 +1041,9 @@ describe('App session history (M6)', () => {
     // Before the first message there is nothing to keep: a new conversation.
     fireEvent.click(menus[0]!)
     fireEvent.click(screen.getByRole('menuitem', { name: 'Fork conversation from here' }))
-    expect(postMessage).toHaveBeenLastCalledWith({ type: 'clearConversation' })
+    expect(postMessage).toHaveBeenLastCalledWith(
+      expect.objectContaining({ type: 'clearConversation' }),
+    )
     expect(screen.queryByText('first')).toBeNull()
   })
 
@@ -1682,7 +1703,7 @@ describe('App webview and UI state (M25)', () => {
     fireEvent.click(screen.getByLabelText('New conversation'))
     fireEvent.change(textarea(), { target: { value: 'second' } })
     fireEvent.keyDown(textarea(), { key: 'Enter' })
-    expect(postMessage).toHaveBeenCalledWith({ type: 'clearConversation' })
+    expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({ type: 'clearConversation' }))
     deliver({ type: 'conversationCleared' })
     expect(screen.getByText('second')).toBeInTheDocument()
     // Ctrl+N from VS Code: only the host's clear arrives.

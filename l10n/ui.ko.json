@@ -307,6 +307,12 @@
   "pdfNeedsModelApi": "PDF 첨부에는 Model API 백엔드가 필요합니다.",
   "invalidPdf": "이 파일은 PDF 이름을 사용하지만 유효한 PDF가 아닙니다.",
   "pdfLabel": "PDF",
+  "toolReadPdf": "PDF `{path}` 읽음 ({pages}, {bytes}바이트)",
+  "toolReadPdfPages": {
+    "other": "{count}페이지"
+  },
+  "toolReadPdfPagesUnknown": "페이지 수 알 수 없음",
+  "toolReadImage": "이미지 `{path}` 읽음 ({mediaType}, {width}×{height}, {bytes}바이트)",
   "textFileTooLarge": "텍스트 파일은 1MB 이하여야 합니다.",
   "textFileInvalid": "이 파일은 유효한 UTF-8 텍스트가 아닙니다.",
   "textFilePrivate": "이 비공개 파일은 첨부할 수 없습니다.",

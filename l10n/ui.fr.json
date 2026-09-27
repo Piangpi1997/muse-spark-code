@@ -317,6 +317,14 @@
   "pdfNeedsModelApi": "Les pièces jointes PDF nécessitent le backend Model API.",
   "invalidPdf": "Ce fichier porte un nom PDF, mais n’est pas un PDF valide.",
   "pdfLabel": "PDF",
+  "toolReadPdf": "PDF `{path}` lu ({pages}, {bytes} octets)",
+  "toolReadPdfPages": {
+    "one": "{count} page lue",
+    "many": "{count} pages lues",
+    "other": "{count} pages lues"
+  },
+  "toolReadPdfPagesUnknown": "Nombre de pages inconnu",
+  "toolReadImage": "Image `{path}` lue ({mediaType}, {width}×{height}, {bytes} octets)",
   "textFileTooLarge": "Les fichiers texte ne doivent pas dépasser 1 Mo.",
   "textFileInvalid": "Ce fichier n’est pas un texte UTF-8 valide.",
   "textFilePrivate": "Ce fichier privé ne peut pas être joint.",

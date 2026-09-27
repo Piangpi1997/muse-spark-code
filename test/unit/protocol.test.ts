@@ -17,6 +17,7 @@ describe('parseWebviewToHostMessage', () => {
     ['setThinking', { type: 'setThinking', enabled: false }],
     ['setPermissionMode', { type: 'setPermissionMode', mode: 'plan' }],
     ['clearConversation', { type: 'clearConversation' }],
+    ['clearConversation epoch', { type: 'clearConversation', attachmentEpoch: 2 }],
     ['compact', { type: 'compact' }],
     ['listSkills', { type: 'listSkills' }],
     ['searchMentions', { type: 'searchMentions', requestId: 3, query: 'app' }],
@@ -29,6 +30,17 @@ describe('parseWebviewToHostMessage', () => {
     [
       'PDF attachment data',
       { type: 'attachImageData', name: 'report.pdf', mediaType: 'application/pdf', base64: 'AAAA' },
+    ],
+    [
+      'browser attachment request',
+      {
+        type: 'attachImageData',
+        name: 'report.pdf',
+        mediaType: 'application/pdf',
+        base64: 'AAAA',
+        requestId: 'upload-1',
+        attachmentEpoch: 2,
+      },
     ],
     ['removeAttachment', { type: 'removeAttachment', id: 'att-1' }],
     ['droppedUris', { type: 'droppedUris', uris: ['file:///a.ts'] }],
@@ -221,6 +233,10 @@ describe('parseHostToWebviewMessage', () => {
       },
     ],
     ['attachmentRejected', { type: 'attachmentRejected', name: 'a.pdf', reason: 'no' }],
+    [
+      'attachmentRejected request',
+      { type: 'attachmentRejected', name: 'a.pdf', reason: 'no', requestId: 'upload-1' },
+    ],
     ['attachmentsCleared', { type: 'attachmentsCleared' }],
     ['notice', { type: 'notice', level: 'warning', text: 'careful' }],
   ])('accepts %s', (_label, message) => {

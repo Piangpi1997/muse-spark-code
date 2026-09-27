@@ -307,6 +307,12 @@
   "pdfNeedsModelApi": "附加 PDF 需要使用 Model API 後端。",
   "invalidPdf": "此檔案名稱為 PDF，但不是有效的 PDF 檔案。",
   "pdfLabel": "PDF",
+  "toolReadPdf": "已讀取 PDF `{path}`（{pages}，{bytes} 位元組）",
+  "toolReadPdfPages": {
+    "other": "{count} 頁"
+  },
+  "toolReadPdfPagesUnknown": "頁數未知",
+  "toolReadImage": "已讀取圖片 `{path}`（{mediaType}，{width}×{height}，{bytes} 位元組）",
   "textFileTooLarge": "文字檔案不得超過 1 MB。",
   "textFileInvalid": "此檔案不是有效的 UTF-8 文字。",
   "textFilePrivate": "無法附加此私人檔案。",

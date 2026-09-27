@@ -451,6 +451,17 @@ describe('uiReducer: composer state', () => {
     expect(uiReducer(added, host({ type: 'attachmentsCleared' })).attachments).toEqual([])
   })
 
+  it('records both same-name host refusal IDs and invalidates them on clear', () => {
+    const state = reduceAll([
+      host({ type: 'attachmentRejected', name: 'same.png', reason: 'unsupported', requestId: 'a' }),
+      host({ type: 'attachmentRejected', name: 'same.png', reason: 'unsupported', requestId: 'b' }),
+    ])
+    expect(state.attachmentSettlements).toEqual(['a', 'b'])
+    const cleared = uiReducer(state, { type: 'conversationCleared' })
+    expect(cleared.attachmentSettlements).toEqual([])
+    expect(cleared.attachmentEpoch).toBe(state.attachmentEpoch + 1)
+  })
+
   it('keeps the latest mention results and queues inserts and focus requests', () => {
     const state = reduceAll([
       host({ type: 'mentionResults', requestId: 1, items: [{ path: 'a.ts', isFolder: false }] }),

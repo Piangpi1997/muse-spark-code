@@ -39,6 +39,7 @@ import {
   TOOL_OUTPUT_CLIP_MARKER,
   TOOL_OUTPUT_ELIDED_MARKER,
   TOOL_OUTPUT_MAX_CHARS,
+  UI_TEXT,
 } from '../../../shared/constants'
 import {
   ADD_MARKER,
@@ -47,7 +48,7 @@ import {
   type PatchHunk,
   REMOVE_MARKER,
 } from '../../../shared/patchDocument'
-import { fill } from '../../../shared/l10n/text'
+import { fill, formatNumber, plural } from '../../../shared/l10n/text'
 import type { DocumentPart, ImagePart } from '../../agent/agentBackend'
 import { readImageInfo } from '../../imageDimensions'
 import { isPdf, pdfPageCount } from '../../pdf'
@@ -819,7 +820,7 @@ function pdfOutcome(relative: string, bytes: Uint8Array): ToolOutcome {
     return failure(`${relative} ${MODEL_TEXT.notPdf}`)
   }
   const pageCount = pdfPageCount(bytes)
-  const text = fill(MODEL_TEXT.readPdf, {
+  const output = fill(MODEL_TEXT.readPdf, {
     path: relative,
     pages:
       pageCount === undefined
@@ -827,9 +828,18 @@ function pdfOutcome(relative: string, bytes: Uint8Array): ToolOutcome {
         : fill(MODEL_TEXT.pagesKnown, { count: String(pageCount) }),
     bytes: String(bytes.byteLength),
   })
+  const visiblePages =
+    pageCount === undefined
+      ? UI_TEXT.toolReadPdfPagesUnknown
+      : plural(UI_TEXT.toolReadPdfPages, pageCount, { count: formatNumber(pageCount) })
+  const visibleOutput = fill(UI_TEXT.toolReadPdf, {
+    path: relative,
+    pages: visiblePages,
+    bytes: formatNumber(bytes.byteLength),
+  })
   return {
-    output: text,
-    visibleOutput: text,
+    output,
+    visibleOutput,
     visibleFile: {
       path: relative,
       part: {
@@ -850,16 +860,23 @@ function imageOutcome(relative: string, bytes: Uint8Array): ToolOutcome {
   if (info === undefined) {
     return failure(`${relative} ${MODEL_TEXT.notImage}`)
   }
-  const text = fill(MODEL_TEXT.readImage, {
+  const output = fill(MODEL_TEXT.readImage, {
     path: relative,
     mediaType: info.mediaType,
     width: String(info.width),
     height: String(info.height),
     bytes: String(bytes.byteLength),
   })
+  const visibleOutput = fill(UI_TEXT.toolReadImage, {
+    path: relative,
+    mediaType: info.mediaType,
+    width: formatNumber(info.width),
+    height: formatNumber(info.height),
+    bytes: formatNumber(bytes.byteLength),
+  })
   return {
-    output: text,
-    visibleOutput: text,
+    output,
+    visibleOutput,
     visibleFile: {
       path: relative,
       part: {

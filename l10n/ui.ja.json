@@ -307,6 +307,12 @@
   "pdfNeedsModelApi": "PDF の添付には Model API バックエンドが必要です。",
   "invalidPdf": "このファイルは PDF という名前ですが、有効な PDF ではありません。",
   "pdfLabel": "PDF",
+  "toolReadPdf": "PDF `{path}` を読み込みました（{pages}、{bytes} バイト）",
+  "toolReadPdfPages": {
+    "other": "{count} ページ"
+  },
+  "toolReadPdfPagesUnknown": "ページ数は不明",
+  "toolReadImage": "画像 `{path}` を読み込みました（{mediaType}、{width}×{height}、{bytes} バイト）",
   "textFileTooLarge": "テキストファイルは 1 MB 以下である必要があります。",
   "textFileInvalid": "このファイルは有効な UTF-8 テキストではありません。",
   "textFilePrivate": "この非公開ファイルは添付できません。",

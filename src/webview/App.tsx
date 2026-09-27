@@ -240,6 +240,7 @@ export function App({
   const bodyRef = useRef<HTMLElement>(null)
   const [isPinnedToEnd, setIsPinnedToEnd] = useState(true)
   const nextGoalRequestId = useRef(0)
+  const nextAttachmentRequestId = useRef(0)
   const isPinnedRef = useRef(isPinnedToEnd)
   const [seenTranscript, setSeenTranscript] = useState(state.transcript)
   const hasNewBelow =
@@ -328,8 +329,8 @@ export function App({
   // The host echoes the clear back; the reducer spends that echo (M25).
   const onNewConversation = useCallback(() => {
     dispatch({ type: 'conversationCleared' })
-    postMessage({ type: 'clearConversation' })
-  }, [dispatch, postMessage])
+    postMessage({ type: 'clearConversation', attachmentEpoch: store.getState().attachmentEpoch })
+  }, [dispatch, postMessage, store])
   // The session goal's verbs (M45, PLAN.md D38): the strip's buttons and `/goal …`.
   const onGoalCommand = useCallback(
     (verb: GoalCommandVerb, objective?: string, source?: 'composer' | 'inline') => {
@@ -865,9 +866,13 @@ export function App({
   )
   const onAttachImage = useCallback(
     (image: ImageData) => {
-      postMessage({ type: 'attachImageData', ...image })
+      const { attachmentEpoch, ...data } = image
+      if (attachmentEpoch !== store.getState().attachmentEpoch) {
+        return
+      }
+      postMessage({ type: 'attachImageData', ...data, attachmentEpoch })
     },
-    [postMessage],
+    [store, postMessage],
   )
   const onDroppedUris = useCallback(
     (uris: readonly string[]) => {
@@ -1474,6 +1479,11 @@ export function App({
           focusRequests={state.focusRequests}
           pendingInsert={state.pendingInsert}
           attachments={state.attachments}
+          attachmentEpoch={state.attachmentEpoch}
+          attachmentSettlements={state.attachmentSettlements}
+          newAttachmentRequestId={() =>
+            `attachment:${newLocalId()}:${String(++nextAttachmentRequestId.current)}`
+          }
           mentionResults={state.mentionResults}
           editorContextLabel={
             editorContext === undefined ? undefined : editorContextLabel(editorContext)

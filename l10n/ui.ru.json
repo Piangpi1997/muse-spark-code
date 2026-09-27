@@ -322,6 +322,15 @@
   "pdfNeedsModelApi": "Для вложений PDF требуется серверная часть Model API.",
   "invalidPdf": "Этот файл назван PDF, но не является допустимым PDF-файлом.",
   "pdfLabel": "PDF",
+  "toolReadPdf": "Прочитан PDF `{path}` ({pages}, {bytes} байт)",
+  "toolReadPdfPages": {
+    "one": "{count} страница",
+    "few": "{count} страницы",
+    "many": "{count} страниц",
+    "other": "{count} страницы"
+  },
+  "toolReadPdfPagesUnknown": "Количество страниц неизвестно",
+  "toolReadImage": "Прочитано изображение `{path}` ({mediaType}, {width}×{height}, {bytes} байт)",
   "textFileTooLarge": "Текстовые файлы должны быть не больше 1 МБ.",
   "textFileInvalid": "Этот файл не содержит допустимый текст UTF-8.",
   "textFilePrivate": "Этот частный файл нельзя прикрепить.",

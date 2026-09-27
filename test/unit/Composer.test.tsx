@@ -62,6 +62,7 @@ const clock = { now: 1_000_000 }
 
 function renderComposer(overrides: Partial<ComposerProps> = {}) {
   clock.now = 1_000_000
+  let nextAttachmentRequestId = 0
   const props: ComposerProps = {
     draft: '',
     placeholder: 'type here',
@@ -77,6 +78,9 @@ function renderComposer(overrides: Partial<ComposerProps> = {}) {
     focusRequests: 0,
     pendingInsert: undefined,
     attachments: [],
+    attachmentEpoch: 0,
+    attachmentSettlements: [],
+    newAttachmentRequestId: () => `test-attachment-${String(++nextAttachmentRequestId)}`,
     mentionResults: undefined,
     editorContextLabel: undefined,
     referenceLabel: undefined,
@@ -114,6 +118,12 @@ function renderComposer(overrides: Partial<ComposerProps> = {}) {
   const view = render(<Composer {...props} />)
   const textarea = screen.getByLabelText<HTMLTextAreaElement>('Message Muse')
   return { props, view, textarea }
+}
+
+function largePdf(name: string): File {
+  const file = new File([Uint8Array.from([1])], name, { type: 'application/pdf' })
+  Object.defineProperty(file, 'size', { value: MAX_DOCUMENT_BYTES })
+  return file
 }
 
 /**
@@ -341,11 +351,157 @@ describe('Composer attachments', () => {
       name: 'report.pdf',
       mediaType: 'application/pdf',
       base64: Buffer.from('%PDF-1.4').toString('base64'),
+      requestId: expect.any(String),
+      attachmentEpoch: 0,
     })
     const huge = new File([new Uint8Array([1])], 'huge.pdf', { type: 'application/pdf' })
     Object.defineProperty(huge, 'size', { value: MAX_DOCUMENT_BYTES + 1 })
     fireEvent.paste(textarea, { clipboardData: { files: [huge] } })
     expect(props.onRefuseFile).toHaveBeenCalledWith('huge.pdf', UI_TEXT.documentTooLarge)
+  })
+
+  it('refuses aggregate PDF paste and drop before reading rejected bytes', async () => {
+    const { props, textarea } = renderComposer()
+    const first = new File([Uint8Array.from([1])], 'first.pdf', { type: 'application/pdf' })
+    const second = new File([Uint8Array.from([2])], 'second.pdf', { type: 'application/pdf' })
+    const third = new File([Uint8Array.from([3])], 'third.pdf', { type: 'application/pdf' })
+    const fourth = new File([Uint8Array.from([4])], 'fourth.pdf', { type: 'application/pdf' })
+    for (const file of [first, second, third, fourth]) {
+      Object.defineProperty(file, 'size', { value: MAX_DOCUMENT_BYTES })
+    }
+    const heldRead = Promise.withResolvers<ArrayBuffer>()
+    vi.spyOn(first, 'arrayBuffer').mockImplementation(() => heldRead.promise)
+    const secondRead = vi.spyOn(second, 'arrayBuffer')
+    const thirdRead = vi.spyOn(third, 'arrayBuffer')
+    fireEvent.paste(textarea, { clipboardData: { files: [first, second] } })
+    fireEvent.drop(screen.getByRole('contentinfo'), {
+      dataTransfer: { files: [third], getData: () => '' },
+    })
+    expect(secondRead).not.toHaveBeenCalled()
+    expect(thirdRead).not.toHaveBeenCalled()
+    expect(props.onRefuseFile).toHaveBeenCalledWith('second.pdf', UI_TEXT.mediaTotalTooLarge)
+    expect(props.onRefuseFile).toHaveBeenCalledWith('third.pdf', UI_TEXT.mediaTotalTooLarge)
+    heldRead.resolve(Uint8Array.from([1]).buffer)
+    await act(async () => {
+      await heldRead.promise
+      await Promise.resolve()
+    })
+    const fourthRead = vi.spyOn(fourth, 'arrayBuffer')
+    fireEvent.paste(textarea, { clipboardData: { files: [fourth] } })
+    expect(fourthRead).not.toHaveBeenCalled()
+    expect(props.onRefuseFile).toHaveBeenCalledWith('fourth.pdf', UI_TEXT.mediaTotalTooLarge)
+  })
+
+  it('reads only the admitted PDF from a twenty-file paste', async () => {
+    const { props, textarea } = renderComposer()
+    const files = Array.from({ length: MAX_ATTACHMENTS_PER_MESSAGE }, (_, index) => {
+      const file = new File([Uint8Array.from([index])], `report-${String(index)}.pdf`, {
+        type: 'application/pdf',
+      })
+      Object.defineProperty(file, 'size', { value: MAX_DOCUMENT_BYTES })
+      return file
+    })
+    const rejectedReads = files.slice(1).map((file) => vi.spyOn(file, 'arrayBuffer'))
+    fireEvent.paste(textarea, { clipboardData: { files } })
+    expect(rejectedReads.every((read) => read.mock.calls.length === 0)).toBe(true)
+    expect(props.onRefuseFile).toHaveBeenCalledTimes(MAX_ATTACHMENTS_PER_MESSAGE - 1)
+    await act(async () => {
+      await Promise.resolve()
+    })
+    expect(props.onAttachImage).toHaveBeenCalledTimes(1)
+  })
+
+  it('counts an existing PDF before reading another pasted PDF', () => {
+    const { props, textarea } = renderComposer({
+      attachments: [
+        {
+          id: 'prior-pdf',
+          name: 'prior.pdf',
+          mediaType: 'application/pdf',
+          sizeBytes: MAX_DOCUMENT_BYTES,
+          pageCount: 1,
+        },
+      ],
+    })
+    const next = new File([Uint8Array.from([1])], 'next.pdf', { type: 'application/pdf' })
+    Object.defineProperty(next, 'size', { value: MAX_DOCUMENT_BYTES })
+    const read = vi.spyOn(next, 'arrayBuffer')
+    fireEvent.paste(textarea, { clipboardData: { files: [next] } })
+    expect(read).not.toHaveBeenCalled()
+    expect(props.onRefuseFile).toHaveBeenCalledWith('next.pdf', UI_TEXT.mediaTotalTooLarge)
+  })
+
+  it('releases a posted media reservation after the host refuses the file', async () => {
+    const { props, view, textarea } = renderComposer()
+    const first = new File([Uint8Array.from([1])], 'first.pdf', { type: 'application/pdf' })
+    Object.defineProperty(first, 'size', { value: MAX_DOCUMENT_BYTES })
+    fireEvent.paste(textarea, { clipboardData: { files: [first] } })
+    await act(async () => {
+      await Promise.resolve()
+    })
+    expect(props.onAttachImage).toHaveBeenCalledTimes(1)
+    const firstRequest = vi.mocked(props.onAttachImage).mock.calls[0]?.[0]
+    if (firstRequest === undefined) {
+      throw new Error('expected browser attachment request')
+    }
+    view.rerender(
+      <Composer
+        {...props}
+        banner="first.pdf: unsupported"
+        attachmentSettlements={[firstRequest.requestId]}
+      />,
+    )
+    const next = new File([Uint8Array.from([2])], 'next.pdf', { type: 'application/pdf' })
+    Object.defineProperty(next, 'size', { value: MAX_DOCUMENT_BYTES })
+    fireEvent.paste(textarea, { clipboardData: { files: [next] } })
+    await act(async () => {
+      await Promise.resolve()
+    })
+    expect(props.onAttachImage).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not release a posted file when a same-name paste is refused locally', async () => {
+    const { props, view, textarea } = renderComposer()
+    fireEvent.paste(textarea, { clipboardData: { files: [largePdf('same.pdf')] } })
+    await act(async () => {
+      await Promise.resolve()
+    })
+    const refused = largePdf('same.pdf')
+    const refusedRead = vi.spyOn(refused, 'arrayBuffer')
+    fireEvent.paste(textarea, { clipboardData: { files: [refused] } })
+    expect(refusedRead).not.toHaveBeenCalled()
+    view.rerender(<Composer {...props} banner={`same.pdf: ${UI_TEXT.mediaTotalTooLarge}`} />)
+    const third = largePdf('third.pdf')
+    const thirdRead = vi.spyOn(third, 'arrayBuffer')
+    fireEvent.paste(textarea, { clipboardData: { files: [third] } })
+    expect(thirdRead).not.toHaveBeenCalled()
+  })
+
+  it('releases both same-name reservations when their host refusals share a banner', async () => {
+    const { props, view, textarea } = renderComposer()
+    const image = () => {
+      const file = new File([Uint8Array.from([1])], 'same.png', { type: 'image/png' })
+      Object.defineProperty(file, 'size', { value: MAX_IMAGE_BYTES })
+      return file
+    }
+    fireEvent.paste(textarea, { clipboardData: { files: [image(), image()] } })
+    await act(async () => {
+      await Promise.resolve()
+    })
+    const requests = vi.mocked(props.onAttachImage).mock.calls.map(([data]) => data.requestId)
+    expect(requests).toHaveLength(2)
+    view.rerender(
+      <Composer {...props} banner="same.png: unsupported" attachmentSettlements={requests} />,
+    )
+    const next = new File([Uint8Array.from([2])], 'next.pdf', { type: 'application/pdf' })
+    Object.defineProperty(next, 'size', { value: MAX_DOCUMENT_BYTES })
+    const read = vi.spyOn(next, 'arrayBuffer')
+    fireEvent.paste(textarea, { clipboardData: { files: [next] } })
+    expect(read).toHaveBeenCalledOnce()
+    await act(async () => {
+      await Promise.resolve()
+    })
+    expect(props.onAttachImage).toHaveBeenCalledTimes(3)
   })
 
   it('attaches pasted images and lets text pastes through', async () => {
@@ -360,6 +516,8 @@ describe('Composer attachments', () => {
       name: 'clip.png',
       mediaType: 'image/png',
       base64: 'AQID',
+      requestId: expect.any(String),
+      attachmentEpoch: 0,
     })
     expect(fireEvent.paste(textarea, { clipboardData: { files: [] } })).toBe(true)
   })
@@ -381,6 +539,8 @@ describe('Composer attachments', () => {
       name: 'pasted-image',
       mediaType: 'image/jpeg',
       base64: 'CQ==',
+      requestId: expect.any(String),
+      attachmentEpoch: 0,
     })
     expect(props.onDroppedUris).toHaveBeenCalledWith(['file:///ws/src/a.ts'])
   })

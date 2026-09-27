@@ -312,6 +312,13 @@
   "pdfNeedsModelApi": "PDF ekleri için Model API arka ucu gerekir.",
   "invalidPdf": "Bu dosyanın adı PDF olarak görünüyor ancak geçerli bir PDF değil.",
   "pdfLabel": "PDF",
+  "toolReadPdf": "PDF `{path}` okundu ({pages}, {bytes} bayt)",
+  "toolReadPdfPages": {
+    "one": "{count} sayfa",
+    "other": "{count} sayfa"
+  },
+  "toolReadPdfPagesUnknown": "Sayfa sayısı bilinmiyor",
+  "toolReadImage": "Görüntü `{path}` okundu ({mediaType}, {width}×{height}, {bytes} bayt)",
   "textFileTooLarge": "Metin dosyaları en fazla 1 MB olmalıdır.",
   "textFileInvalid": "Bu dosya geçerli UTF-8 metni değil.",
   "textFilePrivate": "Bu özel dosya eklenemez.",

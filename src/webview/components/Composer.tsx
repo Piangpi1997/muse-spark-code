@@ -30,6 +30,9 @@ import {
 } from 'react'
 import {
   COMPOSER_MAX_ROWS,
+  BASE64_DATA_URL_OVERHEAD_CHARS,
+  BASE64_INPUT_BLOCK_BYTES,
+  BASE64_OUTPUT_BLOCK_CHARS,
   DICTATION_KEY,
   type DictationAction,
   GOAL_SLASH_COMMAND,
@@ -37,9 +40,11 @@ import {
   IME_PROCESS_KEY,
   MAX_ATTACHMENTS_PER_MESSAGE,
   MAX_DOCUMENT_BYTES,
+  MAX_ENCODED_MEDIA_CHARS,
   MAX_IMAGE_BYTES,
   PDF_EXTENSION,
   PDF_MEDIA_TYPE,
+  TEXT_ATTACHMENT_MEDIA_TYPE,
   type PermissionMode,
   UI_TEXT,
 } from '../../shared/constants'
@@ -77,6 +82,8 @@ export interface ImageData {
   readonly name: string
   readonly mediaType: string
   readonly base64: string
+  readonly requestId: string
+  readonly attachmentEpoch: number
 }
 
 /** What the composer hands the attached palette it asks the parent to render (M38). */
@@ -103,6 +110,9 @@ export interface ComposerProps {
   readonly focusRequests: number
   readonly pendingInsert: string | undefined
   readonly attachments: readonly AttachmentSummary[]
+  readonly attachmentEpoch: number
+  readonly attachmentSettlements: readonly string[]
+  readonly newAttachmentRequestId: () => string
   readonly mentionResults: MentionResults | undefined
   /** The open-file chip ("PLAN.md L5-10"); undefined hides it (M5). */
   readonly editorContextLabel: string | undefined
@@ -226,6 +236,20 @@ function attachableFiles(list: FileList | undefined): readonly File[] {
   )
 }
 
+/** The same conservative data-URL budget the host checks after decoding. */
+function encodedMediaChars(sizeBytes: number, mediaType: string): number {
+  return (
+    BASE64_DATA_URL_OVERHEAD_CHARS +
+    mediaType.length +
+    BASE64_OUTPUT_BLOCK_CHARS * Math.ceil(sizeBytes / BASE64_INPUT_BLOCK_BYTES)
+  )
+}
+
+interface PendingMediaReservation {
+  readonly requestId: string
+  readonly encodedChars: number
+}
+
 /** Ctrl+D (Cmd+D on a Mac): the microphone from the keyboard. */
 function isDictationKey(event: KeyboardEvent<HTMLElement>): boolean {
   return (
@@ -307,6 +331,9 @@ export function Composer(props: ComposerProps) {
     focusRequests,
     pendingInsert,
     attachments,
+    attachmentEpoch,
+    attachmentSettlements,
+    newAttachmentRequestId,
     mentionResults,
     editorContextLabel,
     referenceLabel,
@@ -341,6 +368,21 @@ export function Composer(props: ComposerProps) {
     onSlashMenuOpen,
   } = props
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  /** Admission stays reserved until the host echoes acceptance or a refusal. */
+  const pendingFiles = useRef<PendingMediaReservation[]>([])
+  const currentAttachmentEpoch = useRef(attachmentEpoch)
+  useLayoutEffect(() => {
+    currentAttachmentEpoch.current = attachmentEpoch
+    pendingFiles.current = []
+    return () => {
+      currentAttachmentEpoch.current = -1
+      pendingFiles.current = []
+    }
+  }, [attachmentEpoch])
+  useEffect(() => {
+    const settled = new Set(attachmentSettlements)
+    pendingFiles.current = pendingFiles.current.filter((pending) => !settled.has(pending.requestId))
+  }, [attachmentSettlements])
   const [caret, setCaret] = useState(0)
   const [mentionIndex, setMentionIndex] = useState(0)
   const [dismissedMention, setDismissedMention] = useState<number | undefined>(undefined)
@@ -705,7 +747,16 @@ export function Composer(props: ComposerProps) {
   }
 
   const attachFiles = (files: readonly File[]) => {
-    let count = attachments.length
+    let count = attachments.length + pendingFiles.current.length
+    let mediaChars =
+      attachments.reduce(
+        (total, attachment) =>
+          total +
+          (attachment.mediaType === TEXT_ATTACHMENT_MEDIA_TYPE
+            ? 0
+            : encodedMediaChars(attachment.sizeBytes, attachment.mediaType)),
+        0,
+      ) + pendingFiles.current.reduce((total, pending) => total + pending.encodedChars, 0)
     for (const file of files) {
       const name = file.name === '' ? PASTED_IMAGE_NAME : file.name
       const isDocument = file.type === PDF_MEDIA_TYPE || name.toLowerCase().endsWith(PDF_EXTENSION)
@@ -717,12 +768,37 @@ export function Composer(props: ComposerProps) {
         onRefuseFile(name, UI_TEXT.attachmentLimit)
         continue
       }
+      const mediaType = isDocument ? PDF_MEDIA_TYPE : file.type
+      const estimate = encodedMediaChars(file.size, mediaType)
+      if (mediaChars + estimate > MAX_ENCODED_MEDIA_CHARS) {
+        onRefuseFile(name, UI_TEXT.mediaTotalTooLarge)
+        continue
+      }
       count += 1
+      mediaChars += estimate
+      const requestId = newAttachmentRequestId()
+      const admittedEpoch = attachmentEpoch
+      const reservation: PendingMediaReservation = {
+        requestId,
+        encodedChars: estimate,
+      }
+      pendingFiles.current.push(reservation)
       void blobToBase64(file)
         .then((base64) => {
-          onAttachImage({ name, mediaType: file.type, base64 })
+          if (currentAttachmentEpoch.current !== admittedEpoch) {
+            pendingFiles.current = pendingFiles.current.filter((pending) => pending !== reservation)
+            return
+          }
+          onAttachImage({
+            name,
+            mediaType: file.type,
+            base64,
+            requestId,
+            attachmentEpoch: admittedEpoch,
+          })
         })
         .catch((error: unknown) => {
+          pendingFiles.current = pendingFiles.current.filter((pending) => pending !== reservation)
           onRefuseFile(name, UI_TEXT.attachmentUnreadable)
           // Unhandled on purpose: the page reports it to the log (M39).
           throw error

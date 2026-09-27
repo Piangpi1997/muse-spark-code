@@ -20,6 +20,7 @@ import {
   type DictationUiStatus,
   type EffortLevel,
   HIDDEN_ITEM_KINDS,
+  MAX_ATTACHMENTS_PER_MESSAGE,
   MILLISECONDS_PER_SECOND,
   type PermissionMode,
   type TaskRequest,
@@ -181,6 +182,10 @@ export interface UiState {
   readonly isThinkingEnabled: boolean
   readonly permissionMode: PermissionMode
   readonly attachments: readonly AttachmentSummary[]
+  /** Invalidates browser reads when the composer changes conversations or clears. */
+  readonly attachmentEpoch: number
+  /** Recent host replies to browser attachment attempts, bounded to outstanding capacity. */
+  readonly attachmentSettlements: readonly string[]
   readonly mentionResults: MentionResults | undefined
   readonly transcript: readonly TranscriptEntry[]
   readonly activeTurnId: string | undefined
@@ -326,6 +331,8 @@ export const initialUiState: UiState = {
   isThinkingEnabled: true,
   permissionMode: 'manual',
   attachments: [],
+  attachmentEpoch: 0,
+  attachmentSettlements: [],
   mentionResults: undefined,
   transcript: [],
   activeTurnId: undefined,
@@ -381,6 +388,13 @@ function isStatedRefusal(reason: string): boolean {
 /** A record's own value for `key`; never one of `Object.prototype`'s members. */
 function own<T>(record: Readonly<Record<string, T>>, key: string): T | undefined {
   return Object.hasOwn(record, key) ? record[key] : undefined
+}
+
+function settledAttachmentRequest(
+  ids: readonly string[],
+  requestId: string | undefined,
+): readonly string[] {
+  return requestId === undefined ? ids : [...ids, requestId].slice(-MAX_ATTACHMENTS_PER_MESSAGE * 2)
 }
 
 /** The record without `key`. */
@@ -1527,6 +1541,8 @@ function applyAgentEvent(state: UiState, event: AgentEvent, at: number): UiState
 function clearedConversation(state: UiState): UiState {
   return {
     ...state,
+    attachmentEpoch: state.attachmentEpoch + 1,
+    attachmentSettlements: [],
     pendingGoalCommand: undefined,
     goalEdit: undefined,
     childTranscripts: {},
@@ -1805,6 +1821,8 @@ function applyHostMessage(state: UiState, message: HostToWebviewMessage, at: num
       return announce(
         {
           ...state,
+          attachmentEpoch: isSameSession ? state.attachmentEpoch : state.attachmentEpoch + 1,
+          attachmentSettlements: isSameSession ? state.attachmentSettlements : [],
           isSideChat: message.sideChat ?? state.isSideChat,
           sessionId: message.sessionId,
           restoredSessionId: undefined,
@@ -1934,15 +1952,33 @@ function applyHostMessage(state: UiState, message: HostToWebviewMessage, at: num
     }
     case 'attachmentAdded': {
       const others = state.attachments.filter((entry) => entry.id !== message.attachment.id)
-      return { ...state, attachments: [...others, message.attachment] }
+      return {
+        ...state,
+        attachments: [...others, message.attachment],
+        attachmentSettlements: settledAttachmentRequest(
+          state.attachmentSettlements,
+          message.requestId,
+        ),
+      }
     }
     case 'attachmentRejected': {
       // The composer banner (M14), as Claude Code shows it; the reason the
       // host gave is read out.
-      return withBanner(state, message.name, message.reason)
+      return {
+        ...withBanner(state, message.name, message.reason),
+        attachmentSettlements: settledAttachmentRequest(
+          state.attachmentSettlements,
+          message.requestId,
+        ),
+      }
     }
     case 'attachmentsCleared': {
-      return { ...state, attachments: [] }
+      return {
+        ...state,
+        attachments: [],
+        attachmentEpoch: state.attachmentEpoch + 1,
+        attachmentSettlements: [],
+      }
     }
     case 'notice': {
       // Warnings and errors are read out; informational notices stay visual.

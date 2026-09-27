@@ -237,7 +237,7 @@ const webviewToHostMessageSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('setThinking'), enabled: z.boolean() }),
   z.object({ type: z.literal('setPermissionMode'), mode: z.enum(PERMISSION_MODES) }),
   // "/clear": forget this surface's session; the next send starts a new one.
-  z.object({ type: z.literal('clearConversation') }),
+  z.object({ type: z.literal('clearConversation'), attachmentEpoch: z.optional(z.number()) }),
   // "/compact": ask the host to summarise older context.
   z.object({ type: z.literal('compact') }),
   // The session goal (M45, PLAN.md D38): `/goal …` in the prompt or the goal
@@ -275,6 +275,8 @@ const webviewToHostMessageSchema = z.discriminatedUnion('type', [
     name: z.string(),
     mediaType: z.string(),
     base64: z.string().check(z.maxLength(MAX_ATTACHMENT_BASE64_CHARS)),
+    requestId: z.optional(z.string()),
+    attachmentEpoch: z.optional(z.number()),
   }),
   z.object({ type: z.literal('removeAttachment'), id: z.string() }),
   // Editor resources dropped onto the composer (`text/uri-list`).
@@ -549,8 +551,17 @@ const hostToWebviewMessageSchema = z.discriminatedUnion('type', [
     requestId: z.number(),
     items: z.array(mentionItemSchema),
   }),
-  z.object({ type: z.literal('attachmentAdded'), attachment: attachmentSchema }),
-  z.object({ type: z.literal('attachmentRejected'), name: z.string(), reason: z.string() }),
+  z.object({
+    type: z.literal('attachmentAdded'),
+    attachment: attachmentSchema,
+    requestId: z.optional(z.string()),
+  }),
+  z.object({
+    type: z.literal('attachmentRejected'),
+    name: z.string(),
+    reason: z.string(),
+    requestId: z.optional(z.string()),
+  }),
   z.object({ type: z.literal('attachmentsCleared') }),
   // A one-line message for the transcript (failed host command, warnings).
   z.object({ type: z.literal('notice'), level: z.enum(NOTICE_LEVELS), text: z.string() }),

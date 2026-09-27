@@ -591,13 +591,16 @@ panel cannot present an authoritative native job list or direct cancel.
   image and PDF reads use the checked canonical workspace target if a link
   changes after confinement. Combined image
   and PDF data URLs are capped at 48 million encoded characters per message;
-  an excess attachment is refused. Replayed requests use the same cap and
+  an excess pasted or dropped attachment is refused before the browser reads
+  and encodes it. Replayed requests use the same cap and
   keep newer media, announcing when older media is omitted from the request.
   A PDF whose page tree cannot be counted without ambiguity reserves all 50
   image slots, including when comments or escaped names obscure its count.
   The original attachments remain in local history. A batch of Model API
   `read_file` tool calls uses the same media cap; a file over that batch cap
-  gets a failed tool result before its bytes are retained.
+  gets a failed tool result before its bytes are retained. PDF and image
+  tool rows use the installed panel language and number format; the model
+  receives its English result.
 - A path with a space, `#` or `"` is written in quotes,
   `@"my notes/a b.md"#5-10`, and the menu searches what you type after `@"`.
 - The model pill reads `model effort` (effort tiers Minimal to Max, each

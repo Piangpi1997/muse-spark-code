@@ -321,6 +321,16 @@ while they are (PLAN.md D30, D34).
 
 ### Fixed
 
+- **Bounded paste and drop admission (M54).** The composer checks the shared
+  encoded-media limit against existing and pending files before reading a
+  pasted or dropped PDF. Host replies settle only their own request ID;
+  identical filenames cannot release another file's reservation. New
+  Conversation cancels deferred browser reads and host admissions from the
+  old conversation.
+- **Localized file-read rows (M54).** Model API PDF and image `read_file`
+  transcript rows use the installed panel language and grouped page counts,
+  byte sizes and image dimensions. The function result sent to the model
+  remains English.
 - **Account & usage reset timing (M53 follow-up).** The open modal updates
   its countdown each minute and stops treating an expired report as current.
   It uses Muse Code's reported account-level percentages and reset timestamps

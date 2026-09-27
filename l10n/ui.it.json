@@ -317,6 +317,14 @@
   "pdfNeedsModelApi": "Gli allegati PDF richiedono il backend Model API.",
   "invalidPdf": "Questo file ha un nome PDF, ma non è un PDF valido.",
   "pdfLabel": "PDF",
+  "toolReadPdf": "PDF `{path}` letto ({pages}, {bytes} byte)",
+  "toolReadPdfPages": {
+    "one": "{count} pagina",
+    "many": "{count} pagine",
+    "other": "{count} pagine"
+  },
+  "toolReadPdfPagesUnknown": "Numero di pagine sconosciuto",
+  "toolReadImage": "Immagine `{path}` letta ({mediaType}, {width}×{height}, {bytes} byte)",
   "textFileTooLarge": "I file di testo non devono superare 1 MB.",
   "textFileInvalid": "Questo file non contiene testo UTF-8 valido.",
   "textFilePrivate": "Questo file privato non può essere allegato.",

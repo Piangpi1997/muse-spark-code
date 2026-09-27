@@ -1952,7 +1952,13 @@ tracks the missing MSP feature. We do not send an invented part to Muse Code.
   refused. Binary file types are refused, never decoded as text. The
   Model API `read_file` tool reads UTF-8 text, PDFs and images from confined
   workspace paths. A PDF or image read by that tool travels as a user content
-  part after its function-output round, so the model actually sees it.
+  part after its function-output round, so the model actually sees it. Its
+  function `output` stays English for the model, while the transcript's
+  `visibleOutput` uses the installed `UI_TEXT` language, with page counts,
+  byte sizes and image dimensions formatted in that locale. A known PDF page
+  count takes the language's plural form; an unknown count has its own label.
+  Focused tests check a non-English table and grouped numbers without changing
+  the model-facing text.
 - **Muse Code:** images retain their MSP path. A PDF attachment gets a clear
   refusal naming the Model API backend, including when its extension is
   disguised. A bounded text attachment becomes an MSP text part with the
@@ -4976,7 +4982,7 @@ cards keep the requested relative path, and unsaved-editor checks cover both
 the requested and canonical paths. Link-swap tests must prove the outside
 target is untouched and that an unavailable reservation sends no paid call.
 
-**Status 2026-09-27: M51–M53 merged; M54 PR review fixes gated on two machines.** The
+**Status 2026-09-27: M51–M53 merged; M54 second PR review follow-up underway.** The
 isolated M54 worktree is based on `34002ab`; its pre-M46 50-path staged tree
 is pinned at `refs/codex-backups/m54-pre-m46-20260926`. Focused PDF and
 replay checks passed; the M47-base reconciliation passed 724 focused
@@ -4985,7 +4991,10 @@ localization and lint. M48–M53 are now merged on main. The combined M54 code
 tree `307157a` passed full Windows VM and Mac gates. PR #42 review found
 file-card identity and Muse History-resume gaps, so those gates are a
 checkpoint only. Corrected code tree `6b18a3e` passed full WIN-11-VM and Mac
-gates; its documentation receipt's local quality and hosted PR CI remain open. A compressed
+gates; a later review found aggregate browser-admission and localized
+tool-row gaps, making those gates a checkpoint. Combined code tree `f4b3a3e`
+passed full WIN-11-VM and Mac gates; its documentation receipt's local quality
+and hosted PR CI remain open. A compressed
 or encrypted page tree with
 unknown count still reserves all 50 image slots (D47).
 The raw page-tree inspector also has a fixed candidate limit: excessive
@@ -4999,6 +5008,14 @@ and stop after at most the permitted size plus one byte, even if a workspace
 file grows or its path is replaced between asynchronous operations. The
 picker keeps its existing over-limit refusal and workspace path policy;
 text attachments read the canonical target that passed that policy.
+Paste/drop admission uses each file's byte metadata and existing plus
+in-flight media reservations to enforce the 48-million-character encoded
+budget before `blobToBase64`; a refused second large PDF is never loaded or
+expanded in the webview. Each admitted browser file carries a request ID
+through the host's added/refused result, so only its own reservation is
+released; same-name local refusals cannot release an earlier file. Clearing
+or changing the conversation invalidates pending reads before they can post
+to the new conversation. The host rechecks actual bytes as before.
 An edit or paid image approval binds the canonical target it classified;
 the executing tool must use that target and refuse if a workspace alias
 resolves elsewhere after the card. Paid image sources use the bytes and

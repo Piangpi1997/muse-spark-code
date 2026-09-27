@@ -1163,6 +1163,60 @@ describe('ConversationController: context', () => {
     ])
   })
 
+  it('does not add a pasted image after its host lookup outlives New Conversation', async () => {
+    const gate = Promise.withResolvers<undefined>()
+    let shouldHold = false
+    const t = setup({ beforeEnsureHost: () => (shouldHold ? gate.promise : Promise.resolve()) })
+    shouldHold = true
+    const attaching = t.controller.handle({
+      type: 'attachImageData',
+      name: 'old.png',
+      mediaType: 'image/png',
+      base64: Buffer.from(PNG).toString('base64'),
+      requestId: 'old-paste',
+    })
+    await Promise.resolve()
+    await t.controller.handle({ type: 'clearConversation' })
+    gate.resolve(undefined)
+    await attaching
+    expect(t.surface.posted).not.toContainEqual(
+      expect.objectContaining({ type: 'attachmentAdded', requestId: 'old-paste' }),
+    )
+  })
+
+  it('ignores an old composer generation delivered after New Conversation', async () => {
+    const t = setup()
+    await t.controller.handle({ type: 'clearConversation', attachmentEpoch: 1 })
+    await t.controller.handle({
+      type: 'attachImageData',
+      name: 'late.png',
+      mediaType: 'image/png',
+      base64: Buffer.from(PNG).toString('base64'),
+      requestId: 'late-paste',
+      attachmentEpoch: 0,
+    })
+    expect(t.surface.posted).not.toContainEqual(
+      expect.objectContaining({ type: 'attachmentAdded', requestId: 'late-paste' }),
+    )
+  })
+
+  it('settles a browser file request when the backend cannot be reached', async () => {
+    const t = setup({ beforeEnsureHost: () => Promise.reject(new Error('offline')) })
+    await t.controller.handle({
+      type: 'attachImageData',
+      name: 'offline.png',
+      mediaType: 'image/png',
+      base64: Buffer.from(PNG).toString('base64'),
+      requestId: 'offline-paste',
+    })
+    expect(t.surface.posted).toContainEqual({
+      type: 'attachmentRejected',
+      name: 'offline.png',
+      reason: UI_TEXT.attachmentUnreadable,
+      requestId: 'offline-paste',
+    })
+  })
+
   it('refuses a PDF on Muse Code before turn/start can receive an unsupported part', async () => {
     const t = setup()
     await t.controller.handle({

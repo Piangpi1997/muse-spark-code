@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 import {
   classifyTool,
   confineWorkspacePath,
@@ -10,6 +10,8 @@ import {
   toolDefinitions,
 } from '../../src/core/backends/modelapi/tools'
 import { parsePatchFiles } from '../../src/shared/patchDocument'
+import { EN } from '../../src/shared/l10n/en'
+import { BASE_LOCALE, setUiText } from '../../src/shared/l10n/text'
 import { revertHunks } from '../../src/core/patchApply'
 import {
   MODEL_TEXT,
@@ -189,6 +191,70 @@ describe('read_file: retargeted links (M54)', () => {
       seen: new Map(),
     })
     expect(result.visibleFile?.part.base64Data).toBe(inside.toString('base64'))
+  })
+})
+
+describe('read_file: localized visual summaries (M54)', () => {
+  afterEach(() => {
+    setUiText(EN, BASE_LOCALE)
+  })
+
+  it('keeps PDF function output English while the row translates known and unknown pages', async () => {
+    setUiText(
+      {
+        ...EN,
+        toolReadPdf: 'PDF gelesen: `{path}` ({pages}, {bytes} Byte)',
+        toolReadPdfPages: { one: '{count} Seite', other: '{count} Seiten' },
+        toolReadPdfPagesUnknown: 'Seitenzahl unbekannt',
+      },
+      'de',
+    )
+    const { io, run } = context()
+    const known = Buffer.alloc(12_345, 0x20)
+    known.write('%PDF-1.4\n<< /Type /Pages /Count 1234 >>\n', 0, 'ascii')
+    io.binaries.set('/ws/docs/report.pdf', known)
+
+    const result = await run('read_file', { path: 'docs/report.pdf' })
+    expect(result.output).toBe(
+      'Read PDF `docs/report.pdf` (page count 1234, 12345 bytes). The file itself follows in the next message; you see its text and page images.',
+    )
+    expect(result.visibleOutput).toBe('PDF gelesen: `docs/report.pdf` (1.234 Seiten, 12.345 Byte)')
+    expect(result.visibleFile?.part).toMatchObject({ pageCount: 1234, sizeBytes: 12_345 })
+
+    io.binaries.set('/ws/docs/one.pdf', Buffer.from('%PDF-1.4\n<< /Type /Pages /Count 1 >>'))
+    const singular = await run('read_file', { path: 'docs/one.pdf' })
+    expect(singular.visibleOutput).toContain('1 Seite')
+
+    io.binaries.set('/ws/docs/uncounted.pdf', Buffer.from('%PDF-1.4\nno page tree'))
+    const unknown = await run('read_file', { path: 'docs/uncounted.pdf' })
+    expect(unknown.output).toContain('page count unknown')
+    expect(unknown.visibleOutput).toContain('Seitenzahl unbekannt')
+  })
+
+  it('keeps image function output English while the row groups dimensions and bytes', async () => {
+    setUiText(
+      {
+        ...EN,
+        toolReadImage: 'Bild gelesen: `{path}` ({mediaType}, {width}×{height}, {bytes} Byte)',
+      },
+      'de',
+    )
+    const { io, run } = context()
+    const png = Buffer.alloc(12_345)
+    Buffer.from('89504e470d0a1a0a', 'hex').copy(png)
+    png.write('IHDR', 12, 'ascii')
+    png.writeUInt32BE(1234, 16)
+    png.writeUInt32BE(2345, 20)
+    io.binaries.set('/ws/img/large.png', png)
+
+    const result = await run('read_file', { path: 'img/large.png' })
+    expect(result.output).toBe(
+      'Read image `img/large.png` (image/png, 1234×2345, 12345 bytes). The image itself follows in the next message.',
+    )
+    expect(result.visibleOutput).toBe(
+      'Bild gelesen: `img/large.png` (image/png, 1.234×2.345, 12.345 Byte)',
+    )
+    expect(result.visibleFile?.part).toMatchObject({ width: 1234, height: 2345 })
   })
 })
 

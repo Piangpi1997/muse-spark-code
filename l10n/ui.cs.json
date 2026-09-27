@@ -322,6 +322,15 @@
   "pdfNeedsModelApi": "Přílohy PDF vyžadují backend Model API.",
   "invalidPdf": "Tento soubor má příponu PDF, ale není platným souborem PDF.",
   "pdfLabel": "PDF",
+  "toolReadPdf": "Načten PDF `{path}` ({pages}, {bytes} B)",
+  "toolReadPdfPages": {
+    "one": "{count} stránka",
+    "few": "{count} stránky",
+    "many": "{count} stránek",
+    "other": "{count} stránky"
+  },
+  "toolReadPdfPagesUnknown": "Počet stránek neznámý",
+  "toolReadImage": "Načten obrázek `{path}` ({mediaType}, {width}×{height}, {bytes} B)",
   "textFileTooLarge": "Textové soubory mohou mít nejvýše 1 MB.",
   "textFileInvalid": "Tento soubor není platným textem UTF-8.",
   "textFilePrivate": "Tento soukromý soubor nelze přiložit.",
