@@ -611,7 +611,8 @@ describe('createToolIo (real file system and shell)', () => {
     // start that never saw its stdin end. Hosted Windows runners timed out
     // here twice, once with no output (PR #43) and once with the echo and
     // exit 0 just after the timer (PR #44); 80 local runs of the launch passed.
-    const echo = "process.stderr.write('hook started at '+Date.now());process.stdin.pipe(process.stdout)"
+    const echo =
+      "process.stderr.write('hook started at '+Date.now());process.stdin.pipe(process.stdout)"
     const command =
       process.platform === 'win32'
         ? `"${process.execPath}" -e "${echo}"`
