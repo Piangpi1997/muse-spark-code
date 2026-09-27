@@ -590,7 +590,10 @@ panel cannot present an authoritative native job list or direct cancel.
   shorter excerpt or remove another text attachment. A long conversation may
   still exceed the Model API context limit. Files outside that set
   become `@` path mentions; known binary types and private
-  files are refused.
+  files are refused. A PDF picked under a `.png` or `.txt` name follows its
+  detected PDF header and 32 MB limit; Muse Code gives its PDF refusal.
+  Ordinary unindexed text remains a path mention, and private filenames are
+  refused before any PDF check.
   Images and PDFs also paste and drop. A dismissible banner gives the specific
   size, media, backend, text or private-file refusal; unknown file reasons
   keep generic unsupported-type guidance. Muse Code's MSP 1.3.0 cannot take a PDF part, so a PDF attachment
@@ -610,6 +613,12 @@ panel cannot present an authoritative native job list or direct cancel.
   an excess pasted or dropped attachment is refused before the browser reads
   and encodes it. Replayed requests use the same cap and
   keep newer media, announcing when older media is omitted from the request.
+  Paste/drop checks the first 1 KiB of image-labelled files: a PDF named
+  `.png` or `.txt` uses the 32 MB PDF limit and PDF media type, while a real image over
+  10 MiB is refused without encoding its full bytes. The check is discarded
+  if the conversation changes before it finishes. Plain text clipboard content
+  keeps its normal paste behavior; text-named files without clipboard text are
+  probed and ignored when they are not PDFs. Private names are refused first.
   A PDF whose page tree cannot be counted without ambiguity reserves all 50
   image slots, including when comments, escaped names or indirect `/Count` or
   `/Type` references obscure the real tree beside a visible decoy.

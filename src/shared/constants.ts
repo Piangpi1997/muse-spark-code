@@ -432,6 +432,7 @@ export const MODEL_API_MEDIA_PER_REQUEST = 50
 export const MODEL_API_PDF_PAGE_IMAGES = 50
 // The page count is read from a directly visible PDF page tree when cheap.
 export const PDF_HEADER_WINDOW_BYTES = 1024
+export const PDF_HEADER_SIGNATURE = '%PDF-'
 export const PDF_DICTIONARY_SCAN_CHARS = 4096
 export const PDF_PAGE_TREE_SCAN_LIMIT = 1024
 // A page count past this is a misread, not a document.

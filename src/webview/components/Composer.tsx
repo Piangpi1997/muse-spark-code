@@ -5,8 +5,8 @@
 // button and Send/Stop. The "+" button and the mode button open menus the
 // parent renders above the composer. Keys an input method is composing with
 // (CJK) belong to the composition: Enter commits the candidate, it never
-// sends or picks a mention (M25). An image over the host's limits is refused
-// before it is read, not encoded and posted to be refused (M25).
+// sends or picks a mention (M25). A bounded header read identifies pasted or
+// dropped PDFs before their size cap is chosen; refused media is not encoded.
 //
 // "/" (M38): a prompt that is just `/` shows the palette above the box; one
 // character more turns it into the slash-command list, narrowed as the name
@@ -43,7 +43,11 @@ import {
   MAX_ENCODED_MEDIA_CHARS,
   MAX_IMAGE_BYTES,
   PDF_EXTENSION,
+  PDF_HEADER_WINDOW_BYTES,
   PDF_MEDIA_TYPE,
+  PRIVATE_ATTACHMENT_EXTENSIONS,
+  PRIVATE_ATTACHMENT_NAMES,
+  TEXT_ATTACHMENT_EXTENSIONS,
   TEXT_ATTACHMENT_MEDIA_TYPE,
   type PermissionMode,
   UI_TEXT,
@@ -55,6 +59,7 @@ import {
   slashFilterOf,
 } from '../../shared/mentions'
 import { fill } from '../../shared/l10n/text'
+import { hasPdfHeader } from '../../shared/pdfHeader'
 import { paidFeaturePrice } from '../../shared/paid'
 import type { AttachmentSummary, MentionItem, SettingsSnapshot } from '../../shared/protocol'
 import { rankSlashCommands, type SlashCommand } from '../../shared/slashCommands'
@@ -227,12 +232,28 @@ function keepMenuFocus(event: MouseEvent<HTMLButtonElement>): void {
   event.preventDefault()
 }
 
-function attachableFiles(list: FileList | undefined): readonly File[] {
+function fileExtension(name: string): string {
+  const dot = name.lastIndexOf('.')
+  return dot === -1 ? '' : name.slice(dot).toLowerCase()
+}
+
+function isPrivateAttachmentName(name: string): boolean {
+  const lower = name.toLowerCase()
+  return (
+    lower === '.env' ||
+    lower.startsWith('.env.') ||
+    PRIVATE_ATTACHMENT_NAMES.has(lower) ||
+    PRIVATE_ATTACHMENT_EXTENSIONS.has(fileExtension(lower))
+  )
+}
+
+function attachableFiles(list: FileList | undefined, shouldIncludeText = false): readonly File[] {
   return [...(list ?? [])].filter(
     (file) =>
       file.type.startsWith(IMAGE_TYPE_PREFIX) ||
       file.type === PDF_MEDIA_TYPE ||
-      file.name.toLowerCase().endsWith(PDF_EXTENSION),
+      file.name.toLowerCase().endsWith(PDF_EXTENSION) ||
+      (shouldIncludeText && TEXT_ATTACHMENT_EXTENSIONS.has(fileExtension(file.name))),
   )
 }
 
@@ -370,6 +391,10 @@ export function Composer(props: ComposerProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   /** Admission stays reserved until the host echoes acceptance or a refusal. */
   const pendingFiles = useRef<PendingMediaReservation[]>([])
+  const currentAttachments = useRef(attachments)
+  useLayoutEffect(() => {
+    currentAttachments.current = attachments
+  }, [attachments])
   const currentAttachmentEpoch = useRef(attachmentEpoch)
   useLayoutEffect(() => {
     currentAttachmentEpoch.current = attachmentEpoch
@@ -747,35 +772,32 @@ export function Composer(props: ComposerProps) {
   }
 
   const attachFiles = (files: readonly File[]) => {
-    let count = attachments.length + pendingFiles.current.length
-    let mediaChars =
-      attachments.reduce(
-        (total, attachment) =>
-          total +
-          (attachment.mediaType === TEXT_ATTACHMENT_MEDIA_TYPE
-            ? 0
-            : encodedMediaChars(attachment.sizeBytes, attachment.mediaType)),
-        0,
-      ) + pendingFiles.current.reduce((total, pending) => total + pending.encodedChars, 0)
-    for (const file of files) {
-      const name = file.name === '' ? PASTED_IMAGE_NAME : file.name
-      const isDocument = file.type === PDF_MEDIA_TYPE || name.toLowerCase().endsWith(PDF_EXTENSION)
+    const admit = (file: File, name: string, mediaType: string) => {
+      const current = currentAttachments.current
+      const count = current.length + pendingFiles.current.length
+      const mediaChars =
+        current.reduce(
+          (total, attachment) =>
+            total +
+            (attachment.mediaType === TEXT_ATTACHMENT_MEDIA_TYPE
+              ? 0
+              : encodedMediaChars(attachment.sizeBytes, attachment.mediaType)),
+          0,
+        ) + pendingFiles.current.reduce((total, pending) => total + pending.encodedChars, 0)
+      const isDocument = mediaType === PDF_MEDIA_TYPE
       if (file.size > (isDocument ? MAX_DOCUMENT_BYTES : MAX_IMAGE_BYTES)) {
         onRefuseFile(name, isDocument ? UI_TEXT.documentTooLarge : UI_TEXT.attachmentTooLarge)
-        continue
+        return
       }
       if (count >= MAX_ATTACHMENTS_PER_MESSAGE) {
         onRefuseFile(name, UI_TEXT.attachmentLimit)
-        continue
+        return
       }
-      const mediaType = isDocument ? PDF_MEDIA_TYPE : file.type
       const estimate = encodedMediaChars(file.size, mediaType)
       if (mediaChars + estimate > MAX_ENCODED_MEDIA_CHARS) {
         onRefuseFile(name, UI_TEXT.mediaTotalTooLarge)
-        continue
+        return
       }
-      count += 1
-      mediaChars += estimate
       const requestId = newAttachmentRequestId()
       const admittedEpoch = attachmentEpoch
       const reservation: PendingMediaReservation = {
@@ -791,7 +813,7 @@ export function Composer(props: ComposerProps) {
           }
           onAttachImage({
             name,
-            mediaType: file.type,
+            mediaType,
             base64,
             requestId,
             attachmentEpoch: admittedEpoch,
@@ -804,11 +826,52 @@ export function Composer(props: ComposerProps) {
           throw error
         })
     }
+    for (const file of files) {
+      const name = file.name === '' ? PASTED_IMAGE_NAME : file.name
+      if (isPrivateAttachmentName(name)) {
+        onRefuseFile(name, UI_TEXT.textFilePrivate)
+        continue
+      }
+      const isDocument = file.type === PDF_MEDIA_TYPE || name.toLowerCase().endsWith(PDF_EXTENSION)
+      if (isDocument) {
+        admit(file, name, PDF_MEDIA_TYPE)
+        continue
+      }
+      const admittedEpoch = attachmentEpoch
+      // MIME and suffix can both lie. Only the first 1 KiB is read before
+      // deciding whether this is a 32 MB PDF or a 10 MiB image.
+      void file
+        .slice(0, PDF_HEADER_WINDOW_BYTES)
+        .arrayBuffer()
+        .then((header) => {
+          if (currentAttachmentEpoch.current !== admittedEpoch) {
+            return
+          }
+          if (hasPdfHeader(new Uint8Array(header))) {
+            admit(file, name, PDF_MEDIA_TYPE)
+          } else if (file.type.startsWith(IMAGE_TYPE_PREFIX)) {
+            admit(file, name, file.type)
+          }
+        })
+        .catch(() => {
+          if (currentAttachmentEpoch.current === admittedEpoch) {
+            onRefuseFile(name, UI_TEXT.attachmentUnreadable)
+          }
+        })
+    }
   }
 
   const handlePaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
-    const files = attachableFiles(event.clipboardData.files)
+    const files = attachableFiles(event.clipboardData.files, true)
     if (files.length === 0) {
+      return
+    }
+    // A clipboard text representation belongs in the textarea. A text-named
+    // file with no text representation can be probed for PDF bytes instead.
+    if (
+      attachableFiles(event.clipboardData.files).length === 0 &&
+      event.clipboardData.getData(TEXT_ATTACHMENT_MEDIA_TYPE) !== ''
+    ) {
       return
     }
     event.preventDefault()
@@ -817,7 +880,7 @@ export function Composer(props: ComposerProps) {
 
   const handleDrop = (event: DragEvent<HTMLElement>) => {
     event.preventDefault()
-    attachFiles(attachableFiles(event.dataTransfer.files))
+    attachFiles(attachableFiles(event.dataTransfer.files, true))
     const uris = parseUriList(event.dataTransfer.getData(URI_LIST_TYPE))
     if (uris.length > 0) {
       onDroppedUris(uris)

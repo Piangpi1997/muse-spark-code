@@ -12,12 +12,11 @@
 import { Buffer } from 'node:buffer'
 import {
   PDF_DICTIONARY_SCAN_CHARS,
-  PDF_HEADER_WINDOW_BYTES,
   PDF_PAGE_COUNT_MAX,
   PDF_PAGE_TREE_SCAN_LIMIT,
 } from '../shared/constants'
+import { hasPdfHeader } from '../shared/pdfHeader'
 
-const PDF_HEADER = '%PDF-'
 const PDF_NAME_ESCAPE_RADIX = 16
 const PDF_NAME_ESCAPE_SOURCE_CHARS = 3
 const PDF_CRITICAL_NAME_MAX_LENGTH = 'Encrypt'.length
@@ -119,7 +118,7 @@ function latin1(bytes: Uint8Array): string {
 
 /** Whether the bytes are a PDF: its header within the first 1024 bytes. */
 export function isPdf(bytes: Uint8Array): boolean {
-  return latin1(bytes.subarray(0, PDF_HEADER_WINDOW_BYTES)).includes(PDF_HEADER)
+  return hasPdfHeader(bytes)
 }
 
 /** Where the dictionary around `index` opens, looking back at most the scan window. */

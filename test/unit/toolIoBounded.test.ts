@@ -5,9 +5,15 @@ import path from 'node:path'
 import { afterAll, afterEach, expect, it, vi } from 'vitest'
 import { createToolIo, readPickedFile } from '../../src/host/backend/toolIo'
 import { loadToolImage } from '../../src/core/toolImages'
-import { MAX_IMAGE_BYTES, MODEL_TEXT, TOOL_FILE_MAX_BYTES } from '../../src/shared/constants'
+import {
+  MAX_IMAGE_BYTES,
+  MAX_TEXT_ATTACHMENT_BYTES,
+  MODEL_TEXT,
+  TOOL_FILE_MAX_BYTES,
+} from '../../src/shared/constants'
 import { canonicalPath } from '../../src/host/canonicalPath'
 import { removeFolder } from './helpers/temporaryFolders'
+import { pdfFixture } from './helpers/pdfFixture'
 
 vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<{ open: typeof open; stat: typeof stat }>()
@@ -71,12 +77,45 @@ it('bounds picked bytes when a selected file grows after handle metadata', async
   const target = path.join(root, 'picked.pdf')
   await growAfterOpenMetadata(target, Buffer.alloc(9, 0x62))
 
-  await expect(readPickedFile(target, 4)).resolves.toBeUndefined()
-  await expect(readPickedFile(target, 9)).resolves.toEqual(Buffer.alloc(9, 0x62))
+  await expect(readPickedFile(target, 4)).resolves.toEqual({ bytes: undefined, isPdf: false })
+  await expect(readPickedFile(target, 9)).resolves.toEqual({
+    bytes: Buffer.alloc(9, 0x62),
+    isPdf: false,
+  })
 })
 
 it('keeps missing picked files as an undefined result', async () => {
-  await expect(readPickedFile(path.join(root, 'missing.pdf'), 4)).resolves.toBeUndefined()
+  await expect(readPickedFile(path.join(root, 'missing.pdf'), 4)).resolves.toEqual({
+    bytes: undefined,
+    isPdf: false,
+  })
+})
+
+it('sniffs a renamed PDF on one handle and returns its full bounded bytes from offset zero', async () => {
+  const target = path.join(root, 'renamed.png')
+  const small = Buffer.from(pdfFixture(1))
+  const largePdf = Buffer.concat([small, Buffer.alloc(MAX_IMAGE_BYTES * 2 - small.length, 0x20)])
+  await writeFile(target, largePdf)
+  const read = await readPickedFile(target, MAX_IMAGE_BYTES)
+  expect(read.isPdf).toBe(true)
+  expect(read.bytes?.byteLength).toBe(largePdf.length)
+  expect(Buffer.from(read.bytes ?? []).subarray(0, small.length)).toEqual(small)
+})
+
+it('keeps non-PDF image and text caps at the host read boundary', async () => {
+  const image = path.join(root, 'large.png')
+  const text = path.join(root, 'large.txt')
+  await writeFile(image, Buffer.alloc(MAX_IMAGE_BYTES + 1, 0x61))
+  await writeFile(text, Buffer.alloc(MAX_TEXT_ATTACHMENT_BYTES + 1, 0x62))
+  await expect(readPickedFile(image, MAX_IMAGE_BYTES)).resolves.toEqual({
+    bytes: undefined,
+    isPdf: false,
+  })
+  await expect(readPickedFile(text, MAX_TEXT_ATTACHMENT_BYTES)).resolves.toEqual({
+    bytes: undefined,
+    isPdf: false,
+  })
+  await expect(readPickedFile(text, 0)).resolves.toEqual({ bytes: undefined, isPdf: false })
 })
 
 it('bounds a tool-row image that grows after its open handle reports the old size', async () => {

@@ -146,7 +146,7 @@ export interface FileAccess {
     fsPath: string,
     maxBytes: number,
     expectedCanonicalPath?: string,
-  ): Promise<Uint8Array | undefined>
+  ): Promise<{ readonly bytes: Uint8Array | undefined; readonly isPdf: boolean }>
   /** Indexed relative path and the same checked target for reading; undefined on an escape. */
   canonicalRelativePath(
     fsPath: string,
@@ -2908,6 +2908,7 @@ export class ConversationController {
       }
       const isTextFile = TEXT_ATTACHMENT_EXTENSIONS.has(extension)
       let pathToRead = file.fsPath
+      let shouldMentionUnlessPdf = false
       if (isTextFile) {
         const disposition = await this.textFileDisposition(file, generation)
         if (disposition.kind === 'stale') {
@@ -2917,20 +2918,27 @@ export class ConversationController {
           continue
         }
         if (disposition.kind === 'mention') {
-          this.insertMention(file.relativePath ?? file.fsPath.replaceAll('\\', '/'))
-          continue
+          shouldMentionUnlessPdf = true
+        } else {
+          pathToRead = disposition.checkedAbsolute
         }
-        pathToRead = disposition.checkedAbsolute
       }
       if (isTextFile || extension === PDF_EXTENSION || Object.hasOwn(IMAGE_EXTENSIONS, extension)) {
-        const isPdfFile = extension === PDF_EXTENSION
-        const otherMaxBytes = isTextFile ? MAX_TEXT_ATTACHMENT_BYTES : MAX_IMAGE_BYTES
-        const maxBytes = isPdfFile ? MAX_DOCUMENT_BYTES : otherMaxBytes
-        let bytes: Uint8Array | undefined
+        let maxBytes = MAX_IMAGE_BYTES
+        if (isTextFile) {
+          maxBytes = MAX_TEXT_ATTACHMENT_BYTES
+        } else if (extension === PDF_EXTENSION) {
+          maxBytes = MAX_DOCUMENT_BYTES
+        }
+        let read: Awaited<ReturnType<FileAccess['readFile']>>
         try {
-          bytes = isTextFile
-            ? await this.deps.files.readFile(pathToRead, maxBytes, pathToRead)
-            : await this.deps.files.readFile(pathToRead, maxBytes)
+          if (shouldMentionUnlessPdf) {
+            read = await this.deps.files.readFile(pathToRead, 0)
+          } else if (isTextFile) {
+            read = await this.deps.files.readFile(pathToRead, maxBytes, pathToRead)
+          } else {
+            read = await this.deps.files.readFile(pathToRead, maxBytes)
+          }
         } catch (error: unknown) {
           if (!this.isCurrentAttachmentGeneration(generation)) {
             return
@@ -2946,15 +2954,28 @@ export class ConversationController {
         if (!this.isCurrentAttachmentGeneration(generation)) {
           return
         }
-        if (bytes === undefined || bytes.byteLength > maxBytes) {
+        if (shouldMentionUnlessPdf && !read.isPdf) {
+          this.insertMention(file.relativePath ?? file.fsPath.replaceAll('\\', '/'))
+          continue
+        }
+        const limit = read.isPdf ? MAX_DOCUMENT_BYTES : maxBytes
+        if (read.bytes === undefined || read.bytes.byteLength > limit) {
           const otherTooLarge = isTextFile ? UI_TEXT.textFileTooLarge : UI_TEXT.attachmentTooLarge
           this.post({
             type: 'attachmentRejected',
             name: file.name,
-            reason: isPdfFile ? UI_TEXT.documentTooLarge : otherTooLarge,
+            reason:
+              extension === PDF_EXTENSION || read.isPdf ? UI_TEXT.documentTooLarge : otherTooLarge,
           })
         } else {
-          await this.addAttachment(file.name, bytes, isTextFile, undefined, undefined, generation)
+          await this.addAttachment(
+            file.name,
+            read.bytes,
+            isTextFile,
+            undefined,
+            undefined,
+            generation,
+          )
         }
       } else {
         if (UNSUPPORTED_BINARY_ATTACHMENT_EXTENSIONS.has(extension)) {

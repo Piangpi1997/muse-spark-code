@@ -21,7 +21,13 @@ import {
 } from '../../src/host/conversation/conversationController'
 import type { DictationListener } from '../../src/core/voice/dictation'
 import type { DictationSetup } from '../../src/host/voice/dictationHost'
-import { CHOICE_STEERING_NOTE, type GoalCommandVerb, UI_TEXT } from '../../src/shared/constants'
+import {
+  CHOICE_STEERING_NOTE,
+  MAX_DOCUMENT_BYTES,
+  MAX_IMAGE_BYTES,
+  type GoalCommandVerb,
+  UI_TEXT,
+} from '../../src/shared/constants'
 import type { HostAction, LineRange, MentionItem } from '../../src/shared/protocol'
 import type { SubscriptionUsage } from '../../src/shared/usage'
 import { FakeLogOutputChannel, fakeSurface } from './helpers/fakes'
@@ -99,6 +105,13 @@ const PNG = Uint8Array.from([
   0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52, 0, 0, 0, 2,
   0, 0, 0, 3,
 ])
+
+async function writeTwentyMiBPdf(file: string): Promise<Buffer> {
+  const small = Buffer.from(pdfFixture(1))
+  const bytes = Buffer.concat([small, Buffer.alloc(MAX_IMAGE_BYTES * 2 - small.length, 0x20)])
+  await writeFile(file, bytes)
+  return bytes
+}
 
 const NOW = Date.parse('2026-09-22T12:00:00Z')
 /** The choice-steering note every CLI turn carries (M14), hidden by displayText. */
@@ -377,8 +390,8 @@ function setup(
       showOpenDialog: () => Promise.resolve(picked),
       readFile: (fsPath: string) =>
         fsPath.endsWith('.png')
-          ? Promise.resolve(PNG)
-          : Promise.resolve(new TextEncoder().encode('example text')),
+          ? Promise.resolve({ bytes: PNG, isPdf: false })
+          : Promise.resolve({ bytes: new TextEncoder().encode('example text'), isPdf: false }),
       canonicalRelativePath: (fsPath: string) =>
         Promise.resolve(
           fsPath.startsWith('/ws/')
@@ -1123,13 +1136,14 @@ describe('ConversationController: context', () => {
       canonical: 'allowed.txt',
       checkedAbsolute: '/ws/allowed.txt',
     })
-    const read = vi
-      .spyOn(t.deps.files, 'readFile')
-      .mockImplementation((fsPath) =>
-        Promise.resolve(
-          new TextEncoder().encode(fsPath === '/ws/picked.txt' ? 'PRIVATE_MARKER' : 'SAFE_MARKER'),
+    const read = vi.spyOn(t.deps.files, 'readFile').mockImplementation((fsPath) =>
+      Promise.resolve({
+        bytes: new TextEncoder().encode(
+          fsPath === '/ws/picked.txt' ? 'PRIVATE_MARKER' : 'SAFE_MARKER',
         ),
-      )
+        isPdf: false,
+      }),
+    )
     t.setPicked([{ name: 'picked.txt', fsPath: '/ws/picked.txt', relativePath: 'picked.txt' }])
     await t.controller.handle({ type: 'pickFile' })
     expect(read).toHaveBeenCalledWith('/ws/allowed.txt', expect.any(Number), '/ws/allowed.txt')
@@ -1179,13 +1193,124 @@ describe('ConversationController: context', () => {
     }
   })
 
-  it('keeps text as a path mention without reading it in an untrusted workspace', async () => {
+  it.each(['modelApi', 'museCode'] as const)(
+    'sniffs a 20 MiB PDF named like an image before %s picker admission',
+    async (backend) => {
+      const root = mkdtempSync(path.join(tmpdir(), 'muse-picked-pdf-image-name-'))
+      try {
+        const file = path.join(root, 'report.png')
+        const largePdf = await writeTwentyMiBPdf(file)
+        const t = setup()
+        const controller = backend === 'modelApi' ? modelApiController(t).controller : t.controller
+        vi.spyOn(t.deps.files, 'readFile').mockImplementation(readPickedFile)
+        t.setPicked([{ name: 'report.png', fsPath: file, relativePath: undefined }])
+        await controller.handle({ type: 'pickFile' })
+        expect(t.surface.posted).toContainEqual(
+          backend === 'modelApi'
+            ? expect.objectContaining({
+                type: 'attachmentAdded',
+                attachment: expect.objectContaining({
+                  mediaType: 'application/pdf',
+                  sizeBytes: largePdf.length,
+                }),
+              })
+            : { type: 'attachmentRejected', name: 'report.png', reason: UI_TEXT.pdfNeedsModelApi },
+        )
+      } finally {
+        await removeFolder(root)
+      }
+    },
+  )
+
+  it('keeps indexed text proof and detects a PDF named like text before the 1 MiB cap', async () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'muse-picked-pdf-text-name-'))
+    try {
+      const file = path.join(root, 'report.txt')
+      await writeTwentyMiBPdf(file)
+      const t = setup({ workspaceRoot: root, indexed: ['report.txt'] })
+      const { controller } = modelApiController(t, { workspaceRoot: root })
+      vi.spyOn(t.deps.files, 'canonicalRelativePath').mockImplementation(async (fsPath) => {
+        const result = await confineWorkspacePath(root, fsPath, process.platform, {
+          realPath: canonicalPath,
+        })
+        return result.ok
+          ? { canonical: result.canonical, checkedAbsolute: result.checkedAbsolute }
+          : undefined
+      })
+      const read = vi.spyOn(t.deps.files, 'readFile').mockImplementation(readPickedFile)
+      t.setPicked([{ name: 'report.txt', fsPath: file, relativePath: 'report.txt' }])
+      await controller.handle({ type: 'pickFile' })
+      const checkedFile = await canonicalPath(file)
+      expect(read).toHaveBeenCalledWith(checkedFile, expect.any(Number), checkedFile)
+      expect(t.surface.posted).toContainEqual(
+        expect.objectContaining({
+          type: 'attachmentAdded',
+          attachment: expect.objectContaining({ mediaType: 'application/pdf' }),
+        }),
+      )
+    } finally {
+      await removeFolder(root)
+    }
+  })
+
+  it.each(['modelApi', 'museCode'] as const)(
+    'applies PDF policy to an unindexed outside-workspace .txt on %s',
+    async (backend) => {
+      const root = mkdtempSync(path.join(tmpdir(), 'muse-picked-pdf-outside-text-'))
+      try {
+        const file = path.join(root, 'report.txt')
+        await writeTwentyMiBPdf(file)
+        const t = setup({ indexed: [] })
+        const controller = backend === 'modelApi' ? modelApiController(t).controller : t.controller
+        const read = vi.spyOn(t.deps.files, 'readFile').mockImplementation(readPickedFile)
+        t.setPicked([{ name: 'report.txt', fsPath: file, relativePath: undefined }])
+        await controller.handle({ type: 'pickFile' })
+        expect(read).toHaveBeenCalledWith(file, 0)
+        expect(t.surface.posted).toContainEqual(
+          backend === 'modelApi'
+            ? expect.objectContaining({
+                type: 'attachmentAdded',
+                attachment: expect.objectContaining({ mediaType: 'application/pdf' }),
+              })
+            : { type: 'attachmentRejected', name: 'report.txt', reason: UI_TEXT.pdfNeedsModelApi },
+        )
+      } finally {
+        await removeFolder(root)
+      }
+    },
+  )
+
+  it('preserves the .pdf filename cap and invalid-PDF refusal for non-PDF bytes', async () => {
+    const t = setup()
+    const { controller } = modelApiController(t)
+    const read = vi.spyOn(t.deps.files, 'readFile').mockResolvedValue({
+      bytes: new Uint8Array(MAX_IMAGE_BYTES + 1),
+      isPdf: false,
+    })
+    t.setPicked([{ name: 'report.pdf', fsPath: '/tmp/report.pdf', relativePath: undefined }])
+    await controller.handle({ type: 'pickFile' })
+    expect(read).toHaveBeenCalledWith('/tmp/report.pdf', MAX_DOCUMENT_BYTES)
+    expect(t.surface.posted).toContainEqual({
+      type: 'attachmentRejected',
+      name: 'report.pdf',
+      reason: UI_TEXT.invalidPdf,
+    })
+    read.mockResolvedValue({ bytes: undefined, isPdf: false })
+    await controller.handle({ type: 'pickFile' })
+    expect(t.surface.posted.at(-1)).toEqual({
+      type: 'attachmentRejected',
+      name: 'report.pdf',
+      reason: UI_TEXT.documentTooLarge,
+    })
+  })
+
+  it('keeps untrusted ordinary text as a mention after a header-only PDF probe', async () => {
     const t = setup({ isWorkspaceTrusted: false, indexed: ['src/a.ts'] })
     const read = vi.spyOn(t.deps.files, 'readFile')
     t.setPicked([{ name: 'a.ts', fsPath: '/ws/src/a.ts', relativePath: 'src/a.ts' }])
     await t.controller.handle({ type: 'pickFile' })
     expect(t.surface.posted).toEqual([{ type: 'insertText', text: '@src/a.ts ' }])
-    expect(read).not.toHaveBeenCalled()
+    expect(read).toHaveBeenCalledWith('/ws/src/a.ts', 0)
   })
 
   it('refuses a picked binary type without reading its bytes', async () => {
@@ -1298,14 +1423,17 @@ describe('ConversationController: context', () => {
   it('does not attach a native-picked file read after clear', async () => {
     const t = setup()
     t.setPicked([{ name: 'old.png', fsPath: '/ws/old.png', relativePath: 'old.png' }])
-    const readGate = Promise.withResolvers<Uint8Array>()
+    const readGate = Promise.withResolvers<{
+      readonly bytes: Uint8Array
+      readonly isPdf: boolean
+    }>()
     const read = vi.spyOn(t.deps.files, 'readFile').mockReturnValue(readGate.promise)
     const picking = t.controller.handle({ type: 'pickFile' })
     await vi.waitFor(() => {
       expect(read).toHaveBeenCalledOnce()
     })
     await t.controller.handle({ type: 'clearConversation' })
-    readGate.resolve(PNG)
+    readGate.resolve({ bytes: PNG, isPdf: false })
     await picking
     expect(t.surface.posted).not.toContainEqual(
       expect.objectContaining({
@@ -2620,7 +2748,10 @@ describe('ConversationController: session history (M6)', () => {
     async ({ name, bytes }) => {
       const t = setup({ indexed: ['notes.txt'] })
       const { api, controller } = modelApiController(t)
-      vi.spyOn(t.deps.files, 'readFile').mockResolvedValue(bytes)
+      vi.spyOn(t.deps.files, 'readFile').mockResolvedValue({
+        bytes,
+        isPdf: name === 'report.pdf',
+      })
       t.setPicked([{ name, fsPath: `/ws/${name}`, relativePath: name }])
       await controller.handle({ type: 'pickFile' })
       const attachment = t.surface.posted.findLast((message) => message.type === 'attachmentAdded')

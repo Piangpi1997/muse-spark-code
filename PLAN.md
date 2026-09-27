@@ -5067,6 +5067,26 @@ The indexed UTF-8 native picker forwards that proof through FileAccess to its
 bounded read after the index check. Native PDF and image picks retain their
 existing unrestricted local-path policy. The tool-row image preview adapter
 forwards the same proof from workspace confinement to its bounded read.
+Picker file-size admission follows bytes, not a misleading suffix: peek only
+the first PDF-header window on the already-open handle, then read a detected
+PDF up to the document limit or non-PDF bytes up to the selected image/text
+limit; a `.pdf` name retains its document cap and invalid-PDF refusal.
+An unindexed or outside-workspace text-named file gets only a header probe:
+PDF bytes continue on that same handle, while ordinary text stays a mention
+without reading beyond that header. Return the detected type even on oversize
+refusal so Muse Code gives
+its PDF-specific backend reason. Keep private-name, indexed-text, checked-path
+and conversation-generation checks before any attachment is retained.
+Browser paste/drop admission also peeks the bounded PDF header before applying
+the image cap to a file whose MIME and name claim image content. A real PDF
+named `.png` uses the 32 MB document limit and PDF media type; a non-PDF image
+over 10 MiB is refused without full-file encoding. Preserve the existing
+aggregate encoded-media and in-flight reservation checks before encoding, and
+drop an asynchronous header result after the conversation changes.
+For text-named files, a drop is similarly probed; a paste is probed only when
+the clipboard has no plain text to insert. An ordinary text paste retains its
+native text behavior, and an ordinary text file is not encoded as an image.
+Private attachment names are refused before the header is read.
 
 **Prior checkpoints, 2026-09-27: M51–M53 merged; M54 PR review follow-ups.** The
 isolated M54 worktree is based on `34002ab`; its pre-M46 50-path staged tree
@@ -5163,11 +5183,22 @@ The M52-joined staged tree `ad5d89dcd36ffdcf6ead66126bf328fdf3493e60`
 passed full local Windows quality before its commit `5487149`: 2,113 unit
 tests passed, build and audit clean, accessibility and security gates green.
 The M53 join now preserves PDF media in side-fork replay and refuses its
-scheduled paid controls in core; 614 focused tests passed. The final source
+scheduled paid controls in core; 614 focused tests passed. Earlier source
 tree `2d2d0dc45b31b8b5dcddad9aeae4ca73b126fe2c` passed exact-tree
 Windows VM `npm run quality` and Mac/Kubuntu `npm run quality:gates` after the
 indexed text picker and tool-row preview forwarded their checked path proofs.
-The documentation receipt still needs local `npm run quality`; the updated PR
+Review then found that a PDF with an image or text suffix could hit the wrong
+read cap before its header was inspected. Corrected source tree
+`cdf62eca10d02f089f3fbb4487e00ced496d42fc` passed exact-tree Mac and
+Kubuntu `npm run quality:gates`; the Windows VM passed 260 focused native
+picker, ToolIo and attachment tests on its runtime-equivalent tree `7f56829d`
+(two platform-specific skips). The only 7f-to-cdf change is a test expectation
+for macOS canonical `/private/var` paths. The final documentation receipt
+was superseded by the browser paste/drop review finding. Final browser and
+native picker source tree `2fbb593cd99b54fc786587e6847ee87b2dffd496`
+passed exact-tree Mac/Kubuntu `npm run quality:gates`; the Windows VM passed
+349 focused Composer, PDF, picker, ToolIo and attachment tests (two skips).
+The final documentation receipt needs local `npm run quality`; the updated PR
 head needs hosted CI and review. Live paid PDF delivery remains unverified;
 no paid request ran.
 

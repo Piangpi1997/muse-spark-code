@@ -29,6 +29,7 @@ import type {
   ToolIo,
 } from '../../core/backends/modelapi/tools'
 import { resolveExecutable } from '../../core/executables'
+import { isPdf } from '../../core/pdf'
 import type { ToolImageIo } from '../../core/toolImages'
 import { isSamePath } from '../../core/paths'
 import { powerShellQuoted } from '../../core/shellQuote'
@@ -36,6 +37,8 @@ import {
   BOUNDED_FILE_READ_CHUNK_BYTES,
   BYTES_PER_MIB,
   MODEL_TEXT,
+  MAX_DOCUMENT_BYTES,
+  PDF_HEADER_WINDOW_BYTES,
   HOOK_OUTPUT_MAX_BYTES,
   HOOK_FORBIDDEN_ENV_NAMES,
   HOOK_STDIN_MAX_BYTES,
@@ -394,30 +397,41 @@ async function readBoundedFile(
   maxBytes: number,
   expectedCanonicalPath?: string,
   platform?: NodeJS.Platform,
+  pdfMaxBytes?: number,
 ): Promise<
-  { readonly ok: true; readonly bytes: Buffer } | { readonly ok: false; readonly size: number }
+  | { readonly ok: true; readonly bytes: Buffer; readonly isPdf: boolean }
+  | { readonly ok: false; readonly size: number; readonly isPdf: boolean }
 > {
   const file = await open(absolutePath, 'r')
   try {
     if (expectedCanonicalPath !== undefined && platform !== undefined) {
       await checkedOpenedFile(absolutePath, file, expectedCanonicalPath, platform)
     }
+    // An explicit position leaves this handle's sequential read at byte zero.
+    const header = pdfMaxBytes === undefined ? undefined : Buffer.alloc(PDF_HEADER_WINDOW_BYTES)
+    const headerRead =
+      header === undefined ? undefined : await file.read(header, 0, header.length, 0)
+    const isPdfFile =
+      header !== undefined &&
+      headerRead !== undefined &&
+      isPdf(header.subarray(0, headerRead.bytesRead))
+    const limit = isPdfFile ? (pdfMaxBytes ?? maxBytes) : maxBytes
     const { size } = await file.stat()
-    if (size > maxBytes) {
-      return { ok: false, size }
+    if (size > limit) {
+      return { ok: false, size, isPdf: isPdfFile }
     }
     const chunks: Buffer[] = []
     let total = 0
     for (;;) {
-      const length = Math.min(BOUNDED_FILE_READ_CHUNK_BYTES, maxBytes + 1 - total)
+      const length = Math.min(BOUNDED_FILE_READ_CHUNK_BYTES, limit + 1 - total)
       const chunk = Buffer.allocUnsafe(length)
       const { bytesRead } = await file.read(chunk, 0, length, null)
       if (bytesRead === 0) {
-        return { ok: true, bytes: Buffer.concat(chunks, total) }
+        return { ok: true, bytes: Buffer.concat(chunks, total), isPdf: isPdfFile }
       }
       total += bytesRead
-      if (total > maxBytes) {
-        return { ok: false, size: total }
+      if (total > limit) {
+        return { ok: false, size: total, isPdf: isPdfFile }
       }
       chunks.push(chunk.subarray(0, bytesRead))
     }
@@ -431,18 +445,19 @@ export async function readPickedFile(
   absolutePath: string,
   maxBytes: number,
   expectedCanonicalPath?: string,
-): Promise<Uint8Array | undefined> {
+): Promise<{ readonly bytes: Uint8Array | undefined; readonly isPdf: boolean }> {
   try {
     const read = await readBoundedFile(
       absolutePath,
       maxBytes,
       expectedCanonicalPath,
       process.platform,
+      MAX_DOCUMENT_BYTES,
     )
-    return read.ok ? read.bytes : undefined
+    return { bytes: read.ok ? read.bytes : undefined, isPdf: read.isPdf }
   } catch (error: unknown) {
     if (isMissingFile(error)) {
-      return
+      return { bytes: undefined, isPdf: false }
     }
     throw error
   }

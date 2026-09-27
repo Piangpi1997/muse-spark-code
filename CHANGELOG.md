@@ -7,6 +7,18 @@ happened, not what was planned; superseded entries are kept.
 
 ## [Unreleased]
 
+Pasted and dropped PDFs now receive the PDF byte limit after a 1 KiB header
+check, even when named `.png` or `.txt`. Real images above 10 MiB still stop
+before full-file encoding; pending checks cannot attach to a cleared
+conversation. Ordinary clipboard text keeps native paste behavior, private
+file names are refused, and the combined media budget remains enforced.
+
+Native picker limits now follow a detected PDF header within the first 1 KiB,
+including a PDF named `.png` or `.txt`. A valid PDF up to 32 MB can attach on
+the Model API backend; Muse Code names its PDF backend refusal. Ordinary
+images and text keep their smaller limits, and an invalid `.pdf` keeps its
+existing refusal. Unindexed text stays a path mention.
+
 Indexed UTF-8 picker reads now recheck their selected canonical file when
 loading bytes, and tool-row image previews keep their checked-path proof
 through the VS Code adapter. A workspace junction swap now refuses these

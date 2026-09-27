@@ -126,6 +126,20 @@ function largePdf(name: string): File {
   return file
 }
 
+function pasteOrDropFile(
+  gesture: 'paste' | 'drop',
+  textarea: HTMLTextAreaElement,
+  file: File,
+): void {
+  if (gesture === 'paste') {
+    fireEvent.paste(textarea, { clipboardData: { files: [file], getData: () => '' } })
+  } else {
+    fireEvent.drop(screen.getByRole('contentinfo'), {
+      dataTransfer: { files: [file], getData: () => '' },
+    })
+  }
+}
+
 /**
  * Simulates the parent applying `text` as the draft and the caret landing at
  * its end (the composer is controlled, so the draft arrives as a prop).
@@ -358,6 +372,140 @@ describe('Composer attachments', () => {
     Object.defineProperty(huge, 'size', { value: MAX_DOCUMENT_BYTES + 1 })
     fireEvent.paste(textarea, { clipboardData: { files: [huge] } })
     expect(props.onRefuseFile).toHaveBeenCalledWith('huge.pdf', UI_TEXT.documentTooLarge)
+  })
+
+  it.each(['paste', 'drop'] as const)(
+    'admits a real 20 MiB PDF with misleading image metadata by %s',
+    async (gesture) => {
+      const { props, textarea } = renderComposer()
+      const header = new TextEncoder().encode(
+        '%PDF-1.4\n1 0 obj << /Type /Pages /Count 1 >> endobj\n',
+      )
+      const bytes = new Uint8Array(MAX_IMAGE_BYTES * 2)
+      bytes.set(header)
+      const file = new File([bytes], 'report.png', { type: 'image/png' })
+      const fullRead = vi.spyOn(file, 'arrayBuffer')
+      pasteOrDropFile(gesture, textarea, file)
+      await vi.waitFor(() => {
+        expect(props.onAttachImage).toHaveBeenCalledOnce()
+      })
+      const posted = vi.mocked(props.onAttachImage).mock.calls[0]?.[0]
+      expect(posted?.mediaType).toBe('application/pdf')
+      expect(posted?.base64.startsWith('JVBER')).toBe(true)
+      expect(fullRead).toHaveBeenCalledOnce()
+      expect(props.onRefuseFile).not.toHaveBeenCalled()
+    },
+  )
+
+  it('peeks an 11 MiB real PNG but never encodes its full bytes', async () => {
+    const { props, textarea } = renderComposer()
+    const bytes = new Uint8Array(MAX_IMAGE_BYTES + 1)
+    bytes.set([137, 80, 78, 71, 13, 10, 26, 10])
+    const file = new File([bytes], 'oversize.png', { type: 'image/png' })
+    const headerRead = vi.spyOn(file, 'slice')
+    const fullRead = vi.spyOn(file, 'arrayBuffer')
+    fireEvent.paste(textarea, { clipboardData: { files: [file] } })
+    await vi.waitFor(() => {
+      expect(props.onRefuseFile).toHaveBeenCalledWith('oversize.png', UI_TEXT.attachmentTooLarge)
+    })
+    expect(headerRead).toHaveBeenCalledOnce()
+    expect(fullRead).not.toHaveBeenCalled()
+    expect(props.onAttachImage).not.toHaveBeenCalled()
+  })
+
+  it.each(['paste', 'drop'] as const)(
+    'admits a 20 MiB PDF with a text name and MIME by %s',
+    async (gesture) => {
+      const { props, textarea } = renderComposer()
+      const bytes = new Uint8Array(MAX_IMAGE_BYTES * 2)
+      bytes.set(new TextEncoder().encode('%PDF-1.4\n1 0 obj << /Type /Pages /Count 1 >> endobj\n'))
+      const file = new File([bytes], 'report.txt', { type: 'text/plain' })
+      pasteOrDropFile(gesture, textarea, file)
+      await vi.waitFor(() => {
+        expect(props.onAttachImage).toHaveBeenCalledOnce()
+      })
+      expect(vi.mocked(props.onAttachImage).mock.calls[0]?.[0].mediaType).toBe('application/pdf')
+      expect(props.onRefuseFile).not.toHaveBeenCalled()
+    },
+  )
+
+  it('leaves an ordinary text-file paste and its clipboard text to the browser', () => {
+    const { props, textarea } = renderComposer()
+    const file = new File(['ordinary text'], 'notes.txt', { type: 'text/plain' })
+    const read = vi.spyOn(file, 'arrayBuffer')
+    expect(
+      fireEvent.paste(textarea, {
+        clipboardData: { files: [file], getData: () => 'ordinary text' },
+      }),
+    ).toBe(true)
+    expect(read).not.toHaveBeenCalled()
+    expect(props.onAttachImage).not.toHaveBeenCalled()
+    expect(props.onRefuseFile).not.toHaveBeenCalled()
+  })
+
+  it('refuses a private text name before reading a disguised PDF', () => {
+    const { props } = renderComposer()
+    const file = new File(['%PDF-1.4'], '.env.txt', { type: 'text/plain' })
+    const read = vi.spyOn(file, 'slice')
+    fireEvent.drop(screen.getByRole('contentinfo'), {
+      dataTransfer: { files: [file], getData: () => '' },
+    })
+    expect(props.onRefuseFile).toHaveBeenCalledWith('.env.txt', UI_TEXT.textFilePrivate)
+    expect(read).not.toHaveBeenCalled()
+    expect(props.onAttachImage).not.toHaveBeenCalled()
+  })
+
+  it('reserves aggregate media at header completion across rapid paste and drop', async () => {
+    const { props, textarea } = renderComposer()
+    const header = new TextEncoder().encode('%PDF-1.4')
+    const first = new File([header], 'first.png', { type: 'image/png' })
+    const second = new File([header], 'second.png', { type: 'image/png' })
+    const firstPeek = Promise.withResolvers<ArrayBuffer>()
+    const secondPeek = Promise.withResolvers<ArrayBuffer>()
+    const firstHeader = new Blob([header])
+    const secondHeader = new Blob([header])
+    vi.spyOn(firstHeader, 'arrayBuffer').mockImplementation(() => firstPeek.promise)
+    vi.spyOn(secondHeader, 'arrayBuffer').mockImplementation(() => secondPeek.promise)
+    vi.spyOn(first, 'slice').mockReturnValue(firstHeader)
+    vi.spyOn(second, 'slice').mockReturnValue(secondHeader)
+    Object.defineProperty(first, 'size', { value: MAX_DOCUMENT_BYTES })
+    Object.defineProperty(second, 'size', { value: MAX_DOCUMENT_BYTES })
+    const secondFullRead = vi.spyOn(second, 'arrayBuffer')
+    fireEvent.paste(textarea, { clipboardData: { files: [first] } })
+    fireEvent.drop(screen.getByRole('contentinfo'), {
+      dataTransfer: { files: [second], getData: () => '' },
+    })
+    firstPeek.resolve(header.buffer)
+    await vi.waitFor(() => {
+      expect(props.onAttachImage).toHaveBeenCalledOnce()
+    })
+    secondPeek.resolve(header.buffer)
+    await vi.waitFor(() => {
+      expect(props.onRefuseFile).toHaveBeenCalledWith('second.png', UI_TEXT.mediaTotalTooLarge)
+    })
+    expect(secondFullRead).not.toHaveBeenCalled()
+  })
+
+  it('drops a PDF header read from a cleared conversation before full encoding', async () => {
+    const { props, view, textarea } = renderComposer()
+    const file = new File([new TextEncoder().encode('%PDF-1.4')], 'report.png', {
+      type: 'image/png',
+    })
+    Object.defineProperty(file, 'size', { value: MAX_IMAGE_BYTES * 2 })
+    const peek = Promise.withResolvers<ArrayBuffer>()
+    const header = new Blob([new TextEncoder().encode('%PDF-1.4')])
+    vi.spyOn(header, 'arrayBuffer').mockImplementation(() => peek.promise)
+    vi.spyOn(file, 'slice').mockReturnValue(header)
+    const fullRead = vi.spyOn(file, 'arrayBuffer')
+    fireEvent.paste(textarea, { clipboardData: { files: [file] } })
+    view.rerender(<Composer {...props} attachmentEpoch={1} />)
+    peek.resolve(new TextEncoder().encode('%PDF-1.4').buffer)
+    await act(async () => {
+      await peek.promise
+    })
+    expect(fullRead).not.toHaveBeenCalled()
+    expect(props.onAttachImage).not.toHaveBeenCalled()
+    expect(props.onRefuseFile).not.toHaveBeenCalled()
   })
 
   it('refuses aggregate PDF paste and drop before reading rejected bytes', async () => {
