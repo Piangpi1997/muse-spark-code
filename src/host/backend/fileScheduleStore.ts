@@ -170,7 +170,7 @@ export function createFileScheduleStore(deps: FileScheduleStoreDeps): ScheduleSt
       if (stored === undefined) {
         continue
       }
-      if (stored.expiresAtMs < now) {
+      if (stored.expiresAtMs <= now || stored.nextFireAtMs >= stored.expiresAtMs) {
         await rm(jobPath(id), { force: true })
         continue
       }
@@ -231,7 +231,8 @@ export function createFileScheduleStore(deps: FileScheduleStoreDeps): ScheduleSt
         stillStored?.sessionId === job.sessionId &&
         stillStored.workspaceRoot === job.workspaceRoot &&
         stillStored.accountId === job.accountId &&
-        stillStored.prompt === job.prompt
+        stillStored.prompt === job.prompt &&
+        deps.now() < stillStored.expiresAtMs
       )
     },
   }

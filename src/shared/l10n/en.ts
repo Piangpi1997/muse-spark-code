@@ -540,6 +540,7 @@ export const EN = {
   usagePercentUsed: '{percent} used',
   usageResetsIn: 'resets in {duration}',
   usageAsOf: 'as of {time}',
+  usageAwaitingFreshReport: 'Waiting for a fresh Muse Code usage report.',
   usageNoSubscription:
     'No subscription usage reported yet. Muse Code reports it after the first turn of a conversation.',
   usageModelApiNote:
@@ -1180,8 +1181,7 @@ export const EN = {
   paidWebSearchPrice: '{price} per 1,000 searches',
   paidImagePrice: '{price} per image',
   paidVoicePrice: '{price} per hour of audio',
-  paidScheduledPrice:
-    '{input}/1M input, {cached}/1M cached input, {output}/1M output tokens (standard tier; contributor tier costs less)',
+  paidScheduledPrice: '{input}/1M input, {cached}/1M cached input, {output}/1M output tokens',
   // The confirmation shown when a paid feature is turned on; {feature} is its name.
   paidConfirmTitle: 'Turn on {feature}?',
   paidConfirmWebSearch:

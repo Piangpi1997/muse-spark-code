@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import { isPdf, pdfPageCount } from '../../src/core/pdf'
+import { PDF_PAGE_TREE_SCAN_LIMIT } from '../../src/shared/constants'
 import { pdfFixture } from './helpers/pdfFixture'
 
 describe('PDF input inspection', () => {
@@ -21,6 +22,51 @@ describe('PDF input inspection', () => {
       new URL('../fixtures/compressed-pages-unlinked.pdf', import.meta.url),
     )
     expect(isPdf(bytes)).toBe(true)
+    expect(pdfPageCount(bytes)).toBeUndefined()
+  })
+
+  it('recognises a PDF name escape on a compressed page tree', () => {
+    const bytes = readFileSync(
+      new URL('../fixtures/compressed-pages-unlinked.pdf', import.meta.url),
+    )
+    const source = bytes.toString('latin1')
+    const escaped = source.replace('<< /Type /ObjStm /N', '<</Type /Obj#53tm/N')
+    expect(escaped).not.toBe(source)
+    // Same byte length keeps this fixture's cross-reference offsets valid.
+    expect(Buffer.byteLength(escaped, 'latin1')).toBe(bytes.byteLength)
+    expect(pdfPageCount(Buffer.from(escaped, 'latin1'))).toBeUndefined()
+  })
+
+  it('reserves the full budget for an escaped encryption name', () => {
+    expect(pdfPageCount(pdfFixture(1, '/Review /Encr#79pt'))).toBeUndefined()
+  })
+
+  it.each([{ pageTreeType: 'Pag#65s' }, { countName: 'Co#75nt' }])(
+    'does not trust a visible decoy count beside an escaped page-tree name: %o',
+    (options) => {
+      expect(pdfPageCount(pdfFixture(50, '', { ...options, withDecoy: true }))).toBeUndefined()
+    },
+  )
+
+  it.each([{ typeGap: '% a page-tree comment\n' }, { countGap: '% a count comment\n' }])(
+    'does not trust a decoy count when comments hide the real tree: %o',
+    (options) => {
+      expect(pdfPageCount(pdfFixture(50, '', { ...options, withDecoy: true }))).toBeUndefined()
+    },
+  )
+
+  it.each(['<< /Type /Pages /Kids [] >>', '<< /Type /Pages /Count 100001 >>'])(
+    'does not use a decoy count beside an ambiguous visible page tree: %s',
+    (extra) => {
+      const bytes = new TextEncoder().encode(`%PDF-1.4\n${extra}\n<< /Type /Pages /Count 1 >>\n`)
+      expect(pdfPageCount(bytes)).toBeUndefined()
+    },
+  )
+
+  it('reserves the full budget when page-tree marker volume exceeds the bounded inspector', () => {
+    const bytes = new TextEncoder().encode(
+      `%PDF-1.4\n${'<< /Type /Pages /Count 1 >>\n'.repeat(PDF_PAGE_TREE_SCAN_LIMIT + 1)}`,
+    )
     expect(pdfPageCount(bytes)).toBeUndefined()
   })
 

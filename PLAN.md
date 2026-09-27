@@ -1916,6 +1916,22 @@ tools regardless of a server's read-only hint. The M52 join adds core refusal
 of scheduled create, cancel and run before storage, claim or paid use. Focused
 tests pass; final side-branch certification remains open (M53 below).
 
+PR #41 review narrows the rewind boundary: a steered user card shares its
+turn with the original prompt, so its fork cut must use the preceding
+distinct completed turn or a fresh conversation. Rewind of a selected turn
+still running is hidden and refused until its steered image replay settles.
+Restored Model API image bytes must match the selected user card's persisted
+item identity, never the first user-role replay entry with the same turn ID.
+Accepted compaction must record its actual summarized turn across save and
+resume; a missing replay entry alone does not prove a compaction boundary.
+A Muse Code side panel may resume only its own side fork, never another
+ordinary session from History.
+Live cards retain a webview-local ID until History reload, so Model API turn
+acceptance must also return the backend-reserved replay item ID. Keep the
+local ID for UI reconciliation and use that durable ID for image restoration,
+including steering, queued turns and acknowledgements arriving after a turn
+already completed; never treat a webview-supplied ID as a durable backend ID.
+
 ### D47 — File input follows each backend's proven wire (2026-09-25)
 
 Meta's [file handling guide](https://dev.meta.ai/docs/file-handling) permits
@@ -1930,7 +1946,9 @@ tracks the missing MSP feature. We do not send an invented part to Muse Code.
   Meta's 50 MB limit. No persistent Files API upload or new dependency.
   Images still work. A bounded UTF-8 text file picked from the trusted workspace and
   visible in its file index becomes a named `input_text` part after its real
-  path is checked against symlink escapes; protected/private paths are
+  path is checked against symlink escapes; read the same checked absolute
+  target after the indexed/private check so a retargeted alias cannot swap in
+  private bytes. Protected/private paths are
   refused. Binary file types are refused, never decoded as text. The
   Model API `read_file` tool reads UTF-8 text, PDFs and images from confined
   workspace paths. A PDF or image read by that tool travels as a user content
@@ -1946,6 +1964,12 @@ tracks the missing MSP feature. We do not send an invented part to Muse Code.
   page counter reads only the page-tree dictionary's direct `/Count`; a
   nested dictionary's unrelated `/Count` must not shrink that reservation.
   If the direct count cannot be established, the PDF is uncountable here.
+  An escaped page-tree `/Pages` or `/Count` name can hide a real count behind
+  an unlinked visible decoy; comments between `/Type` and `/Pages` or after
+  `/Count` can do the same. Treat these ambiguous forms as uncountable and
+  reserve all 50 slots. A visible page-tree candidate with a missing,
+  non-positive or out-of-range direct count is ambiguous too: a separate
+  one-page decoy must never lower the reservation.
   The Model API
   extension also caps base64 media to 48 million characters per new message
   and replay request. This is a conservative aggregate memory/request bound,
@@ -1961,6 +1985,10 @@ tracks the missing MSP feature. We do not send an invented part to Muse Code.
   UI shows PDF names as file chips and restores them from Model API session
   history. This does not claim the older bytes remain visible to the model
   after either budget clips them.
+  Conversation rewind keeps its image-only behavior. PDF and named text file
+  cards hide that choice in the panel, and a forged request is refused before
+  fork or clear: exact file bytes cannot be restored from every backend and
+  older History record, so a filename chip must not imply they came back.
   If a tool round stops or fails before its media is delivered, replay keeps
   a path-only explanation. Stop also removes a read-file media message from
   future replay when it interrupts that message's delivery request.
@@ -1969,7 +1997,7 @@ tracks the missing MSP feature. We do not send an invented part to Muse Code.
 
 | #   | Question                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            | Default until answered                                                |
 | --- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
-| Q1  | **Resolved 2026-09-22:** owner authorised installing anything needed; Muse Code CLI 1.3.0 installed via the official installer. The owner holds both a Muse Code subscription (CLI signed in by device code) and a pay-as-you-go Model API key; M7 keeps them apart (D1 amendment).                                                                                                                                                                                                                                                                                                                 | Closed.                                                               |
+| Q1  | **Resolved 2026-09-22:** owner authorised installing anything needed; Muse Code CLI 1.3.0 installed via the official installer. The owner reported Muse Code CLI device sign-in and a pay-as-you-go Model API key; M7 keeps them apart (D1 amendment). A separate current Muse Code paid entitlement or tier is unverified; the personal Muse Power/Maximum screenshot is not CLI entitlement proof.                                                                                                                                                                                                | Closed.                                                               |
 | Q2  | **Resolved 2026-09-22:** publisher `RandyNorthrup` read from the signed-in marketplace management page. Display name stays "Muse Spark Code (Unofficial)" unless the owner asks otherwise.                                                                                                                                                                                                                                                                                                                                                                                                          | Closed.                                                               |
 | Q3  | **Resolved 2026-09-22:** owner wants both the CLI (MSP) backend and the Model API backend in the first release. M7 is required for v0.1.0.                                                                                                                                                                                                                                                                                                                                                                                                                                                          | M7 required; see §10.                                                 |
 | Q4  | **Resolved 2026-09-22 (M9, superseding the M8 answer):** voice dictation ships through the operating system's own recogniser, at no API cost and with no third-party code (owner's constraints): Windows PowerShell 5.1 + `System.Speech` on Windows, a Swift helper on Apple's Speech framework on macOS (owner chose this over an `osascript` bridge), and a dimmed button with the reason on Linux (no distribution ships a recogniser; the owner may revisit). The M8 finding stands for the webview itself: Electron's Web Speech recogniser is dead, so recognition runs in a helper process. | Closed; see M9.                                                       |
@@ -3893,7 +3921,61 @@ translations. The order is D36's table:
 | M55       | Sign in and install Muse Code from the panel (M41 folded in)                                                                          |
 | M56       | Enterprise network: proxy and certificates, the sandbox network switch, no session log, the CLI's config status                       |
 
+### M53 follow-up — Account & usage reset accuracy
+
+**Status 2026-09-26: integrated in M53 PR #41, merged as `be34ee8`
+(tree `5757e29`).** Its seven hosted jobs passed in PR run
+`36298748478`; the follow-up used that M53 gate, with no separate hosted
+run. Certification record:
+`docs/certification/m53-usage-timing.md`.
+
+- Use Muse Code's `usage/read` and `usage/changed` account percentages and
+  absolute reset timestamps as reported. Its SDK has one account-level usage
+  payload, not model-specific quota or plan-name fields. Meta's public Muse
+  Code subscription page publishes an Everyday five-hour allowance, with
+  High 5× and Power 20× capacity, but no per-model conversion or weekly reset
+  rule. The owner's personal Muse Power/Maximum Upgrade screen is separate
+  from Muse Code CLI usage; its weekly token grants do not establish the CLI's
+  `usage/read` entitlement. Do not derive countdowns or usage weights from
+  either plan table, selected model or opaque MSP tier.
+- Recompute visible countdowns while Account & usage stays open, at least
+  once per minute. When a reported reset has passed without a newer frame,
+  label that row as awaiting fresh usage and hide its old percentage and
+  countdown. Retain the observation's age so the user can see why.
+- Drop the global last-usage fallback and attempt to erase its legacy stored
+  value on activation. Cleanup failure does not block activation because no
+  code reads the old value. It has no account identity, so a new sign-in must not inherit
+  another account's plan, percentages or reset time. Clear the webview's
+  report on authentication changes. An empty `usage/read` also clears a
+  same-host observation because the account may have changed. Within one
+  live host, prefer the newest `observedAtMs`; an older or empty read begun
+  before a newer `usage/changed` must not overwrite that event. Discard
+  results from a host stopped or replaced.
+- The timer, expired row, authentication boundary and out-of-order delivery
+  red drills failed before correction and passed after. Exact integrated
+  quality and hosted gates passed before PR #41 merged; the isolated
+  checkpoint alone was never used as certification.
+
 ### M51 — Hooks on the Model API backend (D36)
+
+PR #39 review found a `PreToolUse` permission gap at the M49 join: the
+memory-tool branch returned before forwarding the hook's `ask` decision,
+so `add_memory` or `edit_memory` could write in Bypass without a card.
+The forced-approval bit now reaches the memory permission judgment after
+path placement and before execution. A forced card requires a human
+decision even when `PermissionRequest` hooks allow or Edit automatically
+would ordinarily answer a file write; Plan and Restricted Mode refusals
+still take precedence. The Bypass/Edit memory-write red tests found no
+card before this correction and now pass. Positive allow-once and
+hook-forced read paths also pass locally. Exact staged tree `0fbe2c47`
+passed full WIN-11-VM quality: 2,041 tests (3 skipped), 304 accessibility
+pages with zero violations or missing results, zero audit/secret/SAST
+findings, and zero checkout-owned processes. The next documented tree
+`58bcb9c5` passed local Windows `npm run quality` with the same 2,041/3
+unit result and 304-page accessibility result; all static, build, audit,
+secret and SAST gates passed. Redacted staged-patch gitleaks and independent
+process audit also found zero. This latest receipt changes the documented
+tree again, so its exact local gate and hosted review remain before merge.
 
 Independent final review found an unchecked cast in the Model API host test's
 fake response-body helper. The review cleanup replaces it with a runtime
@@ -3935,10 +4017,10 @@ Run `36282344418` then reported `isTimedOut: true`, `elapsedMs: 11027`,
 empty stdout/stderr and no cancellation. Microsoft documents that
 [stdin is not connected to PowerShell's pipeline for input](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_redirection?view=powershell-5.1),
 while [`Console.In` reads standard input](https://learn.microsoft.com/en-us/dotnet/api/system.console.in?view=netframework-4.8.1).
-On Windows, the hook wrapper now explicitly reads its UTF-8 stdin and pipes
-it to cmd, with the existing 256 KiB hook-input cap enforced before spawn;
-the job-object join, allowlisted environment, 10 second test operation cap
-and child command line stay intact. A local Unicode JSON echo drill passed;
+A diagnostic Windows wrapper explicitly read UTF-8 stdin and piped it to
+cmd, with the existing 256 KiB hook-input cap enforced before spawn; the
+job-object join, allowlisted environment and child command line stayed
+intact. A local Unicode JSON echo drill passed;
 removing the adapter cap made its oversized-input guard test fail before
 restoration. Exact staged tree `c977c836` passed a real Unicode+EOF hook
 drill and full WIN-11-VM `npm run quality`: 2,036 tests passed (3 skipped),
@@ -3947,6 +4029,30 @@ audit, gitleaks and SAST found zero. The remote tree matched before/after
 and process audit found zero checkout-owned processes. This receipt changes
 documentation, so final exact local Windows and hosted branch proof remain
 before a PR.
+Hosted run `36284566101` on `bf559d4` still timed out the controlled
+Windows echo case at 12,232 ms with empty output, despite explicit stdin
+forwarding. That does not prove stdin was the cause. The next diagnostic
+uses a 30 second budget only for this real-process fixture (still far below
+the product's 600 second default) and a 60 second Vitest envelope, while
+keeping the exit/Unicode echo/no-timeout assertions and all separate
+timeout gates. A late success would point to hosted startup pressure; a
+30 second hang would call for deeper I/O work. If late success occurs,
+compare the original wrapper under the same hosted budget before
+retaining extra runtime forwarding code. Run `36285882702` then passed
+all seven hosted jobs on `cadb565`; its Windows Unicode/EOF hook test took
+28,779 ms, near the 30 second fixture cap. An isolated pre-forwarding
+wrapper tree `9ebcdf21` passed that Unicode/EOF test locally and on
+WIN-11-VM with no owned process left. The extra PowerShell read/pipe has
+no demonstrated benefit, so revert only that line while keeping the
+256 KiB adapter guard. Raise this fixture's bounded operation budget to
+60 seconds and its Vitest envelope to 90 seconds, still below the 600
+second product default; all separate timeout behavior tests remain. Exact
+staged tree `b9667382` then passed a focused Unicode/EOF test and full
+WIN-11-VM quality: 2,036 tests passed (3 skipped), all 304 a11y pages
+returned with zero violations/undecided/missing, and audit, gitleaks and
+SAST found zero. Remote tree and process audit were clean. This receipt
+changes documentation; exact host-local and hosted proof on the simpler
+wrapper remain required before a PR.
 An M54 integration review found a separate hook-stdin privacy boundary:
 `input_text`, developer instructions, tool descriptions and assistant output
 can themselves contain pasted `data:` media URLs. The common model-call
@@ -4533,7 +4639,7 @@ later passed its exact-tree local and hosted gates before merge.
 
 ### M52 — Scheduled prompts (D36)
 
-**Status 2026-09-26: M51 join staged; combined certification open.** The
+**Status 2026-09-26: PR #40 expiry and tariff fixes staged; final gate open.** The
 isolated M52 worktree is based on `34002ab`; its pre-M47 79-path staged tree
 is pinned at `refs/backup/m52-before-m47`. Sixteen M47-base fake schedule,
 paid guard, UI and workflow suites passed 622/622; all five TypeScript
@@ -4601,6 +4707,40 @@ test failed with the old prompt still visible, then passed after auth-state
 clearing. Backend switches also clear it; transient CLI sign-in on the still
 active Model API backend preserves it until auth actually changes. The
 webview suite passed 98/98 after the fix. Final exact-tree gates remain open.
+A same-backend Model API key replacement then exposed one more boundary:
+`backendStopping(false)` dropped the old session, but its schedule event stayed
+visible and the next `signedIn` event retained it. A controller test failed
+with the old account's prompt still shown. Dropping a Model API session now
+emits an empty schedule list before the asynchronous restart, while a CLI
+sign-in attempt that keeps the session live does not drop it. The focused
+test passed after the fix; no real key or Model API call was used. This
+change requires its own exact-tree full gate before a commit.
+PR #40 review exposed two M52 boundaries. A seven-day interval first fires
+exactly at the seven-day expiry, so normal polling after that instant prunes
+the job without a runnable occurrence. Treat expiry as exclusive when
+calculating fires; reject a cadence with no eligible fire before creating
+storage. An eligible due occurrence remains pending until Run, Cancel or the
+seven-day expiry, whichever comes first. Prune and refuse claims at expiry,
+including old stored jobs whose first fire equals it. The scheduled
+feature-enable price currently quotes
+only standard token rates, and the per-run modal reuses those rates even for
+a contributor model. Show both verified tariff tiers at feature enable and
+the selected model's exact tier in each run modal; an unpriced model cannot
+gain consent. Preserve all other paid gates and the zero-request decline.
+Add red/green expiry, contributor, and unknown-model tests, update all
+localized rate templates and docs, then rerun the exact-tree full gate before
+updating PR #40.
+Seven focused cases failed before the expiry/tariff fix and then passed;
+one more test caught a receipt write crossing expiry and passed after the
+post-write guard. Six affected suites pass 273/273, all TypeScript projects,
+localization, targeted ESLint, Prettier and zero-clone duplication pass.
+No live Model API attempt was used. Full exact-tree quality and hosted PR
+checks remain open at this checkpoint.
+The first frozen candidate `f215881a` passed static, type, localization and
+duplication gates but its full unit gate failed one stale palette expectation
+for the old standard-only price (2,089 other tests passed, three skipped).
+The palette's new two-tier output is intended; update that explicit test,
+prove it green, and rerun full quality on the next exact tree.
 The native price-modal decline was observed with a fake Model API in an
 ordinary VS Code development window; see the receipt below. Meta's [interactive
 guide](https://dev.meta.ai/docs/muse-code/interactive) defines `/loop` as a
@@ -4622,11 +4762,12 @@ cron>" <prompt>` create local, session-scoped schedules; `/loop list` opens
   survives a window restart. Only a loaded session observes due work; no
   external or hidden process runs after VS Code closes.
 - **Money boundary**: scheduling, listing, and cancelling make no Model API
-  call. A due occurrence stays pending until the user explicitly chooses Run,
-  accepts that occurrence's prompt and published Model API token prices in a
+  call. A due occurrence stays pending until Run, Cancel or seven-day expiry,
+  whichever comes first. When the user chooses Run, they accept that
+  occurrence's prompt and published Model API token prices in a
   modal, and the machine-scoped, off-by-default scheduled-prompts paid gate
   is on with its price accepted. Bypass cannot skip this. A declined or closed
-  dialog leaves it pending and spends nothing. A paid transcript row and
+  dialog leaves it pending until expiry and spends nothing. A paid transcript row and
   Account & usage count identify every admitted scheduled run; its tokens
   remain in the session's token-cost estimate, not added twice. A price
   confirmation names one model and session; if either changes while the
@@ -4693,6 +4834,41 @@ integration and full gates on the later tree remain open.
 
 ### M53 — Conversation rewind and side chat (D46)
 
+**PR #41 live-card image follow-up (focused proof):** the webview's local user-card
+ID and Model API's replay user-message ID differ before any History reload.
+`turnAccepted` must carry the backend's ID to the card without replacing its
+local UI ID, including a late acceptance. A promoted steer may later receive
+a new turn ID, so its ID-keyed correction must work on either event order.
+Snapshot validation must preserve the replay ID. Five targeted cases failed
+before the fix and seven passed after it. Three affected suites passed 273/273;
+localization, changed-file lint, formatting and duplication reported zero
+problems. The joined-tree gates remain required before this follow-up is
+certified.
+
+**PR #41 review follow-up (focused proof):** a steered user card can share its turn
+ID with the previous card, so its fork cut must use an earlier distinct turn
+or hide conversation rewind when none exists. Image restoration must identify
+the selected card as well as its turn. A Muse Code side panel may resume only
+its own side fork from History or after a window reload; a foreign session must
+be refused before its Plan mode or goal can change. Five focused assertions
+failed first; disabling the side guard made its History test fail too. Seven
+targeted tests then passed after the source fix; four affected suites passed
+433/433 with all five TypeScript projects, lint, localization and formatting
+green. An active selected turn remained a further gap: menu and forged
+controller request both failed red drills, then were blocked before a fork.
+Model API replay now links
+each primary or steered user message to its exact transcript card; accepted
+compaction stores its real summarized turn through save and resume. Both core
+regressions failed before the fix and passed afterward, including older
+session files. Exact-tree gates and PR review remain required before this
+follow-up is complete.
+
+**Further PR #41 live-card correction pending:** an immediate Model API
+image rewind before History reload still uses the webview-local card ID while
+the durable replay uses a different generated ID. Red-test primary, steered,
+queued and late-acceptance paths; carry the generated ID through acceptance
+without replacing the local row ID, then rerun the exact combined gate.
+
 **Status 2026-09-26: M52 and M54 joins staged; combined certification
 pending** (`docs/certification/m53.md`). Focused tests and merge red drills
 passed on the isolated trees: 628 focused tests on M47 main `34002ab` and
@@ -4705,6 +4881,10 @@ typecheck, localization, lint and formatting. Side-schedule create, cancel
 and run first failed their red test, then were refused before storage, claim,
 HTTP or paid tally; a PDF remains in side-fork replay. Corrected M51 ancestry
 and exact combined quality and browser gates remain open.
+The isolated M52/M53 join then passed eight focused suites 681/681 with
+zero duplication; its key-replacement checkpoint also passed full Windows
+quality (`docs/certification/m53.md`). M54's final ordered join still needs
+its own exact-tree gate.
 
 - **Goal**: rewind conversation context to a selected user turn, preserving
   its prompt as a new draft; ask a side question in a separate branch while
@@ -4777,15 +4957,51 @@ and exact combined quality and browser gates remain open.
 
 ### M54 — PDFs and other files as input (D47)
 
-**Status 2026-09-26: M52/M53 joins staged; combined certification pending.** The
+**I/O review work:** Picker reads must share the bounded, single-handle file
+reader used by Model API tools, returning the normal oversize refusal even if a
+selected local/remote file grows after metadata is checked. Model API
+`read_file` must read text, images and PDFs through the canonical path that
+passed workspace confinement; a retargeted symlink must not switch the bytes
+to a path outside the workspace after the check. Deterministic race tests and
+focused quality gates precede the final ordered-tree certification.
+The same checked-target rule extends to paid image edit sources (M44) before
+the confirmation/API call and to tool-row images (M43). Tool-row image bytes
+must share the bounded single-handle reader so growth after metadata cannot
+cross the 10 MiB limit. Deterministic link-swap and stale-size red drills
+cover these adjacent paths before final certification.
+Paid image output reservation and Model API `write_file`/`edit_file` also keep
+the canonical target selected at confinement: a link retarget must not create
+or edit outside-workspace files between the check and the write. Text-file
+cards keep the requested relative path, and unsaved-editor checks cover both
+the requested and canonical paths. Link-swap tests must prove the outside
+target is untouched and that an unavailable reservation sends no paid call.
+
+**Status 2026-09-27: M51–M53 merged; M54 code-tree gates passed, certification pending.** The
 isolated M54 worktree is based on `34002ab`; its pre-M46 50-path staged tree
 is pinned at `refs/codex-backups/m54-pre-m46-20260926`. Focused PDF and
 replay checks passed; the M47-base reconciliation passed 724 focused
 attachment, replay, workflow and backend tests, all five TypeScript projects,
-localization and lint. M48–M53 are now staged together; corrected M51 ancestry
-and full quality/browser gates on the combined tree remain open. A compressed
+localization and lint. M48–M53 are now merged on main. The combined M54 code
+tree `307157a` passed full Windows VM and Mac gates; its docs receipt, final
+ordered ancestry and hosted PR gates remain open. A compressed
 or encrypted page tree with
 unknown count still reserves all 50 image slots (D47).
+The raw page-tree inspector also has a fixed candidate limit: excessive
+`/Type /Pages` markers return an unknown count and reserve all 50 slots,
+bounding host CPU work on a crafted document within the accepted byte cap.
+PDF name `#HH` escapes can hide `/Type`, `/ObjStm`, `/Encrypt`, `/Pages` or
+`/Count`; comment-separated type/count tokens are ambiguous too. Those page
+trees reserve all 50 slots. Tool `read_file` and
+the local attachment picker must bind size check and bytes to one open file
+and stop after at most the permitted size plus one byte, even if a workspace
+file grows or its path is replaced between asynchronous operations. The
+picker keeps its existing over-limit refusal and workspace path policy;
+text attachments read the canonical target that passed that policy.
+An edit or paid image approval binds the canonical target it classified;
+the executing tool must use that target and refuse if a workspace alias
+resolves elsewhere after the card. Paid image sources use the bytes and
+canonical paths approved before the card, with no new private-file read or
+HTTP request after an alias changes.
 After the M54 Stop replay fix, nine focused suites passed 531/531 and all
 five TypeScript projects passed on this tree. M54-on-M47 passed full Windows
 `npm run quality` on staged tree `9b01560` (see receipt below); that result
@@ -4809,7 +5025,7 @@ passed full local Windows quality before its commit `5487149`: 2,113 unit
 tests passed, build and audit clean, accessibility and security gates green.
 The M53 join now preserves PDF media in side-fork replay and refuses its
 scheduled paid controls in core; 614 focused tests passed. The final combined
-tree still needs quality and hosted gates after corrected M51 ancestry.
+tree's receipt still needs local quality and hosted PR gates.
 
 - **Goal:** a user can send a PDF to the Model API backend from the picker,
   paste or drop, then see it in the sent card and restored history; the agent
@@ -4835,7 +5051,9 @@ tree still needs quality and hosted gates after corrected M51 ancestry.
   and hook previews without media bytes; M52 confirmed paid runs with PDFs
   already in replay; M53 rewind of PDF/text chips and Plan-mode side chats
   with inherited PDF context. M52 confirmed paid replay and M53 side-fork PDF
-  replay now have focused tests on the staged join. The other cross-checks,
+  replay now have focused tests on the staged join. Conversation rewind of a
+  PDF/text card is explicitly refused until exact file-byte restoration is
+  available. The other cross-checks,
   exact-tree quality and browser gates still precede final certification.
 - **Kubuntu exact-tree gate attempt:** the private `10.10.11.212` checkout of
   staged tree `7cd2d8d` passed `npm ci`, then `npm run quality:gates` stopped
@@ -4884,19 +5102,32 @@ The CLI itself is not bundled: it is Meta's closed-source binary.
 
 ## 7. Gates
 
-**Pre-PR delivery (2026-09-26: trigger merged at `10522223`; first manual
+**Pre-PR delivery, historical (2026-09-26: trigger merged at `10522223`; first manual
 branch dispatch run `36276240077` succeeded on head `ac9df5a` in all seven
 jobs).** The owner
 wants platform failures found and fixed before a pull request is opened.
-`ci.yml` gains `workflow_dispatch`, calling the same `build.yml` as pushes and
+`ci.yml` gained `workflow_dispatch`, calling the same `build.yml` as pushes and
 pull requests. `CONTRIBUTING.md` gives the order: integrate milestones, run
 local quality on the exact tree, collect platform evidence, get an independent
 review, push, dispatch hosted CI and inspect its SHA and every job before
-opening a pull request. No build job or threshold changes. GitHub requires a
+opening a pull request. No build job or threshold changed. GitHub requires a
 manually dispatched workflow on the default branch, so the first pre-PR branch
 run could happen only after this trigger landed on `main`. Its recorded
-run and job evidence prove the process; each feature branch still needs its
-own exact-SHA run before a PR. Pull-request CI and review still gate merge.
+run and job evidence proved that process. The manual pre-PR dispatch policy
+was superseded by the M52 cleanup below; pull-request CI and review still
+gate merge.
+
+**M52 CI trigger cleanup (2026-09-26).** The owner now uses exact-tree local
+and VM gates as the pre-PR filter, then opens one pull request whose event runs
+the seven hosted jobs. A separate routine manual branch dispatch duplicates
+that run. A protected merge of a reviewed PR already has the same code tree,
+so the automatic `push` to `main` also duplicates the seven jobs. Remove only
+the `ci.yml` main-push trigger; retain `pull_request` and optional
+`workflow_dispatch` for a deliberate branch check without a PR. The release
+workflow remains tag-triggered and still calls the shared `build.yml`; no
+build jobs or thresholds change. Update contributor instructions, PR proof
+fields, the README and workflow comments to match. Verify the trigger locally
+with a red drill, then certify the final M52 tree and PR run before merge.
 
 | Gate                  | Command                                                                                                                                                                                                         | Status                                                                                                                                                                                                     |
 | --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

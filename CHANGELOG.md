@@ -12,12 +12,20 @@ while they are (PLAN.md D30, D34).
 
 ### Added
 
-- **Pre-PR branch CI.** The existing cross-platform CI can be run
-  manually on a pushed branch before a pull request. It runs the same shared
-  build as pull requests; the PR template records the exact tested tree,
-  independent review, staged-change secret scan, branch run and seven job
-  conclusions. See the sequence in `CONTRIBUTING.md`. Manual dispatch is
-  available now that the trigger is on `main`.
+- **M53 review fixes (pending final gates).** A steered user message now cuts
+  conversation rewind at an earlier distinct turn; an unsafe cut is hidden.
+  Image restoration names the selected user card. A Muse Code side panel's
+  History and reload stay bound to its own side fork. Live Model API cards keep
+  their UI IDs while carrying the backend replay ID, so an image can be
+  restored before a History reload. Promoted steers correct their turn on
+  either event order without restarting a completed turn.
+
+- **Optional branch CI.** The cross-platform CI can be run manually on a
+  pushed branch when a pull request is not being opened. It uses the same
+  shared build as pull requests. The normal path uses local and VM gates as
+  the filter, then records the exact tested tree, independent review,
+  staged-change secret scan and the pull request's seven job conclusions.
+  See `CONTRIBUTING.md`.
 - **Subagents on the Model API backend** (M48, PLAN.md D45). Child sessions
   run in parallel with bounded capacity, their own transcript, the existing
   tool approvals and workspace rules, and usage counted with the parent.
@@ -62,8 +70,10 @@ while they are (PLAN.md D30, D34).
   cannot be hidden by a post-tool hook stop.
   Model-call hook text previews also remove pasted media data URLs before
   shortening user text, instructions, tool descriptions or assistant output.
-  Windows hook commands now receive their bounded UTF-8 JSON stdin through
-  PowerShell's explicit pipe to cmd; the payload stays off command lines.
+  Hook stdin is bounded again at the host adapter before process launch;
+  the payload stays off command lines. A `PreToolUse` hook's request for
+  approval now reaches memory tools in Bypass and Edit automatically; its
+  card requires a human, while Plan still refuses writes.
 
 - **Model API scheduled prompts** (M52). `/loop` stores an interval or local
   five-field cron prompt in the current conversation; the panel lists due
@@ -80,8 +90,13 @@ while they are (PLAN.md D30, D34).
   The paid row and tally appear only when the first request starts. Muse Code's
   native cron remains available through its model tools; MSP offers no direct
   scheduler controls. Sign-out or a backend switch clears account-bound
-  prompts from the panel immediately; a temporary CLI sign-in attempt keeps
-  the still-active Model API list.
+  prompts from the panel immediately. Replacing the Model API key also clears
+  the old account's prompts before the backend restarts; a temporary CLI
+  sign-in attempt keeps the still-active Model API list.
+  A seven-day cadence with no fire before expiry is refused; an already due
+  prompt can be claimed only before expiry. Feature enable shows both verified
+  token tiers, and each run quotes its selected model's exact tier, including
+  the contributor cached-input rate; an unknown model cannot gain consent.
 
 - **Conversation rewind and side chats** (M53, PLAN.md D46). A sent message
   can branch before itself and return its prompt to the composer. Model API
@@ -95,6 +110,8 @@ while they are (PLAN.md D30, D34).
   Rewind and side-chat clicks carry their source session, so a late request
   is ignored if that tab has moved to another session. Closing a
   side chat returns focus to its original tab while that tab remains open.
+  Conversation rewind waits for the selected turn to finish so pending steered
+  images cannot be mistaken for saved replay.
   Its locked Plan mode leaves `Shift+Tab` available for keyboard navigation.
   Muse Code's Windows 1.3.0 fork limitation still hides these actions.
 
@@ -112,13 +129,32 @@ while they are (PLAN.md D30, D34).
   backends; excluded and outside files stay path mentions, and private files
   are refused. The PDF page budget reads the page tree's own count even
   when nested metadata has another count, preventing an oversized request.
+  A document with too many page-tree markers gets the conservative full
+  50-slot reservation, keeping host inspection bounded. Escaped PDF object
+  stream, encryption or page-tree names, comments obscuring page-tree
+  tokens, or a missing/out-of-range page count also reserve 50 slots.
+  Workspace PDF, image and
+  text tool reads check size and read through one bounded file handle, so a
+  growing or replaced file cannot bypass the host byte cap.
+  Picked files use that bounded reader too; text, image and PDF `read_file`
+  calls read the checked canonical target when a link is retargeted after
+  workspace confinement. Model API `write_file` and `edit_file` now read and
+  write that checked target as well, while retaining their requested paths
+  on cards and checking unsaved changes under both path names. An indexed text
+  attachment also reads its checked target. Write and paid image approvals
+  bind that target and the image source bytes before the card; changed links
+  are refused before a protected write or paid request.
+  Conversation rewind is hidden for PDF and named text file cards; a direct
+  request is refused before fork or clear. Image-only rewind remains available.
   Stop removes tool-read media from future replay if its turn ends early.
 
 - **Image edits** (M44, PLAN.md D37). With image generation on, the model
   can also change one workspace image, or combine up to four, by a prompt,
   into a new PNG (`edit_image`, Meta's `/images/edits`, $0.01 per image).
   The card names the images it starts from; everything that could fail is
-  checked before anything is asked or billed.
+  checked before anything is asked or billed. Image-edit sources now read
+  their checked canonical targets if a workspace link retargets. New image
+  output is reserved at its checked target before any paid request.
 - **Images and Muse Voice on the Muse Code backend** (M44). While a Model
   API key is stored, the extension's own `ide` tool server offers Muse Code
   an image and an image-edit tool, and the microphone can use Muse Voice:
@@ -186,6 +222,9 @@ while they are (PLAN.md D30, D34).
   the Model API backend made, shows in its row. Every other tool in Muse
   Code's list has a name, an MCP tool reads "tool (server)", and any other
   result is indented JSON. All built from a live capture of Muse Code 1.3.0.
+  Tool-row pictures now use the checked workspace target and a bounded,
+  single-handle read, so a changing link or growing file cannot bypass the
+  10 MiB preview limit.
 - **MCP servers on the Model API backend** (M50, PLAN.md D42). The window
   runs the MCP servers of Muse Code's settings file itself, local (stdio)
   and remote (streamable HTTP), with a client of its own: their tools are
@@ -262,6 +301,10 @@ while they are (PLAN.md D30, D34).
 
 ### Changed
 
+- **One hosted CI run per reviewed tree.** Pull requests still run the seven
+  cross-platform jobs. Protected `main` merges no longer launch the same jobs
+  again on an identical tree; manual branch dispatch remains available for
+  diagnostics without an open pull request.
 - **Windows unit test scheduling (M50).** Vitest runs test files one at a time
   on Windows so concurrent MCP job-helper launches cannot starve the hosted
   runner past the MCP startup deadline. Test selection, coverage, and deadlines
@@ -274,6 +317,14 @@ while they are (PLAN.md D30, D34).
 
 ### Fixed
 
+- **Account & usage reset timing (M53 follow-up).** The open modal updates
+  its countdown each minute and stops treating an expired report as current.
+  It uses Muse Code's reported account-level percentages and reset timestamps
+  without guessing model or plan multipliers. Sign-out and authentication
+  changes clear visible usage; the old global snapshot is no longer read and
+  is removed during activation when storage permits. An empty CLI read also
+  clears a same-host snapshot. A late
+  read cannot replace a newer report or restore a stopped host's usage.
 - **Windows MCP stdio startup (M50).** A compiled C# job executable now starts
   each configured server directly. PowerShell only compiles it once, avoiding
   per-server startup delay while retaining binary pipes, job containment and

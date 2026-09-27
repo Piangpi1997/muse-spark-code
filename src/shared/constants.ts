@@ -49,7 +49,7 @@ export const COMMAND_IDS = {
 export const GLOBAL_STATE_KEYS = {
   /** "Don't ask again" on the Windows sandbox setup prompt. */
   sandboxPromptSuppressed: 'museSpark.sandboxPromptSuppressed',
-  /** The subscription window the CLI last reported, shown "as of" until a fresh one (M16). */
+  /** Legacy unscoped subscription snapshot, erased at activation (M53 follow-up). */
   lastUsage: 'museSpark.lastUsage',
   /**
    * The paid features whose price the user accepted in the confirmation
@@ -431,6 +431,7 @@ export const MODEL_API_PDF_PAGE_IMAGES = 50
 // The page count is read from a directly visible PDF page tree when cheap.
 export const PDF_HEADER_WINDOW_BYTES = 1024
 export const PDF_DICTIONARY_SCAN_CHARS = 4096
+export const PDF_PAGE_TREE_SCAN_LIMIT = 1024
 // A page count past this is a misread, not a document.
 export const PDF_PAGE_COUNT_MAX = 100_000
 
@@ -601,6 +602,7 @@ export const MODEL_API_STREAM_IDLE_MS = 300_000
 export const BYTES_PER_MIB = 1024 * 1024
 export const TOOL_FILE_MAX_MIB = 10
 export const TOOL_FILE_MAX_BYTES = TOOL_FILE_MAX_MIB * BYTES_PER_MIB
+export const BOUNDED_FILE_READ_CHUNK_BYTES = 64 * 1024
 export const HTTP_UNAUTHORIZED = 401
 // Refused before any work was done: the one status a per-call-billed request retries (M34).
 export const HTTP_TOO_MANY_REQUESTS = 429
@@ -993,6 +995,7 @@ export const OUTPUT_PAGE_BYTES = 256 * 1024
 export const STATUS_VERB_INTERVAL_MS = 4000
 export const MILLISECONDS_PER_SECOND = 1000
 export const SECONDS_PER_MINUTE = 60
+export const USAGE_COUNTDOWN_REFRESH_MS = MILLISECONDS_PER_SECOND * SECONDS_PER_MINUTE
 export const MINUTES_PER_HOUR = 60
 export const HOURS_PER_DAY = 24
 export const DAYS_PER_WEEK = 7
@@ -1484,6 +1487,7 @@ export const MODEL_TEXT = {
   imageGenerationOff:
     'image generation is off; the user turns it on (it is paid) in the palette or the museSpark.modelApiImageGeneration setting',
   imagePathTaken: 'something already exists at that path; choose a new file name',
+  pathChangedAfterApproval: 'path changed after approval; request a new approval',
   // The user said no in the price confirmation (M44): nothing was bought.
   imageDeclined: 'the user declined to buy this image; nothing was bought or written',
   // M45 (PLAN.md D38): the goal loop on the Model API backend, in Muse Code's

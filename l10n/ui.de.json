@@ -467,6 +467,7 @@
   "usagePercentUsed": "{percent} verbraucht",
   "usageResetsIn": "wird in {duration} zurückgesetzt",
   "usageAsOf": "Stand: {time}",
+  "usageAwaitingFreshReport": "Warte auf einen aktuellen Nutzungsbericht von Muse Code.",
   "usageNoSubscription": "Noch keine Abonnementnutzung gemeldet. Muse Code meldet sie nach dem ersten Durchgang einer Unterhaltung.",
   "usageModelApiNote": "Dieses Fenster läuft mit Ihrem Model-API-Schlüssel: Anfragen werden dem Schlüssel nutzungsbasiert berechnet und im Dashboard von dev.meta.ai erfasst.",
   "usageOpenDashboard": "dev.meta.ai öffnen",
@@ -1078,7 +1079,7 @@
   "scheduleRunConfirmAccept": "Diesmal ausführen",
   "scheduleConfirmationExpired": "Modell, Unterhaltung oder Eingabe haben sich während der Bestätigung geändert. Prüfen Sie den Zeitplan und wählen Sie erneut „Ausführen“.",
   "paidScheduledName": "Geplante Prompts",
-  "paidScheduledPrice": "{input}/1 Mio. Eingabe-Token, {cached}/1 Mio. zwischengespeicherte Eingabe-Token, {output}/1 Mio. Ausgabe-Token (Standardtarif; Contributor-Tarif günstiger)",
+  "paidScheduledPrice": "{input}/1 Mio. Eingabe-Token, {cached}/1 Mio. zwischengespeicherte Eingabe-Token, {output}/1 Mio. Ausgabe-Token",
   "paidConfirmScheduled": "Ein fälliger geplanter Prompt wartet darauf, dass Sie ihn ausführen. Vor jedem Model-API-Aufruf wird erneut gefragt. {price}. Abrechnung über Ihren Model-API-Schlüssel; der Gesamtbetrag hängt von den verwendeten Token ab.",
   "usagePaidScheduled": {
     "one": "{count} geplante Ausführung",

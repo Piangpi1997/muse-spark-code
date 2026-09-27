@@ -48,6 +48,7 @@ describe('parseWebviewToHostMessage', () => {
       {
         type: 'rewindConversation',
         sourceSessionId: 's1',
+        itemId: 'u2',
         turnId: 't2',
         lastTurnId: 't1',
         text: 'again',
@@ -90,6 +91,16 @@ describe('parseWebviewToHostMessage', () => {
       },
     ],
     ['rewind without a turn', { type: 'rewindConversation', text: 'again', imageCount: 0 }],
+    [
+      'rewind without a selected card',
+      {
+        type: 'rewindConversation',
+        sourceSessionId: 's1',
+        turnId: 't1',
+        text: 'again',
+        imageCount: 0,
+      },
+    ],
     [
       'rewind with invalid image count',
       {
@@ -159,9 +170,20 @@ describe('parseHostToWebviewMessage', () => {
     ['authState', { type: 'authState', status: 'signedIn' }],
     ['sessionInfo', { type: 'sessionInfo', modelId: 'm', contextLimit: 10 }],
     ['turnAccepted', { type: 'turnAccepted', localId: 'l', turnId: 't' }],
+    [
+      'turnAccepted with replay identity',
+      { type: 'turnAccepted', localId: 'l', turnId: 't', userMessageId: 'backend-u' },
+    ],
     ['sendFailed', { type: 'sendFailed', localId: 'l', reason: 'no' }],
     ['goalCommandResult', { type: 'goalCommandResult', requestId: 'g1', accepted: false }],
     ['agentEvent', { type: 'agentEvent', event: { type: 'turnStarted', turnId: 't' } }],
+    [
+      'promoted steer event',
+      {
+        type: 'agentEvent',
+        event: { type: 'userMessageTurnChanged', userMessageId: 'u1', turnId: 't2' },
+      },
+    ],
     [
       'modelList',
       {
@@ -210,9 +232,17 @@ describe('parseHostToWebviewMessage', () => {
     ['init missing settings', { type: 'init', emptyStateHint: 'h' }],
     ['unknown auth status', { type: 'authState', status: 'maybe' }],
     ['agentEvent with an unknown event', { type: 'agentEvent', event: { type: 'nope' } }],
+    [
+      'promoted steer event without its user id',
+      { type: 'agentEvent', event: { type: 'userMessageTurnChanged', turnId: 't2' } },
+    ],
     ['composerState with a bad effort', { type: 'composerState', effort: 'ultra' }],
     ['notice with an unknown level', { type: 'notice', level: 'panic', text: 'x' }],
     ['goal result without acceptance', { type: 'goalCommandResult', requestId: 'g1' }],
+    [
+      'turnAccepted with invalid replay identity',
+      { type: 'turnAccepted', localId: 'l', turnId: 't', userMessageId: 2 },
+    ],
     [
       'goal result with numeric request id',
       { type: 'goalCommandResult', requestId: 1, accepted: true },

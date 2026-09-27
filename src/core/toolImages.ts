@@ -16,7 +16,8 @@ export type ToolImageResult =
 export interface ToolImageIo {
   readonly realPath: (fsPath: string) => Promise<string>
   readonly fileSize: (fsPath: string) => Promise<number>
-  readonly readFile: (fsPath: string) => Promise<Uint8Array>
+  /** Reads at most maxBytes plus one from one open file handle. */
+  readonly readBytes: (fsPath: string, maxBytes: number) => Promise<Uint8Array | undefined>
 }
 
 /** The media type a path's name gives, when it names an image the panel shows. */
@@ -45,10 +46,15 @@ export async function loadToolImage(
   if (!resolved.ok) {
     return resolved
   }
-  const size = await io.fileSize(resolved.absolute)
+  const size = await io.fileSize(resolved.checkedAbsolute)
   if (size > MAX_IMAGE_BYTES) {
     return { ok: false, reason: `${given} is larger than ${String(MAX_IMAGE_BYTES)} bytes` }
   }
-  const bytes = await io.readFile(resolved.absolute)
-  return { ok: true, dataUri: `data:${mediaType};base64,${Buffer.from(bytes).toString('base64')}` }
+  const bytes = await io.readBytes(resolved.checkedAbsolute, MAX_IMAGE_BYTES)
+  if (bytes === undefined) {
+    return { ok: false, reason: `${given} does not exist` }
+  }
+  return bytes.byteLength > MAX_IMAGE_BYTES
+    ? { ok: false, reason: `${given} is larger than ${String(MAX_IMAGE_BYTES)} bytes` }
+    : { ok: true, dataUri: `data:${mediaType};base64,${Buffer.from(bytes).toString('base64')}` }
 }

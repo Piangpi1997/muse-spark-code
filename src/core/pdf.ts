@@ -14,9 +14,19 @@ import {
   PDF_DICTIONARY_SCAN_CHARS,
   PDF_HEADER_WINDOW_BYTES,
   PDF_PAGE_COUNT_MAX,
+  PDF_PAGE_TREE_SCAN_LIMIT,
 } from '../shared/constants'
 
 const PDF_HEADER = '%PDF-'
+const PDF_NAME_ESCAPE_RADIX = 16
+const PDF_NAME_ESCAPE_SOURCE_CHARS = 3
+const PDF_CRITICAL_NAME_MAX_LENGTH = 'Encrypt'.length
+const PDF_CRITICAL_NAME_SOURCE_MAX_LENGTH =
+  PDF_CRITICAL_NAME_MAX_LENGTH * PDF_NAME_ESCAPE_SOURCE_CHARS
+const PDF_CRITICAL_NAMES = new Set(['type', 'objstm', 'encrypt', 'pages', 'count'])
+const PDF_NAME_HEX_PAIR = /^[0-9A-Fa-f]{2}$/
+const PDF_NAME_LETTER = /^[A-Za-z]$/
+const PDF_NAME_CONTINUATION = /^[A-Za-z0-9#]$/
 const OBJECT_STREAM_MARKER = '/ObjStm'
 const ENCRYPTION_MARKER = '/Encrypt'
 const DICTIONARY_OPEN = '<<'
@@ -25,6 +35,80 @@ const DICTIONARY_CLOSE = '>>'
 // letters, digits and a few marks; the next token starts with a delimiter).
 const PAGES_TYPE = /\/Type\s*\/Pages(?![A-Za-z0-9])/g
 const COUNT_VALUE = /^\s+(\d+)(?![A-Za-z0-9])/
+const PDF_COMMENT_CANDIDATE = /\/(?:Type|Count)/g
+const PDF_WHITESPACE = ' \t\r\n\f\0'
+
+/** A bounded parse of a PDF name that may encode one or more bytes as `#HH`. */
+function escapedNameAt(text: string, slash: number): string | undefined {
+  let cursor = slash + 1
+  let name = ''
+  let hasEscape = false
+  while (name.length <= PDF_CRITICAL_NAME_MAX_LENGTH) {
+    const character = text[cursor]
+    if (character === '#') {
+      const hex = text.slice(cursor + 1, cursor + PDF_NAME_ESCAPE_SOURCE_CHARS)
+      if (!PDF_NAME_HEX_PAIR.test(hex)) {
+        return undefined
+      }
+      name += String.fromCodePoint(Number.parseInt(hex, PDF_NAME_ESCAPE_RADIX))
+      cursor += PDF_NAME_ESCAPE_SOURCE_CHARS
+      hasEscape = true
+    } else if (character !== undefined && PDF_NAME_LETTER.test(character)) {
+      name += character
+      cursor += 1
+    } else {
+      break
+    }
+  }
+  return hasEscape &&
+    !PDF_NAME_CONTINUATION.test(text[cursor] ?? '') &&
+    PDF_CRITICAL_NAMES.has(name.toLowerCase())
+    ? name
+    : undefined
+}
+
+/** Too many `#` bytes are ambiguous too; inspection work stays bounded. */
+function hasEscapedCriticalName(text: string): boolean {
+  let inspected = 0
+  for (let hash = text.indexOf('#'); hash !== -1; hash = text.indexOf('#', hash + 1)) {
+    inspected += 1
+    if (inspected > PDF_PAGE_TREE_SCAN_LIMIT) {
+      return true
+    }
+    const floor = Math.max(0, hash - PDF_CRITICAL_NAME_SOURCE_MAX_LENGTH)
+    const before = text.slice(floor, hash)
+    const relativeSlash = before.lastIndexOf('/')
+    if (relativeSlash !== -1 && escapedNameAt(text, floor + relativeSlash) !== undefined) {
+      return true
+    }
+  }
+  return false
+}
+
+/** A comment or excessive whitespace after a critical name may hide the real tree. */
+function hasAmbiguousCommentGap(text: string): boolean {
+  let inspected = 0
+  for (const match of text.matchAll(PDF_COMMENT_CANDIDATE)) {
+    inspected += 1
+    if (inspected > PDF_PAGE_TREE_SCAN_LIMIT) {
+      return true
+    }
+    let cursor = match.index + match[0].length
+    let character = text[cursor]
+    while (
+      character !== undefined &&
+      PDF_WHITESPACE.includes(character) &&
+      cursor - match.index < PDF_DICTIONARY_SCAN_CHARS
+    ) {
+      cursor += 1
+      character = text[cursor]
+    }
+    if (character === '%' || cursor - match.index >= PDF_DICTIONARY_SCAN_CHARS) {
+      return true
+    }
+  }
+  return false
+}
 
 function latin1(bytes: Uint8Array): string {
   return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString('latin1')
@@ -166,17 +250,23 @@ function directCount(body: string): number | undefined {
 /** The largest page-tree `/Count` in the text; undefined when there is none. */
 function pageTreeCount(text: string): number | undefined {
   let best: number | undefined
+  let inspected = 0
   for (const match of text.matchAll(PAGES_TYPE)) {
+    inspected += 1
+    if (inspected > PDF_PAGE_TREE_SCAN_LIMIT) {
+      return undefined
+    }
     const dictionary = enclosingDictionary(text, match.index)
     const count = directCount(dictionary?.body ?? '')
     if (
-      count !== undefined &&
-      Number.isSafeInteger(count) &&
-      count > 0 &&
-      count <= PDF_PAGE_COUNT_MAX
+      count === undefined ||
+      !Number.isSafeInteger(count) ||
+      count <= 0 ||
+      count > PDF_PAGE_COUNT_MAX
     ) {
-      best = Math.max(best ?? 0, count)
+      return undefined
     }
+    best = Math.max(best ?? 0, count)
   }
   return best
 }
@@ -186,6 +276,10 @@ export function pdfPageCount(bytes: Uint8Array): number | undefined {
   const text = latin1(bytes)
   // An object stream or encryption can hide the real Pages dictionary.
   // An unrelated visible one must not lower its budget reservation.
-  const hasHiddenObjects = text.includes(OBJECT_STREAM_MARKER) || text.includes(ENCRYPTION_MARKER)
+  const hasHiddenObjects =
+    text.includes(OBJECT_STREAM_MARKER) ||
+    text.includes(ENCRYPTION_MARKER) ||
+    hasEscapedCriticalName(text) ||
+    hasAmbiguousCommentGap(text)
   return hasHiddenObjects ? undefined : pageTreeCount(text)
 }

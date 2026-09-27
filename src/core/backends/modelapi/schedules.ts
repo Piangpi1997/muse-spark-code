@@ -143,7 +143,7 @@ function nextCronFire(
     return undefined
   }
   const start = Math.floor(afterMs / MINUTE_MS) * MINUTE_MS + MINUTE_MS
-  for (let time = start; time <= expiresAtMs; time += MINUTE_MS) {
+  for (let time = start; time < expiresAtMs; time += MINUTE_MS) {
     if (isCronMatch(cron, new Date(time))) {
       return time
     }
@@ -161,7 +161,7 @@ export function nextScheduleFire(
     return nextCronFire(cadence.expression, afterMs, expiresAtMs)
   }
   const next = afterMs + cadence.everyMs
-  return next <= expiresAtMs ? next : undefined
+  return next < expiresAtMs ? next : undefined
 }
 
 /** A local `/loop` command; undefined when the text is an ordinary prompt. */

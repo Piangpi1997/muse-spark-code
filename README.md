@@ -369,7 +369,8 @@ the ones that answer in JSON are shown as what they mean:
   under The panel for moving one there yourself and stopping it.
 - **Pictures**: when the agent reads an image, or the Model API backend
   generates one, the row shows it; click it to open the file. Only images
-  inside the workspace are shown.
+  inside the workspace are shown. The preview reads the checked target with
+  the same 10 MiB file cap if a workspace link or file changes meanwhile.
 - **MCP tools** read "tool (server)", and any tool the panel has no special
   view for shows its arguments and result as indented JSON.
 
@@ -461,7 +462,9 @@ unsupported events and handlers are reported and skipped. Hook commands run as y
 the agent's sandbox, with a narrow environment that excludes the Model API key.
 They get JSON on stdin, have a timeout and output cap, and may approve an
 ordinary tool call that would otherwise ask. Paid calls and protected writes
-still need your confirmation. Review each source with
+still need your confirmation. A `PreToolUse` hook that asks forces a human
+card for memory reads or writes, including in Bypass and Edit automatically;
+Plan still refuses memory writes. Review each source with
 **Muse Spark: Hooks** in the Command Palette before enabling the setting.
 On the Model API backend, that picker shows the machine setting's on/off state
 and opens it. Turning the setting off stops hook dispatch in an open session;
@@ -537,12 +540,16 @@ and **Cancel schedule** controls.
 Each job belongs to this workspace, conversation, and stored Model API key.
 Signing out or switching backends hides its prompts immediately; a temporary
 CLI sign-in attempt leaves the still-active Model API list in place.
-It expires after seven days. Only a loaded conversation checks for due work;
+It expires after seven days; `/loop 7d ...` has no run before that deadline
+and is refused. A due prompt stays pending until Run, Cancel or expiry.
+Only a loaded conversation checks for due work;
 closing VS Code stops checks. A missed recurring interval leaves one due
 occurrence, without a backlog. A due prompt **never runs by itself**: turn
-on **Scheduled prompts (paid)** and accept the published token rates, then
-choose **Run now** and confirm that occurrence's prompt, model and rates in
-a separate modal. Declining leaves it due and makes no API call. Bypass
+on **Scheduled prompts (paid)** and accept both published standard and
+contributor token rates, then choose **Run now** and confirm that
+occurrence's prompt, model and exact tier rates in a separate modal. An
+unpriced model cannot be approved. Declining leaves it due until expiry and
+makes no API call. Bypass
 permissions does not skip either confirmation. A changed model, prompt,
 conversation or paid setting refuses an old confirmation; the client checks
 the key it actually reads before HTTP. A receipt claimed just before such a
@@ -578,10 +585,15 @@ panel cannot present an authoritative native job list or direct cancel.
   there names the Model API backend instead. The Model API agent can read a
   workspace PDF or image through `read_file`; other workspace files use its
   existing UTF-8 text reader. Excluded text files share only a path mention,
-  and the Model API reader confines paths to the workspace. Combined image
+  and the Model API reader confines paths to the workspace. Picker reads stop
+  at the file's size cap even if it grows during the read. Model API text,
+  image and PDF reads use the checked canonical workspace target if a link
+  changes after confinement. Combined image
   and PDF data URLs are capped at 48 million encoded characters per message;
   an excess attachment is refused. Replayed requests use the same cap and
   keep newer media, announcing when older media is omitted from the request.
+  A PDF whose page tree cannot be counted without ambiguity reserves all 50
+  image slots, including when comments or escaped names obscure its count.
   The original attachments remain in local history. A batch of Model API
   `read_file` tool calls uses the same media cap; a file over that batch cap
   gets a failed tool result before its bytes are retained.
@@ -661,7 +673,13 @@ rewind button on any sent message (on hover):
   History. Images return when the backend still has their bytes; the panel
   warns if it cannot restore one. A Model API conversation cannot be rewound
   before its latest compaction. A rewind queued for a session the tab has since
-  left is ignored.
+  left is ignored. Messages steered into one turn use the last earlier turn as
+  their branch point; if none exists, the conversation rewind choice is hidden.
+  Wait for the selected turn to finish before rewinding its conversation.
+  A just-sent Model API image can be restored before History is reopened.
+  Conversation rewind is hidden for PDF and named text file cards because their
+  bytes cannot be restored reliably on every backend and History path. A
+  request made outside the menu is refused before the conversation changes.
 - **Rewind code to here** reverts every edit made after that message, the
   conversation's and its subagents', in the reverse of the order they
   landed. A file the edit created goes to the trash, unless you have added
@@ -681,7 +699,9 @@ review those rules before treating that branch as read only. Close the side
 tab to return to the main one; its branch stays in History. It uses the
 selected backend's normal model allowance or key billing; it does not route
 Model API calls through a Muse subscription. In a side chat, `Shift+Tab`
-moves keyboard focus normally because its permission mode is fixed.
+moves keyboard focus normally because its permission mode is fixed. A side
+panel's History shows only its own side branches; the same boundary applies
+when the window reloads.
 
 Each edit is undone only where its own lines (the changed lines and the few
 around them) are still exactly as the edit left them. If you added or
@@ -698,7 +718,8 @@ not see. On the Model API backend the file tools also refuse a file an
 editor holds unsaved changes to, keep a file's BOM, line breaks and final
 line break, refuse files that are not UTF-8 text rather than rewrite them,
 and replace an existing file with `write_file` only after reading it (as
-Claude Code does).
+Claude Code does). A linked path checks both its requested and canonical
+editor locations for unsaved changes.
 
 **History.** The clock icon lists the workspace's conversations by day with
 search, resume (full transcript), archive and **Show archived**. Archive with
@@ -839,8 +860,16 @@ backend runs no workflows.
 
 - **Account:** auth method, plan, backend, Muse Code version and model.
 - **Usage (Muse Code):** the subscription's current window and week. Muse
-  Code reports them only after a reply; until then the modal shows the last
-  window it reported, dated "as of".
+  Code reports them only after a reply. The modal reads the latest report
+  from the signed-in CLI when opened; it does not use an account-agnostic
+  snapshot after a host restart or sign-out. Countdowns update each minute
+  while the modal is open. Once a reported reset has passed, that row waits
+  for a fresh Muse Code report instead of showing an expired percentage or
+  reset countdown. Each observation is dated "as of". The numbers are the
+  CLI's account-level percentages and reset times: changing the selected
+  model does not create a separate local quota or reset calculation, and an
+  opaque plan ID is shown as "Muse Code subscription". Personal Muse
+  Power/Maximum plan grants are separate from this CLI usage report.
 - **This conversation:** token totals (on Muse Code, prompt tokens as it
   counts them once). On the Model API also the cached tokens, the cache-hit
   rate and a dollar estimate from Meta's published per-token prices
@@ -985,7 +1014,9 @@ While one is on, you can always tell:
   card and no "always allow". Plan refuses it (it writes a file), and a
   path that is taken, outside the workspace, or not a `.png`, or a source
   that is missing, outside the workspace, not a PNG, JPEG or WebP image, or
-  over 10 MB, is refused before anything is asked or billed.
+  over 10 MB, is refused before anything is asked or billed. Edit sources
+  are read from their checked canonical workspace targets, even if a link
+  changes after the check.
 - **Every new child task asks first**, in every mode, Bypass included; Plan
   refuses it. The decision shows its objective, model, published rates and
   four-request ceiling. Retries count; a running note spends the same grant.
@@ -1226,6 +1257,9 @@ message resumes the same session.
   system before touching it: a path that leaves the workspace, directly or
   through a link, is refused, and Windows names that would be reinterpreted
   (alternate data streams, device names, trailing dots) are refused too.
+  Text reads and writes use the checked canonical target if a workspace
+  link changes between the check and the operation. Paid image output is
+  reserved at that same checked target before the API request.
   Its shell tool starts PowerShell or bash by absolute path with the
   environment VS Code's own terminal would give (the editor's internal
   variables removed). Stop and a timeout end everything a command started:
@@ -1418,8 +1452,8 @@ media/                      icons, banner, social preview, README screenshots
 .github/                    workflows (ci, build, release), audit exceptions, pinned semgrep, CODEOWNERS, Dependabot
 ```
 
-**Releases.** CI (`ci.yml`, every push to `main`, every pull request and manual
-branch dispatches) calls
+**Releases.** CI (`ci.yml`, every pull request and optional manual branch
+dispatch) calls
 `build.yml`:
 
 - `quality:gates` on Ubuntu, Windows and macOS;

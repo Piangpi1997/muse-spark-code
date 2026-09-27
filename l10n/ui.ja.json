@@ -456,6 +456,7 @@
   "usagePercentUsed": "{percent} 使用済み",
   "usageResetsIn": "{duration}後にリセット",
   "usageAsOf": "{time} 時点",
+  "usageAwaitingFreshReport": "Muse Code の最新の使用状況レポートを待っています。",
   "usageNoSubscription": "サブスクリプションの使用量はまだ報告されていません。Muse Code は会話の最初のターンの後に報告します。",
   "usageModelApiNote": "このウィンドウは Model API キーで実行されています。リクエストは従量課金の料金でキーに請求され、dev.meta.ai ダッシュボードで集計されます。",
   "usageOpenDashboard": "dev.meta.ai を開く",
@@ -1048,7 +1049,7 @@
   "scheduleRunConfirmAccept": "今回だけ実行",
   "scheduleConfirmationExpired": "確認中にモデル、会話、またはプロンプトが変更されました。予定を確認し、もう一度［実行］を選択してください。",
   "paidScheduledName": "予定されたプロンプト",
-  "paidScheduledPrice": "入力100万トークンあたり {input}、キャッシュ済み入力100万トークンあたり {cached}、出力100万トークンあたり {output}（標準ティア。コントリビューターティアは割安）",
+  "paidScheduledPrice": "入力100万トークンあたり {input}、キャッシュ済み入力100万トークンあたり {cached}、出力100万トークンあたり {output}",
   "paidConfirmScheduled": "期限が来た予定されたプロンプトは、実行されるまで待機します。毎回 Model API 呼び出し前に再確認します。{price}。Model API キーに請求され、合計額は使用トークン数によって変わります。",
   "usagePaidScheduled": {
     "other": "予定された実行 {count} 回"

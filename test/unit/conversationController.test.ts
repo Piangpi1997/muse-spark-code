@@ -32,6 +32,7 @@ import { heldShellToolIo, memoryToolIo, type MemoryToolIo, noopToolIo } from './
 import { createFileScheduleStore } from '../../src/host/backend/fileScheduleStore'
 import { removeFolder } from './helpers/temporaryFolders'
 import { memorySessionStore } from './helpers/fakeSessionStore'
+import { pdfFixture } from './helpers/pdfFixture'
 import {
   fakeInitializeResult,
   fakeMspHost,
@@ -154,8 +155,6 @@ function setup(
     /** How long the IDE tool server takes to answer (a retried start, D25). */
     ideMcpStartMs?: number
     grantedCapabilities?: readonly string[]
-    /** The window a previous session left in the cache (M16). */
-    cachedUsage?: SubscriptionUsage
     shellSandbox?: ShellSandboxPosture
     /** Contributor-tier guard (M7). */
     isConfidentialWorkspace?: boolean
@@ -183,6 +182,8 @@ function setup(
     /** VS Code's workspace trust (M46: Restricted Mode runs no `!` command). */
     isWorkspaceTrusted?: boolean
     isSideChat?: boolean
+    /** The side panel's original fork ID, including after window reload. */
+    sideSessionId?: string
     openSideChat?: (sessionId: string) => void
     /** Hold a host lookup after the action captured its source session. */
     hostGate?: { current: Promise<undefined> | undefined; onWait?: () => void }
@@ -276,6 +277,7 @@ function setup(
   )
   const auth = fakeAuth(options.status)
   const surface = fakeSurface('s', options.isSideChat)
+  surface.takeRestoredSessionId.mockReturnValue(options.sideSessionId)
   const openExternal = vi.fn<(url: string) => void>()
   const hostActions: HostAction[] = []
   let picked: PickedFile[] = []
@@ -293,7 +295,6 @@ function setup(
   const reviews: [string, string, string][] = []
   const opened: [string, string][] = []
   const openedFiles: [string, LineRange | undefined][] = []
-  let cachedUsage: SubscriptionUsage | undefined = options.cachedUsage
   const contributorPrompts: string[] = []
   let remoteBypassPrompts = 0
   // What "Export conversation…" handed the save dialog (M30).
@@ -364,7 +365,11 @@ function setup(
           ? Promise.resolve(PNG)
           : Promise.resolve(new TextEncoder().encode('example text')),
       canonicalRelativePath: (fsPath: string) =>
-        Promise.resolve(fsPath.startsWith('/ws/') ? fsPath.slice('/ws/'.length) : undefined),
+        Promise.resolve(
+          fsPath.startsWith('/ws/')
+            ? { canonical: fsPath.slice('/ws/'.length), checkedAbsolute: fsPath }
+            : undefined,
+        ),
       pickMentionFile: () => Promise.resolve(mentionChoice),
       toRelativePath: (uri: string) =>
         uri.startsWith('file:///ws/') ? uri.slice('file:///ws/'.length) : undefined,
@@ -426,13 +431,6 @@ function setup(
     },
     readToolImage:
       options.readToolImage ?? (() => Promise.resolve({ ok: false, reason: 'no image here' })),
-    usageCache: {
-      read: () => cachedUsage,
-      write: (usage) => {
-        cachedUsage = usage
-        return Promise.resolve()
-      },
-    },
     ideMcpEndpoint: () =>
       new Promise((resolve) => {
         // A server still (re)starting answers later (D25); the session waits.
@@ -491,7 +489,6 @@ function setup(
     inserted,
     opened,
     openedFiles,
-    cachedUsage: () => cachedUsage,
     onSandboxUnavailable,
     saveAll,
     unsaved,
@@ -1080,6 +1077,32 @@ describe('ConversationController: context', () => {
         reason: UI_TEXT.textFilePrivate,
       },
     ])
+  })
+
+  it('reads an indexed text attachment from the checked target after its alias retargets', async () => {
+    const t = setup({ indexed: ['allowed.txt'] })
+    vi.spyOn(t.deps.files, 'canonicalRelativePath').mockResolvedValue({
+      canonical: 'allowed.txt',
+      checkedAbsolute: '/ws/allowed.txt',
+    })
+    const read = vi
+      .spyOn(t.deps.files, 'readFile')
+      .mockImplementation((fsPath) =>
+        Promise.resolve(
+          new TextEncoder().encode(fsPath === '/ws/picked.txt' ? 'PRIVATE_MARKER' : 'SAFE_MARKER'),
+        ),
+      )
+    t.setPicked([{ name: 'picked.txt', fsPath: '/ws/picked.txt', relativePath: 'picked.txt' }])
+    await t.controller.handle({ type: 'pickFile' })
+    expect(read).toHaveBeenCalledWith('/ws/allowed.txt', expect.any(Number))
+    await t.send('text-file', 'Explain this', ['att-1'])
+    const turn = t.server.requestsFor('turn/start')[0]
+    if (turn?.params === undefined) {
+      throw new Error('expected text attachment turn')
+    }
+    const input = JSON.stringify(turn.params['input'])
+    expect(input).toContain('SAFE_MARKER')
+    expect(input).not.toContain('PRIVATE_MARKER')
   })
 
   it('keeps text as a path mention without reading it in an untrusted workspace', async () => {
@@ -1767,6 +1790,31 @@ async function firstUsageReport(t: ReturnType<typeof setup>) {
   return t.surface.posted.at(-1)
 }
 
+async function observeUsage(t: ReturnType<typeof setup>, usage: SubscriptionUsage): Promise<void> {
+  await firstUsageReport(t)
+  t.server.notify('usage/changed', usage)
+  await settle()
+  expect(t.surface.posted.at(-1)).toMatchObject({ subscription: usage })
+}
+
+async function expectEmptyUsageRead(t: ReturnType<typeof setup>): Promise<void> {
+  t.server.handle('usage/read', () => ({}))
+  await t.controller.handle({ type: 'readUsage' })
+  expect(t.surface.posted.at(-1)).not.toHaveProperty('subscription')
+}
+
+async function pendingUsageRead(t: ReturnType<typeof setup>) {
+  await firstUsageReport(t)
+  t.server.silence('usage/read')
+  const read = t.controller.handle({ type: 'readUsage' })
+  await settle()
+  const request = t.server.requestsFor('usage/read').at(-1)
+  if (request?.id === undefined) {
+    throw new Error('usage/read was not sent')
+  }
+  return { read, requestId: request.id }
+}
+
 function withHistory(
   options: Parameters<typeof setup>[0] = {},
   sessionOverrides: Record<string, unknown> = {},
@@ -1794,6 +1842,43 @@ function withHistory(
     name: `${String(params['name'])} (canonical)`,
   }))
   return t
+}
+
+function expectFileRewindRefused(t: ReturnType<typeof setup>): void {
+  expect(t.surface.posted).not.toContainEqual({ type: 'conversationCleared' })
+  expect(t.surface.posted).not.toContainEqual({ type: 'restoreDraft', text: 'Inspect this file' })
+  expect(t.surface.posted).toContainEqual({
+    type: 'notice',
+    level: 'warning',
+    text: UI_TEXT.attachmentUnreadable,
+  })
+}
+
+function latestAcceptedModelTurn(t: ReturnType<typeof setup>) {
+  const accepted = t.surface.posted.findLast((message) => message.type === 'turnAccepted')
+  const info = t.surface.posted.findLast((message) => message.type === 'sessionInfo')
+  if (accepted?.type !== 'turnAccepted' || info?.type !== 'sessionInfo') {
+    throw new Error('expected live turn acceptance')
+  }
+  return { accepted, info }
+}
+
+async function sendPickedAttachmentTurn(
+  t: ReturnType<typeof setup>,
+  controller: ConversationController,
+  attachmentId: string,
+  localId: string,
+  text: string,
+): Promise<void> {
+  await controller.handle({
+    type: 'sendMessage',
+    localId,
+    text,
+    attachmentIds: [attachmentId],
+  })
+  await vi.waitFor(() => {
+    expect(agentEvents(t).some((event) => event.type === 'turnCompleted')).toBe(true)
+  })
 }
 
 /** One completed source turn for fork and side-chat tests (M53). */
@@ -2062,6 +2147,7 @@ describe('ConversationController: session history (M6)', () => {
     await t.controller.handle({
       type: 'rewindConversation',
       sourceSessionId: 's1',
+      itemId: 'u2',
       turnId: 't2',
       lastTurnId: 't1',
       text: 'second',
@@ -2075,6 +2161,7 @@ describe('ConversationController: session history (M6)', () => {
     await t.controller.handle({
       type: 'rewindConversation',
       sourceSessionId: 'forked',
+      itemId: 'u1',
       turnId: 't1',
       text: 'first',
       imageCount: 1,
@@ -2082,6 +2169,126 @@ describe('ConversationController: session history (M6)', () => {
     expect(t.surface.posted).toContainEqual({ type: 'conversationCleared' })
     expect(t.surface.posted).toContainEqual({ type: 'restoreDraft', text: 'first' })
     expect(t.surface.posted).toContainEqual({
+      type: 'notice',
+      level: 'warning',
+      text: UI_TEXT.rewindImagesUnavailable,
+    })
+  })
+
+  it.each([
+    { name: 'report.pdf', mediaType: 'application/pdf' },
+    { name: 'notes.txt', mediaType: 'text/plain' },
+  ])(
+    'refuses a forged rewind of a History file card before clearing: $name',
+    async ({ name, mediaType }) => {
+      const t = withHistory()
+      t.server.handle('session/resume', (params) => ({
+        ...envelope({ ...storedSession, sessionId: params['sessionId'], status: 'idle' }),
+        history: {
+          mode: 'inline',
+          items: [
+            {
+              itemId: 'file-card',
+              kind: 'userMessage',
+              status: 'completed',
+              turnId: 't1',
+              text: 'Inspect this file',
+              attachments: [{ type: 'file', mediaType, name, sizeBytes: 9 }],
+            },
+          ],
+          snapshot: null,
+        },
+      }))
+      await t.controller.handle({ type: 'resumeSession', sessionId: 'old' })
+      t.surface.posted.length = 0
+      await t.controller.handle({
+        type: 'rewindConversation',
+        sourceSessionId: 'old',
+        itemId: 'file-card',
+        turnId: 't1',
+        text: 'Inspect this file',
+        imageCount: 1,
+      })
+      expect(t.server.requestsFor('session/fork')).toHaveLength(0)
+      expectFileRewindRefused(t)
+    },
+  )
+
+  it.each([
+    { name: 'report.pdf', bytes: pdfFixture(1) },
+    { name: 'notes.txt', bytes: new TextEncoder().encode('A picked note') },
+  ])(
+    'refuses a forged rewind of a fresh file card before clearing: $name',
+    async ({ name, bytes }) => {
+      const t = setup({ indexed: ['notes.txt'] })
+      const { api, controller } = modelApiController(t)
+      vi.spyOn(t.deps.files, 'readFile').mockResolvedValue(bytes)
+      t.setPicked([{ name, fsPath: `/ws/${name}`, relativePath: name }])
+      await controller.handle({ type: 'pickFile' })
+      const attachment = t.surface.posted.findLast((message) => message.type === 'attachmentAdded')
+      if (attachment?.type !== 'attachmentAdded') {
+        throw new Error('expected picked file')
+      }
+      api.script({ text: 'File read' })
+      await sendPickedAttachmentTurn(
+        t,
+        controller,
+        attachment.attachment.id,
+        'file-local',
+        'Inspect this file',
+      )
+      const { accepted, info } = latestAcceptedModelTurn(t)
+      t.surface.posted.length = 0
+      await controller.handle({
+        type: 'rewindConversation',
+        sourceSessionId: info.sessionId ?? '',
+        itemId: accepted.userMessageId ?? '',
+        turnId: accepted.turnId,
+        text: 'Inspect this file',
+        imageCount: 1,
+      })
+      expectFileRewindRefused(t)
+    },
+  )
+
+  it('restores a completed live Model API image before History reload (M53)', async () => {
+    const t = setup()
+    const { api, controller } = modelApiController(t, {
+      newId: (() => {
+        let nextId = 0
+        return () => `id${String(++nextId)}`
+      })(),
+    })
+    await attachPng({ controller })
+    const attachment = t.surface.posted.findLast((message) => message.type === 'attachmentAdded')
+    if (attachment?.type !== 'attachmentAdded') {
+      throw new Error('expected attachment')
+    }
+    api.script({ text: 'I saw the image' })
+    await sendPickedAttachmentTurn(
+      t,
+      controller,
+      attachment.attachment.id,
+      'live-card',
+      'look at this',
+    )
+    const { accepted, info } = latestAcceptedModelTurn(t)
+    expect(accepted.userMessageId).toEqual(expect.any(String))
+    const attachmentCount = t.surface.posted.filter(
+      (message) => message.type === 'attachmentAdded',
+    ).length
+    await controller.handle({
+      type: 'rewindConversation',
+      sourceSessionId: info.sessionId ?? '',
+      itemId: accepted.userMessageId ?? '',
+      turnId: accepted.turnId,
+      text: 'look at this',
+      imageCount: 1,
+    })
+    expect(t.surface.posted.filter((message) => message.type === 'attachmentAdded')).toHaveLength(
+      attachmentCount + 1,
+    )
+    expect(t.surface.posted).not.toContainEqual({
       type: 'notice',
       level: 'warning',
       text: UI_TEXT.rewindImagesUnavailable,
@@ -2097,6 +2304,7 @@ describe('ConversationController: session history (M6)', () => {
     await t.controller.handle({
       type: 'rewindConversation',
       sourceSessionId: 'another-session',
+      itemId: 'u1',
       turnId: 't1',
       text: 'stale draft',
       imageCount: 0,
@@ -2104,6 +2312,25 @@ describe('ConversationController: session history (M6)', () => {
     expect(t.server.requestsFor('session/fork')).toHaveLength(0)
     expect(t.surface.posted).not.toContainEqual({ type: 'conversationCleared' })
     expect(t.surface.posted).not.toContainEqual({ type: 'restoreDraft', text: 'stale draft' })
+  })
+
+  it('refuses a forged rewind of the active turn before steered image replay settles (M53)', async () => {
+    const t = withHistory()
+    await t.send('l1', 'running')
+    await t.controller.handle({
+      type: 'rewindConversation',
+      sourceSessionId: 's1',
+      itemId: 'steered-user-card',
+      turnId: 't1',
+      lastTurnId: 'older',
+      text: 'steered with image',
+      imageCount: 1,
+    })
+    expect(t.server.requestsFor('session/fork')).toHaveLength(0)
+    expect(t.surface.posted).not.toContainEqual({
+      type: 'restoreDraft',
+      text: 'steered with image',
+    })
   })
 
   it('does not rewind another session if the surface clears during host lookup (M53)', async () => {
@@ -2122,6 +2349,7 @@ describe('ConversationController: session history (M6)', () => {
     const rewinding = t.controller.handle({
       type: 'rewindConversation',
       sourceSessionId: 's1',
+      itemId: 'u1',
       turnId: 't1',
       text: 'old draft',
       imageCount: 0,
@@ -2245,6 +2473,39 @@ describe('ConversationController: session history (M6)', () => {
     await controller.restoreSession(ordinary.sessionId)
     await controller.handle({ type: 'resumeSession', sessionId: ordinary.sessionId })
     expect(t.surface.posted.some((message) => message.type === 'historyLoaded')).toBe(false)
+  })
+
+  it('keeps a Muse Code side panel on its own fork across reload and History selection (M53)', async () => {
+    const t = withHistory({ isSideChat: true, sideSessionId: 'forked' })
+    await t.controller.restoreSession('forked')
+    expect(t.server.requestsFor('session/resume')).toHaveLength(1)
+    expect(t.surface.posted).toContainEqual(
+      expect.objectContaining({ type: 'sessionInfo', sessionId: 'forked', sideChat: true }),
+    )
+    t.server.handle('session/list', () => ({
+      sessions: [{ ...storedSession, sessionId: 'forked' }, storedSession],
+      nextCursor: null,
+    }))
+    await t.controller.handle({ type: 'listSessions' })
+    expect(t.surface.posted.at(-1)).toMatchObject({
+      type: 'sessionList',
+      sessions: [{ sessionId: 'forked' }],
+    })
+    t.surface.posted.length = 0
+    await t.controller.handle({ type: 'resumeSession', sessionId: 'old' })
+    expect(t.server.requestsFor('session/resume')).toHaveLength(1)
+    expect(
+      t.server
+        .requestsFor('session/setApprovalMode')
+        .some((request) => request.params?.['sessionId'] === 'old'),
+    ).toBe(false)
+    expect(t.server.requestsFor('goal/clear')).toHaveLength(0)
+    expect(t.surface.posted.some((message) => message.type === 'historyLoaded')).toBe(false)
+    expect(t.surface.posted).toContainEqual({
+      type: 'notice',
+      level: 'warning',
+      text: UI_TEXT.sideChatSessionOnly,
+    })
   })
 
   it('renames the session to the canonical name, and reports a refusal', async () => {
@@ -2516,11 +2777,14 @@ describe('ConversationController: backends and tiers (M7)', () => {
         (message) => message.type === 'notice' && message.text.includes('sandbox'),
       ),
     ).toBe(false)
-    expect(t.surface.posted).toContainEqual({
-      type: 'turnAccepted',
-      localId: 'l1',
-      turnId: 'fixed',
-    })
+    expect(t.surface.posted).toContainEqual(
+      expect.objectContaining({
+        type: 'turnAccepted',
+        localId: 'l1',
+        turnId: 'fixed',
+        userMessageId: expect.any(String),
+      }),
+    )
   })
 })
 
@@ -2694,7 +2958,7 @@ describe('ConversationController (M15)', () => {
   })
 })
 
-describe('ConversationController usage cache (M16)', () => {
+describe('ConversationController usage host boundaries (M53 follow-up)', () => {
   const stale: SubscriptionUsage = {
     observedAtMs: 1000,
     tier: 'tier-1',
@@ -2702,24 +2966,62 @@ describe('ConversationController usage cache (M16)', () => {
     weekly: { usedPercent: 5, resetsAtMs: 9000 },
   }
 
-  it('shows the last reported window while the CLI has none yet, then refreshes the cache', async () => {
-    const t = setup({ cachedUsage: stale })
-    expect(await firstUsageReport(t)).toMatchObject({
-      type: 'usageReport',
-      backend: 'museCode',
-      subscription: stale,
-    })
-    const fresh = { ...stale, observedAtMs: 2000 }
-    t.server.handle('usage/read', () => ({ usage: fresh }))
-    await t.controller.handle({ type: 'readUsage' })
-    expect(t.surface.posted.at(-1)).toMatchObject({ subscription: fresh })
-    expect(t.cachedUsage()).toEqual(fresh)
+  it('drops an old host observation before a new empty usage read', async () => {
+    const t = setup()
+    await observeUsage(t, stale)
+    await t.controller.backendStopping(true)
+    await expectEmptyUsageRead(t)
   })
 
   it('reports no window at all when nothing was ever cached', async () => {
     const t = setup()
     expect(await firstUsageReport(t)).not.toHaveProperty('subscription')
-    expect(t.cachedUsage()).toBeUndefined()
+  })
+
+  it('clears a same-host observation when a later read has no account usage', async () => {
+    const t = setup()
+    await observeUsage(t, stale)
+    await expectEmptyUsageRead(t)
+  })
+
+  it('keeps a newer event when an empty read started before that event', async () => {
+    const t = setup()
+    const { read, requestId } = await pendingUsageRead(t)
+    t.server.notify('usage/changed', stale)
+    await settle()
+    t.server.incoming.push(`${JSON.stringify({ jsonrpc: '2.0', id: requestId, result: {} })}\n`)
+    await read
+    expect(t.surface.posted.at(-1)).toMatchObject({ subscription: stale })
+  })
+
+  it('keeps a newer usage event when an older read finishes later', async () => {
+    const t = setup()
+    const older = { ...stale, observedAtMs: 2000 }
+    const newer = { ...stale, observedAtMs: 3000, weekly: { ...stale.weekly, usedPercent: 90 } }
+    const { read, requestId } = await pendingUsageRead(t)
+    t.server.notify('usage/changed', newer)
+    await settle()
+    t.server.incoming.push(
+      `${JSON.stringify({ jsonrpc: '2.0', id: requestId, result: { usage: older } })}\n`,
+    )
+    await read
+    const reports = t.surface.posted.filter((message) => message.type === 'usageReport')
+    expect(reports.at(-1)).toMatchObject({ subscription: newer })
+    expect(reports).not.toContainEqual(expect.objectContaining({ subscription: older }))
+  })
+
+  it('drops a delayed usage read from a host stopped by sign-out', async () => {
+    const t = setup()
+    const { read, requestId } = await pendingUsageRead(t)
+    const reportsBeforeStop = t.surface.posted.filter((message) => message.type === 'usageReport')
+    await t.controller.backendStopping(true)
+    t.server.incoming.push(
+      `${JSON.stringify({ jsonrpc: '2.0', id: requestId, result: { usage: stale } })}\n`,
+    )
+    await read
+    expect(t.surface.posted.filter((message) => message.type === 'usageReport')).toEqual(
+      reportsBeforeStop,
+    )
   })
 })
 
@@ -4778,6 +5080,22 @@ describe('ConversationController: scheduled prompts (M52)', () => {
     expect(api.responseBodies()).toHaveLength(1)
     expect(staleNotices()).toHaveLength(3)
     expect(await scheduleStore.list(sessionId)).toEqual([])
+    // Replacing the Model API key restarts its host, then reports signedIn on
+    // the same backend. Clear the old account's prompts at that first drop.
+    await controller.handle({
+      type: 'scheduleCreate',
+      cadence: { kind: 'interval', everyMs: 60_000 },
+      prompt: 'Private old-account prompt',
+    })
+    const latestSchedules = () =>
+      t.surface.posted.findLast(
+        (message) => message.type === 'agentEvent' && message.event.type === 'schedulesChanged',
+      )
+    expect(latestSchedules()).toMatchObject({
+      event: { jobs: [expect.objectContaining({ prompt: 'Private old-account prompt' })] },
+    })
+    await controller.backendStopping(false)
+    expect(latestSchedules()).toMatchObject({ event: { jobs: [] } })
     controller.dispose()
     await modelHost.close()
   })

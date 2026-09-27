@@ -177,6 +177,24 @@ export function paidFeatureName(feature: PaidFeature): string {
   return names[feature]
 }
 
+function scheduledRatePrice(tier: keyof typeof MODEL_API_PRICES_PER_MILLION): string {
+  const rates = MODEL_API_PRICES_PER_MILLION[tier]
+  return fill(UI_TEXT.paidScheduledPrice, {
+    input: formatUsd(rates.input, MODEL_API_PRICE_DECIMALS),
+    cached: formatUsd(rates.cachedInput, MODEL_API_PRICE_DECIMALS),
+    output: formatUsd(rates.output, MODEL_API_PRICE_DECIMALS),
+  })
+}
+
+/** Exact scheduled-run tariff; unknown models cannot authorize a paid request. */
+export function scheduledRunPrice(modelId: string): string {
+  const tier = modelApiPaidTier(modelId)
+  if (tier === undefined) {
+    throw new Error(UI_TEXT.subagentTariffUnknown)
+  }
+  return scheduledRatePrice(tier)
+}
+
 /** The feature's price, as its setting, confirmation, badge and dialog state it. */
 export function paidFeaturePrice(feature: PaidFeature): string {
   switch (feature) {
@@ -192,12 +210,10 @@ export function paidFeaturePrice(feature: PaidFeature): string {
       return fill(UI_TEXT.paidVoicePrice, { price: formatUsd(PAID_PRICES_USD.voicePerHour, 2) })
     }
     case 'scheduledPrompts': {
-      const prices = MODEL_API_PRICES_PER_MILLION.standard
-      return fill(UI_TEXT.paidScheduledPrice, {
-        input: formatUsd(prices.input, 2),
-        cached: formatUsd(prices.cachedInput, 2),
-        output: formatUsd(prices.output, 2),
-      })
+      return [
+        `${MODEL_API_PRICED_MODELS.standard.join(', ')}: ${scheduledRatePrice('standard')}`,
+        `${MODEL_API_PRICED_MODELS.contributor.join(', ')}: ${scheduledRatePrice('contributor')}`,
+      ].join('\n')
     }
     case 'subagents': {
       return [

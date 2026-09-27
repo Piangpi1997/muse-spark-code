@@ -478,6 +478,7 @@
   "usagePercentUsed": "{percent} usado",
   "usageResetsIn": "é redefinido em {duration}",
   "usageAsOf": "atualizado {time}",
+  "usageAwaitingFreshReport": "Aguardando um relatório atualizado de uso do Muse Code.",
   "usageNoSubscription": "Nenhum uso da assinatura foi relatado ainda. O Muse Code o relata após o primeiro turno de uma conversa.",
   "usageModelApiNote": "Esta janela usa sua chave da Model API: as solicitações são cobradas da chave com tarifas de pagamento conforme o uso e contabilizadas no painel de dev.meta.ai.",
   "usageOpenDashboard": "Abrir dev.meta.ai",
@@ -1108,7 +1109,7 @@
   "scheduleRunConfirmAccept": "Executar desta vez",
   "scheduleConfirmationExpired": "O modelo, a conversa ou o prompt mudou durante a confirmação. Revise o agendamento e escolha Executar novamente.",
   "paidScheduledName": "Prompts agendados",
-  "paidScheduledPrice": "{input}/1 milhão de tokens de entrada, {cached}/1 milhão de tokens de entrada em cache, {output}/1 milhão de tokens de saída (tarifa padrão; a tarifa de colaborador é menor)",
+  "paidScheduledPrice": "{input}/1 milhão de tokens de entrada, {cached}/1 milhão de tokens de entrada em cache, {output}/1 milhão de tokens de saída",
   "paidConfirmScheduled": "Um prompt agendado pendente espera você executá-lo. Cada execução pede confirmação novamente antes de qualquer chamada à Model API. {price}. Cobrado na sua chave Model API; o total varia conforme os tokens usados.",
   "usagePaidScheduled": {
     "one": "{count} execução agendada",

@@ -184,6 +184,8 @@ export interface TurnSubmission {
   readonly turnId: string
   /** `started`, `queued` or `steered` (open on the wire). */
   readonly disposition: string
+  /** Backend-reserved transcript user ID for exact live-card replay (Model API). */
+  readonly userMessageId?: string
 }
 
 export interface CompactOutcome {
@@ -286,7 +288,7 @@ export interface AgentSession {
    */
   sendTurn(parts: readonly TurnPart[], displayText?: string): Promise<TurnSubmission>
   /** Inject input into the running turn; rejects when it is no longer running. */
-  steer(expectedTurnId: string, parts: readonly TurnPart[]): Promise<string>
+  steer(expectedTurnId: string, parts: readonly TurnPart[]): Promise<TurnSubmission>
   cancel(): Promise<void>
   setModel(modelId: string): Promise<void>
   /** The session's standing reasoning-effort default (wire vocabulary). */
@@ -349,7 +351,7 @@ export interface AgentSession {
    * attachment metadata only (MSP `Item.attachments`), so its sessions do
    * not offer this and a rewind warns that the bytes cannot be restored.
    */
-  readonly sentImages?: (turnId: string) => readonly SentImage[] | undefined
+  readonly sentImages?: (turnId: string, itemId: string) => readonly SentImage[] | undefined
   dispose(): void
 }
 

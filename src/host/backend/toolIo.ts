@@ -9,7 +9,7 @@
 
 import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { lstat, mkdir, open, readFile, rm, stat } from 'node:fs/promises'
+import { lstat, mkdir, open, rm } from 'node:fs/promises'
 import path from 'node:path'
 import { StringDecoder } from 'node:string_decoder'
 import { Worker } from 'node:worker_threads'
@@ -31,6 +31,7 @@ import type {
 import { resolveExecutable } from '../../core/executables'
 import { powerShellQuoted } from '../../core/shellQuote'
 import {
+  BOUNDED_FILE_READ_CHUNK_BYTES,
   BYTES_PER_MIB,
   MODEL_TEXT,
   HOOK_OUTPUT_MAX_BYTES,
@@ -348,6 +349,55 @@ function hookProgramFor(deps: ToolIoDeps, configuredShell: string | undefined): 
       })
 }
 
+/** A path's metadata and bytes come from one handle; growth stops after max + 1 bytes. */
+async function readBoundedFile(
+  absolutePath: string,
+  maxBytes: number,
+): Promise<
+  { readonly ok: true; readonly bytes: Buffer } | { readonly ok: false; readonly size: number }
+> {
+  const file = await open(absolutePath, 'r')
+  try {
+    const { size } = await file.stat()
+    if (size > maxBytes) {
+      return { ok: false, size }
+    }
+    const chunks: Buffer[] = []
+    let total = 0
+    for (;;) {
+      const length = Math.min(BOUNDED_FILE_READ_CHUNK_BYTES, maxBytes + 1 - total)
+      const chunk = Buffer.allocUnsafe(length)
+      const { bytesRead } = await file.read(chunk, 0, length, null)
+      if (bytesRead === 0) {
+        return { ok: true, bytes: Buffer.concat(chunks, total) }
+      }
+      total += bytesRead
+      if (total > maxBytes) {
+        return { ok: false, size: total }
+      }
+      chunks.push(chunk.subarray(0, bytesRead))
+    }
+  } finally {
+    await file.close()
+  }
+}
+
+/** Picker bytes use the same single-handle cap as tool reads, on the extension host. */
+export async function readPickedFile(
+  absolutePath: string,
+  maxBytes: number,
+): Promise<Uint8Array | undefined> {
+  try {
+    const read = await readBoundedFile(absolutePath, maxBytes)
+    return read.ok ? read.bytes : undefined
+  } catch (error: unknown) {
+    if (isMissingFile(error)) {
+      return
+    }
+    throw error
+  }
+}
+
 export function createToolIo(deps: ToolIoDeps): ToolIo {
   const interpreter = shellInterpreter(deps.platform, deps.systemRoot, deps.env(), existsSync)
   const configuredHookShell = deps.env()['SHELL']
@@ -356,15 +406,15 @@ export function createToolIo(deps: ToolIoDeps): ToolIo {
     async readFile(absolutePath) {
       let bytes: Uint8Array
       try {
-        // Refused before it is loaded (M39): the tools hold a file whole.
-        const { size } = await stat(absolutePath)
-        if (size > TOOL_FILE_MAX_BYTES) {
-          const mib = (size / BYTES_PER_MIB).toFixed(1)
+        // Refused before it is loaded (M39), including growth after metadata.
+        const read = await readBoundedFile(absolutePath, TOOL_FILE_MAX_BYTES)
+        if (!read.ok) {
+          const mib = (read.size / BYTES_PER_MIB).toFixed(1)
           throw new Error(
             `${MODEL_TEXT.toolFileTooLarge} ${String(TOOL_FILE_MAX_MIB)} MiB, and this one is ${mib} MiB: ${MODEL_TEXT.toolFileTooLargeHint}`,
           )
         }
-        bytes = await readFile(absolutePath)
+        bytes = read.bytes
       } catch (error: unknown) {
         if (isMissingFile(error)) {
           return
@@ -375,13 +425,13 @@ export function createToolIo(deps: ToolIoDeps): ToolIo {
     },
     async readBytes(absolutePath, maxBytes) {
       try {
-        const { size } = await stat(absolutePath)
-        if (size > maxBytes) {
+        const read = await readBoundedFile(absolutePath, maxBytes)
+        if (!read.ok) {
           throw new Error(
-            `${path.basename(absolutePath)} is ${String(size)} bytes, over the ${String(maxBytes)} allowed`,
+            `${path.basename(absolutePath)} is ${String(read.size)} bytes, over the ${String(maxBytes)} allowed`,
           )
         }
-        return await readFile(absolutePath)
+        return read.bytes
       } catch (error: unknown) {
         if (isMissingFile(error)) {
           return
@@ -463,7 +513,7 @@ export function createToolIo(deps: ToolIoDeps): ToolIo {
     },
     async runHook(command, payload, cwd, timeoutMs, signal, extraEnvNames) {
       // dispatchHooks enforces this too. Keep the adapter bounded when it is
-      // called directly, before PowerShell reads stdin into one string.
+      // called directly, before any hook subprocess starts.
       if (Buffer.byteLength(payload) > HOOK_STDIN_MAX_BYTES) {
         throw new RangeError('Hook stdin exceeds the input cap')
       }
@@ -479,15 +529,13 @@ export function createToolIo(deps: ToolIoDeps): ToolIo {
       }
       const assembly = deps.platform === 'win32' ? await deps.shellJobAssembly?.() : undefined
       const job = assembly === undefined ? undefined : newShellJob(assembly)
-      // On Windows PowerShell joins the job first. Native stdin is not
-      // automatically forwarded through its pipeline: read the bounded UTF-8
-      // JSON stream explicitly, then pipe it to cmd without putting it on the
-      // command line. The command itself uses cmd, as Muse Code does.
+      // On Windows PowerShell joins the job first, then starts cmd.exe with
+      // the configured command. The command itself uses cmd, as Muse Code does.
       const args =
         deps.platform === 'win32'
           ? shellArguments(
               deps.platform,
-              `[Console]::InputEncoding = New-Object System.Text.UTF8Encoding $false; $hookStdinText = [Console]::In.ReadToEnd(); $hookStdinText | & ${powerShellQuoted(hookProgram)} /D /S /C ${powerShellQuoted(command)}`,
+              `& ${powerShellQuoted(hookProgram)} /D /S /C ${powerShellQuoted(command)}`,
               job,
             )
           : ['-c', command]

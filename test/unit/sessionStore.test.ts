@@ -115,6 +115,18 @@ describe('parseStoredSession', () => {
     expect(parseStoredSession(structuredClone(full))).toEqual({ ok: true, session: full })
   })
 
+  it('preserves exact user-card and accepted-compaction links while reading older files (M53)', () => {
+    const linked: StoredSession = {
+      ...full,
+      compactedThroughTurnId: 't1',
+      replay: full.replay.map((entry, index) =>
+        index === 0 ? { ...entry, userMessageId: 'i1' } : entry,
+      ),
+    }
+    expect(parseStoredSession(structuredClone(linked))).toEqual({ ok: true, session: linked })
+    expect(parseStoredSession(structuredClone(full))).toEqual({ ok: true, session: full })
+  })
+
   it('keeps a background completion note tied to its task across storage (M46)', () => {
     const note = {
       turnId: 't1',

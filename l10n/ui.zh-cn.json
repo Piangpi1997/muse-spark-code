@@ -456,6 +456,7 @@
   "usagePercentUsed": "已用 {percent}",
   "usageResetsIn": "{duration}后重置",
   "usageAsOf": "截至 {time}",
+  "usageAwaitingFreshReport": "正在等待 Muse Code 提供最新用量报告。",
   "usageNoSubscription": "尚未报告订阅用量。Muse Code 会在对话的第一轮之后报告。",
   "usageModelApiNote": "此窗口使用你的 Model API 密钥：请求按即用即付费率计费到该密钥，并在 dev.meta.ai 仪表板上统计。",
   "usageOpenDashboard": "打开 dev.meta.ai",
@@ -1048,7 +1049,7 @@
   "scheduleRunConfirmAccept": "仅运行本次",
   "scheduleConfirmationExpired": "确认期间模型、对话或提示词已更改。请检查计划并再次选择“运行”。",
   "paidScheduledName": "已计划的提示词",
-  "paidScheduledPrice": "每百万输入令牌 {input}，每百万缓存输入令牌 {cached}，每百万输出令牌 {output}（标准等级；贡献者等级价格更低）",
+  "paidScheduledPrice": "每百万输入令牌 {input}，每百万缓存输入令牌 {cached}，每百万输出令牌 {output}",
   "paidConfirmScheduled": "到期的计划提示词会等待您手动运行。每次运行都会在调用 Model API 前再次请求确认。{price}。费用计入您的 Model API 密钥；总额随使用的令牌数变化。",
   "usagePaidScheduled": {
     "other": "已计划运行 {count} 次"

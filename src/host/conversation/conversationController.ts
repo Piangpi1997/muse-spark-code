@@ -142,8 +142,10 @@ export interface FileAccess {
   showOpenDialog(): Promise<readonly PickedFile[]>
   /** Reads no file that is already over the attachment limit. */
   readFile(fsPath: string, maxBytes: number): Promise<Uint8Array | undefined>
-  /** Canonical path inside the first workspace root; undefined on an escape or unresolved path. */
-  canonicalRelativePath(fsPath: string): Promise<string | undefined>
+  /** Indexed relative path and the same checked target for reading; undefined on an escape. */
+  canonicalRelativePath(
+    fsPath: string,
+  ): Promise<{ readonly canonical: string; readonly checkedAbsolute: string } | undefined>
   /** QuickPick over the mention index; resolves to the chosen relative path. */
   pickMentionFile(): Promise<string | undefined>
   /** Relative path for a dropped `file:` URI; undefined outside the workspace. */
@@ -175,12 +177,6 @@ export interface SessionMemory {
   setArchivedIds(ids: readonly string[]): Promise<void>
   lastSession(): LastSession | undefined
   setLastSession(last: LastSession | undefined): Promise<void>
-}
-
-/** Where the last subscription window lives between sessions (extension global state). */
-export interface UsageCache {
-  read(): SubscriptionUsage | undefined
-  write(usage: SubscriptionUsage): Promise<void>
 }
 
 export interface ConversationDeps {
@@ -236,8 +232,6 @@ export interface ConversationDeps {
   readonly openFile: (path: string, range: LineRange | undefined) => Promise<void>
   /** The picture a tool row names, from the workspace (M43, `loadToolImage`). */
   readonly readToolImage: (path: string) => Promise<ToolImageResult>
-  /** The subscription window the CLI last reported, kept across sessions (M16). */
-  readonly usageCache: UsageCache
   /** The IDE tool server for `session/start`, when it is listening. */
   readonly ideMcpEndpoint: () => Promise<SessionMcpHttpServer | undefined>
   readonly newAttachmentId: () => string
@@ -315,7 +309,6 @@ const SUBAGENT_ITEM_KIND = 'subagent'
 const IN_PROGRESS_STATUS = 'inProgress'
 // The unsaved files a warning names before it counts the rest (D27).
 const UNSAVED_FILES_NAMED = 3
-const STEERED_DISPOSITION = 'steered'
 // How a notice the user saw reads in the log (M39).
 const NOTICE_PREFIX = 'Shown in the panel: '
 
@@ -434,9 +427,13 @@ export class ConversationController {
   private skills: readonly SkillOption[] | undefined
   private skillsRefresh: Promise<void> | undefined
   private readonly attachments: AttachmentStore
+  /** A file chip names bytes rewind cannot restore across every backend/history path. */
+  private readonly fileTurnIds = new Set<string>()
   private modelId: string
   private permissionMode: PermissionMode
   private isSideChat: boolean
+  /** Muse Code does not persist a side marker: this panel may resume only its own fork. */
+  private readonly sideSessionIds = new Set<string>()
   private effort: EffortLevel = DEFAULT_EFFORT
   private isThinkingEnabled = true
   private activeTurnId: string | undefined
@@ -452,6 +449,11 @@ export class ConversationController {
   private sessionRecords: Map<string, SessionRecord> | undefined
   private readonly listWatch = new HostWatch()
   private readonly usageWatch = new HostWatch()
+  /** Usage belongs to one live host; a restarted host may use another account. */
+  private usageHost: AgentHost | undefined
+  private latestUsage: SubscriptionUsage | undefined
+  private usageEventRevision = 0
+  private usageReadSequence = 0
   /** The dictation driver, created on the first press (M9). */
   private dictation: DictationHandle | undefined
   private dictationStatus: DictationStatus = 'idle'
@@ -510,6 +512,10 @@ export class ConversationController {
   public constructor(private readonly deps: ConversationDeps) {
     this.modelId = deps.modelId
     this.isSideChat = deps.surface.isSideChat === true
+    const restoredSideId = this.isSideChat ? deps.surface.takeRestoredSessionId() : undefined
+    if (restoredSideId !== undefined) {
+      this.sideSessionIds.add(restoredSideId)
+    }
     this.permissionMode = this.isSideChat ? 'plan' : deps.initialPermissionMode
     if (this.permissionMode === BYPASS_MODE && !deps.isBypassAllowed()) {
       // The initial-mode setting alone cannot switch approvals off; the
@@ -603,9 +609,15 @@ export class ConversationController {
     if (this.sessionRecords === undefined) {
       return
     }
+    const sessions: ReturnType<typeof toSessionRow>[] = []
+    for (const record of this.sessionRecords.values()) {
+      if (!this.deps.surface.isSideChat || this.sideSessionIds.has(record.sessionId)) {
+        sessions.push(toSessionRow(record))
+      }
+    }
     this.post({
       type: 'sessionList',
-      sessions: Array.from(this.sessionRecords.values(), (record) => toSessionRow(record)),
+      sessions,
       archivedIds: [...this.deps.sessions.archivedIds()],
     })
   }
@@ -661,6 +673,11 @@ export class ConversationController {
     }
     this.unsubscribe?.()
     this.unsubscribe = undefined
+    // A key replacement may sign straight back in on the same Model API
+    // backend. Clear the old account's prompt names before that async restart.
+    if (session?.schedules !== undefined && !this.isDisposed) {
+      this.forward({ type: 'schedulesChanged', jobs: [] })
+    }
     this.closedWatch?.()
     this.closedWatch = undefined
     if (session !== undefined) {
@@ -673,6 +690,7 @@ export class ConversationController {
     session?.dispose()
     this.session = undefined
     this.activeTurnId = undefined
+    this.fileTurnIds.clear()
     this.childSessionIds.clear()
     this.finishedTurns.clear()
     this.forgetForegroundShells()
@@ -838,6 +856,16 @@ export class ConversationController {
     this.gapReload ??= this.reloadAfterGaps()
   }
 
+  private noteFileCard(item: ItemSnapshot): void {
+    if (
+      item.kind === 'userMessage' &&
+      item.turnId !== undefined &&
+      item.attachments?.some((attachment) => attachment.type === 'file')
+    ) {
+      this.fileTurnIds.add(item.turnId)
+    }
+  }
+
   private onEvent(event: AgentEvent): void {
     // The controller's own events (D26): never forwarded to the webview.
     if (event.type === 'viewGap') {
@@ -966,12 +994,14 @@ export class ConversationController {
         break
       }
       case 'itemStarted': {
+        this.noteFileCard(event.item)
         this.noteForegroundShell(event.item)
         this.noteSubagentRow(event.item)
         break
       }
       case 'itemUpdated':
       case 'itemCompleted': {
+        this.noteFileCard(event.item)
         if (event.type === 'itemCompleted' || event.item.status !== IN_PROGRESS_STATUS) {
           this.pendingShellApprovals.delete(event.item.itemId)
           this.pausedForegroundShells.delete(event.item.itemId)
@@ -1542,6 +1572,9 @@ export class ConversationController {
     session: AgentSession,
     origin: SessionOrigin,
   ): Promise<void> {
+    if (origin === 'started' && this.deps.surface.isSideChat === true) {
+      this.sideSessionIds.add(session.sessionId)
+    }
     this.deps.log.info(
       `Session ${session.sessionId} ${origin} on the ${host.info.kind} backend, model ${session.modelId}`,
     )
@@ -1774,6 +1807,7 @@ export class ConversationController {
   ): void {
     for (const item of history.items) {
       this.noteSubagentRow(item)
+      this.noteFileCard(item)
     }
     this.restoreForegroundShells(history.items, activeTurnId)
     this.post({
@@ -1790,12 +1824,12 @@ export class ConversationController {
     })
   }
 
-  /** A side panel may not turn an ordinary Model API session into a side chat. */
+  /** A side panel may only load its own fork; Model API also checks its durable marker. */
   private canLoadIntoSurface(host: AgentHost, loaded: LoadedSession): boolean {
     return (
       this.deps.surface.isSideChat !== true ||
-      host.info.kind !== 'modelApi' ||
-      loaded.record.sideChat === true
+      (this.sideSessionIds.has(loaded.session.sessionId) &&
+        (host.info.kind !== 'modelApi' || loaded.record.sideChat === true))
     )
   }
 
@@ -1811,6 +1845,15 @@ export class ConversationController {
     notice: string,
     origin: SessionOrigin,
   ): Promise<void> {
+    if (
+      origin === 'forked' &&
+      this.deps.surface.isSideChat === true &&
+      this.session !== undefined &&
+      this.sideSessionIds.has(this.session.sessionId) &&
+      (host.info.kind !== 'modelApi' || loaded.record.sideChat === true)
+    ) {
+      this.sideSessionIds.add(loaded.session.sessionId)
+    }
     if (!this.canLoadIntoSurface(host, loaded)) {
       loaded.session.dispose()
       throw new Error(UI_TEXT.sideChatSessionOnly)
@@ -1865,6 +1908,10 @@ export class ConversationController {
   }
 
   private async resumeSession(sessionId: string): Promise<void> {
+    if (this.deps.surface.isSideChat === true && !this.sideSessionIds.has(sessionId)) {
+      this.notice('warning', UI_TEXT.sideChatSessionOnly)
+      return
+    }
     if (this.refuseAction() !== undefined || this.session?.sessionId === sessionId) {
       return
     }
@@ -1925,13 +1972,27 @@ export class ConversationController {
   private async rewindConversation(
     message: Extract<ConversationMessage, { type: 'rewindConversation' }>,
   ): Promise<void> {
+    if (message.turnId === this.activeTurnId) {
+      return
+    }
     try {
       const forkable = await this.forkableSource(message.sourceSessionId)
       if (forkable === undefined) {
         return
       }
       const { source, host } = forkable
-      const images = source.sentImages?.(message.turnId) ?? []
+      if (message.turnId === this.activeTurnId) {
+        return
+      }
+      // Model API replay may hold PDF bytes, but a named text file is stored
+      // only as model-facing text. Muse Code echoes file metadata without
+      // bytes. Never clear/fork on a file card while its chips cannot be
+      // restored exactly in both paths.
+      if (this.fileTurnIds.has(message.turnId)) {
+        this.notice('warning', UI_TEXT.attachmentUnreadable)
+        return
+      }
+      const images = source.sentImages?.(message.turnId, message.itemId) ?? []
       if (message.lastTurnId === undefined) {
         this.clear()
       } else {
@@ -2052,10 +2113,7 @@ export class ConversationController {
   ): Promise<TurnSubmission> {
     if (this.activeTurnId !== undefined) {
       try {
-        return {
-          turnId: await session.steer(this.activeTurnId, parts),
-          disposition: STEERED_DISPOSITION,
-        }
+        return await session.steer(this.activeTurnId, parts)
       } catch (error: unknown) {
         this.deps.log.warn(`turn/steer failed (${describe(error)}); submitting as a new turn`)
       }
@@ -2170,12 +2228,22 @@ export class ConversationController {
         return
       }
       const { turnId } = submission
+      if (typed.some((part) => part.type === 'file' || part.type === 'textFile')) {
+        this.fileTurnIds.add(turnId)
+      }
       // A queued turn is not the running one, and an ack that lands after its
       // own turn completed must not mark it running again (D26).
       if (submission.disposition !== QUEUED_DISPOSITION && !this.finishedTurns.has(turnId)) {
         this.activeTurnId = turnId
       }
-      this.post({ type: 'turnAccepted', localId, turnId })
+      this.post({
+        type: 'turnAccepted',
+        localId,
+        turnId,
+        ...(submission.userMessageId !== undefined && {
+          userMessageId: submission.userMessageId,
+        }),
+      })
       this.noteActivity()
     } catch (error: unknown) {
       const reason = describe(error)
@@ -2578,20 +2646,27 @@ export class ConversationController {
   }
 
   /** Text bytes need a trusted, indexed, canonical workspace path; path mentions stay available. */
-  private async textFileDisposition(file: PickedFile): Promise<'attach' | 'mention' | 'refuse'> {
+  private async textFileDisposition(
+    file: PickedFile,
+  ): Promise<
+    | { readonly kind: 'attach'; readonly checkedAbsolute: string }
+    | { readonly kind: 'mention' }
+    | { readonly kind: 'refuse' }
+  > {
     if (!this.deps.isWorkspaceTrusted()) {
-      return 'mention'
+      return { kind: 'mention' }
     }
-    let canonical: string | undefined
+    let checked: Awaited<ReturnType<FileAccess['canonicalRelativePath']>>
     try {
-      canonical = await this.deps.files.canonicalRelativePath(file.fsPath)
+      checked = await this.deps.files.canonicalRelativePath(file.fsPath)
     } catch (error: unknown) {
       this.deps.log.warn(`text attachment path check failed: ${describe(error)}`)
-      return 'mention'
+      return { kind: 'mention' }
     }
-    if (canonical === undefined) {
-      return 'mention'
+    if (checked === undefined) {
+      return { kind: 'mention' }
     }
+    const { canonical } = checked
     const segments = canonical.toLowerCase().split('/')
     const name = segments.at(-1) ?? ''
     if (
@@ -2601,9 +2676,11 @@ export class ConversationController {
       PRIVATE_ATTACHMENT_EXTENSIONS.has(path.extname(name))
     ) {
       this.post({ type: 'attachmentRejected', name: file.name, reason: UI_TEXT.textFilePrivate })
-      return 'refuse'
+      return { kind: 'refuse' }
     }
-    return (await this.deps.mentions.contains(canonical)) ? 'attach' : 'mention'
+    return (await this.deps.mentions.contains(canonical))
+      ? { kind: 'attach', checkedAbsolute: checked.checkedAbsolute }
+      : { kind: 'mention' }
   }
 
   private async pickFile(): Promise<void> {
@@ -2620,15 +2697,17 @@ export class ConversationController {
         continue
       }
       const isTextFile = TEXT_ATTACHMENT_EXTENSIONS.has(extension)
+      let pathToRead = file.fsPath
       if (isTextFile) {
         const disposition = await this.textFileDisposition(file)
-        if (disposition === 'refuse') {
+        if (disposition.kind === 'refuse') {
           continue
         }
-        if (disposition === 'mention') {
+        if (disposition.kind === 'mention') {
           this.insertMention(file.relativePath ?? file.fsPath.replaceAll('\\', '/'))
           continue
         }
+        pathToRead = disposition.checkedAbsolute
       }
       if (isTextFile || extension === PDF_EXTENSION || Object.hasOwn(IMAGE_EXTENSIONS, extension)) {
         const isPdfFile = extension === PDF_EXTENSION
@@ -2636,7 +2715,7 @@ export class ConversationController {
         const maxBytes = isPdfFile ? MAX_DOCUMENT_BYTES : otherMaxBytes
         let bytes: Uint8Array | undefined
         try {
-          bytes = await this.deps.files.readFile(file.fsPath, maxBytes)
+          bytes = await this.deps.files.readFile(pathToRead, maxBytes)
         } catch (error: unknown) {
           this.deps.log.warn(`attachment read failed: ${describe(error)}`)
           this.post({
@@ -2710,12 +2789,30 @@ export class ConversationController {
   private async readUsage(): Promise<void> {
     try {
       const host = await this.deps.ensureHost()
+      if (this.usageHost !== host) {
+        this.usageHost = host
+        this.latestUsage = undefined
+      }
+      const readSequence = ++this.usageReadSequence
+      const eventRevision = this.usageEventRevision
       this.usageWatch.ensure(host, (watched) =>
         watched.onUsageChanged((usage) => {
+          if (this.usageHost === watched) {
+            this.usageEventRevision += 1
+          }
           void this.postUsage(watched, usage)
         }),
       )
-      await this.postUsage(host, await host.readUsage())
+      const subscription = await host.readUsage()
+      if (this.usageHost !== host || this.usageReadSequence !== readSequence) {
+        return
+      }
+      // An empty read can mean account switched within the same CLI host;
+      // only clear observations that preceded this read, not newer events.
+      if (subscription === undefined && this.usageEventRevision !== eventRevision) {
+        return
+      }
+      await this.postUsage(host, subscription)
     } catch (error: unknown) {
       this.notice('error', `${UI_TEXT.usageUnavailable}: ${describe(error)}`)
     }
@@ -2725,17 +2822,24 @@ export class ConversationController {
     host: AgentHost,
     subscription: SubscriptionUsage | undefined,
   ): Promise<void> {
+    if (!this.canPostUsage(host)) {
+      return
+    }
+    if (
+      subscription !== undefined &&
+      this.latestUsage !== undefined &&
+      subscription.observedAtMs < this.latestUsage.observedAtMs
+    ) {
+      return
+    }
+    this.latestUsage = subscription
+    const shown = subscription
     const account = await this.deps.accountFacts(host.info.kind)
     const insights = host.info.kind === 'museCode' ? await this.deps.usageInsights() : undefined
-    // The CLI reports a window only after it has seen a reply (M8, re-probed
-    // 2026-09-22: `usage/read` is empty after a host and even a session
-    // start). Until then the dialog shows the last window it ever reported,
-    // dated by its own `observedAtMs` (M16).
-    if (subscription !== undefined) {
-      await this.deps.usageCache.write(subscription)
+    // An older read or a stopped host must not replace a newer observation.
+    if (!this.canPostUsage(host) || this.latestUsage !== shown) {
+      return
     }
-    const shown =
-      subscription ?? (host.info.kind === 'museCode' ? this.deps.usageCache.read() : undefined)
     this.post({
       type: 'usageReport',
       backend: host.info.kind,
@@ -2743,6 +2847,12 @@ export class ConversationController {
       ...(shown !== undefined && { subscription: shown }),
       ...(insights !== undefined && { insights }),
     })
+  }
+
+  private canPostUsage(host: AgentHost): boolean {
+    return (
+      !this.isDisposed && this.usageHost === host && this.deps.auth.current.status === 'signedIn'
+    )
   }
 
   /** An owner command on a subagent from the Agent map (M18); the CLI's item updates carry the outcome. */
@@ -3339,6 +3449,8 @@ export class ConversationController {
     this.dropSession(false)
     this.listWatch.forget()
     this.usageWatch.forget()
+    this.usageHost = undefined
+    this.latestUsage = undefined
   }
 
   /**
@@ -3356,6 +3468,8 @@ export class ConversationController {
     this.dropSession(false)
     this.listWatch.forget()
     this.usageWatch.forget()
+    this.usageHost = undefined
+    this.latestUsage = undefined
     if (exit.isPersistent) {
       this.deps.auth.markBackendError(`${UI_TEXT.hostExited} (${exit.description})`)
     } else if (didHaveSession) {
@@ -3374,6 +3488,8 @@ export class ConversationController {
     this.dropSession()
     this.listWatch.dispose()
     this.usageWatch.dispose()
+    this.usageHost = undefined
+    this.latestUsage = undefined
     this.dictation?.dispose()
     this.dictation = undefined
     this.retiredDictation?.dispose()

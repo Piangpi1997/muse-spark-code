@@ -203,6 +203,11 @@ export interface ToolContext {
   readonly workspaceRoot: string
   readonly platform: NodeJS.Platform
   readonly io: ToolIo
+  /** The checked write destination shown to the permission gate before approval. */
+  readonly approvedTarget?: {
+    readonly absolute: string
+    readonly checkedAbsolute: string
+  }
   /** The turn's: aborting it stops a running command (PLAN.md D25). */
   readonly signal?: AbortSignal
   /** The shell's time limit, lifted when the command moves to the background (M46). */
@@ -531,6 +536,11 @@ export type PathResolution =
     }
   | { readonly ok: false; readonly reason: string }
 
+/** A confined path and the canonical target checked before a tool read. */
+type ConfinedPathResolution =
+  | (Extract<PathResolution, { readonly ok: true }> & { readonly checkedAbsolute: string })
+  | Extract<PathResolution, { readonly ok: false }>
+
 const PARENT_SEGMENT = '..'
 // Device names Windows resolves in every directory (`NUL`, `CON`, `COM1.txt`):
 // reading one can block on a console, writing one goes nowhere.
@@ -603,7 +613,7 @@ export async function confineWorkspacePath(
   given: string,
   platform: NodeJS.Platform,
   io: Pick<ToolIo, 'realPath'>,
-): Promise<PathResolution> {
+): Promise<ConfinedPathResolution> {
   const textual = resolveWorkspacePath(workspaceRoot, given, platform)
   if (!textual.ok) {
     return textual
@@ -622,7 +632,7 @@ export async function confineWorkspacePath(
   const p = pathModule(platform)
   const relative = p.relative(realRoot, realTarget)
   return isBelow(relative, p)
-    ? { ...textual, canonical: relative.split(p.sep).join('/') }
+    ? { ...textual, canonical: relative.split(p.sep).join('/'), checkedAbsolute: realTarget }
     : { ok: false, reason: `path ${given} leads outside the workspace through a link` }
 }
 
@@ -868,12 +878,12 @@ function imageOutcome(relative: string, bytes: Uint8Array): ToolOutcome {
  * of its kind may be; the file itself reaches the model after the round.
  */
 async function readVisual(
-  file: { readonly relative: string; readonly absolute: string },
+  file: { readonly relative: string; readonly checkedAbsolute: string },
   kind: 'pdf' | 'image',
   context: ToolContext,
 ): Promise<ToolOutcome> {
   const bytes = await context.io.readBytes(
-    file.absolute,
+    file.checkedAbsolute,
     kind === 'pdf' ? MAX_DOCUMENT_BYTES : MAX_IMAGE_BYTES,
   )
   if (bytes === undefined) {
@@ -899,7 +909,7 @@ async function readFile(
   if (visual !== undefined) {
     return await readVisual(resolved, visual, context)
   }
-  const raw = await context.io.readFile(resolved.absolute)
+  const raw = await context.io.readFile(resolved.checkedAbsolute)
   if (raw === undefined) {
     return failure(`file not found: ${resolved.relative}`)
   }
@@ -928,6 +938,7 @@ async function located(
       readonly ok: true
       readonly relative: string
       readonly absolute: string
+      readonly checkedAbsolute: string
       readonly before: string | undefined
     }
   | { readonly ok: false; readonly outcome: ToolOutcome }
@@ -941,17 +952,31 @@ async function located(
   if (!resolved.ok) {
     return { ok: false, outcome: failure(resolved.reason) }
   }
-  const before = await context.io.readFile(resolved.absolute)
-  return { ok: true, relative: resolved.relative, absolute: resolved.absolute, before }
+  if (
+    context.approvedTarget !== undefined &&
+    (resolved.absolute !== context.approvedTarget.absolute ||
+      resolved.checkedAbsolute !== context.approvedTarget.checkedAbsolute)
+  ) {
+    return { ok: false, outcome: failure(MODEL_TEXT.pathChangedAfterApproval) }
+  }
+  const before = await context.io.readFile(resolved.checkedAbsolute)
+  return {
+    ok: true,
+    relative: resolved.relative,
+    absolute: resolved.absolute,
+    checkedAbsolute: resolved.checkedAbsolute,
+    before,
+  }
 }
 
 /** Why an edit must not touch this file now, or undefined (D27). */
 function editRefusal(
-  file: { readonly relative: string; readonly absolute: string },
+  file: { readonly relative: string; readonly absolute: string; readonly checkedAbsolute: string },
   context: ToolContext,
 ): ToolOutcome | undefined {
   // Writing under an editor's unsaved changes makes VS Code ask which to keep.
-  return context.io.hasUnsavedChanges(file.absolute)
+  return context.io.hasUnsavedChanges(file.absolute) ||
+    context.io.hasUnsavedChanges(file.checkedAbsolute)
     ? failure(`${file.relative} ${MODEL_TEXT.fileHasUnsavedChanges}`)
     : undefined
 }
@@ -968,9 +993,9 @@ async function writeFile(
   if (refusal !== undefined) {
     return refusal
   }
-  const { before, relative, absolute } = file
+  const { before, relative, absolute, checkedAbsolute } = file
   if (before === undefined) {
-    await context.io.writeFile(absolute, args.content)
+    await context.io.writeFile(checkedAbsolute, args.content)
     context.seen.set(absolute, fingerprint(args.content))
     return patchOutcome(
       relative,
@@ -992,7 +1017,7 @@ async function writeFile(
       ? `${normalized}${LF}`
       : normalized
   const after = fileText(text, shape)
-  await context.io.writeFile(absolute, after)
+  await context.io.writeFile(checkedAbsolute, after)
   context.seen.set(absolute, fingerprint(after))
   return patchOutcome(
     relative,
@@ -1011,7 +1036,7 @@ async function editFile(
   if (!file.ok) {
     return file.outcome
   }
-  const { before, relative, absolute } = file
+  const { before, relative, absolute, checkedAbsolute } = file
   if (before === undefined) {
     return failure(`file not found: ${relative}`)
   }
@@ -1037,7 +1062,7 @@ async function editFile(
   }
   const updated = `${current.slice(0, first)}${replace}${current.slice(first + find.length)}`
   const after = fileText(updated, shape)
-  await context.io.writeFile(absolute, after)
+  await context.io.writeFile(checkedAbsolute, after)
   context.seen.set(absolute, fingerprint(after))
   return patchOutcome(relative, current, updated, 'edited', `edited ${relative}`)
 }

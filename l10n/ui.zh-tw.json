@@ -456,6 +456,7 @@
   "usagePercentUsed": "已使用 {percent}",
   "usageResetsIn": "{duration}後重設",
   "usageAsOf": "截至 {time}",
+  "usageAwaitingFreshReport": "正在等待 Muse Code 提供最新用量報告。",
   "usageNoSubscription": "尚未回報訂閱使用量。Muse Code 會在對話的第一個回合後回報。",
   "usageModelApiNote": "此視窗使用您的 Model API 金鑰：要求會依隨用隨付費率向該金鑰計費，並計入 dev.meta.ai 儀表板。",
   "usageOpenDashboard": "開啟 dev.meta.ai",
@@ -1048,7 +1049,7 @@
   "scheduleRunConfirmAccept": "僅執行本次",
   "scheduleConfirmationExpired": "確認期間模型、對話或提示詞已變更。請檢查排程並再次選擇「執行」。",
   "paidScheduledName": "已排程的提示詞",
-  "paidScheduledPrice": "每百萬輸入權杖 {input}、每百萬快取輸入權杖 {cached}、每百萬輸出權杖 {output}（標準級別；貢獻者級別費用較低）",
+  "paidScheduledPrice": "每百萬輸入權杖 {input}、每百萬快取輸入權杖 {cached}、每百萬輸出權杖 {output}",
   "paidConfirmScheduled": "到期的排程提示詞會等待您手動執行。每次執行都會在呼叫 Model API 前再次要求確認。{price}。費用計入您的 Model API 金鑰；總額依使用的權杖數而變動。",
   "usagePaidScheduled": {
     "other": "已排程執行 {count} 次"

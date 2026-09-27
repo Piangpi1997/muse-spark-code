@@ -112,6 +112,7 @@ describe('confineWorkspacePath: links (D24)', () => {
       absolute: '/ws/inner/a.ts',
       relative: 'inner/a.ts',
       canonical: 'src/a.ts',
+      checkedAbsolute: '/ws/src/a.ts',
     })
   })
 
@@ -136,6 +137,137 @@ describe('confineWorkspacePath: links (D24)', () => {
     expect(read.failureReason).toContain('through a link')
     expect(files.files.size).toBe(1)
     expect(files.files.get('/ws/a.txt')).toBe('x')
+  })
+})
+
+function retargetedIo(base: ReturnType<typeof memoryToolIo>) {
+  let target = '/ws/safe'
+  const pointedPath = (absolutePath: string) =>
+    absolutePath.startsWith('/ws/link/')
+      ? `${target}${absolutePath.slice('/ws/link'.length)}`
+      : absolutePath
+  return {
+    ...base,
+    realPath: (absolutePath: string) => {
+      const checked = pointedPath(absolutePath)
+      if (absolutePath.startsWith('/ws/link/')) {
+        target = '/ws/outside'
+      }
+      return Promise.resolve(checked)
+    },
+    readFile: (absolutePath: string) => base.readFile(pointedPath(absolutePath)),
+    readBytes: (absolutePath: string, maxBytes: number) =>
+      base.readBytes(pointedPath(absolutePath), maxBytes),
+  }
+}
+
+describe('read_file: retargeted links (M54)', () => {
+  it('reads the checked canonical text target after a link retargets', async () => {
+    const base = memoryToolIo({ 'safe/note.txt': 'inside', 'outside/note.txt': 'outside' }, ROOT)
+    const io = retargetedIo(base)
+    const result = await executeTool('read_file', '{"path":"link/note.txt"}', {
+      workspaceRoot: ROOT,
+      platform: 'linux',
+      io,
+      seen: new Map(),
+    })
+    expect(result.output).toContain('inside')
+    expect(result.output).not.toContain('outside')
+  })
+
+  it('reads the checked canonical PDF target after a link retargets', async () => {
+    const base = memoryToolIo({}, ROOT)
+    const inside = Buffer.from('%PDF-1.4\ninside\n')
+    const outside = Buffer.from('%PDF-1.4\noutside\n')
+    base.binaries.set('/ws/safe/report.pdf', inside)
+    base.binaries.set('/ws/outside/report.pdf', outside)
+    const io = retargetedIo(base)
+    const result = await executeTool('read_file', '{"path":"link/report.pdf"}', {
+      workspaceRoot: ROOT,
+      platform: 'linux',
+      io,
+      seen: new Map(),
+    })
+    expect(result.visibleFile?.part.base64Data).toBe(inside.toString('base64'))
+  })
+})
+
+function retargetedWritablePath(absolutePath: string): string {
+  return absolutePath.startsWith('/ws/link/')
+    ? `/etc/${absolutePath.slice('/ws/link/'.length)}`
+    : absolutePath
+}
+
+function retargetedWritableIo(initial: Record<string, string>) {
+  const base = memoryToolIo(initial, ROOT)
+  const io = {
+    ...base,
+    realPath: (absolutePath: string) =>
+      Promise.resolve(
+        absolutePath.startsWith('/ws/link/')
+          ? `/ws/safe/${absolutePath.slice('/ws/link/'.length)}`
+          : absolutePath,
+      ),
+    readFile: (absolutePath: string) => base.readFile(retargetedWritablePath(absolutePath)),
+    writeFile: (absolutePath: string, content: string) =>
+      base.writeFile(retargetedWritablePath(absolutePath), content),
+  }
+  return { base, io }
+}
+
+describe('write_file and edit_file: retargeted links (M54)', () => {
+  it('creates at the checked target instead of a retargeted outside path', async () => {
+    const { base, io } = retargetedWritableIo({})
+    const result = await executeTool('write_file', '{"path":"link/new.txt","content":"safe"}', {
+      workspaceRoot: ROOT,
+      platform: 'linux',
+      io,
+      seen: new Map(),
+    })
+    expect(result.failureReason).toBeUndefined()
+    expect(base.files.get('/ws/safe/new.txt')).toBe('safe')
+    expect(base.files.has('/etc/new.txt')).toBe(false)
+  })
+
+  it('edits the checked text and keeps the outside file untouched', async () => {
+    const { base, io } = retargetedWritableIo({ 'safe/note.txt': 'before' })
+    base.files.set('/etc/note.txt', 'before')
+    const result = await executeTool(
+      'edit_file',
+      '{"path":"link/note.txt","find":"before","replace":"after"}',
+      { workspaceRoot: ROOT, platform: 'linux', io, seen: new Map() },
+    )
+    expect(result.failureReason).toBeUndefined()
+    expect(base.files.get('/ws/safe/note.txt')).toBe('after')
+    expect(base.files.get('/etc/note.txt')).toBe('before')
+  })
+
+  it('replaces the checked text the model read through the requested path', async () => {
+    const { base, io } = retargetedWritableIo({ 'safe/note.txt': 'before' })
+    base.files.set('/etc/note.txt', 'before')
+    const ctx: ToolContext = { workspaceRoot: ROOT, platform: 'linux', io, seen: new Map() }
+    const read = await executeTool('read_file', '{"path":"link/note.txt"}', ctx)
+    expect(read.output).toContain('before')
+    const written = await executeTool(
+      'write_file',
+      '{"path":"link/note.txt","content":"after"}',
+      ctx,
+    )
+    expect(written.failureReason).toBeUndefined()
+    expect(base.files.get('/ws/safe/note.txt')).toBe('after')
+    expect(base.files.get('/etc/note.txt')).toBe('before')
+  })
+
+  it('refuses an unsaved canonical editor file even when the alias is not open', async () => {
+    const { base, io } = retargetedWritableIo({ 'safe/note.txt': 'before' })
+    base.unsaved.add('/ws/safe/note.txt')
+    const result = await executeTool(
+      'edit_file',
+      '{"path":"link/note.txt","find":"before","replace":"after"}',
+      { workspaceRoot: ROOT, platform: 'linux', io, seen: new Map() },
+    )
+    expect(result.failureReason).toContain(MODEL_TEXT.fileHasUnsavedChanges)
+    expect(base.files.get('/ws/safe/note.txt')).toBe('before')
   })
 })
 

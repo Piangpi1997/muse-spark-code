@@ -353,6 +353,7 @@ const webviewToHostMessageSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('rewindConversation'),
     sourceSessionId: z.string().check(z.minLength(1)),
+    itemId: z.string().check(z.minLength(1)),
     turnId: z.string(),
     lastTurnId: z.optional(z.string()),
     text: z.string(),
@@ -517,8 +518,13 @@ const hostToWebviewMessageSchema = z.discriminatedUnion('type', [
   // D30): the composer's badge, the palette's toggles and the usage dialog.
   // Sent on surfaceReady and on every change.
   z.object({ type: z.literal('paidState'), state: paidStateSchema }),
-  // The host accepted a sendMessage and the turn is running.
-  z.object({ type: z.literal('turnAccepted'), localId: z.string(), turnId: z.string() }),
+  // The host accepted a sendMessage. Model API also returns its durable user-item ID.
+  z.object({
+    type: z.literal('turnAccepted'),
+    localId: z.string(),
+    turnId: z.string(),
+    userMessageId: z.optional(z.string().check(z.minLength(1))),
+  }),
   // The host could not submit a sendMessage. `attachmentsKept` (M25): the
   // host still holds the message's images, so the composer shows them again;
   // absent, the webview asks the host to drop any it still holds.

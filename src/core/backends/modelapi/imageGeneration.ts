@@ -67,6 +67,8 @@ export function isPng(bytes: Uint8Array): boolean {
 
 interface WorkspaceFile {
   readonly absolute: string
+  readonly checkedAbsolute: string
+  readonly canonical: string
   readonly relative: string
 }
 
@@ -114,7 +116,9 @@ async function targetOf(
   }
   const problem =
     imagePathProblem(resolved.relative) ??
-    ((await workspace.io.pathExists(resolved.absolute)) ? MODEL_TEXT.imagePathTaken : undefined)
+    ((await workspace.io.pathExists(resolved.checkedAbsolute))
+      ? MODEL_TEXT.imagePathTaken
+      : undefined)
   return problem === undefined ? resolved : { reason: problem }
 }
 
@@ -141,7 +145,7 @@ async function sourceOf(
   }
   let bytes: Uint8Array | undefined
   try {
-    bytes = await workspace.io.readBytes(resolved.absolute, MAX_IMAGE_BYTES)
+    bytes = await workspace.io.readBytes(resolved.checkedAbsolute, MAX_IMAGE_BYTES)
   } catch (error: unknown) {
     return { reason: error instanceof Error ? error.message : String(error) }
   }
@@ -222,7 +226,7 @@ export async function runImageCall(plan: ImagePlan, deps: ImageRunDeps): Promise
   // The file is taken first, so a path taken while the card was open costs nothing.
   let reservation: FileReservation
   try {
-    reservation = await deps.io.reserveFile(plan.target.absolute)
+    reservation = await deps.io.reserveFile(plan.target.checkedAbsolute)
   } catch {
     return failure(MODEL_TEXT.imagePathTaken)
   }

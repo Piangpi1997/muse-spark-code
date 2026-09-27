@@ -478,6 +478,7 @@
   "usagePercentUsed": "{percent} utilisé",
   "usageResetsIn": "réinitialisation dans {duration}",
   "usageAsOf": "mis à jour {time}",
+  "usageAwaitingFreshReport": "En attente d’un nouveau rapport d’utilisation de Muse Code.",
   "usageNoSubscription": "Aucune utilisation de l’abonnement signalée pour l’instant. Muse Code la signale après le premier tour d’une conversation.",
   "usageModelApiNote": "Cette fenêtre utilise votre clé Model API : les requêtes sont facturées sur la clé au tarif à l’usage et comptabilisées dans le tableau de bord dev.meta.ai.",
   "usageOpenDashboard": "Ouvrir dev.meta.ai",
@@ -1108,7 +1109,7 @@
   "scheduleRunConfirmAccept": "Exécuter cette fois",
   "scheduleConfirmationExpired": "Le modèle, la conversation ou la demande a changé pendant la confirmation. Vérifiez la programmation et choisissez de nouveau Exécuter.",
   "paidScheduledName": "Prompts planifiés",
-  "paidScheduledPrice": "{input}/1 M de jetons d’entrée, {cached}/1 M de jetons d’entrée en cache, {output}/1 M de jetons de sortie (tarif standard ; le tarif contributeur est inférieur)",
+  "paidScheduledPrice": "{input}/1 M de jetons d’entrée, {cached}/1 M de jetons d’entrée en cache, {output}/1 M de jetons de sortie",
   "paidConfirmScheduled": "Un prompt planifié arrivé à échéance attend votre intervention. Chaque exécution demande une nouvelle confirmation avant tout appel Model API. {price}. Facturé sur votre clé Model API ; le total dépend des jetons utilisés.",
   "usagePaidScheduled": {
     "one": "{count} exécution planifiée",

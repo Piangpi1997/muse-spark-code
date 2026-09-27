@@ -26,6 +26,8 @@ import {
 export interface StoredReplayItem {
   readonly turnId: string
   readonly item: InputItem
+  /** The transcript user card that supplied this exact replay message (M53). */
+  readonly userMessageId?: string
   /** Identifies a background task's terminal model note across fork cuts. */
   readonly backgroundTaskId?: string
 }
@@ -73,6 +75,8 @@ export interface StoredSession {
   readonly createdAt: string
   readonly lastActivityAt: string
   readonly turnIds: readonly string[]
+  /** Last completed turn covered by the accepted compaction summary (M53). */
+  readonly compactedThroughTurnId?: string
   readonly forkedFrom?: string
   readonly firstPrompt?: string
   readonly todos: readonly TodoItem[]
@@ -184,6 +188,7 @@ const storedSessionFields = {
   createdAt: z.string(),
   lastActivityAt: z.string(),
   turnIds: z.array(z.string()),
+  compactedThroughTurnId: z.optional(z.string()),
   forkedFrom: z.optional(z.string()),
   firstPrompt: z.optional(z.string()),
   todos: z.array(todoItemSchema),
@@ -193,6 +198,7 @@ const storedSessionFields = {
     z.object({
       turnId: z.string(),
       item: storedInputItemSchema,
+      userMessageId: z.optional(z.string()),
       backgroundTaskId: z.optional(z.string()),
     }),
   ),
@@ -250,6 +256,7 @@ export function parseStoredSession(raw: unknown): StoredSessionParse {
     name,
     forkedFrom,
     firstPrompt,
+    compactedThroughTurnId,
     goal,
     sideChat,
     children,
@@ -257,8 +264,9 @@ export function parseStoredSession(raw: unknown): StoredSessionParse {
     spawnCommands,
     ...rest
   } = result.data
-  const replay = rest.replay.map(({ backgroundTaskId, ...entry }) => ({
+  const replay = rest.replay.map(({ backgroundTaskId, userMessageId, ...entry }) => ({
     ...entry,
+    ...(userMessageId !== undefined && { userMessageId }),
     ...(backgroundTaskId !== undefined && { backgroundTaskId }),
   }))
   const restoredChildren: StoredChild[] = []
@@ -290,6 +298,7 @@ export function parseStoredSession(raw: unknown): StoredSessionParse {
       ...(name !== undefined && { name }),
       ...(forkedFrom !== undefined && { forkedFrom }),
       ...(firstPrompt !== undefined && { firstPrompt }),
+      ...(compactedThroughTurnId !== undefined && { compactedThroughTurnId }),
       ...(goal !== undefined && { goal }),
       ...(sideChat === true && { sideChat: true }),
       ...(children !== undefined && { children: restoredChildren }),

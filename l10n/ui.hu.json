@@ -467,6 +467,7 @@
   "usagePercentUsed": "{percent} felhasználva",
   "usageResetsIn": "{duration} múlva nullázódik",
   "usageAsOf": "állapot: {time}",
+  "usageAwaitingFreshReport": "Várakozás a Muse Code friss használati jelentésére.",
   "usageNoSubscription": "Még nincs jelentett előfizetés-használat. A Muse Code egy beszélgetés első köre után jelenti.",
   "usageModelApiNote": "Ez az ablak az Ön Model API-kulcsával fut: a kéréseket használatalapú díjszabással a kulcsra számlázzák, és a dev.meta.ai irányítópultján tartják nyilván.",
   "usageOpenDashboard": "A dev.meta.ai megnyitása",
@@ -1078,7 +1079,7 @@
   "scheduleRunConfirmAccept": "Futtatás ez alkalommal",
   "scheduleConfirmationExpired": "A modell, a beszélgetés vagy az utasítás megváltozott a megerősítés alatt. Ellenőrizze az ütemezést, majd válassza ismét a Futtatás lehetőséget.",
   "paidScheduledName": "Ütemezett promptok",
-  "paidScheduledPrice": "{input}/1 millió bemeneti token, {cached}/1 millió gyorsítótárazott bemeneti token, {output}/1 millió kimeneti token (normál díjszabás; a közreműködői díjszabás olcsóbb)",
+  "paidScheduledPrice": "{input}/1 millió bemeneti token, {cached}/1 millió gyorsítótárazott bemeneti token, {output}/1 millió kimeneti token",
   "paidConfirmScheduled": "Az esedékes ütemezett prompt megvárja, hogy futtassa. Minden futtatás újabb megerősítést kér bármilyen Model API-hívás előtt. {price}. A díj a Model API-kulcsára terhelődik; a végösszeg a felhasznált tokenektől függ.",
   "usagePaidScheduled": {
     "one": "{count} ütemezett futtatás",

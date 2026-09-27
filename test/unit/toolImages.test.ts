@@ -15,7 +15,7 @@ function io(
     reads,
     realPath: (fsPath) => Promise.resolve(links[fsPath] ?? fsPath),
     fileSize: (fsPath) => Promise.resolve(files[fsPath]?.length ?? 0),
-    readFile: (fsPath) => {
+    readBytes: (fsPath) => {
       reads.push(fsPath)
       const bytes = files[fsPath]
       return bytes === undefined ? Promise.reject(new Error('missing')) : Promise.resolve(bytes)
@@ -64,6 +64,44 @@ describe('loadToolImage (M43)', () => {
       reason: 'no folder is open',
     })
     expect(files.reads).toEqual([])
+  })
+
+  it('reads the checked image when a link retargets after confinement', async () => {
+    const inside = new Uint8Array([1, 2, 3])
+    const outside = new Uint8Array([4, 5, 6])
+    let target = '/work/safe/dot.png'
+    const files = {
+      realPath: (fsPath: string) => {
+        if (fsPath !== '/work/link/dot.png') {
+          return Promise.resolve(fsPath)
+        }
+        const checked = target
+        target = '/work/outside/dot.png'
+        return Promise.resolve(checked)
+      },
+      fileSize: () => Promise.resolve(inside.length),
+      readFile: (fsPath: string) =>
+        Promise.resolve(fsPath === '/work/link/dot.png' ? outside : inside),
+      readBytes: (fsPath: string) =>
+        Promise.resolve(fsPath === '/work/link/dot.png' ? outside : inside),
+    }
+    await expect(loadToolImage('link/dot.png', ROOT, 'linux', files)).resolves.toEqual({
+      ok: true,
+      dataUri: `data:image/png;base64,${Buffer.from(inside).toString('base64')}`,
+    })
+  })
+
+  it('refuses a file grown beyond the image limit after stale metadata', async () => {
+    const overLimit = new Uint8Array(MAX_IMAGE_BYTES + 1)
+    const files = {
+      realPath: (fsPath: string) => Promise.resolve(fsPath),
+      fileSize: () => Promise.resolve(4),
+      readFile: () => Promise.resolve(overLimit),
+      readBytes: (_fsPath: string, maxBytes: number) =>
+        Promise.resolve(overLimit.length > maxBytes ? undefined : overLimit),
+    }
+    const result = await loadToolImage('grown.png', ROOT, 'linux', files)
+    expect(result.ok).toBe(false)
   })
 
   it('knows a picture by its extension, in any case', () => {
