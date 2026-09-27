@@ -1,0 +1,41 @@
+{
+  "SessionId": 1,
+  "OwnedPids": [7920, 16616, 736, 15424, 18968, 14296, 19784, 16972, 4152],
+  "Windows": [
+    {
+      "Pid": 7920,
+      "Name": "[Extension Development Host] workspace - Visual Studio Code",
+      "Hwnd": 329300,
+      "Items": [
+        {
+          "Name": "Run this scheduled prompt with muse-spark-1.3?",
+          "Type": "ControlType.Text",
+          "Focus": false,
+          "Enabled": true,
+          "Hwnd": 0
+        },
+        {
+          "Name": "Prompt: M52 Manual native decline proof\n\nBilled to your Model API key: $1.25/1M input, $0.15/1M cached input, $4.25/1M output tokens (standard tier; contributor tier costs less). Total varies with tokens used.\n\nOther enabled paid tools may add their own charges. Bypass does not skip this confirmation.",
+          "Type": "ControlType.Text",
+          "Focus": false,
+          "Enabled": true,
+          "Hwnd": 0
+        },
+        {
+          "Name": "Run this time",
+          "Type": "ControlType.Pane",
+          "Focus": true,
+          "Enabled": true,
+          "Hwnd": 132766
+        },
+        {
+          "Name": "Cancel",
+          "Type": "ControlType.Pane",
+          "Focus": false,
+          "Enabled": true,
+          "Hwnd": 132764
+        }
+      ]
+    }
+  ]
+}

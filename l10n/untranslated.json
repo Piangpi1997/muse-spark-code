@@ -34,7 +34,8 @@
       "goalItem",
       "composerShellMode",
       "onboardingShortcuts.shell",
-      "onboardingShortcuts.moveToBackground"
+      "onboardingShortcuts.moveToBackground",
+      "loopItem"
     ],
     "cs": [
       "groupModel",

@@ -210,6 +210,9 @@ function paidUseText(feature: PaidFeature, tally: PaidTally): string {
         duration: formatDurationMs(tally.voiceSeconds * MILLISECONDS_PER_SECOND),
       })
     }
+    case 'scheduledPrompts': {
+      return plural(UI_TEXT.usagePaidScheduled, tally.scheduledRuns)
+    }
     case 'subagents': {
       return plural(UI_TEXT.usagePaidSubagentRequests, tally.subagentRequests ?? 0)
     }
@@ -254,14 +257,19 @@ function PaidRow({ feature, paid }: { readonly feature: PaidFeature; readonly pa
   const requests = paid.tally.subagentRequests ?? 0
   const unknown = paid.tally.subagentUnknownRequests ?? 0
   const isEntirelyUnknown = feature === 'subagents' && requests > 0 && requests === unknown
+  const cost = formatUsd(paidCostUsd(feature, paid.tally))
+  let costDetail = cost
+  if (feature === 'scheduledPrompts') {
+    costDetail = UI_TEXT.usageScheduledIncluded
+  } else if (feature === 'subagents') {
+    costDetail = fill(UI_TEXT.usagePaidSubagentReported, { cost })
+  }
   return (
     <>
       <dt>{`${paidFeatureName(feature)} (${state})`}</dt>
       <dd className={feature === 'subagents' ? 'usage-paid-child' : undefined}>
         {paidUseText(feature, paid.tally)}
-        {isEntirelyUnknown
-          ? null
-          : ` · ${feature === 'subagents' ? fill(UI_TEXT.usagePaidSubagentReported, { cost: formatUsd(paidCostUsd(feature, paid.tally)) }) : formatUsd(paidCostUsd(feature, paid.tally))}`}
+        {isEntirelyUnknown ? null : ` · ${costDetail}`}
         {feature === 'subagents' ? (
           <>
             {isEntirelyUnknown

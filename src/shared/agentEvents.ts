@@ -6,6 +6,7 @@
 // Shared by host and webview: no `vscode`, Node, or DOM imports.
 
 import * as z from 'zod/mini'
+import { scheduleViewSchema } from './schedule'
 import { PAID_FEATURES } from './constants'
 
 /** A source a reply cites: the page's URL and, when Meta sent one, its title (M33). */
@@ -282,6 +283,8 @@ const agentEventSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('approvalModeChanged'), mode: z.string() }),
   // The session's user-invocable skill set changed; re-list.
   z.object({ type: z.literal('skillsChanged') }),
+  /** Extension-owned Model API schedules, never Muse Code's native cron jobs (M52). */
+  z.object({ type: z.literal('schedulesChanged'), jobs: z.array(scheduleViewSchema) }),
   // The host is waiting for a decision on a gated tool call.
   z.object({
     type: z.literal('approvalRequested'),

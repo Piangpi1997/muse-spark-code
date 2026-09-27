@@ -32,6 +32,7 @@ import {
   WEBVIEW_ERROR_STACK_MAX_CHARS,
 } from './constants'
 import { paidStateSchema } from './paid'
+import { scheduleCadenceSchema } from './schedule'
 import { sessionRowSchema } from './sessions'
 import { accountFactsSchema, subscriptionUsageSchema, usageInsightsSchema } from './usage'
 
@@ -240,6 +241,15 @@ const webviewToHostMessageSchema = z.discriminatedUnion('type', [
     verb: z.enum(GOAL_COMMANDS),
     objective: z.optional(z.string()),
   }),
+  // Model API schedules only (M52): validated before crossing into the host.
+  z.object({
+    type: z.literal('scheduleCreate'),
+    cadence: scheduleCadenceSchema,
+    prompt: z.string(),
+  }),
+  z.object({ type: z.literal('scheduleList') }),
+  z.object({ type: z.literal('scheduleCancel'), id: z.string() }),
+  z.object({ type: z.literal('scheduleRun'), id: z.string(), occurrenceMs: z.number() }),
   // "/export" and "Export session log…" (M30): Markdown, or Muse Code's JSON log.
   z.object({ type: z.literal('exportConversation'), format: z.enum(EXPORT_FORMATS) }),
   // The palette opened: (re)load the session's skills.

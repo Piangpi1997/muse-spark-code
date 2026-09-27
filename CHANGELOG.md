@@ -12,10 +12,12 @@ while they are (PLAN.md D30, D34).
 
 ### Added
 
-- **Pre-PR branch CI.** The existing cross-platform CI can be run
-  manually on a pushed branch before a pull request. It runs the same shared
-  build as pull requests; see the sequence in `CONTRIBUTING.md`. Manual
-  dispatch becomes available after this trigger reaches `main`.
+- **Optional branch CI.** The cross-platform CI can be run manually on a
+  pushed branch when a pull request is not being opened. It uses the same
+  shared build as pull requests. The normal path uses local and VM gates as
+  the filter, then records the exact tested tree, independent review,
+  staged-change secret scan and the pull request's seven job conclusions.
+  See `CONTRIBUTING.md`.
 - **Subagents on the Model API backend** (M48, PLAN.md D45). Child sessions
   run in parallel with bounded capacity, their own transcript, the existing
   tool approvals and workspace rules, and usage counted with the parent.
@@ -33,8 +35,8 @@ while they are (PLAN.md D30, D34).
   conversation total.
   Muse Code's `subagent/readResult` and `subagent/reopen` controls remain
   deferred until an accepted-command capture establishes their behavior.
-  Muse Code's two uncaptured owner verbs remain a later follow-up. Final
-  M48 quality and hosted checks remain open.
+  Muse Code's two uncaptured owner verbs remain a later follow-up. M48's
+  local and hosted quality gates passed before its PR #35 merge.
 
 - **Model API hooks, initial M51 increment (certification pending).** The
   machine-scoped `modelApiHooks` setting enables all 17 documented hook event
@@ -61,10 +63,33 @@ while they are (PLAN.md D30, D34).
   Model-call hook text previews also remove pasted media data URLs before
   shortening user text, instructions, tool descriptions or assistant output.
   Hook stdin is bounded again at the host adapter before process launch;
-  the payload stays off command lines.
-  A `PreToolUse` hook's request for approval now reaches memory tools in
-  Bypass and Edit automatically; its card requires a human, while Plan
-  still refuses writes.
+  the payload stays off command lines. A `PreToolUse` hook's request for
+  approval now reaches memory tools in Bypass and Edit automatically; its
+  card requires a human, while Plan still refuses writes.
+
+- **Model API scheduled prompts** (M52). `/loop` stores an interval or local
+  five-field cron prompt in the current conversation; the panel lists due
+  jobs and cancels them. Every due run waits for a machine-scoped paid gate
+  and a separate prompt-and-token-price confirmation. Jobs are scoped to the
+  workspace, conversation and stored key; an atomic receipt prevents two
+  windows or a restart from replaying one admitted occurrence. A model,
+  conversation, prompt or paid-gate change while the price dialog is open
+  expires that approval without sending a request; cancellation during the
+  dialog does too. The scheduled turn keeps its confirmed model and key
+  digest in memory through admission and retries; a changed key is refused
+  before HTTP. Stop during the key read sends no request or paid count, and
+  a slow job read cannot show another key's prompts after an account switch.
+  The paid row and tally appear only when the first request starts. Muse Code's
+  native cron remains available through its model tools; MSP offers no direct
+  scheduler controls. Sign-out or a backend switch clears account-bound
+  prompts from the panel immediately. Replacing the Model API key also clears
+  the old account's prompts before the backend restarts; a temporary CLI
+  sign-in attempt keeps the still-active Model API list.
+  A seven-day cadence with no fire before expiry is refused; an already due
+  prompt can be claimed only before expiry. Feature enable shows both verified
+  token tiers, and each run quotes its selected model's exact tier, including
+  the contributor cached-input rate; an unknown model cannot gain consent.
+
 - **Image edits** (M44, PLAN.md D37). With image generation on, the model
   can also change one workspace image, or combine up to four, by a prompt,
   into a new PNG (`edit_image`, Meta's `/images/edits`, $0.01 per image).
@@ -213,6 +238,10 @@ while they are (PLAN.md D30, D34).
 
 ### Changed
 
+- **One hosted CI run per reviewed tree.** Pull requests still run the seven
+  cross-platform jobs. Protected `main` merges no longer launch the same jobs
+  again on an identical tree; manual branch dispatch remains available for
+  diagnostics without an open pull request.
 - **Windows unit test scheduling (M50).** Vitest runs test files one at a time
   on Windows so concurrent MCP job-helper launches cannot starve the hosted
   runner past the MCP startup deadline. Test selection, coverage, and deadlines

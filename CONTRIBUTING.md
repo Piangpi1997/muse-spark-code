@@ -30,20 +30,26 @@ Use this order for a candidate branch:
    behavior, exercise the same tree on the Windows 11 host and VM in parallel
    and record both results; collect other platform evidence where needed.
 3. Have an independent agent review the staged diff and acceptance evidence.
-   Fix findings, restage, and repeat the full local gate and affected platform
-   checks. Commit only after the final tree passes; verify the commit's tree
-   matches the tested `git write-tree` hash.
-4. Push the reviewed commit to its feature branch. Once `workflow_dispatch`
-   has reached the default branch, run `gh workflow run ci.yml --ref YOUR_BRANCH`.
-   Find the new run with
-   `gh run list --workflow ci.yml --branch YOUR_BRANCH --event workflow_dispatch`.
+   Scan the staged changes for secrets too: local `security:secrets` scans
+   committed history, so it cannot see the index before commit. Fix findings,
+   restage, and repeat the full local gate, staged secret scan and affected
+   platform checks. Commit only after the final tree passes; verify the
+   commit's tree matches the tested `git write-tree` hash.
+4. Push the reviewed commit to its feature branch and open one pull request.
+   Its `pull_request` event starts the seven hosted jobs. Do not also dispatch
+   `ci.yml` manually for the same commit; `workflow_dispatch` remains available
+   when an explicit branch check is needed without a pull request.
 5. Use `gh run watch RUN_ID --exit-status`, then
    `gh run view RUN_ID --json headSha,jobs`. Match `headSha` to the pushed
    commit and check every job: Ubuntu, Windows and macOS quality; Linux and
    Windows accessibility and VS Code integration; macOS dictation; packaging;
    gitleaks; and semgrep. Fix failures and repeat from the exact-tree gate.
-6. Open the pull request after that run is green. Pull-request CI and review
-   still gate the merge; later changes to the branch need a fresh run.
+   Later branch changes need a fresh pull-request run. The protected merge
+   does not repeat identical CI on a `main` push; release tags still build.
+6. Add the pull-request run ID, `headSha`, seven conclusions, independent
+   review, and any unproved platform or live gate to the PR proof once checks
+   finish. A printed success line without the process exit status is not a
+   gate result.
 
 - Run `npm run quality` and make it green. It runs every gate: formatting,
   ESLint (zero warnings), stylelint, type checks, dead-code and cycle

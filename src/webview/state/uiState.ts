@@ -45,6 +45,7 @@ import type {
   SkillOption,
 } from '../../shared/protocol'
 import { EMPTY_PAID_TALLY, type PaidState } from '../../shared/paid'
+import type { ScheduleView } from '../../shared/schedule'
 import type { SessionRow } from '../../shared/sessions'
 import type { AccountFacts, SubscriptionUsage, UsageInsights } from '../../shared/usage'
 import { goalStatusLabel, toolLabel } from '../toolPresentation'
@@ -219,6 +220,8 @@ export interface UiState {
   readonly todos: readonly TodoItem[]
   /** The session goal (M45, PLAN.md D38): the strip above the composer while there is one. */
   readonly goal: SessionGoal | undefined
+  /** Extension-owned Model API schedules for this session (M52). */
+  readonly schedules: readonly ScheduleView[]
   /** Fetched output pages keyed by `${itemId}:${outputRef}`. */
   readonly outputPages: Readonly<Record<string, OutputPage>>
   /** Pictures loaded for tool rows (M43), keyed by `toolImageKey`; never saved. */
@@ -338,6 +341,7 @@ export const initialUiState: UiState = {
   paid: { features: [], tally: EMPTY_PAID_TALLY, isKeyStored: false },
   todos: [],
   goal: undefined,
+  schedules: [],
   outputPages: {},
   toolImages: {},
   localSequence: 0,
@@ -1443,6 +1447,9 @@ function applyAgentEvent(state: UiState, event: AgentEvent, at: number): UiState
         goalAnnouncement(state.goal, goal),
       )
     }
+    case 'schedulesChanged': {
+      return { ...state, schedules: event.jobs }
+    }
     case 'effortChanged':
     case 'approvalModeChanged':
     case 'skillsChanged': {
@@ -1493,6 +1500,7 @@ function clearedConversation(state: UiState): UiState {
     context: undefined,
     todos: [],
     goal: undefined,
+    schedules: [],
     outputPages: {},
     toolImages: {},
   }
@@ -1616,6 +1624,15 @@ function applyHostMessage(state: UiState, message: HostToWebviewMessage, at: num
     case 'authState': {
       return {
         ...state,
+        // Account-bound prompts disappear on sign-out or backend switch.
+        // A CLI sign-in attempt can be transient while the Model API key and
+        // session stay live; keep its list until auth actually changes.
+        schedules:
+          message.backend === 'modelApi' &&
+          (message.status === 'signedIn' ||
+            (message.status === 'signingIn' && state.auth.backend === 'modelApi'))
+            ? state.schedules
+            : [],
         auth: {
           status: message.status,
           detail: message.detail,
@@ -1741,6 +1758,7 @@ function applyHostMessage(state: UiState, message: HostToWebviewMessage, at: num
           goal,
           ...editor,
           pendingGoalCommand: isSameSession ? state.pendingGoalCommand : undefined,
+          schedules: isSameSession ? state.schedules : [],
           activeTurnId: message.activeTurnId,
           lastCompletedTurnId: undefined,
           usage: isSameSession ? state.usage : undefined,
