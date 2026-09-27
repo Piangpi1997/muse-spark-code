@@ -1466,23 +1466,24 @@ stopped and the next message resumes the same session.
   flow is **Muse Spark: Set Up Shell Sandbox**. Start a new conversation
   afterwards. Linux and macOS need no setup.
 - **Shell commands run in `C:\Windows\System32\WindowsPowerShell\v1.0`
-  instead of the project, and the first one takes ages** — Muse Code 1.3.0's
-  Windows sandbox cannot enter folders under `C:\Users\<you>`
+  instead of the project** — Muse Code's Windows sandbox (1.3.0 and 1.4.0;
+  on 1.3.0 the first command also takes about half a minute) cannot enter
+  folders under `C:\Users\<you>`
   ([meta-models/muse-code-sdk#26](https://github.com/meta-models/muse-code-sdk/issues/26)).
   With `museSpark.shellSandbox` at `auto` the extension starts Muse Code
   without the sandbox for such workspaces: commands run directly as you, in
   the project, still gated by the approval cards, and the panel says so once
   per conversation. `muse` keeps the sandbox regardless; `off` never sandboxes.
-- **No Rename, conversation rewind or Side chat on Muse Code 1.3.0 for Windows** — Muse
-  Code 1.3.0 refuses `session/rename` and `session/fork` on Windows
-  ([#30](https://github.com/meta-models/muse-code-sdk/issues/30),
+- **No Rename, conversation rewind or Side chat with Muse Code on Windows** —
+  Muse Code refuses `session/rename` and `session/fork` on Windows (1.3.0
+  and 1.4.0; [#30](https://github.com/meta-models/muse-code-sdk/issues/30),
   [#31](https://github.com/meta-models/muse-code-sdk/issues/31)), so the
-  panel does not offer fork-based actions there; **Rewind code to here**
-  still works. A newer Muse Code gets them back when its fork method works,
-  and the Model API backend offers them now.
+  panel does not offer fork-based actions there, whatever the version, until
+  a release is verified to fix them; **Rewind code to here** still works,
+  and the Model API backend offers all of them.
 - **A warning that "Muse Code reported an error for the decision (the tool
   may have run anyway): … approval ledger durability fence …"** — Muse Code
-  1.3.0 on Windows sometimes fails its own ledger write after applying your
+  on Windows (seen on 1.3.0) sometimes fails its own ledger write after applying your
   decision ([#29](https://github.com/meta-models/muse-code-sdk/issues/29)).
   The tool row shows what happened; nothing needs redoing.
 - **Model API charges while using the CLI** — the extension never hands your

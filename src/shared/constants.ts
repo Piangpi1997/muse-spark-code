@@ -1214,10 +1214,15 @@ export const MSP_ATTACHMENT_FRAME_BUDGET_BYTES =
   MSP_FRAME_LIMIT_BYTES - MSP_ATTACHMENT_FRAME_HEADROOM_BYTES
 // `session/list` refuses a larger page (msp.d.ts SessionListParams.limit).
 export const MSP_SESSION_LIST_MAX_LIMIT = 200
-// Muse Code versions that refuse `session/rename` and `session/fork` on
-// Windows (meta-models/muse-code-sdk#30 and #31, verified live 2026-09-22 on
-// 1.3.0): the panel does not offer either there (D26).
-export const WINDOWS_SESSION_EDITS_LIMITED_MAX_VERSION = '1.3.0'
+// MSP schema fingerprints Muse Code has served beyond the one
+// `@muse-code/sdk` 1.3.0 pins, each an additive change (1.4.0's schema export
+// diffed against 1.3.0's; Meta's release manifests carry the same values).
+// Such a host is logged at info with its build; any other mismatch stays a
+// warning (docs/certification/release-0.9.1.md).
+export const MSP_KNOWN_SCHEMA_FINGERPRINTS: Readonly<Record<string, string>> = {
+  'sha256:36466f634c8c78a812462ec941187fd4547b232ee06153e5feb2a1482f0d3d7f': '1.4.0-R4161.1',
+  'sha256:99a7458c70a670dda3dda45512bdd1e270aba156f46a1324515de45dce95a658': '1.4.0-R4302.1',
+}
 // Muse Code's documented exit codes (SDK `classifyExit`) after which a
 // restart cannot help; what each code means is `UI_TEXT.museExitMeanings`.
 export const MUSE_EXIT_PERSISTENT_CODES: ReadonlySet<number> = new Set([2, 3, 5])
@@ -1349,10 +1354,6 @@ export const HTTP_STATUS = {
   internalServerError: 500,
 } as const
 
-// Muse Code versions whose Windows sandbox cannot enter C:\Users\<user>, so a
-// workspace under the profile runs shell commands in PowerShell's own folder
-// (verified live 2026-09-22 on 1.3.0 through the panel and `muse exec`).
-export const SANDBOX_PROFILE_LIMITED_MAX_VERSION = '1.3.0'
 // Link schemes the transcript opens; anything else is refused with a notice.
 export const ALLOWED_LINK_SCHEMES: ReadonlySet<string> = new Set(['http:', 'https:', 'mailto:'])
 // A code block's Copy button reads "Copied" for this long.

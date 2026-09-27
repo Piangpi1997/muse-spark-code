@@ -2043,7 +2043,8 @@ describe('ConversationController: transcript actions (M4)', () => {
   })
 
   it('warns once per session when the sandbox is forced on for a profile workspace', async () => {
-    // The fake server reports 1.3.0-test, an affected version.
+    // Every Muse Code version is affected so far (1.3.0 and 1.4.0, #26), so
+    // the warning no longer looks at the version the fake server reports.
     const t = setup({
       platform: 'win32',
       userProfileDir: String.raw`C:\Users\randy`,

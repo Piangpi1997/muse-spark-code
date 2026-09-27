@@ -573,7 +573,7 @@
   "outputIsBinary": "Zapisane dane wyjściowe są binarne i nie można ich wyświetlić jako tekstu",
   "editReviewNeedsFolder": "Otwórz folder, w którym wprowadzono edycję, aby ją przejrzeć lub cofnąć.",
   "unsavedFilesNotice": "Muse czyta i edytuje zapisane pliki, a nie niezapisane zmiany w edytorze (włącz museSpark.autosave, aby zapisywać przed każdą wiadomością). Niezapisane:",
-  "sessionEditsUnsupported": "Muse Code 1.3.0 nie może zmieniać nazw ani rozwidlać sesji w systemie Windows (meta-models/muse-code-sdk#30, #31).",
+  "sessionEditsUnsupported": "Muse Code nie może zmieniać nazw ani rozwidlać sesji w systemie Windows (meta-models/muse-code-sdk#30, #31).",
   "contributorTitle": "Model z poziomu Contributor",
   "contributorDetail": "Meta może używać promptów i odpowiedzi wysłanych do modelu z poziomu Contributor do trenowania swoich modeli w zamian za niższą cenę. Użyć go w tej rozmowie?",
   "contributorConfirm": "Użyj modelu Contributor",
@@ -728,7 +728,7 @@
   "bannerDismiss": "Odrzuć",
   "trustGrantedNotice": "Obszar roboczy jest zaufany: Muse wczyta jego reguły, umiejętności i pamięć od następnej wiadomości.",
   "sandboxRestartNotice": "Zmieniono ustawienie Muse Code; przy następnej wiadomości Muse Code uruchomi się z nim ponownie i będzie kontynuować tę rozmowę.",
-  "sandboxProfileNotice": "Ten obszar roboczy znajduje się w Twoim profilu użytkownika, do którego piaskownica Windows tej wersji Muse Code nie ma dostępu: polecenia powłoki będą uruchamiane w folderze programu PowerShell zamiast w projekcie i każde zajmie około pół minuty. Nie dotyczy to odczytu i edycji plików. W obszarze roboczym poza C:\\Users polecenia są uruchamiane na miejscu.",
+  "sandboxProfileNotice": "Ten obszar roboczy znajduje się w Twoim profilu użytkownika, do którego piaskownica Windows Muse Code nie ma dostępu: polecenia powłoki będą uruchamiane w folderze programu PowerShell zamiast w projekcie. Nie dotyczy to odczytu i edycji plików. W obszarze roboczym poza C:\\Users polecenia są uruchamiane na miejscu.",
   "permissionModes": {
     "manual": "Ręczny",
     "acceptEdits": "Automatyczna edycja",
