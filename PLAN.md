@@ -5728,10 +5728,11 @@ is first built, instead of riding in the host bundle as a 12 KiB string;
 `codex/m56-enterprise-final`. Its commit `f7dc40f` sits on
 `codex/m55-install` `b98c05b`. A merge then brings in M55's `d50ce40`, which
 carries main's merged M54 (PR #42, `cf33cb2`). Both trees passed local
-`npm run quality`, and the receipts are in their commit messages. Still
-open: hosted PR CI and the Mac and Kubuntu gates on the final tree; M55's
-merge (PR #43) before M56's; and live proof behind a real enterprise proxy
-with a private root, including Muse Code's IDE route**
+`npm run quality`, and the receipts are in their commit messages. M55's
+review fix and main after PR #43 (`0cf5e7e`) are merged in, and that tree
+passed `npm run quality` too (2,497 unit tests, 328 accessibility pages).
+Still open: hosted PR CI, and live proof behind a real enterprise proxy with
+a private root, including Muse Code's IDE route**
 (`docs/certification/m56.md`, "Final join onto M55").
 
 That join keeps M54's and M55's records as they were. It restores
