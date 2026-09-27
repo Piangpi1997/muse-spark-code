@@ -30,7 +30,7 @@ import {
   MODEL_TEXT,
   TOOL_OUTPUT_MAX_CHARS,
 } from '../../shared/constants'
-import { resolveWorkspacePath } from '../backends/modelapi/tools'
+import { resolveWorkspacePath } from '../workspacePath'
 import {
   indexLineFor,
   hasIndexLine,

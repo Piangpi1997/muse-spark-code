@@ -925,6 +925,7 @@
   "editRevertedPath": "{path} ripristinato.",
   "editCreatedRemovedPath": "{path}: spostato nel cestino (creato da Muse).",
   "modelApiNeedsFolder": "Apri prima una cartella; il back-end Model API lavora all’interno di un’area di lavoro.",
+  "modelApiBundleUnavailable": "Impossibile caricare il back-end Model API; reinstalla l’estensione e ricarica la finestra. Il log contiene i dettagli.",
   "cliNotFound": "Muse Code non è installato in nessun percorso noto.",
   "cliPathNotAbsolute": "museSpark.museBinaryPath deve essere un percorso assoluto.",
   "cliSearched": "Percorsi cercati: {paths}",

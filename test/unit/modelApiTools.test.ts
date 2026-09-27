@@ -1,14 +1,13 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import {
   classifyTool,
-  confineWorkspacePath,
   executeTool,
   parseQuestions,
-  resolveWorkspacePath,
   shellToolFor,
   type ToolContext,
   toolDefinitions,
 } from '../../src/core/backends/modelapi/tools'
+import { confineWorkspacePath, resolveWorkspacePath } from '../../src/core/workspacePath'
 import { parsePatchFiles } from '../../src/shared/patchDocument'
 import { EN } from '../../src/shared/l10n/en'
 import { BASE_LOCALE, setUiText } from '../../src/shared/l10n/text'

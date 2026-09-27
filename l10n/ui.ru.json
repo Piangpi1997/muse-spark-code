@@ -947,6 +947,7 @@
   "editRevertedPath": "Изменения в {path} отменены.",
   "editCreatedRemovedPath": "{path}: перемещен в корзину (его создал Muse).",
   "modelApiNeedsFolder": "Сначала откройте папку; бэкенд Model API работает внутри рабочей области.",
+  "modelApiBundleUnavailable": "Не удалось загрузить бэкенд Model API; переустановите расширение и перезагрузите окно. Подробности — в журнале.",
   "cliNotFound": "Muse Code не установлен ни в одном из известных расположений.",
   "cliPathNotAbsolute": "museSpark.museBinaryPath должен быть абсолютным путем.",
   "cliSearched": "Проверено: {paths}",

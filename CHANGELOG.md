@@ -7,7 +7,21 @@ happened, not what was planned; superseded entries are kept.
 
 ## [Unreleased]
 
-Nothing yet.
+### Changed
+
+- **The extension starts lighter** (M57, PLAN.md D6). The Model API backend
+  (its host, tools, hooks, goals, subagents and MCP client) is now a bundle
+  of its own, `dist/modelApi.js`, loaded the first time a conversation uses
+  that backend rather than whenever VS Code starts the extension:
+  `dist/extension.js` goes from 596.8 KiB to 425.3 KiB, and a Muse Code user
+  never loads the backend at all. Nothing it does changes. If the file is
+  missing or damaged, the conversation says so in your language and the log
+  names the file.
+- **Build.** `dist/modelApi.js` has a size budget of 400 KiB (295.6 KiB
+  today), and `npm run build` fails if the backend's files creep back into
+  the activation bundle (`scripts/check-bundle-split.mjs`). The host-globals
+  and third-party-notices checks cover the new bundle, `npm run cycles`
+  follows it, and the `.vsix` ships it.
 
 ## [0.9.0] - 2026-09-27
 
