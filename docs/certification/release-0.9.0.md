@@ -100,3 +100,26 @@ to restore them (`drills-090.mjs` in the session scratchpad).
 
 After the drills, the six focused suites passed 115/115. The changed files
 passed ESLint and Prettier, and all five TypeScript projects passed.
+
+## The search worker parses its job
+
+The documentation audit found one unchecked boundary cast in `src`:
+`workerData as SearchJob` in `src/host/backend/searchWorker.ts`. Only the
+extension's own `toolIo.searchOnWorker` sends that job, but AGENTS.md rule 7
+says every message across a thread boundary is parsed. The worker now parses
+the job with a `zod/mini` schema before it searches. A malformed job ends
+the search with its reason, as an invalid pattern already did.
+`dist/searchWorker.js` grew from 3.6 KiB to 15.1 KiB, within its 50 KiB
+budget.
+
+`test/unit/searchWorker.test.ts` starts the bundled worker directly with
+`maxHits: 'many'` and expects a `done` message whose reason names `maxHits`.
+The suite passed 6/6.
+
+| Drill | What was broken                                     | Result           |
+| ----- | --------------------------------------------------- | ---------------- |
+| S1    | The search worker trusts its job without parsing it | exit 1, 1 failed |
+
+The `nosemgrep` reason in `src/host/backend/mcpJobLaunch.ts` now names the
+packaged C# files the MCP launcher is compiled from (M56), not "fixed M50
+source".
