@@ -773,6 +773,19 @@ automatically" was M21's (D24) and the exit codes M22's (D25).
 | Stop and refusals (Model API)                                | Queued messages vanished on Stop; a refusal part rendered as an empty reply.                                                                                                                                                                                                                               | Each queued message ends with the reason above; a refusal's own words are the reply.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | A late acceptance makes a finished turn "running"            | `send()` set the active turn from the ack, which can land after its own `turn/completed` (the D28 companion), and from a queued turn.                                                                                                                                                                      | The controller remembers finished turns; neither a finished nor a queued turn becomes the running one, and a `turnCompleted` for another turn leaves the running one alone.                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 
+**Amendment 2026-09-27 (0.9.1): Windows limits hold for every version.**
+D26 hid rename and fork on Windows, and D12's profile-workspace warning
+applied, only up to Muse Code 1.3.0 (`WINDOWS_SESSION_EDITS_LIMITED_MAX_VERSION`,
+`SANDBOX_PROFILE_LIMITED_MAX_VERSION`), on the assumption that the next
+release would fix them. 1.4.0, which Meta's launcher installs by itself,
+fixed neither (#26, #30, #31 re-tested live on `1.4.0-R4302.1`), so 0.9.0
+offered Rename, conversation rewind and Side chat there again, and each
+failed; the sandbox warning disappeared too. Both limits now apply on
+Windows to every version, with no version ceiling: a limit is lifted only
+by a release after a Muse Code version is verified to fix it. Showing an
+action that fails is worse than hiding one that would work.
+`docs/certification/release-0.9.1.md`.
+
 ### D27 — The audit: editing correctness (2026-09-23)
 
 Section D of the audit (D24): the Model API's file tools, Edit Review and
@@ -6443,7 +6456,7 @@ GitHub Release carries `muse-spark-code-0.8.0.vsix` (905,941 bytes) and the
 workflow published it ("Published RandyNorthrup.muse-spark-code v0.8.0." at
 15:01:22 UTC); the Marketplace listed 0.8.0 at 15:08:10 UTC (`vsce show`).
 
-**0.9.0 (in preparation, 2026-09-27):** the paid features (D30, D34) and
+**0.9.0 (published 2026-09-27):** the paid features (D30, D34) and
 parity with what Muse Code and the Model API offer (D36):
 
 - web search, image generation and Muse Voice, opt in and loud (M33–M35,
@@ -6488,14 +6501,22 @@ Before the tag:
   `dist/extension.js` 596.8 KiB);
 - the release pull request from `release/0.9.0`, then tag `v0.9.0`.
 
-To record after the tag:
-
-- the release run and its jobs;
-- the GitHub Release `.vsix` and its size;
-- `vsce show` listing 0.9.0.
+Released: PR #45 merged as `2f4f669`; tag `v0.9.0`; release run
+36356158602 passed every job (tag checks, the seven build jobs, GitHub
+Release, Marketplace publish); the GitHub Release carries
+`muse-spark-code-0.9.0.vsix` (1,162,374 bytes).
 
 Checked live on 2026-09-27: every Model API feature, Muse Voice, paid web
 search, images and edits, PDFs and subagents included, in 18 cases of the
 live sweep on the owner's key (34 runs, about $0.095, contributor tier); and
 one Muse Code turn on CLI 1.4.0 (26 attempts). Not checked live: the
 installer and device sign-in, an authenticated enterprise proxy.
+
+**0.9.1 (2026-09-27): Muse Code 1.4.0 on Windows.** A re-test of Meta's
+new stable release (`1.4.0-R4302.1`, which the launcher installs by itself;
+4 billed turns, 28 attempts) found 0.9.0's two Windows limits keyed to
+"1.3.0 or older": on 1.4.0 the panel offered Rename, conversation rewind and
+Side chat again, which fail (#30, #31), and dropped the profile-workspace
+sandbox warning, which still applies (#26). Both now hold for every version
+(D26 amendment). Known 1.4.0 schema fingerprints are logged at info instead
+of as a mismatch warning. `docs/certification/release-0.9.1.md`.

@@ -27,10 +27,7 @@ import {
   type TurnSubmission,
 } from '../../core/agent/agentBackend'
 import { toSessionRow } from '../../core/agent/sessionRows'
-import {
-  isProfileWorkspaceLimited,
-  type ShellSandboxPosture,
-} from '../../core/backends/musecode/sandbox'
+import { isProfileWorkspace, type ShellSandboxPosture } from '../../core/backends/musecode/sandbox'
 import { chatReferenceText } from '../../core/chatReference'
 import { textFileDisplay } from '../../shared/textFileDisplay'
 import { type EditorContext, editorContextText } from '../../core/editorContext'
@@ -1212,18 +1209,17 @@ export class ConversationController {
    * turned it off for a Windows profile workspace, or the user forced it on
    * where the CLI cannot run commands in the workspace.
    */
-  private noteShellSandbox(workspaceRoot: string, serverVersion: string): void {
+  private noteShellSandbox(workspaceRoot: string): void {
     const posture = this.deps.shellSandbox()
     if (posture.reason === 'profileWorkspace') {
       this.notice('info', UI_TEXT.sandboxOffProfileNotice)
       return
     }
-    const isLimited = isProfileWorkspaceLimited({
-      platform: this.deps.platform,
+    const isLimited = isProfileWorkspace(
+      this.deps.platform,
       workspaceRoot,
-      userProfileDir: this.deps.userProfileDir,
-      serverVersion,
-    })
+      this.deps.userProfileDir,
+    )
     if (isLimited && posture.isSandboxed) {
       this.notice('warning', UI_TEXT.sandboxProfileNotice)
     }
@@ -1873,7 +1869,7 @@ export class ConversationController {
     if (host.info.kind === 'modelApi') {
       this.notice('info', UI_TEXT.modelApiBackendNotice)
     } else {
-      this.noteShellSandbox(workspaceRoot, host.info.serverVersion)
+      this.noteShellSandbox(workspaceRoot)
     }
     return session
   }
