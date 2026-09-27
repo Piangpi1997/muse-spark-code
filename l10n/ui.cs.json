@@ -336,6 +336,7 @@
   "toolVisualFileMissing": "Soubor `{path}` nebyl nalezen.",
   "toolVisualReadFailed": "Soubor `{path}` se nepodařilo přečíst.",
   "textFileTooLarge": "Textové soubory mohou mít nejvýše 1 MB.",
+  "textFilesOverBudget": "Přílohy překračují limit zprávy Muse Code. Odeberte přílohu nebo zkraťte zprávu.",
   "textFileInvalid": "Tento soubor není platným textem UTF-8.",
   "textFilePrivate": "Tento soukromý soubor nelze přiložit.",
   "textFileLabel": "Textový soubor",

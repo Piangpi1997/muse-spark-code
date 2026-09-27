@@ -17,6 +17,7 @@ import {
   MAX_TEXT_ATTACHMENT_BYTES,
   MODEL_API_MEDIA_PER_REQUEST,
   MODEL_API_PDF_PAGE_IMAGES,
+  MSP_ATTACHMENT_FRAME_BUDGET_BYTES,
   PDF_EXTENSION,
   PDF_MEDIA_TYPE,
   TEXT_ATTACHMENT_EXTENSIONS,
@@ -27,6 +28,7 @@ import type { AttachmentSummary } from '../shared/protocol'
 import { readImageInfo } from './imageDimensions'
 import { isPdf, pdfPageCount } from './pdf'
 import type { TurnPart } from './agent/agentBackend'
+import { textFileInput } from './textAttachment'
 
 export type AddAttachmentResult =
   | { readonly ok: true; readonly attachment: AttachmentSummary }
@@ -36,6 +38,7 @@ interface StoredAttachment {
   readonly summary: AttachmentSummary
   readonly bytes: Uint8Array
   readonly text?: string
+  readonly mspPartBytes?: number
 }
 
 const FIRST_PRINTABLE_CODE_POINT = 0x20
@@ -91,6 +94,14 @@ export class AttachmentStore {
     return BASE64_DATA_URL_OVERHEAD_CHARS + mediaType.length + base64Length
   }
 
+  /** Serialized MSP attachment parts, before prompt/context and command envelope. */
+  private mspAttachmentBytes(): number {
+    return Array.from(this.entries.values(), (entry) => entry.mspPartBytes ?? 0).reduce(
+      (total, length) => total + length,
+      0,
+    )
+  }
+
   private fitsMediaBytes(bytes: Uint8Array, mediaType: string): boolean {
     return this.mediaChars() + this.encodedChars(bytes, mediaType) <= this.maxEncodedMediaChars
   }
@@ -125,7 +136,11 @@ export class AttachmentStore {
     return { ok: true, attachment: summary }
   }
 
-  private addImage(name: string, bytes: Uint8Array): AddAttachmentResult {
+  private addImage(
+    name: string,
+    bytes: Uint8Array,
+    shouldCheckMspBudget: boolean,
+  ): AddAttachmentResult {
     if (bytes.byteLength > MAX_IMAGE_BYTES) {
       return { ok: false, reason: UI_TEXT.attachmentTooLarge }
     }
@@ -147,11 +162,33 @@ export class AttachmentStore {
       height: info.height,
       sizeBytes: bytes.byteLength,
     }
-    this.entries.set(summary.id, { summary, bytes })
+    const base64Length =
+      BASE64_OUTPUT_BLOCK_CHARS * Math.ceil(bytes.byteLength / BASE64_INPUT_BLOCK_BYTES)
+    const mspPartBytes =
+      Buffer.byteLength(
+        JSON.stringify({
+          type: 'image',
+          base64Data: '',
+          mediaType: info.mediaType,
+          width: info.width,
+          height: info.height,
+        }),
+      ) + base64Length
+    if (
+      shouldCheckMspBudget &&
+      this.mspAttachmentBytes() + mspPartBytes > MSP_ATTACHMENT_FRAME_BUDGET_BYTES
+    ) {
+      return { ok: false, reason: UI_TEXT.commandTooLarge }
+    }
+    this.entries.set(summary.id, { summary, bytes, mspPartBytes })
     return { ok: true, attachment: summary }
   }
 
-  private addText(name: string, bytes: Uint8Array): AddAttachmentResult {
+  private addText(
+    name: string,
+    bytes: Uint8Array,
+    shouldCheckMspBudget: boolean,
+  ): AddAttachmentResult {
     if (bytes.byteLength > MAX_TEXT_ATTACHMENT_BYTES) {
       return { ok: false, reason: UI_TEXT.textFileTooLarge }
     }
@@ -170,7 +207,25 @@ export class AttachmentStore {
       mediaType: TEXT_ATTACHMENT_MEDIA_TYPE,
       sizeBytes: bytes.byteLength,
     }
-    this.entries.set(summary.id, { summary, bytes, text: content })
+    const mspPartBytes = Buffer.byteLength(
+      JSON.stringify({
+        type: 'text',
+        text: textFileInput({
+          type: 'textFile',
+          name,
+          mediaType: TEXT_ATTACHMENT_MEDIA_TYPE,
+          sizeBytes: bytes.byteLength,
+          text: content,
+        }),
+      }),
+    )
+    if (
+      shouldCheckMspBudget &&
+      this.mspAttachmentBytes() + mspPartBytes > MSP_ATTACHMENT_FRAME_BUDGET_BYTES
+    ) {
+      return { ok: false, reason: UI_TEXT.textFilesOverBudget }
+    }
+    this.entries.set(summary.id, { summary, bytes, text: content, mspPartBytes })
     return { ok: true, attachment: summary }
   }
 
@@ -196,8 +251,8 @@ export class AttachmentStore {
       return { ok: false, reason: UI_TEXT.invalidPdf }
     }
     return canAcceptText && TEXT_ATTACHMENT_EXTENSIONS.has(path.extname(name).toLowerCase())
-      ? this.addText(name, bytes)
-      : this.addImage(name, bytes)
+      ? this.addText(name, bytes, !canAcceptDocuments)
+      : this.addImage(name, bytes, !canAcceptDocuments)
   }
 
   public remove(id: string): boolean {

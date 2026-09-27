@@ -1093,6 +1093,10 @@ export const MSP_LONG_COMMANDS: ReadonlySet<string> = new Set([
 // DEFAULT_FRAME_LIMIT_BYTES): a command larger than this is refused here with
 // a message, where the host would drop the frame and never answer (D26).
 export const MSP_FRAME_LIMIT_BYTES = 10 * 1024 * 1024
+// Leave room for the user's prompt, selected context, and command envelope.
+export const MSP_ATTACHMENT_FRAME_HEADROOM_BYTES = 2 * 1024 * 1024
+export const MSP_ATTACHMENT_FRAME_BUDGET_BYTES =
+  MSP_FRAME_LIMIT_BYTES - MSP_ATTACHMENT_FRAME_HEADROOM_BYTES
 // `session/list` refuses a larger page (msp.d.ts SessionListParams.limit).
 export const MSP_SESSION_LIST_MAX_LIMIT = 200
 // Muse Code versions that refuse `session/rename` and `session/fork` on

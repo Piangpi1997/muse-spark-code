@@ -425,6 +425,33 @@ async function nextInputAfterStop(
   return JSON.stringify(input)
 }
 
+/** Two different PDFs so replay proves which round's bytes were delivered. */
+function twoToolPdfs(t: ReturnType<typeof setup>): {
+  readonly firstData: string
+  readonly laterData: string
+} {
+  const first = pdfFixture(1)
+  const later = pdfFixture(2)
+  t.io.binaries.set('/ws/docs/first.pdf', first)
+  t.io.binaries.set('/ws/docs/later.pdf', later)
+  return {
+    firstData: `data:application/pdf;base64,${Buffer.from(first).toString('base64')}`,
+    laterData: `data:application/pdf;base64,${Buffer.from(later).toString('base64')}`,
+  }
+}
+
+/** Earlier bytes stay, while a later undelivered file becomes path-only context. */
+function expectOnlyFirstPdfDelivered(
+  nextInput: string,
+  firstData: string,
+  laterData: string,
+): void {
+  expect(nextInput).toContain(firstData)
+  expect(nextInput).not.toContain(laterData)
+  expect(nextInput).toContain('docs/later.pdf')
+  expect(nextInput).toContain('was not delivered because that tool round ended early')
+}
+
 describe('ModelApiHost: catalogue and sessions', () => {
   it('lists the chat models with the window, default and active flags', async () => {
     const t = setup()
@@ -2376,6 +2403,76 @@ describe('ModelApiSession: turns', () => {
     held.resolve(undefined)
     await turnDone()
     expect(await nextInputAfterStop(t, session, turnDone)).not.toContain('input_file')
+  })
+
+  it('keeps an earlier delivered PDF when Stop interrupts a later PDF delivery in the same turn', async () => {
+    const t = setup()
+    const { firstData, laterData } = twoToolPdfs(t)
+    const { session, turnDone } = await startSession(t)
+    const held = Promise.withResolvers<undefined>()
+    t.api.script(
+      { calls: [{ name: 'read_file', arguments: '{"path":"docs/first.pdf"}' }] },
+      { calls: [{ name: 'read_file', arguments: '{"path":"docs/later.pdf"}' }] },
+      { hold: held.promise, text: 'held later answer' },
+    )
+    await session.sendTurn([{ type: 'text', text: 'Read both in order' }])
+    await vi.waitFor(() => {
+      expect(t.api.responseBodies()).toHaveLength(3)
+    })
+    expect(JSON.stringify(t.api.responseBodies()[1]?.['input'])).toContain(firstData)
+    expect(JSON.stringify(t.api.responseBodies()[2]?.['input'])).toContain(laterData)
+
+    await session.cancel()
+    held.resolve(undefined)
+    await turnDone()
+    const nextInput = await nextInputAfterStop(t, session, turnDone)
+    expectOnlyFirstPdfDelivered(nextInput, firstData, laterData)
+  })
+
+  it('keeps an earlier delivered PDF when a later PDF delivery request fails', async () => {
+    const t = setup()
+    const { firstData, laterData } = twoToolPdfs(t)
+    const { session, turnDone } = await startSession(t)
+    t.api.script(
+      { calls: [{ name: 'read_file', arguments: '{"path":"docs/first.pdf"}' }] },
+      { calls: [{ name: 'read_file', arguments: '{"path":"docs/later.pdf"}' }] },
+      { failed: { code: 'server_error', message: 'later request failed' } },
+    )
+    await session.sendTurn([{ type: 'text', text: 'Read both in order' }])
+    await turnDone()
+    expect(JSON.stringify(t.api.responseBodies()[1]?.['input'])).toContain(firstData)
+    expect(JSON.stringify(t.api.responseBodies()[2]?.['input'])).toContain(laterData)
+
+    const nextInput = await nextInputAfterStop(t, session, turnDone)
+    expectOnlyFirstPdfDelivered(nextInput, firstData, laterData)
+  })
+
+  it('keeps an earlier delivered PDF when a later PostToolBatch hook stops the turn', async () => {
+    let batches = 0
+    const t = setup({
+      hooks: hooksFor('PostToolBatch', 'stop-later-pdf'),
+      runHook: () => {
+        batches += 1
+        return hookReply(
+          batches === 2 ? JSON.stringify({ continue: false, stopReason: 'stop later PDF' }) : '{}',
+        )
+      },
+    })
+    const { firstData, laterData } = twoToolPdfs(t)
+    const { session, turnDone } = await startSession(t, 'allowAll')
+    t.api.script(
+      { calls: [{ name: 'read_file', arguments: '{"path":"docs/first.pdf"}' }] },
+      { calls: [{ name: 'read_file', arguments: '{"path":"docs/later.pdf"}' }] },
+      { text: 'should not run' },
+    )
+    await session.sendTurn([{ type: 'text', text: 'Read both before the hook stops' }])
+    await turnDone()
+    expect(batches).toBe(2)
+    expect(t.api.responseBodies()).toHaveLength(2)
+    expect(JSON.stringify(t.api.responseBodies()[1]?.['input'])).toContain(firstData)
+
+    const nextInput = await nextInputAfterStop(t, session, turnDone)
+    expectOnlyFirstPdfDelivered(nextInput, firstData, laterData)
   })
 
   it.each(['PostToolUse', 'PostToolBatch'] as const)(

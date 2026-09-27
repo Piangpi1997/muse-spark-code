@@ -7,6 +7,11 @@ happened, not what was planned; superseded entries are kept.
 
 ## [Unreleased]
 
+Muse Code now refuses a combination of text attachments whose serialized
+message would exceed its frame limit, before retaining the last file chip.
+Escaped text and existing images count; removing a file frees room. The Model
+API's separate attachment allowance is unchanged.
+
 Three paid extras of Meta's Model API, off until you turn them on, and loud
 while they are (PLAN.md D30, D34).
 
@@ -334,6 +339,10 @@ while they are (PLAN.md D30, D34).
   remains English. Invalid PDF or image bytes, missing visual files and file
   read errors now show localized failure rows and reasons too, while their
   model-facing error text stays English.
+- **Delivered file-read media survives a later Stop (M54).** A PDF or image
+  already sent in a completed Model API request stays in future replay when
+  a later tool round in the same turn stops or fails. Only media still waiting
+  for its first successful delivery becomes a path-only note.
 - **Account & usage reset timing (M53 follow-up).** The open modal updates
   its countdown each minute and stops treating an expired report as current.
   It uses Muse Code's reported account-level percentages and reset timestamps

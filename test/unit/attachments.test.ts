@@ -183,6 +183,55 @@ describe('AttachmentStore', () => {
     ).toEqual({ ok: false, reason: UI_TEXT.textFileTooLarge })
   })
 
+  it('refuses aggregate Muse text before ten valid files overflow an MSP frame', () => {
+    const attachments = store()
+    const bytes = new Uint8Array(MAX_TEXT_ATTACHMENT_BYTES).fill(0x61)
+    const outcomes = Array.from({ length: 10 }, (_, index) =>
+      attachments.add(`note-${String(index)}.txt`, bytes, false, true),
+    )
+    expect(outcomes.at(-1)).toEqual({ ok: false, reason: UI_TEXT.textFilesOverBudget })
+    expect(outcomes.some((outcome) => !outcome.ok)).toBe(true)
+    expect(attachments.list().length).toBeLessThan(10)
+    const modelApi = store()
+    expect(
+      Array.from(
+        { length: 10 },
+        (_, index) => modelApi.add(`note-${String(index)}.txt`, bytes, true, true).ok,
+      ).every(Boolean),
+    ).toBe(true)
+  })
+
+  it('counts JSON escaping and frees the Muse frame budget when an attachment is removed', () => {
+    const attachments = store()
+    const escaped = new TextEncoder().encode(
+      '"\\\n'.repeat(Math.floor(MAX_TEXT_ATTACHMENT_BYTES / 3)),
+    )
+    const first = attachments.add('first.txt', escaped, false, true)
+    expect(first.ok).toBe(true)
+    expect(attachments.add('second.txt', escaped, false, true).ok).toBe(true)
+    expect(attachments.add('third.txt', escaped, false, true).ok).toBe(true)
+    expect(attachments.add('fourth.txt', escaped, false, true)).toEqual({
+      ok: false,
+      reason: UI_TEXT.textFilesOverBudget,
+    })
+    if (first.ok) {
+      expect(attachments.remove(first.attachment.id)).toBe(true)
+    }
+    expect(attachments.add('fourth.txt', escaped, false, true).ok).toBe(true)
+  })
+
+  it('counts existing image parts when admitting Muse text', () => {
+    const attachments = store()
+    const image = png(1, 1, MAX_IMAGE_BYTES / 2)
+    expect(attachments.add('first.png', image, false, true).ok).toBe(true)
+    const text = new Uint8Array(MAX_TEXT_ATTACHMENT_BYTES).fill(0x61)
+    expect(attachments.add('first.txt', text, false, true).ok).toBe(true)
+    expect(attachments.add('second.txt', text, false, true)).toEqual({
+      ok: false,
+      reason: UI_TEXT.textFilesOverBudget,
+    })
+  })
+
   it('builds base64 image parts for the requested ids and drops them once released', () => {
     const attachments = store()
     attachments.add('a.png', png(2, 3))

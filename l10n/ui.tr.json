@@ -324,6 +324,7 @@
   "toolVisualFileMissing": "`{path}` dosyası bulunamadı.",
   "toolVisualReadFailed": "`{path}` dosyası okunamadı.",
   "textFileTooLarge": "Metin dosyaları en fazla 1 MB olmalıdır.",
+  "textFilesOverBudget": "Ekler Muse Code ileti sınırını aşıyor. Bir eki kaldırın veya iletiyi kısaltın.",
   "textFileInvalid": "Bu dosya geçerli UTF-8 metni değil.",
   "textFilePrivate": "Bu özel dosya eklenemez.",
   "textFileLabel": "Metin",

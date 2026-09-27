@@ -324,6 +324,7 @@
   "toolVisualFileMissing": "Die Datei `{path}` wurde nicht gefunden.",
   "toolVisualReadFailed": "Die Datei `{path}` konnte nicht gelesen werden.",
   "textFileTooLarge": "Textdateien dürfen höchstens 1 MB groß sein.",
+  "textFilesOverBudget": "Anhänge überschreiten das Nachrichtenlimit von Muse Code. Entfernen Sie einen Anhang oder kürzen Sie die Nachricht.",
   "textFileInvalid": "Diese Datei ist kein gültiger UTF-8-Text.",
   "textFilePrivate": "Diese private Datei kann nicht angehängt werden.",
   "textFileLabel": "Textdatei",

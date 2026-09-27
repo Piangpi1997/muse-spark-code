@@ -1940,6 +1940,11 @@ comes from the first 100 pages, with page images from the first 50 sharing a
 50-image request budget. The pinned Muse Code SDK 1.3.0 defines only text,
 image and skill input parts. Its [file input request](https://github.com/meta-models/muse-code-sdk/issues/48)
 tracks the missing MSP feature. We do not send an invented part to Muse Code.
+The Muse Code attachment store budgets serialized text and image parts together,
+leaving 2 MiB of its 10 MiB MSP frame for the prompt, context and envelope;
+an impossible file combination is refused before it becomes a chip. The
+exact outbound frame check remains the final guard for unusually large
+prompts or selections.
 
 - **Model API:** PDF bytes, checked by header, may be attached from the file
   picker, clipboard or drop, up to 32 MB each; the inline base64 stays below
@@ -2002,7 +2007,11 @@ tracks the missing MSP feature. We do not send an invented part to Muse Code.
   older History record, so a filename chip must not imply they came back.
   If a tool round stops or fails before its media is delivered, replay keeps
   a path-only explanation. Stop also removes a read-file media message from
-  future replay when it interrupts that message's delivery request.
+  future replay when it interrupts that message's delivery request. A later
+  stop or failure in the same turn must preserve PDF/image media that reached
+  an earlier successful model response: only still-pending media from a later
+  tool round is replaced by path-only text. Multi-round red/green tests cover
+  both a later Stop and a later failed model request.
 
 ## 3. Open questions (need the owner)
 

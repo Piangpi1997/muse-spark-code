@@ -336,6 +336,7 @@
   "toolVisualFileMissing": "Nie znaleziono pliku `{path}`.",
   "toolVisualReadFailed": "Nie można odczytać pliku `{path}`.",
   "textFileTooLarge": "Pliki tekstowe mogą mieć najwyżej 1 MB.",
+  "textFilesOverBudget": "Załączniki przekraczają limit wiadomości Muse Code. Usuń załącznik lub skróć wiadomość.",
   "textFileInvalid": "Ten plik nie zawiera prawidłowego tekstu UTF-8.",
   "textFilePrivate": "Tego prywatnego pliku nie można dołączyć.",
   "textFileLabel": "Tekst",

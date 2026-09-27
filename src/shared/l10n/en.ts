@@ -373,6 +373,8 @@ export const EN = {
   toolVisualFileMissing: 'The file `{path}` was not found.',
   toolVisualReadFailed: 'The file `{path}` could not be read.',
   textFileTooLarge: 'Text files must be 1 MB or smaller.',
+  textFilesOverBudget:
+    'Attachments fill Muse Code’s message limit. Remove an attachment or shorten the message.',
   textFileInvalid: 'This file is not valid UTF-8 text.',
   textFilePrivate: 'This private file cannot be attached.',
   textFileLabel: 'Text',

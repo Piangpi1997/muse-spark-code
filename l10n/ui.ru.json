@@ -336,6 +336,7 @@
   "toolVisualFileMissing": "Файл `{path}` не найден.",
   "toolVisualReadFailed": "Не удалось прочитать файл `{path}`.",
   "textFileTooLarge": "Текстовые файлы должны быть не больше 1 МБ.",
+  "textFilesOverBudget": "Вложения превышают лимит сообщения Muse Code. Удалите вложение или сократите сообщение.",
   "textFileInvalid": "Этот файл не содержит допустимый текст UTF-8.",
   "textFilePrivate": "Этот частный файл нельзя прикрепить.",
   "textFileLabel": "Текст",

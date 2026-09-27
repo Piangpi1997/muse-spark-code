@@ -330,6 +330,7 @@
   "toolVisualFileMissing": "Le fichier `{path}` est introuvable.",
   "toolVisualReadFailed": "Impossible de lire le fichier `{path}`.",
   "textFileTooLarge": "Les fichiers texte ne doivent pas dépasser 1 Mo.",
+  "textFilesOverBudget": "Les pièces jointes dépassent la limite de message de Muse Code. Retirez une pièce jointe ou raccourcissez le message.",
   "textFileInvalid": "Ce fichier n’est pas un texte UTF-8 valide.",
   "textFilePrivate": "Ce fichier privé ne peut pas être joint.",
   "textFileLabel": "Texte",

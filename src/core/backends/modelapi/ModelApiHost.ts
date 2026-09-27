@@ -303,6 +303,13 @@ interface ReplayItem {
   readonly backgroundTaskId?: string
 }
 
+/** A tool-read file until a completed model request has actually carried its media part. */
+interface PendingReadFile {
+  readonly path: string
+  readonly lead: InputContentPart
+  readonly media: InputContentPart
+}
+
 interface PendingNote {
   readonly text: string
   readonly backgroundTaskId?: string
@@ -1165,8 +1172,8 @@ export class ModelApiSession implements AgentSession {
    * round's outputs in a user message, where Meta reads them.
    */
   private readonly readFiles: VisibleFile[] = []
-  /** Synthetic user messages carrying a tool-read file, until the turn settles. */
-  private readonly readFileMessages = new WeakMap<ReplayItem, readonly string[]>()
+  /** Synthetic tool-read media still waiting for a completed model request. */
+  private readonly readFileMessages = new WeakMap<ReplayItem, readonly PendingReadFile[]>()
   /** The MCP notices this session has shown (M50): each is said once. */
   private readonly announcedMcp = new Set<string>()
   /** The compaction in flight (D26): it holds the session like a turn. */
@@ -2050,6 +2057,7 @@ export class ModelApiSession implements AgentSession {
         undefined,
       )
     }
+    this.markReadFileMediaDelivered(turnId, body.input)
     const calls = this.adoptOutput(turnId, final, open, chargedGoalId)
     const post = await this.runHooks(
       'PostLLMCall',
@@ -2342,6 +2350,7 @@ export class ModelApiSession implements AgentSession {
     if (files.length === 0) {
       return
     }
+    const pending: PendingReadFile[] = []
     const content = files.flatMap((file): InputContentPart[] => {
       if (!isRoundComplete) {
         return [
@@ -2352,44 +2361,76 @@ export class ModelApiSession implements AgentSession {
         ]
       }
       const [sent] = this.contentParts([file.part])
-      return sent === undefined
-        ? []
-        : [
-            { type: 'input_text', text: fill(MODEL_TEXT.toolFileFollows, { path: file.path }) },
-            sent,
-          ]
+      if (sent === undefined) {
+        return []
+      }
+      const lead: InputContentPart = {
+        type: 'input_text',
+        text: fill(MODEL_TEXT.toolFileFollows, { path: file.path }),
+      }
+      pending.push({ path: file.path, lead, media: sent })
+      return [lead, sent]
     })
     const replay: ReplayItem = { turnId, item: { type: 'message', role: 'user', content } }
     this.replay.push(replay)
-    if (isRoundComplete) {
-      this.readFileMessages.set(
-        replay,
-        files.map((file) => file.path),
-      )
+    if (pending.length > 0) {
+      this.readFileMessages.set(replay, pending)
     }
   }
 
-  /** A stopped or failed turn must not re-send tool media on the next user turn. */
-  private dropReadFileMedia(turnId: string): void {
-    for (const [index, replay] of this.replay.entries()) {
+  /** Only media present in a completed request has reached the model. */
+  private markReadFileMediaDelivered(turnId: string, input: readonly InputItem[]): void {
+    const sent = new Set(
+      input.flatMap((item) =>
+        item.type === 'message' && item.role === 'user' ? item.content : [],
+      ),
+    )
+    for (const replay of this.replay) {
       if (replay.turnId !== turnId) {
         continue
       }
-      const paths = this.readFileMessages.get(replay)
-      if (paths === undefined) {
+      const pending = this.readFileMessages.get(replay)
+      if (pending === undefined) {
         continue
       }
+      const remaining = pending.filter((file) => !sent.has(file.media))
+      if (remaining.length === 0) {
+        this.readFileMessages.delete(replay)
+      } else {
+        this.readFileMessages.set(replay, remaining)
+      }
+    }
+  }
+
+  /** A stopped or failed turn replaces only media no completed request carried. */
+  private dropReadFileMedia(turnId: string): void {
+    for (const [index, replay] of this.replay.entries()) {
+      if (replay.turnId !== turnId || replay.item.type !== 'message') {
+        continue
+      }
+      const pending = this.readFileMessages.get(replay)
+      if (pending === undefined) {
+        continue
+      }
+      const leads = new Map(pending.map((file) => [file.lead, file.path]))
+      const media = new Set(pending.map((file) => file.media))
+      const content = replay.item.content.flatMap((part): InputContentPart[] => {
+        const filePath = leads.get(part)
+        if (filePath !== undefined) {
+          return [
+            { type: 'input_text', text: fill(MODEL_TEXT.toolFileNotDelivered, { path: filePath }) },
+          ]
+        }
+        return media.has(part) ? [] : [part]
+      })
       this.replay[index] = {
         ...replay,
         item: {
-          type: 'message',
-          role: 'user',
-          content: paths.map((filePath) => ({
-            type: 'input_text',
-            text: fill(MODEL_TEXT.toolFileNotDelivered, { path: filePath }),
-          })),
+          ...replay.item,
+          content,
         },
       }
+      this.readFileMessages.delete(replay)
     }
   }
 
