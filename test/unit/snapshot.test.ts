@@ -131,6 +131,9 @@ describe('the saved conversation (M25)', () => {
       sessionId: 'old',
     })
     expect(webviewStateOf(initialUiState, false)).toEqual({})
+    const side = throughJson(webviewStateOf({ ...shown, isSideChat: true }, false))
+    expect(parsePersistedState(side)).toEqual({ sessionId: 's1', sideChat: true })
+    expect(restoredUiState(side).isSideChat).toBe(true)
   })
 
   it('keeps only the session id past the size cap, and says so once the host confirms it', () => {

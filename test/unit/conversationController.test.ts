@@ -173,6 +173,10 @@ function setup(
     readToolImage?: ConversationDeps['readToolImage']
     /** VS Code's workspace trust (M46: Restricted Mode runs no `!` command). */
     isWorkspaceTrusted?: boolean
+    isSideChat?: boolean
+    openSideChat?: (sessionId: string) => void
+    /** Hold a host lookup after the action captured its source session. */
+    hostGate?: { current: Promise<undefined> | undefined; onWait?: () => void }
   } = {},
 ) {
   const handle = fakeMspHost()
@@ -262,7 +266,7 @@ function setup(
     log,
   )
   const auth = fakeAuth(options.status)
-  const surface = fakeSurface('s')
+  const surface = fakeSurface('s', options.isSideChat)
   const openExternal = vi.fn<(url: string) => void>()
   const hostActions: HostAction[] = []
   let picked: PickedFile[] = []
@@ -320,6 +324,11 @@ function setup(
     usageInsights: () => Promise.resolve(options.usageInsights),
     ensureHost: async () => {
       await options.beforeEnsureHost?.()
+      const gate = options.hostGate?.current
+      if (gate !== undefined) {
+        options.hostGate?.onWait?.()
+        await gate
+      }
       return host
     },
     workspaceRoot: 'workspaceRoot' in options ? options.workspaceRoot : '/ws',
@@ -327,6 +336,7 @@ function setup(
     initialPermissionMode: options.initialPermissionMode ?? 'manual',
     hasApprovalUi: options.hasApprovalUi ?? false,
     openExternal,
+    ...(options.openSideChat !== undefined && { openSideChat: options.openSideChat }),
     mentions: {
       search: (query: string, limit: number) => {
         const items: MentionItem[] = [
@@ -1696,12 +1706,20 @@ function withHistory(
   t.server.handle('session/fork', () =>
     envelope({ ...storedSession, sessionId: 'forked', forkedFrom: { sessionId: 'old' } }),
   )
+  t.server.handle('goal/clear', goalRefusal('missing_goal'))
   t.server.handle('session/rename', (params) => ({
     commandId: params['commandId'],
     status: 'accepted',
     name: `${String(params['name'])} (canonical)`,
   }))
   return t
+}
+
+/** One completed source turn for fork and side-chat tests (M53). */
+async function completeFirstTurn(t: ReturnType<typeof withHistory>): Promise<void> {
+  await t.send('l1', 'first')
+  t.finishTurn()
+  await settle()
 }
 
 const historyLoaded = {
@@ -1953,6 +1971,199 @@ describe('ConversationController: session history (M6)', () => {
       level: 'error',
       text: 'Could not fork the conversation: invalid fork boundary: WriteFailed',
     })
+  })
+
+  it('rewinds by forking before the chosen turn and restores its draft; the first turn clears (M53)', async () => {
+    const t = withHistory()
+    await t.send('l1', 'first')
+    t.finishTurn()
+    await settle()
+    await t.controller.handle({
+      type: 'rewindConversation',
+      sourceSessionId: 's1',
+      turnId: 't2',
+      lastTurnId: 't1',
+      text: 'second',
+      imageCount: 0,
+    })
+    expect(t.server.requestsFor('session/fork')[0]?.params).toMatchObject({
+      sessionId: 's1',
+      cutPoint: { lastTurnId: 't1' },
+    })
+    expect(t.surface.posted).toContainEqual({ type: 'restoreDraft', text: 'second' })
+    await t.controller.handle({
+      type: 'rewindConversation',
+      sourceSessionId: 'forked',
+      turnId: 't1',
+      text: 'first',
+      imageCount: 1,
+    })
+    expect(t.surface.posted).toContainEqual({ type: 'conversationCleared' })
+    expect(t.surface.posted).toContainEqual({ type: 'restoreDraft', text: 'first' })
+    expect(t.surface.posted).toContainEqual({
+      type: 'notice',
+      level: 'warning',
+      text: UI_TEXT.rewindImagesUnavailable,
+    })
+  })
+
+  it('ignores a rewind sent for a session no longer on this surface (M53)', async () => {
+    const t = withHistory()
+    await t.send('l1', 'first')
+    t.finishTurn()
+    await settle()
+    t.surface.posted.length = 0
+    await t.controller.handle({
+      type: 'rewindConversation',
+      sourceSessionId: 'another-session',
+      turnId: 't1',
+      text: 'stale draft',
+      imageCount: 0,
+    })
+    expect(t.server.requestsFor('session/fork')).toHaveLength(0)
+    expect(t.surface.posted).not.toContainEqual({ type: 'conversationCleared' })
+    expect(t.surface.posted).not.toContainEqual({ type: 'restoreDraft', text: 'stale draft' })
+  })
+
+  it('does not rewind another session if the surface clears during host lookup (M53)', async () => {
+    const onWait = vi.fn()
+    const hostGate: { current: Promise<undefined> | undefined; onWait: () => void } = {
+      current: undefined,
+      onWait,
+    }
+    const t = withHistory({ hostGate })
+    await t.send('l1', 'first')
+    t.finishTurn()
+    await settle()
+    t.surface.posted.length = 0
+    const gate = Promise.withResolvers<undefined>()
+    hostGate.current = gate.promise
+    const rewinding = t.controller.handle({
+      type: 'rewindConversation',
+      sourceSessionId: 's1',
+      turnId: 't1',
+      text: 'old draft',
+      imageCount: 0,
+    })
+    await vi.waitFor(() => {
+      expect(onWait).toHaveBeenCalledOnce()
+    })
+    await t.controller.handle({ type: 'clearConversation' })
+    gate.resolve(undefined)
+    await rewinding
+    expect(
+      t.surface.posted.filter((message) => message.type === 'conversationCleared'),
+    ).toHaveLength(1)
+    expect(t.surface.posted).not.toContainEqual({ type: 'restoreDraft', text: 'old draft' })
+  })
+
+  it('opens a Plan-mode side fork without dropping the main session (M53)', async () => {
+    const opened = vi.fn<(sessionId: string) => void>()
+    const t = withHistory({ openSideChat: opened })
+    await completeFirstTurn(t)
+    await t.controller.handle({ type: 'openSideChat', sourceSessionId: 's1' })
+    expect(opened).toHaveBeenCalledWith('forked')
+    expect(t.server.requestsFor('session/setApprovalMode').at(-1)?.params).toMatchObject({
+      sessionId: 'forked',
+      mode: 'denyUnmatched',
+    })
+    expect(t.server.requestsFor('turn/cancel')).toHaveLength(0)
+    expect(t.surface.posted).toContainEqual(
+      expect.objectContaining({ type: 'sessionInfo', sessionId: 's1' }),
+    )
+    expect(t.surface.posted).not.toContainEqual({ type: 'conversationCleared' })
+  })
+
+  it('ignores a delayed side-chat click from the session this surface left (M53)', async () => {
+    const opened = vi.fn<(sessionId: string) => void>()
+    const t = withHistory({ openSideChat: opened })
+    await completeFirstTurn(t)
+    await t.controller.handle({ type: 'resumeSession', sessionId: 'old' })
+    await t.controller.handle({ type: 'openSideChat', sourceSessionId: 's1' })
+    expect(t.server.requestsFor('session/fork')).toHaveLength(0)
+    expect(opened).not.toHaveBeenCalled()
+  })
+
+  it('does not open a side fork after its source surface cleared during host lookup (M53)', async () => {
+    const onWait = vi.fn()
+    const hostGate: { current: Promise<undefined> | undefined; onWait: () => void } = {
+      current: undefined,
+      onWait,
+    }
+    const opened = vi.fn<(sessionId: string) => void>()
+    const t = withHistory({ hostGate, openSideChat: opened })
+    await t.send('l1', 'first')
+    t.finishTurn()
+    await settle()
+    const gate = Promise.withResolvers<undefined>()
+    hostGate.current = gate.promise
+    const opening = t.controller.handle({ type: 'openSideChat', sourceSessionId: 's1' })
+    await vi.waitFor(() => {
+      expect(onWait).toHaveBeenCalledOnce()
+    })
+    await t.controller.handle({ type: 'clearConversation' })
+    gate.resolve(undefined)
+    await opening
+    expect(t.server.requestsFor('session/fork')).toHaveLength(0)
+    expect(opened).not.toHaveBeenCalled()
+  })
+
+  it('keeps a side chat in Plan mode even when the panel asks to change it (M53)', async () => {
+    const t = setup({ isSideChat: true, initialPermissionMode: 'bypassPermissions' })
+    await t.controller.handle({ type: 'setPermissionMode', mode: 'auto' })
+    expect(t.surface.posted).toContainEqual({
+      type: 'notice',
+      level: 'info',
+      text: UI_TEXT.sideChatPlanOnly,
+    })
+    expect(t.surface.posted).toContainEqual({
+      type: 'composerState',
+      effort: 'high',
+      isThinkingEnabled: true,
+      permissionMode: 'plan',
+    })
+  })
+
+  it('restores a durable side session as Plan when ordinary History resumes it (M53)', async () => {
+    const t = setup()
+    const { host, controller } = modelApiController(t)
+    const side = await host.startSession({
+      workspaceRoot: '/ws',
+      modelId: 'muse-spark-1.3',
+      approvalMode: 'promptUnmatched',
+      sideChat: true,
+    })
+    await controller.handle({ type: 'resumeSession', sessionId: side.sessionId })
+    expect(t.surface.posted).toContainEqual(
+      expect.objectContaining({ type: 'historyLoaded', sessionId: side.sessionId, sideChat: true }),
+    )
+    expect(t.surface.posted).toContainEqual(
+      expect.objectContaining({ type: 'sessionInfo', sessionId: side.sessionId, sideChat: true }),
+    )
+    expect(t.surface.posted).toContainEqual(
+      expect.objectContaining({ type: 'composerState', permissionMode: 'plan' }),
+    )
+    await controller.handle({ type: 'setPermissionMode', mode: 'auto' })
+    expect(t.surface.posted).toContainEqual({
+      type: 'notice',
+      level: 'info',
+      text: UI_TEXT.sideChatPlanOnly,
+    })
+    await controller.handle({ type: 'clearConversation' })
+    expect(t.surface.posted.at(-2)).toMatchObject({ type: 'sessionInfo', sideChat: false })
+  })
+
+  it('refuses an ordinary Model API session in a side surface on restore or History selection (M53)', async () => {
+    const t = setup({ isSideChat: true })
+    const { host, controller } = modelApiController(t)
+    const ordinary = await host.startSession({
+      workspaceRoot: '/ws',
+      modelId: 'muse-spark-1.3',
+      approvalMode: 'promptUnmatched',
+    })
+    await controller.restoreSession(ordinary.sessionId)
+    await controller.handle({ type: 'resumeSession', sessionId: ordinary.sessionId })
+    expect(t.surface.posted.some((message) => message.type === 'historyLoaded')).toBe(false)
   })
 
   it('renames the session to the canonical name, and reports a refusal', async () => {

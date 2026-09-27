@@ -52,11 +52,19 @@ body {
   margin: 0;
   font-size: var(--vscode-font-size);
   font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.header {
+  flex-wrap: wrap;
+  gap: 4px;
 }
 
 .header-actions {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
+  justify-content: flex-end;
   gap: 2px;
 }
 

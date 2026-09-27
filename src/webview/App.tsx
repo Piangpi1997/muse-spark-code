@@ -671,6 +671,12 @@ export function App({
   const onOpenHistory = useCallback(() => {
     toggleOverlay('history')
   }, [toggleOverlay])
+  const onOpenSideChat = useCallback(() => {
+    const sessionId = store.getState().sessionId
+    if (sessionId !== undefined) {
+      postMessage({ type: 'openSideChat', sourceSessionId: sessionId })
+    }
+  }, [postMessage, store])
   const onOpenAgents = useCallback(() => {
     setSelectedAgentId(undefined)
     toggleOverlay('agents')
@@ -748,6 +754,30 @@ export function App({
   const onRewind = useCallback(
     (entryId: string) => {
       postMessage({ type: 'rewindCode', edits: [...editsAfter(store.getState(), entryId)] })
+    },
+    [store, postMessage],
+  )
+  const onRewindConversation = useCallback(
+    (entryId: string) => {
+      const current = store.getState()
+      const entry = current.transcript.find((candidate) => candidate.id === entryId)
+      const cut = forkCutBefore(current.transcript, entryId)
+      if (
+        cut === undefined ||
+        current.sessionId === undefined ||
+        entry?.kind !== 'user' ||
+        entry.turnId === undefined
+      ) {
+        return
+      }
+      postMessage({
+        type: 'rewindConversation',
+        sourceSessionId: current.sessionId,
+        turnId: entry.turnId,
+        ...(cut.type === 'afterTurn' && { lastTurnId: cut.lastTurnId }),
+        text: entry.text,
+        imageCount: entry.attachments.length,
+      })
     },
     [store, postMessage],
   )
@@ -1093,6 +1123,14 @@ export function App({
   }
 
   const isRunning = state.activeTurnId !== undefined
+  const canOpenSideChat =
+    state.sessionId !== undefined &&
+    state.canEditSessions &&
+    !state.isSideChat &&
+    state.transcript.some(
+      (entry) =>
+        entry.kind === 'user' && entry.turnId !== undefined && entry.turnId !== state.activeTurnId,
+    )
   let body
   if (isBodyGated) {
     body = (
@@ -1132,6 +1170,9 @@ export function App({
         onRefuseLink={onRefuseLink}
         onFork={state.sessionId === undefined || !state.canEditSessions ? undefined : onFork}
         onRewind={state.sessionId === undefined ? undefined : onRewind}
+        onRewindConversation={
+          state.sessionId === undefined || !state.canEditSessions ? undefined : onRewindConversation
+        }
         onReply={onReply}
         quoteMenuEntryId={quoteMenu?.entryId}
         onQuote={onQuote}
@@ -1283,6 +1324,7 @@ export function App({
         <Header
           title={title}
           isFocusView={state.settings.focusView}
+          isSideChat={state.isSideChat}
           onNewConversation={onNewConversation}
           onOpenHistory={onOpenHistory}
           onRename={state.sessionId === undefined || !state.canEditSessions ? undefined : onRename}
@@ -1290,6 +1332,7 @@ export function App({
           runningAgentCount={runningAgentCount}
           runningTaskCount={backgroundTasks.filter((task) => isRunningTask(task)).length}
           onOpenAgents={onOpenAgents}
+          onOpenSideChat={canOpenSideChat ? onOpenSideChat : undefined}
         />
         {history}
       </div>
@@ -1366,8 +1409,8 @@ export function App({
           onFocusChange={onFocusChange}
           onOpenPalette={onOpenPalette}
           onOpenModelPicker={onOpenModelPicker}
-          onCyclePermissionMode={onCyclePermissionMode}
-          onOpenModeMenu={onOpenModeMenu}
+          onCyclePermissionMode={state.isSideChat ? undefined : onCyclePermissionMode}
+          onOpenModeMenu={state.isSideChat ? undefined : onOpenModeMenu}
           onOpenAttachMenu={onOpenAttachMenu}
           onRemoveAttachment={onRemoveAttachment}
           onSearchMentions={onSearchMentions}

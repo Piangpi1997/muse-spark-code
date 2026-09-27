@@ -1887,6 +1887,35 @@ Agent map keeps the captured M18 controls; those two verbs remain unavailable
 until a bounded live owner-command capture establishes their success shapes.
 The Model API backend's local read and reopen actions are separate from MSP.
 
+### D46 — Conversation rewind and side chat (2026-09-25)
+
+Muse Code 1.3.0 exposes neither `session/rewind` nor `session/sideChat` over
+MSP. Conversation rewind uses the supported `session/fork` cut point just
+before the selected user turn, then restores that turn's prompt as a draft.
+The first turn rewinds to a fresh conversation. Code rewind remains a separate
+choice; its existing edit review refuses changed files. The prior session
+stays in History. A Model API fork rejects a cut before its latest compaction
+summary, because that summary contains later context. Images return to the
+composer when the backend retained their bytes; a missing image is reported.
+
+Side chat opens a separate tab forked from completed turns, with Plan mode
+forced and the inherited goal cleared so it cannot continue there. The Model
+API backend denies write tools in that mode. Muse Code
+applies its project and session allow rules, so its side fork is not claimed
+strictly read only. The main tab
+and any running turn remain attached. Closing the side tab returns focus to
+the original tab; its fork stays in History. Muse Code 1.3.0 on Windows has a
+known `session/fork` failure, so both conversation actions remain unavailable
+there until the CLI fixes that method. A side chat is an ordinary Model API or
+Muse Code model call on the selected backend, never a paid Model API feature
+called through a Muse subscription.
+
+The Model API Plan statement covers its tool-permission engine. The provisional
+M51 join now suppresses hooks in a durable side session and refuses external
+MCP tools regardless of a server's read-only hint. M52 scheduled prompts still
+need a core refusal after that milestone joins; final side-branch read-only
+certification remains open (M53 below).
+
 ## 3. Open questions (need the owner)
 
 | #   | Question                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            | Default until answered                                                |
@@ -4420,6 +4449,86 @@ still needs its full quality gate and hosted recheck.
 - **PowerShell identity pairs**: the earlier Windows sweep drill found that `@(@(pid, ticks))` flattens the pair, so it fed a FILETIME timestamp to `Get-Process -Id` and missed a child. Its hashtable records remain for the M27 fallback and POSIX/legacy cases; M50's Windows stdio path no longer relies on the sweep or a PID at teardown.
 - **Left for later**: resources, prompts, sampling, roots, elicitation and
   OAuth for remote servers; a server's own event stream over HTTP.
+
+### M53 — Conversation rewind and side chat (D46)
+
+**Status 2026-09-26: provisional M51 join staged; M52 join and certification
+pending** (`docs/certification/m53.md`). Focused tests and merge red drills
+passed on the isolated trees: 628 focused tests on M47 main `34002ab` and
+the combined-fork red drill on M46. The pre-move stage is pinned at
+`refs/codex-backups/m53-pre-m47-20260926`. M48–M51 are present in staged
+tree `01fe750c246b16a527ca51eeb989c672571e7eb8`; six focused suites
+passed 561/561 with five TypeScript projects, lint, localization and format
+green. Corrected M51 ancestry, M52 integration, full quality and visual gates
+remain open.
+
+- **Goal**: rewind conversation context to a selected user turn, preserving
+  its prompt as a new draft; ask a side question in a separate branch while
+  the main conversation continues.
+- **Research**: Muse Code 1.3.0 exposes `session/fork` with an optional
+  completed-turn cut point, but no MSP rewind or side-chat verb. Its TUI has
+  `/rewind` and `/side` (`/btw`). The Model API session already stores input
+  replay and transcript items. D46 sets the implementation and limits.
+- **Scope**: a user-card rewind choice, draft and available image restoration,
+  a fork before the chosen turn (or fresh conversation before the first), a
+  separate side-chat panel that keeps the source attached, a fixed Plan-mode
+  policy and cleared goal on the side branch, compaction-aware Model API cuts, eight strings
+  in all fourteen languages, and documentation.
+- **Acceptance pending**: full quality and visual accessibility gates after
+  earlier milestone integration. Focused host, backend, reducer, UI,
+  snapshot and protocol tests and red drills passed on the isolated tree.
+- **Mac gate checkpoint, M48–M52 joins still pending**: exact staged M53 tree
+  `426a6f55f99f551e6ce85254977688964699a867` passed remote patch and
+  Node archive verification and `npm ci`, then `quality:gates` stopped at
+  `unicorn/prefer-simple-condition-first` in the side-chat `Shift+Tab`
+  guard. Moving the existing callback check first passed focused ESLint and
+  the keyboard regression test on the private Mac copy. The second run on
+  corrected tree `eda1f4ce416ccd5c4cd5f402edc0e0eec01608f5` passed
+  through cycles, then stopped at three `jscpd` clones. Shared fork-source
+  guard and test setup helpers removed all three on the private Mac copy:
+  duplication found zero, 267 focused tests passed, and changed-file ESLint
+  plus host/unit type checks passed. A third run on exact staged tree
+  `eaa5ee60f195d8eab9ce5ab237ca2c59db70bb0f` passed
+  `quality:gates` on Mac: 1717 unit tests passed, localization, duplication
+  and audit clean. The `rewind` and `signin` accessibility scenarios each
+  passed all four themes; the full Mac accessibility matrix remains open
+  after six-way Chrome page timeouts over SSH (`docs/certification/m53.md`).
+- **WIN-11-VM full local gate**: literal `npm run quality` exited 0 on exact
+  staged M53 tree `4273bd0f94bccfcffae471b5ad1a36cd38542964` on M47
+  base. Unit tests: 1721 passed, three skipped. Accessibility: 280 pages,
+  zero violated or undecided rules and zero pages without a result.
+  PSScriptAnalyzer, localization, duplication, audit, gitleaks and Semgrep
+  all reported zero findings. The private VM checkout had no unstaged or
+  untracked files or remaining gate processes. This documentation receipt
+  changes the staged tree; M48–M52 joins and their gates remain pending
+  (`docs/certification/m53.md`).
+- **Provisional M51 boundary review**: `ModelApiSession.copyInto` keeps the
+  completed-turn/compaction cut alongside M46 background notes and M48 child
+  records. A side fork is marked and put in Plan before any M51 `SessionStart`
+  hook; all its hooks stay disabled through resume and close. M50 external MCP
+  calls are refused before read-only hints or approval rules. Copied and
+  resumed child records are held to Plan. A side surface cannot revive an
+  ordinary Model API session: the core checks its stored marker before resume
+  hooks. Red tests caught the previous hook, child-mode and resume leaks;
+  normal forks remain unaffected (`docs/certification/m53.md`).
+- **Durable side-session lifecycle**: the stored marker is optional for old
+  sessions. The fork clears its inherited goal before a strict save; a failed
+  save opens no panel or orphan record, and a slow save finishes before the
+  source hold is released. History/restart keeps the side label and Plan lock.
+  These focused checks passed on the provisional M51 join. M52 schedule
+  create/run denial, corrected M51 ancestry and exact combined quality still
+  need verification before delivery.
+- **Stale action boundary**: a rewind message names the session whose
+  transcript supplied the selected prompt; a side-chat message names the
+  session shown when its header button was clicked. If the surface switched
+  sessions before or during host work, neither rewind nor side chat may
+  clear, replace, or fork the unrelated current session.
+- **Focus return**: closing a side-chat tab reveals its original surface if
+  that surface is still registered. The registry's active fallback can be a
+  different tab, so it is not used as proof that the original closed.
+- **Limit**: Muse Code 1.3.0 on Windows refuses forks. On other Muse Code
+  platforms the Plan-mode side fork may inherit allow rules; unlike Model
+  API Plan mode, it is not certified as strictly read only.
 
 ### M41 — Install Muse Code from the panel (folded into M55)
 

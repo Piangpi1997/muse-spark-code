@@ -601,11 +601,31 @@ change, and **Click to expand** opens the diff editor. To undo, use the
 rewind button on any sent message (on hover):
 
 - **Fork conversation from here**.
+- **Rewind conversation to here** starts a branch before that message and
+  puts its prompt back in the composer. The original conversation stays in
+  History. Images return when the backend still has their bytes; the panel
+  warns if it cannot restore one. A Model API conversation cannot be rewound
+  before its latest compaction. A rewind queued for a session the tab has since
+  left is ignored.
 - **Rewind code to here** reverts every edit made after that message, the
   conversation's and its subagents', in the reverse of the order they
   landed. A file the edit created goes to the trash, unless you have added
   to it since, in which case your lines stay.
 - **Fork conversation and rewind code**.
+
+**Side chat.** Use **Side chat** in the header to open a separate Plan-mode
+conversation with the completed turns as reference. Its inherited goal is
+cleared; the original tab keeps its session, goal and running turn. A delayed
+side-chat request is ignored if the original tab has since changed sessions.
+On the Model API backend, the side branch keeps Plan mode after reopen,
+suppresses local hooks and refuses external MCP tools, including ones their
+server labels read only. Scheduled prompt controls still await the M52
+integration gate. Muse Code applies its own project and session rules in Plan mode;
+review those rules before treating that branch as read only. Close the side
+tab to return to the main one; its branch stays in History. It uses the
+selected backend's normal model allowance or key billing; it does not route
+Model API calls through a Muse subscription. In a side chat, `Shift+Tab`
+moves keyboard focus normally because its permission mode is fixed.
 
 Each edit is undone only where its own lines (the changed lines and the few
 around them) are still exactly as the edit left them. If you added or
@@ -1180,12 +1200,13 @@ message resumes the same session.
   without the sandbox for such workspaces: commands run directly as you, in
   the project, still gated by the approval cards, and the panel says so once
   per conversation. `muse` keeps the sandbox regardless; `off` never sandboxes.
-- **No Rename in the header, no Fork in a message's menu (Windows)** — Muse
+- **No Rename, conversation rewind or Side chat on Muse Code 1.3.0 for Windows** — Muse
   Code 1.3.0 refuses `session/rename` and `session/fork` on Windows
   ([#30](https://github.com/meta-models/muse-code-sdk/issues/30),
   [#31](https://github.com/meta-models/muse-code-sdk/issues/31)), so the
-  panel does not offer them there; **Rewind code to here** still works. A
-  newer Muse Code gets both back, and the Model API backend has both.
+  panel does not offer fork-based actions there; **Rewind code to here**
+  still works. A newer Muse Code gets them back when its fork method works,
+  and the Model API backend offers them now.
 - **A warning that "Muse Code reported an error for the decision (the tool
   may have run anyway): … approval ledger durability fence …"** — Muse Code
   1.3.0 on Windows sometimes fails its own ledger write after applying your

@@ -106,6 +106,15 @@ describe('parseStoredSession', () => {
     expect(parseStoredSession({ ...full, goal: { objective: 'x' } })).toMatchObject({ ok: false })
   })
 
+  it('keeps a side-session marker without changing older session files (M53)', () => {
+    const side: StoredSession = { ...full, sideChat: true, approvalMode: 'denyUnmatched' }
+    const parsed = parseStoredSession(structuredClone(side))
+    expect(parsed).toEqual({ ok: true, session: side })
+    expect(headerOf(side).sideChat).toBe(true)
+    expect(recordOf(headerOf(side)).sideChat).toBe(true)
+    expect(parseStoredSession(structuredClone(full))).toEqual({ ok: true, session: full })
+  })
+
   it('keeps a background completion note tied to its task across storage (M46)', () => {
     const note = {
       turnId: 't1',

@@ -42,6 +42,7 @@ type UiSnapshot = z.infer<typeof snapshotSchema>
 const webviewStateSchema = z.object({
   /** What the host resumes after a window reload (D15, `parsePersistedState`). */
   sessionId: z.optional(z.string()),
+  sideChat: z.optional(z.boolean()),
   /** The conversation as shown, validated separately so a stale shape loses only itself. */
   snapshot: z.optional(z.unknown()),
   /** The session whose transcript was too long to save (WEBVIEW_STATE_MAX_CHARS). */
@@ -81,7 +82,10 @@ export function webviewStateOf(
   maxChars = WEBVIEW_STATE_MAX_CHARS,
 ): WebviewState {
   const sessionId = state.sessionId ?? state.restoredSessionId
-  const base: WebviewState = sessionId === undefined ? {} : { sessionId }
+  const base: WebviewState = {
+    ...(sessionId !== undefined && { sessionId }),
+    ...(state.isSideChat && { sideChat: true }),
+  }
   if (!isTranscriptKept) {
     return base
   }
@@ -112,8 +116,12 @@ export function restoredUiState(raw: unknown): UiState {
   if (!persisted.success) {
     return initialUiState
   }
-  const { sessionId, snapshot, omittedSessionId } = persisted.data
-  const base: UiState = { ...initialUiState, restoredSessionId: sessionId }
+  const { sessionId, snapshot, omittedSessionId, sideChat } = persisted.data
+  const base: UiState = {
+    ...initialUiState,
+    restoredSessionId: sessionId,
+    isSideChat: sideChat === true,
+  }
   const parsed = snapshotSchema.safeParse(snapshot)
   // A valid snapshot for another session must not supply history details here.
   if (parsed.success && parsed.data.sessionId === sessionId) {

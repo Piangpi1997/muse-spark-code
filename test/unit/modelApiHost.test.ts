@@ -246,11 +246,13 @@ function setup(
 async function startSession(
   t: ReturnType<typeof setup>,
   approvalMode = 'promptUnmatched',
+  isSideChat = false,
 ): Promise<{ session: ModelApiSession; events: AgentEvent[]; turnDone: () => Promise<void> }> {
   const session = (await t.host.startSession({
     workspaceRoot: ROOT,
     modelId: 'muse-spark-1.3',
     approvalMode,
+    ...(isSideChat && { sideChat: true }),
   })) as ModelApiSession
   return { session, ...watchTurns(session) }
 }
@@ -295,10 +297,11 @@ async function answerFirst(
   t: ReturnType<typeof setup>,
   session: ModelApiSession,
   turnDone: () => Promise<void>,
-): Promise<void> {
+): Promise<string> {
   t.api.script({ text: 'first reply' })
-  await session.sendTurn([{ type: 'text', text: 'first' }])
+  const submitted = await session.sendTurn([{ type: 'text', text: 'first' }])
   await turnDone()
+  return submitted.turnId
 }
 
 /** One turn that reads a.txt and answers, with the fake API scripted for it. */
@@ -449,6 +452,238 @@ describe('ModelApiHost: catalogue and sessions', () => {
     expect(whole.history.items).toHaveLength(4)
     await t.host.close()
     expect(t.host.sessionCount).toBe(0)
+  })
+
+  it('restores sent image bytes and forks only completed turns while another reply runs (M53)', async () => {
+    const t = setup()
+    const { session, turnDone } = await startSession(t)
+    t.api.script({ text: 'first reply' })
+    const first = await session.sendTurn([
+      { type: 'text', text: 'look at this' },
+      { type: 'image', mediaType: 'image/png', base64Data: TINY_PNG_BASE64, width: 1, height: 1 },
+    ])
+    await turnDone()
+    expect(session.sentImages(first.turnId)).toEqual([
+      { mediaType: 'image/png', base64Data: TINY_PNG_BASE64 },
+    ])
+    const held = Promise.withResolvers<undefined>()
+    t.api.script({ hold: held.promise, text: 'second reply' })
+    const second = await session.sendTurn([{ type: 'text', text: 'still running' }])
+    const fork = await t.host.forkSession(session.sessionId, 'muse-spark-1.3')
+    held.resolve(undefined)
+    await turnDone()
+    expect(fork.record.turnCount).toBe(1)
+    expect(fork.history.items.map((item) => item.text)).toEqual(['look at this', 'first reply'])
+    expect(fork.history.items.some((item) => item.turnId === second.turnId)).toBe(false)
+  })
+
+  it('rejects a rewind whose cut predates the latest compaction summary (M53)', async () => {
+    const t = setup()
+    const { session, turnDone } = await startSession(t)
+    const firstTurnId = await answerFirst(t, session, turnDone)
+    t.api.script({ text: 'second reply' })
+    await session.sendTurn([{ type: 'text', text: 'second' }])
+    await turnDone()
+    t.api.script({ text: 'summary' })
+    await session.compact()
+    await expect(
+      t.host.forkSession(session.sessionId, 'muse-spark-1.3', firstTurnId),
+    ).rejects.toThrow(UI_TEXT.rewindBeforeCompaction)
+  })
+
+  it('stores a side fork in Plan before opening and suppresses its hooks across resume (M53)', async () => {
+    const store = memorySessionStore()
+    const runHook = vi.fn(() => hookReply())
+    const t = setup({ store, hooks: hooksFor('SessionStart', 'record'), runHook })
+    const { session, turnDone } = await startSession(t)
+    await answerFirst(t, session, turnDone)
+    await t.host.flush()
+    runHook.mockClear()
+
+    const side = await t.host.forkSession(session.sessionId, 'muse-spark-1.3', undefined, {
+      sideChat: true,
+    })
+    expect(side.record.sideChat).toBe(true)
+    expect(store.saved.get(side.record.sessionId)).toMatchObject({
+      sideChat: true,
+      approvalMode: 'denyUnmatched',
+    })
+    expect(runHook).not.toHaveBeenCalled()
+
+    side.session.dispose()
+    const resumed = await t.host.resumeSession(side.record.sessionId, 'muse-spark-1.3')
+    expect(resumed.record.sideChat).toBe(true)
+    await expect(resumed.session.setApprovalMode('allowAll')).rejects.toThrow(
+      UI_TEXT.sideChatPlanOnly,
+    )
+    expect(runHook).not.toHaveBeenCalled()
+
+    const normal = await t.host.forkSession(session.sessionId, 'muse-spark-1.3')
+    expect(normal.record.sideChat).not.toBe(true)
+    expect(runHook).toHaveBeenCalled()
+
+    await t.host.close()
+    runHook.mockClear()
+    const nextWindow = setup({ store, hooks: hooksFor('SessionStart', 'record'), runHook })
+    await nextWindow.host.load()
+    const restored = await nextWindow.host.resumeSession(side.record.sessionId, 'muse-spark-1.3')
+    expect(restored.record.sideChat).toBe(true)
+    await expect(restored.session.setApprovalMode('allowAll')).rejects.toThrow(
+      UI_TEXT.sideChatPlanOnly,
+    )
+    expect(runHook).not.toHaveBeenCalled()
+  })
+
+  it('refuses to open a side fork when its durable save fails (M53)', async () => {
+    const store = memorySessionStore()
+    const t = setup({ store })
+    const { session, turnDone } = await startSession(t)
+    await answerFirst(t, session, turnDone)
+    await t.host.flush()
+    store.failNextSave = true
+
+    await expect(
+      t.host.forkSession(session.sessionId, 'muse-spark-1.3', undefined, { sideChat: true }),
+    ).rejects.toThrow('disk full')
+    await t.host.flush()
+    expect(t.host.sessionCount).toBe(1)
+    expect(store.saved.size).toBe(1)
+    expect(store.saved.has(session.sessionId)).toBe(true)
+    const listed = await t.host.listSessions({ workspaceRoot: ROOT, limit: 10 })
+    expect(listed.sessions.map((record) => record.sessionId)).toEqual([session.sessionId])
+  })
+
+  it('waits for a side fork save before its only hold can be released and resumed (M53)', async () => {
+    const store = memorySessionStore()
+    const save = store.save.bind(store)
+    const entered = Promise.withResolvers<undefined>()
+    const release = Promise.withResolvers<undefined>()
+    store.save = async (snapshot) => {
+      if (snapshot.sideChat === true) {
+        entered.resolve(undefined)
+        await release.promise
+      }
+      await save(snapshot)
+    }
+    const t = setup({ store })
+    const { session, turnDone } = await startSession(t)
+    await answerFirst(t, session, turnDone)
+    await t.host.flush()
+
+    let hasReturned = false
+    const opening = t.host.forkSession(session.sessionId, 'muse-spark-1.3', undefined, {
+      sideChat: true,
+    })
+    void opening.then(() => {
+      hasReturned = true
+    })
+    try {
+      await entered.promise
+      expect(hasReturned).toBe(false)
+    } finally {
+      release.resolve(undefined)
+    }
+    const side = await opening
+    side.session.dispose()
+    const resumed = await t.host.resumeSession(side.record.sessionId, 'muse-spark-1.3')
+    expect(resumed.record.sideChat).toBe(true)
+    expect(resumed.history.sideChat).toBe(true)
+  })
+
+  it('refuses even a read-only-hinted external MCP call in a side session (M53)', async () => {
+    const mcp = fakeMcpSource([{ server: 'docs', tool: 'lookup', isReadOnly: true }])
+    const t = setup({ mcpServers: mcp })
+    const { session, events, turnDone } = await startSession(t, 'denyUnmatched', true)
+    t.api.script({ calls: [{ name: 'mcp__docs__lookup', arguments: '{}' }] }, { text: 'done' })
+    await session.sendTurn([{ type: 'text', text: 'read from docs' }])
+    await turnDone()
+    expect(mcp.calls).toEqual([])
+    expect(events.filter((event) => event.type === 'approvalRequested')).toEqual([])
+  })
+
+  it('runs no SessionStart or SessionEnd command hook for a side session (M53)', async () => {
+    const runHook = vi.fn(() => hookReply())
+    const t = setup({
+      hooks: [...hooksFor('SessionStart', 'start'), ...hooksFor('SessionEnd', 'end')],
+      runHook,
+    })
+    await t.host.startSession({
+      workspaceRoot: ROOT,
+      modelId: 'muse-spark-1.3',
+      approvalMode: 'promptUnmatched',
+      sideChat: true,
+    })
+    await t.host.close()
+    expect(runHook).not.toHaveBeenCalled()
+  })
+
+  it('runs no model-call command hook during a side turn (M53)', async () => {
+    const runHook = vi.fn(() => hookReply())
+    const t = setup({ hooks: hooksFor('PreLLMCall', 'before-model'), runHook })
+    const { session, turnDone } = await startSession(t, 'denyUnmatched', true)
+    t.api.script({ text: 'answer' })
+    await session.sendTurn([{ type: 'text', text: 'question' }])
+    await turnDone()
+    expect(runHook).not.toHaveBeenCalled()
+  })
+
+  it('rejects a stored ordinary session before its resume hook when a side surface requires it (M53)', async () => {
+    const store = memorySessionStore()
+    const runHook = vi.fn(() => hookReply())
+    const t = setup({ store, hooks: hooksFor('SessionStart', 'on-resume'), runHook })
+    const { session, turnDone } = await startSession(t)
+    await answerFirst(t, session, turnDone)
+    await t.host.flush()
+    session.dispose()
+    runHook.mockClear()
+
+    await expect(
+      t.host.resumeSession(session.sessionId, 'muse-spark-1.3', undefined, {
+        requireSideChat: true,
+      }),
+    ).rejects.toThrow(UI_TEXT.sideChatSessionOnly)
+    expect(runHook).not.toHaveBeenCalled()
+  })
+
+  it('clears the inherited goal before a side fork is saved (M53)', async () => {
+    const store = memorySessionStore()
+    const t = setup({ store })
+    const { session, turnDone } = await startSession(t)
+    await answerFirst(t, session, turnDone)
+    t.api.script({ text: 'working' })
+    await session.controlGoal({ verb: 'set', objective: 'Ship it' })
+    await turnDone()
+    expect(session.history().goal?.status).toBe('active')
+
+    const side = await t.host.forkSession(session.sessionId, 'muse-spark-1.3', undefined, {
+      sideChat: true,
+    })
+    expect(side.history.goal).toBeNull()
+    expect(store.saved.get(side.record.sessionId)?.goal).toBeUndefined()
+    expect(session.history().goal?.status).toBe('active')
+  })
+
+  it('keeps copied child records closed and unable to resume paid work from a side fork (M53)', async () => {
+    const store = memorySessionStore()
+    const t = setupSubagents({ store })
+    const { session } = await startApprovedSubagentSession(t)
+    await completePaidChild(t, session, 'spawn_before_side_fork')
+    const chargedBefore = t.paidUses.length
+
+    const side = await t.host.forkSession(session.sessionId, 'muse-spark-1.3', undefined, {
+      sideChat: true,
+    })
+    expect(side.history.items.find((item) => item.kind === 'subagent')?.controlStatus).toBe(
+      'closed',
+    )
+    expect(store.saved.get(side.record.sessionId)?.children?.[0]?.session.approvalMode).toBe(
+      'denyUnmatched',
+    )
+    await expect(side.session.controlSubagent('subagent-1', 'reopen')).rejects.toThrow()
+    side.session.dispose()
+    const reopened = await t.host.resumeSession(side.record.sessionId, 'muse-spark-1.3')
+    await expect(reopened.session.controlSubagent('subagent-1', 'reopen')).rejects.toThrow()
+    expect(t.paidUses).toHaveLength(chargedBefore)
   })
 })
 

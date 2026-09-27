@@ -63,7 +63,10 @@ export type EditRef = z.infer<typeof editRefSchema>
 // session the panel shows, so a panel rebuilt after a window reload resumes
 // it (PLAN.md D15). The webview keeps its own conversation snapshot beside
 // it (M25, src/webview/state/snapshot.ts); the host never reads that part.
-const persistedStateSchema = z.object({ sessionId: z.optional(z.string()) })
+const persistedStateSchema = z.object({
+  sessionId: z.optional(z.string()),
+  sideChat: z.optional(z.boolean()),
+})
 export type PersistedState = z.infer<typeof persistedStateSchema>
 
 export function parsePersistedState(raw: unknown): PersistedState {
@@ -332,6 +335,14 @@ const webviewToHostMessageSchema = z.discriminatedUnion('type', [
   }),
   // Rewind code to a message: revert every edit after it, newest first (M13).
   z.object({ type: z.literal('rewindCode'), edits: z.array(editRefSchema) }),
+  z.object({
+    type: z.literal('rewindConversation'),
+    sourceSessionId: z.string().check(z.minLength(1)),
+    turnId: z.string(),
+    lastTurnId: z.optional(z.string()),
+    text: z.string(),
+    imageCount: z.number(),
+  }),
   // Session history (M6).
   z.object({ type: z.literal('listSessions') }),
   // The Agent map reads a subagent's own session (M14).
@@ -357,6 +368,10 @@ const webviewToHostMessageSchema = z.discriminatedUnion('type', [
   }),
   /** Fork the current session through `lastTurnId` (all turns when absent). */
   z.object({ type: z.literal('forkSession'), lastTurnId: z.optional(z.string()) }),
+  z.object({
+    type: z.literal('openSideChat'),
+    sourceSessionId: z.string().check(z.minLength(1)),
+  }),
   z.object({ type: z.literal('renameSession'), name: z.string() }),
   // Account & usage (M8): ask for the subscription window; answered by usageReport.
   z.object({ type: z.literal('readUsage') }),
@@ -381,6 +396,7 @@ const hostToWebviewMessageSchema = z.discriminatedUnion('type', [
     emptyStateHint: z.string(),
     composerPlaceholder: z.string(),
     settings: settingsSnapshotSchema,
+    sideChat: z.optional(z.boolean()),
   }),
   // A `museSpark.*` setting changed while the webview was open.
   z.object({ type: z.literal('settingsChanged'), settings: settingsSnapshotSchema }),
@@ -399,6 +415,7 @@ const hostToWebviewMessageSchema = z.discriminatedUnion('type', [
   }),
   // Insert text at the composer caret (Alt+K mention reference).
   z.object({ type: z.literal('insertText'), text: z.string() }),
+  z.object({ type: z.literal('restoreDraft'), text: z.string() }),
   // The active editor changed (M5); undefined when no text file is active.
   z.object({
     type: z.literal('editorContext'),
@@ -418,6 +435,7 @@ const hostToWebviewMessageSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('sessionInfo'),
     modelId: z.string(),
+    sideChat: z.optional(z.boolean()),
     contextLimit: z.optional(z.number()),
     sessionId: z.optional(z.string()),
     // `false` where the host refuses rename and fork (D26); absent means offered.
@@ -441,6 +459,7 @@ const hostToWebviewMessageSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('historyLoaded'),
     sessionId: z.string(),
+    sideChat: z.optional(z.boolean()),
     items: z.array(itemSnapshotSchema),
     name: z.optional(z.string()),
     todos: z.array(todoItemSchema),

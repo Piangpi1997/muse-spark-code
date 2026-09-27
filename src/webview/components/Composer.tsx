@@ -118,9 +118,9 @@ export interface ComposerProps {
   readonly onOpenPalette: () => void
   readonly onOpenModelPicker: () => void
   /** Shift+Tab. */
-  readonly onCyclePermissionMode: () => void
+  readonly onCyclePermissionMode?: (() => void) | undefined
   /** The mode button: the Modes menu. */
-  readonly onOpenModeMenu: () => void
+  readonly onOpenModeMenu?: (() => void) | undefined
   /** The "+" button: the attach menu. */
   readonly onOpenAttachMenu: () => void
   readonly onRemoveAttachment: (id: string) => void
@@ -637,7 +637,7 @@ export function Composer(props: ComposerProps) {
       }
       return
     }
-    if (event.key === 'Tab' && event.shiftKey) {
+    if (onCyclePermissionMode !== undefined && event.key === 'Tab' && event.shiftKey) {
       event.preventDefault()
       onCyclePermissionMode()
       return
@@ -918,10 +918,17 @@ export function Composer(props: ComposerProps) {
           <button
             type="button"
             className="mode-button"
-            title={UI_TEXT.permissionModeTitle}
-            aria-label={`${UI_TEXT.permissionModeTitle}: ${UI_TEXT.permissionModes[permissionMode]}`}
+            title={
+              onOpenModeMenu === undefined ? UI_TEXT.sideChatPlanOnly : UI_TEXT.permissionModeTitle
+            }
+            aria-label={
+              onOpenModeMenu === undefined
+                ? UI_TEXT.sideChatPlanOnly
+                : `${UI_TEXT.permissionModeTitle}: ${UI_TEXT.permissionModes[permissionMode]}`
+            }
             onMouseDown={keepMenuFocus}
             onClick={onOpenModeMenu}
+            disabled={onOpenModeMenu === undefined}
           >
             {modeIcon(permissionMode)}
             <span>{UI_TEXT.permissionModes[permissionMode]}</span>

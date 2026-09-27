@@ -100,6 +100,8 @@ export const EN = {
   editAutomaticallyResolver: 'Edit automatically',
   focusViewBadge: 'Focus view',
   historyTitle: 'Session history',
+  sideChatTitle: 'Side chat',
+  openSideChat: 'Side chat',
   newConversationTitle: 'New conversation',
   sendTitle: 'Send',
   // Command palette ("/" menu).
@@ -489,6 +491,7 @@ export const EN = {
   // The user card's menu (Claude Code's rewind button): fork, rewind, both.
   rewindMenuLabel: 'Fork or rewind',
   forkFromHere: 'Fork conversation from here',
+  rewindConversationToHere: 'Rewind conversation to here',
   rewindCodeToHere: 'Rewind code to here',
   forkAndRewind: 'Fork conversation and rewind code',
   rewindNothing: 'No edits after this message to rewind.',
@@ -497,6 +500,8 @@ export const EN = {
     other: 'Code rewound to this message ({count} edits)',
   }),
   forkedNotice: 'Forked into a new conversation.',
+  rewindImagesUnavailable: 'Some images from this message could not be restored.',
+  rewindBeforeCompaction: 'Cannot rewind before the latest compaction.',
   resumedNotice: 'Resumed',
   historyUnavailable: 'The conversation history could not be loaded',
   historyNotServed: 'The earlier messages of this conversation could not be shown',
@@ -607,6 +612,10 @@ export const EN = {
   compactionDone: 'Context compacted',
   resumeFailed: 'Could not resume the conversation',
   forkFailed: 'Could not fork the conversation',
+  rewindConversationFailed: 'Could not rewind the conversation',
+  sideChatFailed: 'Could not open a side chat',
+  sideChatPlanOnly: 'Side chats stay in Plan mode.',
+  sideChatSessionOnly: 'This side chat can open only side-chat conversations.',
   renameFailed: 'Could not rename the conversation',
   sandboxOffProfileNotice:
     "This workspace is under your user profile, where Muse Code's Windows sandbox cannot run commands, so this window runs shell commands without the sandbox, directly as you. Approval prompts still apply. Setting: museSpark.shellSandbox.",

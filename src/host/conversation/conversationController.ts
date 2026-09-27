@@ -180,6 +180,7 @@ export interface ConversationDeps {
   /** False until the approval cards ship (M4); see shared/permissionModes.ts. */
   readonly hasApprovalUi: boolean
   readonly openExternal: (url: string) => void
+  readonly openSideChat?: (sessionId: string) => void
   readonly mentions: MentionSearch
   readonly files: FileAccess
   /** The `allowDangerouslySkipPermissions` setting: whether Bypass is offered. */
@@ -419,6 +420,7 @@ export class ConversationController {
   private readonly attachments: AttachmentStore
   private modelId: string
   private permissionMode: PermissionMode
+  private isSideChat: boolean
   private effort: EffortLevel = DEFAULT_EFFORT
   private isThinkingEnabled = true
   private activeTurnId: string | undefined
@@ -491,7 +493,8 @@ export class ConversationController {
 
   public constructor(private readonly deps: ConversationDeps) {
     this.modelId = deps.modelId
-    this.permissionMode = deps.initialPermissionMode
+    this.isSideChat = deps.surface.isSideChat === true
+    this.permissionMode = this.isSideChat ? 'plan' : deps.initialPermissionMode
     if (this.permissionMode === BYPASS_MODE && !deps.isBypassAllowed()) {
       // The initial-mode setting alone cannot switch approvals off; the
       // explicit allow setting must be on too, as in Claude Code.
@@ -567,11 +570,12 @@ export class ConversationController {
     return this.models?.find((model) => model.modelId === modelId)?.contextLimit
   }
 
-  private postSessionInfo(modelId: string): void {
+  private postSessionInfo(modelId: string, shouldResetSideChat = false): void {
     const contextLimit = this.contextLimitFor(modelId)
     this.post({
       type: 'sessionInfo',
       modelId,
+      ...((this.isSideChat || shouldResetSideChat) && { sideChat: this.isSideChat }),
       ...(contextLimit !== undefined && { contextLimit }),
       ...(this.session !== undefined && { sessionId: this.session.sessionId }),
       // Said only where it is so (D26): the panel then offers neither.
@@ -1510,6 +1514,12 @@ export class ConversationController {
     return ideEndpoint === undefined ? undefined : { [IDE_MCP_SERVER_NAME]: ideEndpoint }
   }
 
+  private sideResumeOptions(host: AgentHost): { readonly requireSideChat: true } | undefined {
+    return this.deps.surface.isSideChat === true && host.info.kind === 'modelApi'
+      ? { requireSideChat: true }
+      : undefined
+  }
+
   /** Take a session as this surface's: events, composer state, skills. */
   private async attach(
     host: AgentHost,
@@ -1578,6 +1588,7 @@ export class ConversationController {
       workspaceRoot,
       modelId: this.modelId,
       approvalMode: approvalModeFor(this.permissionMode, this.deps.hasApprovalUi),
+      ...(this.isSideChat && { sideChat: true }),
       ...(mcpServers !== undefined && { mcpServers }),
     })
     if (this.isDisposed) {
@@ -1614,10 +1625,21 @@ export class ConversationController {
         target.sessionId,
         this.modelId,
         await this.mcpServersFor(host),
+        this.sideResumeOptions(host),
       )
     } catch (error: unknown) {
       this.notice('warning', `${UI_TEXT.sessionNotContinued}: ${describe(error)}`)
       return undefined
+    }
+    if (!this.canLoadIntoSurface(host, loaded)) {
+      loaded.session.dispose()
+      this.notice('warning', UI_TEXT.sideChatSessionOnly)
+      return undefined
+    }
+    this.isSideChat = loaded.record.sideChat === true || this.deps.surface.isSideChat === true
+    if (this.isSideChat) {
+      this.permissionMode = 'plan'
+      this.postComposerState()
     }
     if (this.isDisposed) {
       loaded.session.dispose()
@@ -1736,6 +1758,7 @@ export class ConversationController {
     this.post({
       type: 'historyLoaded',
       sessionId,
+      ...(history.sideChat !== undefined && { sideChat: history.sideChat }),
       items: [...history.items],
       ...(history.name !== undefined && { name: history.name }),
       todos: [...history.todos],
@@ -1744,6 +1767,15 @@ export class ConversationController {
       // A turn still running keeps its Stop and its steering (D26).
       ...(activeTurnId !== undefined && { activeTurnId }),
     })
+  }
+
+  /** A side panel may not turn an ordinary Model API session into a side chat. */
+  private canLoadIntoSurface(host: AgentHost, loaded: LoadedSession): boolean {
+    return (
+      this.deps.surface.isSideChat !== true ||
+      host.info.kind !== 'modelApi' ||
+      loaded.record.sideChat === true
+    )
   }
 
   /**
@@ -1758,7 +1790,16 @@ export class ConversationController {
     notice: string,
     origin: SessionOrigin,
   ): Promise<void> {
+    if (!this.canLoadIntoSurface(host, loaded)) {
+      loaded.session.dispose()
+      throw new Error(UI_TEXT.sideChatSessionOnly)
+    }
     this.dropSession()
+    this.isSideChat = loaded.record.sideChat === true || this.deps.surface.isSideChat === true
+    if (this.isSideChat) {
+      this.permissionMode = 'plan'
+      this.postComposerState()
+    }
     const models = await host.listModels(loaded.session.sessionId)
     const active = models.find((model) => model.isActive)
     if (active !== undefined) {
@@ -1814,6 +1855,7 @@ export class ConversationController {
         sessionId,
         this.modelId,
         await this.mcpServersFor(host),
+        this.sideResumeOptions(host),
       )
       await this.adopt(host, loaded, UI_TEXT.resumedNotice, 'resumed')
     } catch (error: unknown) {
@@ -1836,6 +1878,101 @@ export class ConversationController {
       await this.adopt(host, loaded, UI_TEXT.forkedNotice, 'forked')
     } catch (error: unknown) {
       this.notice('error', `${UI_TEXT.forkFailed}: ${describe(error)}`)
+    }
+  }
+
+  /** Resolve a still-current session before a fork-based panel action (M53). */
+  private async forkableSource(
+    sourceSessionId: string,
+  ): Promise<{ readonly source: AgentSession; readonly host: AgentHost } | undefined> {
+    const source = this.session
+    if (source?.sessionId !== sourceSessionId) {
+      return undefined
+    }
+    const host = await this.deps.ensureHost()
+    if (this.session !== source) {
+      return undefined
+    }
+    if (!host.info.canEditSessions) {
+      this.notice('info', UI_TEXT.sessionEditsUnsupported)
+      return undefined
+    }
+    return { source, host }
+  }
+
+  /** Branch before a user turn, then put its prompt back in the composer (M53). */
+  private async rewindConversation(
+    message: Extract<ConversationMessage, { type: 'rewindConversation' }>,
+  ): Promise<void> {
+    try {
+      const forkable = await this.forkableSource(message.sourceSessionId)
+      if (forkable === undefined) {
+        return
+      }
+      const { source, host } = forkable
+      const images = source.sentImages?.(message.turnId) ?? []
+      if (message.lastTurnId === undefined) {
+        this.clear()
+      } else {
+        const loaded = await host.forkSession(source.sessionId, this.modelId, message.lastTurnId)
+        if (this.session !== source) {
+          loaded.session.dispose()
+          return
+        }
+        await this.adopt(host, loaded, UI_TEXT.forkedNotice, 'forked')
+        this.attachments.clear()
+        this.post({ type: 'attachmentsCleared' })
+      }
+      for (const image of images) {
+        const added = this.attachments.add(image.mediaType, Buffer.from(image.base64Data, 'base64'))
+        if (added.ok) {
+          this.post({ type: 'attachmentAdded', attachment: added.attachment })
+        }
+      }
+      if (images.length < message.imageCount) {
+        this.notice('warning', UI_TEXT.rewindImagesUnavailable)
+      }
+      this.post({ type: 'restoreDraft', text: message.text })
+    } catch (error: unknown) {
+      this.notice('error', `${UI_TEXT.rewindConversationFailed}: ${describe(error)}`)
+    }
+  }
+
+  /** A separate Plan-mode fork, leaving this surface attached (M53). */
+  private async openSideChat(sourceSessionId: string): Promise<void> {
+    if (this.deps.openSideChat === undefined) {
+      return
+    }
+    try {
+      const forkable = await this.forkableSource(sourceSessionId)
+      if (forkable === undefined) {
+        return
+      }
+      const { source, host } = forkable
+      const loaded = await host.forkSession(source.sessionId, this.modelId, undefined, {
+        sideChat: true,
+      })
+      try {
+        if (loaded.record.sideChat !== true) {
+          await loaded.session.setApprovalMode('denyUnmatched')
+          try {
+            // Muse Code's fork keeps the parent's goal until cleared.
+            await loaded.session.controlGoal({ verb: 'clear' })
+          } catch (error: unknown) {
+            if (!(error instanceof GoalRefusedError && error.refusal === 'noGoal')) {
+              throw error
+            }
+          }
+        }
+        if (this.session !== source) {
+          return
+        }
+        this.deps.openSideChat(loaded.session.sessionId)
+      } finally {
+        loaded.session.dispose()
+      }
+    } catch (error: unknown) {
+      this.notice('error', `${UI_TEXT.sideChatFailed}: ${describe(error)}`)
     }
   }
 
@@ -2191,6 +2328,11 @@ export class ConversationController {
   }
 
   private async setPermissionMode(mode: PermissionMode): Promise<void> {
+    if (mode !== 'plan' && this.isSideChat) {
+      this.notice('info', UI_TEXT.sideChatPlanOnly)
+      this.postComposerState()
+      return
+    }
     if (mode === BYPASS_MODE && !(await this.mayBypass())) {
       this.postComposerState()
       return
@@ -2213,7 +2355,9 @@ export class ConversationController {
   }
 
   private clear(): void {
+    const wasSideChat = this.isSideChat
     this.dropSession()
+    this.isSideChat = this.deps.surface.isSideChat === true
     // A new conversation is new: the session a restart or crash left to
     // resume is not picked up by its first message (D25).
     this.resumeTarget = undefined
@@ -2224,7 +2368,7 @@ export class ConversationController {
     this.setTitle(undefined)
     // No session any more: the webview forgets the id it keeps for the
     // reload serializer (D15).
-    this.postSessionInfo(this.modelId)
+    this.postSessionInfo(this.modelId, wasSideChat && !this.isSideChat)
     void this.deps.sessions.setLastSession(undefined)
     this.post({ type: 'attachmentsCleared' })
   }
@@ -2668,6 +2812,14 @@ export class ConversationController {
       }
       case 'rewindCode': {
         await this.rewindCode(message.edits)
+        break
+      }
+      case 'rewindConversation': {
+        await this.rewindConversation(message)
+        break
+      }
+      case 'openSideChat': {
+        await this.openSideChat(message.sourceSessionId)
         break
       }
       case 'setModel': {

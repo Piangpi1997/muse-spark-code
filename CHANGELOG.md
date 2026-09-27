@@ -60,6 +60,20 @@ while they are (PLAN.md D30, D34).
   cannot be hidden by a post-tool hook stop.
   Model-call hook text previews also remove pasted media data URLs before
   shortening user text, instructions, tool descriptions or assistant output.
+- **Conversation rewind and side chats** (M53, PLAN.md D46). A sent message
+  can branch before itself and return its prompt to the composer. Model API
+  images return when replay still holds them; otherwise the panel warns.
+  Side chat opens a separate Plan-mode fork without stopping the main tab.
+  On the Model API backend, its stored side marker survives reopen, keeps
+  Plan and the cleared goal, suppresses hooks, and refuses external MCP tools
+  even when a server marks them read only. A failed fork save opens no panel.
+  Scheduled prompt controls await the M52 integration gate.
+  Rewind and side-chat clicks carry their source session, so a late request
+  is ignored if that tab has moved to another session. Closing a
+  side chat returns focus to its original tab while that tab remains open.
+  Its locked Plan mode leaves `Shift+Tab` available for keyboard navigation.
+  Muse Code's Windows 1.3.0 fork limitation still hides these actions.
+
 - **Image edits** (M44, PLAN.md D37). With image generation on, the model
   can also change one workspace image, or combine up to four, by a prompt,
   into a new PNG (`edit_image`, Meta's `/images/edits`, $0.01 per image).

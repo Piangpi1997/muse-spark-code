@@ -60,5 +60,6 @@ The PNGs beside the records are that day's harness renders.
 - [M48](m48.md): opt-in, bounded Model API subagents; native read/reopen deferred (PLAN.md D45; merged as PR #35)
 - [M49](m49.md): shared memory view and Model API memory tools (PLAN.md D41; merged as PR #36, native writer lock parity unproved)
 - [M50](m50.md): MCP servers on the Model API backend and its diagnostics tool (PLAN.md D42; combined certification pending)
+- [M53](m53.md): conversation rewind and side chat; certification pending (PLAN.md D46)
 - [M42](m42.md): replay as Meta validates it: commentary, reasoning summaries, reasoning-only turns, stream retries (PLAN.md D35)
 - [M33–M35](m33-m35.md): the paid features: web search, image generation and Muse Voice, opt in and loud (PLAN.md D30, D34)

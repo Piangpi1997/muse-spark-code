@@ -125,6 +125,7 @@ export interface PendingRestore {
 
 export interface UiState {
   readonly phase: 'connecting' | 'ready'
+  readonly isSideChat: boolean
   readonly emptyStateHint: string
   readonly composerPlaceholder: string
   readonly settings: SettingsSnapshot | undefined
@@ -296,6 +297,7 @@ export type UiAction =
 
 export const initialUiState: UiState = {
   phase: 'connecting',
+  isSideChat: false,
   emptyStateHint: '',
   composerPlaceholder: '',
   settings: undefined,
@@ -1576,6 +1578,7 @@ function applyHostMessage(state: UiState, message: HostToWebviewMessage, at: num
     case 'init': {
       return {
         ...state,
+        isSideChat: message.sideChat === true,
         phase: 'ready',
         emptyStateHint: message.emptyStateHint,
         composerPlaceholder: message.composerPlaceholder,
@@ -1604,6 +1607,9 @@ function applyHostMessage(state: UiState, message: HostToWebviewMessage, at: num
     case 'insertText': {
       return withInsert(state, message.text)
     }
+    case 'restoreDraft': {
+      return { ...state, draft: message.text, focusRequests: state.focusRequests + 1 }
+    }
     case 'editorContext': {
       // A dismissal holds only while the same file stays active.
       const isSameFile = message.context?.relativePath === state.dismissedEditorPath
@@ -1627,6 +1633,7 @@ function applyHostMessage(state: UiState, message: HostToWebviewMessage, at: num
     case 'sessionInfo': {
       return {
         ...state,
+        isSideChat: message.sideChat ?? state.isSideChat,
         model: { modelId: message.modelId, contextLimit: message.contextLimit },
         sessionId: message.sessionId,
         canEditSessions: message.canEditSessions ?? true,
@@ -1732,6 +1739,7 @@ function applyHostMessage(state: UiState, message: HostToWebviewMessage, at: num
       return announce(
         {
           ...state,
+          isSideChat: message.sideChat ?? state.isSideChat,
           sessionId: message.sessionId,
           restoredSessionId: undefined,
           title: message.name,
