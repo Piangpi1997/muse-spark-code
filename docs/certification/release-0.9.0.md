@@ -231,3 +231,93 @@ the gate exited 1 with 4 pages without a result; restored, it exited 0.
 
 `npm run check:l10n`: 14 tables, 93 manifest strings, 226 source files, 0
 problems.
+
+## Live Model API sweep
+
+Recorded 2026-09-27 on branch `live/modelapi-sweep` (from `1d1b281`, this
+release's fixes). `test/e2e/modelApi.live.e2e.test.ts` drives the production
+Model API backend against Meta's real API: `ModelApiBackendManager` over the
+real client and the live `fetch`, and the real file, shell (in a Windows job
+object), memory, MCP, hook and schedule I/O, each case in an empty temporary
+workspace with its own config, data and storage folders. Only the UI is
+replaced, by an answerer that allows each card once, accepts each price and
+explains instead of answering a question. Every model call used
+`muse-spark-1.3-contributor`. The key came from a DPAPI file through a
+wrapper script that sets it for one run and filters it from the output. The
+test takes it out of the environment on load, and each case checks that no
+log line, event or file under its folder holds it.
+
+The full run, then the two cases rerun after it (case06 with its objective
+reordered, case12 with image usage reported apart):
+
+| Case                                     | Result | Requests | Est. $ | What it proved                                                                                                                                                   |
+| ---------------------------------------- | ------ | -------- | ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 01 plain reply                           | pass   | 4        | 0.0007 | `GET /models` lists the contributor model; `24h` retention accepted; thinking off sends `minimal`; the second same-effort request hit the cache (3185/3230)      |
+| 02 tools                                 | pass   | 5        | 0.0005 | `read_file`, `edit_file` and `powershell` each through a Manual card; the file changed on disk                                                                   |
+| 03 replay (M42)                          | pass   | 3        | 0.0004 | a second turn replaying reasoning, `function_call` and its output was accepted                                                                                   |
+| 04 images                                | pass   | 3        | 0.0005 | an attached 64x64 PNG read as "red"; a PNG read by `read_file` went after the outputs as `message:user[input_image]` and read as "blue"                          |
+| 05 PDFs (M54)                            | pass   | 3        | 0.0005 | an attached PDF read as MARIGOLD; one read by `read_file` went as `input_file` after the outputs, read as TANGERINE                                              |
+| 06 goals (M45)                           | pass   | 3        | 0.0008 | the goal tools offered and accepted; `get_goal`, then `update_goal`: active to complete                                                                          |
+| 07 memory (M49)                          | pass   | 2        | 0.0004 | `add_memory` wrote the note and its index line where `MemoryStore.locate` puts it, under the case's own data home                                                |
+| 08 MCP (M50)                             | pass   | 4        | 0.0005 | the fixture stdio server from Muse Code settings; `echo` round trip; a tool result with a picture went back as `function_call_output[input_image]` and was taken |
+| 09 hooks (M51)                           | pass   | 2        | 0.0008 | trusted: the `UserPromptSubmit` hook wrote its marker and its stdout reached the model; untrusted: no marker, no context                                         |
+| 10 subagents (M48)                       | pass   | 4        | 0.0008 | spawn card allowed; the child ran on the contributor model and returned PONG to `subagent_wait`                                                                  |
+| 11 web search (M33)                      | pass   | 2        | 0.0034 | one search, counted and marked paid; the next turn replayed commentary and `web_search_call` and was accepted                                                    |
+| 12 image generation and edit (M34, M44)  | pass   | 6        | 0.0206 | both cards allowed, both PNGs written, two images counted                                                                                                        |
+| 13 scheduled prompt (M52)                | pass   | 1        | 0.0003 | `/loop 1m` parsed and created; the confirmed run of the due occurrence ran once and was counted                                                                  |
+| 14 Muse Voice (M35)                      | pass   | 1 (WS)   | 0.0002 | a SAPI-spoken WAV streamed at real time; transcript exact; 3 s counted; socket closed 1000                                                                       |
+| 15 compaction                            | pass   | 5        | 0.0007 | a summary request replaying a tool call with no tools offered was accepted; the next turn recalled CINNAMON from the summary                                     |
+| 16 resume, fork, side chat (D14, M53)    | pass   | 5        | 0.0005 | a stored session resumed in a new window, a rewind fork and a side chat, each continued                                                                          |
+| 17 rules and a skill (D13)               | pass   | 3        | 0.0006 | `AGENTS.md` obeyed; a project skill listed and invoked                                                                                                           |
+| 18 a question, then Stop at a card (D26) | pass   | 4        | 0.0006 | the question settled as clarified; Stop at the shell card cancelled the turn; the next turn replayed the stopped call with its output                            |
+
+No request was refused: every HTTP status was 200. The image endpoints
+return a usage object (about 9,400 to 11,600 input and 330 output tokens per
+image). Meta's pricing page says it is "for reference" and that images are a
+flat $0.01, which is what the extension counts.
+
+### The defect it found
+
+**What was wrong.** `askUser` in `ModelApiHost.ts` emitted
+`questionRequested` before it held the question as pending. An answer given
+in the same tick was refused with "question … is not pending", and the turn
+waited forever (case18's first run, 240 s timeout). Approval cards were
+already registered first. The panel answers later through the webview, so
+this was latent in the product, but any listener answering in the event
+would hang the turn.
+
+**The fix.** The card is emitted inside `waitFor`'s register callback, after
+the pending entry is set, as `askApproval` does.
+
+**Test.** `test/unit/modelApiHost.test.ts`, "takes an answer given as the
+card arrives": a listener clarifies inside the event. Without the fix it
+fails in 83 ms ("question id6 is not pending"); with it the suite passes
+290/290.
+
+### What the harness got wrong first
+
+- An 8x8 PNG reached Meta intact (`message:user[input_image]`, 200), but at
+  a few tokens the model answered "grey", then "white", after looking for a
+  file with `list_files`. At 64x64 it is seen.
+- A hook's context arrives as plain user text (M51's design), so asking
+  whether "a hook gave you a word" got NONE. The prompt now asks for the word.
+- Once, the model replied DONE before calling `update_goal`. The objective now
+  puts the tool call first.
+- vitest 5's default reporter hides a passing test's `console.warn`, so the
+  summary goes to stderr directly. `live.e2e.test.ts` (the CLI drill) prints
+  its attempt count with `console.warn` and is affected the same way.
+
+### Drills
+
+| Drill | What was broken                                                                 | Result                                                     |
+| ----- | ------------------------------------------------------------------------------- | ---------------------------------------------------------- |
+| Q1    | The question emitted before it is pending (the code before the fix)             | the unit test failed, 1 failed; the live case18 hung       |
+| L1    | The key-leak scan pointed at a planted marker in a log line and a file (case14) | failed with `[ 'the log', 'drill.txt' ]`; reverted by copy |
+
+### Spend
+
+34 live runs, 150 requests (147 HTTP, 3 WebSocket), about $0.095 estimated
+in total: $0.06 for six images (case12 ran three times), $0.0075 for three
+searches, the rest tokens. Failed runs are included: case04 twice (8x8),
+case09 once (prompt), case18 once (the defect), the full run (case06), and
+drill L1.

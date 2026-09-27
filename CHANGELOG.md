@@ -279,7 +279,10 @@ inspection.
   branch dispatch remains for diagnostics. On Windows, unit test files run
   one at a time and the accessibility gate opens at most two pages at once,
   so the hosted runner is not starved; the pre-commit hook runs its lint and
-  format tasks serially. No check, threshold or deadline changed.
+  format tasks serially. No check, threshold or deadline changed. An
+  opt-in live sweep (`npm run test:e2e:live:modelapi`, never in CI) runs the
+  Model API backend against Meta's real API, one case per feature, on the
+  contributor tier.
 
 ### Security
 
@@ -309,6 +312,10 @@ inspection.
 - **Model API keys in Meta's current format are accepted.** A key that
   starts with `LLM_` (Meta's current keys have no `|`) was refused as
   malformed; both shapes are now accepted, and both are redacted from logs.
+- **A question answered the moment it appears is taken** (Model API). The
+  card was shown before the question was held as pending, so an answer in
+  that instant was refused and the turn waited for ever. Found by the live
+  sweep.
 - **Account & usage reset timing (M53 follow-up).** The open modal updates its
   countdown each minute and stops treating an expired report as current. It
   uses Muse Code's reported account-level percentages and reset timestamps

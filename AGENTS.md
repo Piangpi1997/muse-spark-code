@@ -112,7 +112,8 @@ native/darwin/**      Dictation.swift, Info.plist, build.sh, check-disclaim.sh:
 resources/            the walkthrough
 test/unit/**          vitest (node + jsdom via docblock); `vscode` is mocked
 test/e2e/**           the fake Muse Code CLI driven through the real backend;
-                      the opt-in live drill
+                      the opt-in live drills (the Muse Code CLI; the Model
+                      API sweep, which bills the owner's key)
 test/integration/**   @vscode/test-cli, runs inside VS Code
 test/harness/         the webview behind a fake host, for screenshots and the
                       accessibility gate; themes/ holds VS Code's four themes

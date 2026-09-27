@@ -569,6 +569,13 @@ tree was checked marker by marker; what held and what did not:
 | Owner's screenshot       | Claude Code's user message carries one button that opens "Fork conversation from here / Rewind code to here / Fork conversation and rewind code"; ours showed an inline "Fork from here" button and had no rewind.                                               | M13: the same menu; "Rewind code to here" reverts every completed edit after the message, newest first, through the existing edit review, and reports the count.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | Still human              | Tab restore after Reload Window, walkthrough rendering, Ctrl+N, Restricted Mode banner, Diagnostics output, boundary Reload.                                                                                                                                     | Owner F5 checks; listed in `docs/certification/m12.md` and `m13.md`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 
+**2026-09-27, the Model API end to end.** With a key again (0.9.0), the
+Model API backend has a live sweep of its own: `npm run test:e2e:live:modelapi`
+(`MUSE_LIVE_MODEL_API=1`), the production backend against Meta's real API,
+one case per feature, contributor tier only, every request counted and a
+$0.50 stop. Opt-in and never in CI, like the CLI drill. Its first run and
+the defect it found are in `docs/certification/release-0.9.0.md`.
+
 ### D17 — Subagents, the Agent map, the Account & Usage modal, and the smaller parity gaps, in one milestone (2026-09-22)
 
 The owner asked for four things in the same evening and then said "stop
@@ -6485,5 +6492,8 @@ To record after the tag:
 - the GitHub Release `.vsix` and its size;
 - `vsce show` listing 0.9.0.
 
-Not checked live: Muse Voice, paid images and PDFs, Model API subagents, the
+Checked live on 2026-09-27: every Model API feature, Muse Voice, paid web
+search, images and edits, PDFs and subagents included, in 18 cases of the
+live sweep on the owner's key (34 runs, about $0.095, contributor tier); and
+one Muse Code turn on CLI 1.4.0 (26 attempts). Not checked live: the
 installer and device sign-in, an authenticated enterprise proxy.
