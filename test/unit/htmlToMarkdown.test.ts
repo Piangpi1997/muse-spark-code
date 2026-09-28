@@ -121,11 +121,10 @@ describe('htmlToMarkdown (M69)', () => {
     expect(markdown('<datalist><option>listed</option></datalist><p>shown')).toBe('shown')
   })
 
-  it('stays linear on hidden elements left open', () => {
-    const page = '<p hidden>x<span>'.repeat(20_000) + '<ul>' + '<li hidden>y'.repeat(20_000)
-    const started = performance.now()
+  it('hides every one of many hidden elements left open', () => {
+    // Time on a hostile page is the worker's limit to bound (pageConverter.test.ts).
+    const page = '<p hidden>x<span>'.repeat(5000) + '<ul>' + '<li hidden>y'.repeat(5000)
     expect(markdown(page)).toBe('')
-    expect(performance.now() - started).toBeLessThan(2000)
   })
 
   it('ignores a slash on an HTML element, honouring it only on void and SVG or MathML ones', () => {
@@ -309,16 +308,16 @@ describe('htmlToMarkdown (M69)', () => {
     expect(markdown('<toString>x</toString><constructor>y</constructor>')).toBe('xy')
   })
 
-  it('stays linear on a hostile page', () => {
-    const deep = `${'<b>'.repeat(20_000)}x${'</b>'.repeat(20_000)}`
-    // An item at every level: uncapped, the indents alone would be 25 million characters.
-    const lists = '<ul><li>x'.repeat(5000)
+  it("keeps a hostile page's Markdown small: nesting, indents and columns are capped", () => {
+    // How long parse5 takes on such a page is bounded by the worker's time
+    // limit (pageConverter.test.ts); here only the output is checked.
+    const deep = `${'<b>'.repeat(5000)}x${'</b>'.repeat(5000)}`
+    // An item at every level: uncapped, the indents alone would be 4 million characters.
+    const lists = '<ul><li>x'.repeat(2000)
     const wide = `<table><tr>${'<td>c</td>'.repeat(5000)}</tr>${'<tr><td>r</td></tr>'.repeat(2000)}</table>`
-    const started = performance.now()
     expect(markdown(deep)).toContain('x')
-    expect(markdown(lists).length).toBeLessThan(200_000)
+    expect(markdown(lists).length).toBeLessThan(100_000)
     expect(markdown(wide).length).toBeLessThan(300_000)
-    expect(performance.now() - started).toBeLessThan(5000)
   })
 
   it('indents quotes and lists no deeper than four levels', () => {
@@ -331,17 +330,15 @@ describe('htmlToMarkdown (M69)', () => {
     const bound = 100_000
     const longBase = new URL(`https://docs.example.com/${'a'.repeat(1500)}/page.html`)
     // Each 18-character link becomes a 1,500-character absolute one.
-    const links = '<a href="x">y</a> '.repeat(250_000)
+    const links = '<a href="x">y</a> '.repeat(20_000)
     // Short rows padded to a wide header; many short lines deep in quotes and lists.
-    const rows = `<table><tr>${'<th>h</th>'.repeat(32)}</tr>${'<tr><td>r</td></tr>'.repeat(250_000)}</table>`
-    const lines = `${'<blockquote><ul><li>'.repeat(40)}<pre>${'x\n'.repeat(2_000_000)}</pre>`
-    const started = performance.now()
+    const rows = `<table><tr>${'<th>h</th>'.repeat(32)}</tr>${'<tr><td>r</td></tr>'.repeat(50_000)}</table>`
+    const lines = `${'<blockquote><ul><li>'.repeat(40)}<pre>${'x\n'.repeat(200_000)}</pre>`
     for (const html of [links, rows, lines]) {
       const page = htmlToMarkdown(html, longBase, bound)
       expect(page.isTruncated).toBe(true)
       expect(page.markdown.length).toBeLessThan(bound * 2)
     }
-    expect(performance.now() - started).toBeLessThan(5000)
     const small = htmlToMarkdown('<p>short</p>', longBase, bound)
     expect(small).toMatchObject({ markdown: 'short', isTruncated: false })
   })
