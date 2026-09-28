@@ -131,4 +131,16 @@ Run on the working tree (Windows 11, 2026-09-27), before the commit:
   rule 2): raising it, or a size cut elsewhere in the host bundle, is the
   owner's decision.
 
-The full `npm run quality` run is reported with the pull request.
+After the fix was joined with M57 (the Model API backend in its own bundle,
+`dist/extension.js` down to about 425 KiB) and M58, `npm run quality` on
+`2a4f0db` exited 0:
+
+- `check:l10n` 14 tables, 0 problems; jscpd 0 clones;
+- vitest: 179 files passed and 2 skipped; 2,605 tests passed and 23
+  skipped; statements 94.47 %;
+- build: `dist/extension.js` 434.9 KiB of 600, `dist/modelApi.js` 297.2 KiB
+  of 400, the bundle-split check passed;
+- a11y: 336 pages, 0 rules violated;
+- gitleaks: no leaks; Semgrep: 287 rules on 416 files, 0 findings.
+
+The budget question above is settled by M57; no budget was raised.
