@@ -1730,8 +1730,10 @@ published.
 
 ### How this extension is built
 
-The extension is developed by a small team of AI agents under one human
-owner, with every change held to the same gates as a human pull request.
+Since September 2026 the extension has been developed by a small team of AI
+agents under one human owner. This describes that process; each milestone's
+record in `docs/certification/` says what was actually run for it,
+including how earlier milestones were checked.
 
 - **The owner** sets the plan (`PLAN.md`), makes the product decisions, and
   approves anything that spends money, signs in or publishes.
@@ -1739,32 +1741,29 @@ owner, with every change held to the same gates as a human pull request.
   builds the harder milestones itself (security-sensitive and stateful
   work), verifies every review finding in the code, and merges.
 - **Muse Code, the product's own backend, builds too.** Up to four
-  headless `muse exec` instances build well-scoped milestones in their own
-  git worktrees, on the Muse Spark contributor model. Their work goes
-  through exactly the same review and gates.
-- **Reviewers.** Each change is reviewed before it is pushed, one defect
-  class at a time (concurrency and lifecycle; wire evidence, validation and
-  security; failure paths, honesty and docs). **Grok Build** runs that
-  review on a test machine, limited to reading files and inspecting git.
-  On the pull request, **Codex** reviews again. A finding is fixed with
-  every sibling of its class in one commit. Since September 2026, a change
-  that reaches a third review round is redesigned instead of patched
-  (earlier milestones, such as M45, went through more patch rounds).
-- **Gates.** The full `npm run quality` (with the accessibility gate, the
-  secret scan and semgrep) runs on a dedicated test machine, Linux or
-  macOS, so it never competes with the owner's workstation; the
-  PowerShell lint runs only on Windows. CI then runs `quality:gates` on
-  Ubuntu, Windows and macOS, and the other gates as the jobs listed above.
-  A milestone's guards get red drills: each guard is broken on purpose, its
-  test must fail, and the file is restored byte for byte. The milestone's
-  record in `docs/certification/` lists the drills, and anything it did
-  not drill.
+  headless `muse exec` instances draft well-scoped milestones in their own
+  git worktrees, on the Muse Spark contributor model; a Claude Code agent
+  checks and finishes each draft, and it goes through the same review and
+  gates.
+- **Reviewers.** A change is reviewed before it is pushed, one defect class
+  at a time (concurrency and lifecycle; wire evidence, validation and
+  security; failure paths, honesty and docs), by **Grok Build** on a test
+  machine (reading files and inspecting git only) or by Claude Code review
+  agents. On the pull request, **Codex** reviews again. A finding is fixed
+  with every sibling of its class in one commit, and a change that reaches
+  a third review round is redesigned instead of patched.
+- **Gates.** `quality:gates`, the secret scan and semgrep run on a
+  dedicated test machine (Linux or macOS) so they never compete with the
+  owner's workstation; the accessibility gate runs locally for the screens
+  a change touches, and the PowerShell lint only on Windows. CI then runs
+  `quality:gates` on Ubuntu, Windows and macOS, and the other gates as the
+  jobs listed above. A milestone's new guards get red drills: each guard is
+  broken on purpose, its test must fail, and the file is restored byte for
+  byte; the record lists the drills and anything not drilled.
 - **Evidence.** Under AGENTS.md rule 13, a shape parsed from Muse Code or
-  the Model API is written from a live capture; each certification record
-  names its capture, or says where a shape came from Meta's documentation
-  or a fake server without a live check (as early milestones such as M7
-  and M44 did). Live checks run on the contributor model in throwaway
-  workspaces, with their model calls counted.
+  the Model API is written from a live capture, and the record names it.
+  Live checks run on the contributor model in throwaway workspaces and
+  record their model-call counts.
 
 ## Support this project
 
