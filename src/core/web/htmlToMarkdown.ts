@@ -20,9 +20,10 @@
 // and its output bounded, so a page built to expand stops at the bound.
 
 import { type DefaultTreeAdapterTypes, defaultTreeAdapter, html as spec, parse } from 'parse5'
-import { decodeHtml } from './htmlCharset'
+import { changedEncoding, charsetInMetaContent, decodeHtml } from './htmlCharset'
 import type { HtmlJob, MarkdownPage } from './htmlConversion'
 import { isHiddenByStyle } from './inlineStyle'
+import { decodeIn, encodingOf } from './textDecoding'
 
 type Element = DefaultTreeAdapterTypes.Element
 type ChildNode = DefaultTreeAdapterTypes.ChildNode
@@ -71,6 +72,29 @@ const VOID = new Set([
   'wbr',
 ])
 const ARIA_HIDDEN = 'true'
+// The elements a declarative shadow root may attach to (and any custom element).
+const SHADOW_HOSTS = new Set([
+  'article',
+  'aside',
+  'blockquote',
+  'body',
+  'div',
+  'footer',
+  'h1',
+  'h2',
+  'h3',
+  'h4',
+  'h5',
+  'h6',
+  'header',
+  'main',
+  'nav',
+  'p',
+  'section',
+  'span',
+])
+const SHADOW_ROOT_MODES = new Set(['open', 'closed'])
+const CONTENT_TYPE = 'content-type'
 // Base URLs a page may not set (the standard's document base URL rule).
 const REFUSED_BASE_SCHEMES = new Set(['data:', 'javascript:'])
 
@@ -780,8 +804,8 @@ function attributesOf(element: Element): ReadonlyMap<string, string> {
 }
 
 /**
- * Whether HTML hides the element: its `hidden`, `inert` or
- * `aria-hidden="true"` attribute, an inline style that hides it, a dialog
+ * Whether HTML hides the element: its `hidden`, `inert`, `popover` (until
+ * shown) or `aria-hidden="true"` attribute, an inline style that hides it, a dialog
  * not opened, or ruby's fallback parentheses (`rp`).
  */
 function isHiddenElement(element: Element): boolean {
@@ -789,6 +813,7 @@ function isHiddenElement(element: Element): boolean {
   if (
     attributes.has('hidden') ||
     attributes.has('inert') ||
+    attributes.has('popover') ||
     attributes.get('aria-hidden')?.trim().toLowerCase() === ARIA_HIDDEN
   ) {
     return true
@@ -851,31 +876,129 @@ function baseOf(document: ParentNode, pageUrl: URL): URL {
   return pageUrl
 }
 
-/** The document's title: the first `<title>`'s text, white space collapsed. */
+/** The first child of `parent` that is the HTML element `name`. */
+function childNamed(parent: ParentNode | undefined, name: string): Element | undefined {
+  return parent?.childNodes.find((node): node is Element => isHtml(node, name))
+}
+
+/**
+ * The page's title: the first `<title>` that is a child of `<head>`, white
+ * space collapsed. (The standard's document.title takes the first anywhere;
+ * one the parser put inside a hidden element must not reach the model.)
+ */
 function titleOf(document: ParentNode): string | undefined {
-  for (const node of inTreeOrder(document)) {
-    if (isHtml(node, 'title')) {
-      const text = node.childNodes
-        .map((child) => (defaultTreeAdapter.isTextNode(child) ? child.value : ''))
-        .join('')
-      return collapse(text.slice(0, MAX_TITLE_SOURCE_CHARS)).trim() || undefined
+  const title = childNamed(childNamed(childNamed(document, 'html'), 'head'), 'title')
+  if (title === undefined) {
+    return undefined
+  }
+  const text = title.childNodes
+    .map((child) => (defaultTreeAdapter.isTextNode(child) ? child.value : ''))
+    .join('')
+  return collapse(text.slice(0, MAX_TITLE_SOURCE_CHARS)).trim() || undefined
+}
+
+/**
+ * A shadow tree being written (declarative shadow DOM): the host's children
+ * by the slot they go to (`''` for the default slot), the slots already
+ * filled (only the first of a name takes them), and the tree around the
+ * host, which those children belong to.
+ */
+interface ShadowScope {
+  readonly slots: ReadonlyMap<string, readonly ChildNode[]>
+  readonly filled: Set<string>
+  readonly outer: ShadowScope | undefined
+}
+
+/** One step of the walk: a node to enter in its tree, or an element whose content is done. */
+type Step =
+  | { readonly enter: ChildNode; readonly scope: ShadowScope | undefined }
+  | { readonly leave: string }
+
+/** The template that gives the host a declarative shadow root: its first child `<template shadowrootmode>`. */
+function shadowTemplateOf(host: Element): DefaultTreeAdapterTypes.Template | undefined {
+  if (!SHADOW_HOSTS.has(host.tagName) && !host.tagName.includes('-')) {
+    return undefined
+  }
+  for (const child of host.childNodes) {
+    if (
+      isHtml(child, 'template') &&
+      SHADOW_ROOT_MODES.has(attributeOf(child, 'shadowrootmode')?.toLowerCase() ?? '')
+    ) {
+      return child as DefaultTreeAdapterTypes.Template
     }
   }
   return undefined
 }
 
-/** One step of the walk: a node to enter, or an element whose content is done. */
-type Step = { readonly enter: ChildNode } | { readonly leave: string }
+/** The host's children by the slot each goes to; the shadow root's template is not one of them. */
+function slotsOf(host: Element, template: Element): ReadonlyMap<string, readonly ChildNode[]> {
+  const slots = new Map<string, ChildNode[]>()
+  for (const child of host.childNodes) {
+    if (child === template || !(isElement(child) || defaultTreeAdapter.isTextNode(child))) {
+      continue
+    }
+    const name = isElement(child) ? (attributeOf(child, 'slot') ?? '') : ''
+    slots.set(name, [...(slots.get(name) ?? []), child])
+  }
+  return slots
+}
+
+/** Pushes nodes to enter, first on top. */
+function pushAll(steps: Step[], nodes: readonly ChildNode[], scope: ShadowScope | undefined): void {
+  for (let index = nodes.length - 1; index >= 0; index -= 1) {
+    const node = nodes[index]
+    if (node !== undefined) {
+      steps.push({ enter: node, scope })
+    }
+  }
+}
+
+/**
+ * What an element shows of its content: a shadow root's in place of its own
+ * children, a filled slot's assigned nodes (else its own, as fallback), and
+ * of a closed `<details>` only its summary.
+ */
+function pushContent(steps: Step[], element: Element, scope: ShadowScope | undefined): void {
+  const template = shadowTemplateOf(element)
+  if (template !== undefined) {
+    const shadow: ShadowScope = {
+      slots: slotsOf(element, template),
+      filled: new Set(),
+      outer: scope,
+    }
+    pushAll(steps, defaultTreeAdapter.getTemplateContent(template).childNodes, shadow)
+    return
+  }
+  if (element.tagName === 'details' && attributeOf(element, 'open') === undefined) {
+    const summary = element.childNodes.find((child) => isHtml(child, 'summary'))
+    pushAll(steps, summary === undefined ? [] : [summary], scope)
+    return
+  }
+  pushAll(steps, element.childNodes, scope)
+}
+
+/** A `<slot>` in a shadow tree: the nodes assigned to it, or its own as fallback. */
+function pushSlot(steps: Step[], slot: Element, scope: ShadowScope): void {
+  const name = attributeOf(slot, 'name') ?? ''
+  const assigned = scope.filled.has(name) ? undefined : scope.slots.get(name)
+  scope.filled.add(name)
+  if (assigned !== undefined && assigned.length > 0) {
+    pushAll(steps, assigned, scope.outer)
+    return
+  }
+  pushAll(steps, slot.childNodes, scope)
+}
 
 /** Writes what is shown of the tree, in document order, until the writer is full. */
 function writeShown(document: ParentNode, writer: MarkdownWriter): void {
-  const steps: Step[] = document.childNodes.toReversed().map((node) => ({ enter: node }))
+  const steps: Step[] = []
+  pushAll(steps, document.childNodes, undefined)
   for (let step = steps.pop(); step !== undefined && !writer.isFull; step = steps.pop()) {
     if ('leave' in step) {
       writer.endTag(step.leave)
       continue
     }
-    const node = step.enter
+    const { enter: node, scope } = step
     if (!isElement(node)) {
       if (defaultTreeAdapter.isTextNode(node)) {
         writer.text(node.value)
@@ -885,18 +1008,25 @@ function writeShown(document: ParentNode, writer: MarkdownWriter): void {
     if (isLeftOut(node)) {
       continue
     }
+    if (scope !== undefined && isHtml(node, 'slot')) {
+      pushSlot(steps, node, scope)
+      continue
+    }
     writer.startTag(node.tagName, attributesOf(node))
     if (VOID.has(node.tagName)) {
       continue
     }
     steps.push({ leave: node.tagName })
-    for (let index = node.childNodes.length - 1; index >= 0; index -= 1) {
-      const child = node.childNodes[index]
-      if (child !== undefined) {
-        steps.push({ enter: child })
-      }
-    }
+    pushContent(steps, node, scope)
   }
+}
+
+/** The page as Markdown from its tree, links resolved against its base URL. */
+function pageOf(document: ParentNode, pageUrl: URL, maxChars: number): MarkdownPage {
+  const writer = new MarkdownWriter(baseOf(document, pageUrl), maxChars)
+  writeShown(document, writer)
+  const isTruncated = writer.isFull
+  return { title: titleOf(document), markdown: writer.finish(), isTruncated }
 }
 
 /**
@@ -905,14 +1035,47 @@ function writeShown(document: ParentNode, writer: MarkdownWriter): void {
  * page can expand, a relative link into a long absolute one), and says so.
  */
 export function htmlToMarkdown(html: string, pageUrl: URL, maxChars: number): MarkdownPage {
-  const document = parse(html)
-  const writer = new MarkdownWriter(baseOf(document, pageUrl), maxChars)
-  writeShown(document, writer)
-  const isTruncated = writer.isFull
-  return { title: titleOf(document), markdown: writer.finish(), isTruncated }
+  return pageOf(parse(html), pageUrl, maxChars)
 }
 
-/** One fetched page, from its bytes: decoded as HTML decodes it, then converted. */
+/**
+ * The encoding the first `<meta>` in the tree declares (its `charset`, or
+ * an `http-equiv="content-type"` content's charset), as the parser meets it.
+ */
+function declaredEncodingOf(document: ParentNode): string | undefined {
+  for (const node of inTreeOrder(document)) {
+    if (!isHtml(node, 'meta')) {
+      continue
+    }
+    const httpEquiv = attributeOf(node, 'http-equiv')?.trim().toLowerCase()
+    const content = attributeOf(node, 'content')
+    const label =
+      attributeOf(node, 'charset') ??
+      (httpEquiv === CONTENT_TYPE && content !== undefined
+        ? charsetInMetaContent(content)
+        : undefined)
+    if (label !== undefined && encodingOf(label) !== undefined) {
+      return label
+    }
+  }
+  return undefined
+}
+
+/**
+ * One fetched page, from its bytes: decoded as HTML decodes it, then
+ * converted. When the encoding was only tentative and a `<meta>` the parser
+ * meets declares another, the page is read again in that one, as a browser
+ * reparses it.
+ */
 export function convertHtmlJob(job: HtmlJob): MarkdownPage {
-  return htmlToMarkdown(decodeHtml(job.bytes, job.charset), new URL(job.url), job.maxChars)
+  const decoded = decodeHtml(job.bytes, job.charset, job.isXml)
+  let document = parse(decoded.text)
+  if (decoded.isTentative) {
+    const declared = declaredEncodingOf(document)
+    const next = declared === undefined ? undefined : changedEncoding(decoded.encoding, declared)
+    if (next !== undefined) {
+      document = parse(decodeIn(job.bytes, next))
+    }
+  }
+  return pageOf(document, new URL(job.url), job.maxChars)
 }

@@ -56,15 +56,15 @@ happened, not what was planned; superseded entries are kept.
     and the mode are asked again after the card, before each request and
     before the page reaches the model; damaged compression and unknown charsets are
     handled as a browser would; `museSpark.sandboxNetwork`'s description now
-    says it also hides web fetch from Muse Code. Ten more strings, one
+    says it also hides web fetch from Muse Code. Fourteen more strings, one
     changed and one dropped, and two changed setting descriptions, in
     fifteen languages.
 - **Dependencies.** Web fetch parses HTML with `parse5` 8.0.1 (MIT),
   sniffs its encoding with `html-encoding-sniffer` 6.0.0 (MIT) and reads
   inline styles with `@csstools/css-tokenizer` 4.0.1 (MIT), all already in
   the tree through the test tools. They load only in `dist/pageWorker.js`
-  (212 KiB, budget 300 KiB), on a worker thread started at the first page
-  and stopped at 10 seconds or 512 MiB; `dist/extension.js` does not carry
+  (212 KiB, budget 300 KiB), on a worker thread started for each page (at
+  most two at once) and stopped at 10 seconds or 512 MiB; `dist/extension.js` does not carry
   them. `entities` is no longer a direct dependency.
 
 ### Changed

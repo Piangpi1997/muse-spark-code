@@ -12,7 +12,7 @@
 //   carrying the backend);
 // - web fetch's page converter (M69: parse5, the HTML converter and what
 //   they use) is in dist/extension.js or dist/modelApi.js, or missing from
-//   its worker, dist/pageWorker.js, which loads at the first page.
+//   its worker, dist/pageWorker.js, started for each page.
 //
 // Exits 1 on any problem.
 //

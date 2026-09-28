@@ -125,10 +125,12 @@ Only the latest release on the Visual Studio Marketplace receives fixes.
   TLS is read. Same-host redirects are checked and pinned again (at most
   five); another host's is handed back to the model, which asks again.
   5 MiB after decompression, 30 seconds, text types only. HTML is parsed
-  by parse5 on a worker thread stopped at 10 seconds or 512 MiB, its output
-  bounded; what HTML hides (`hidden`, `inert`, `aria-hidden`, an inline
-  `display`, `visibility` or `content-visibility` that hides, template
-  content, `<noscript>`) is left out, while text a stylesheet hides still
+  by parse5 on a worker thread per page (at most two at once) stopped at
+  10 seconds or 512 MiB, its output bounded; what HTML hides (`hidden`,
+  `inert`, `popover`, `aria-hidden`, a closed `<details>` but its summary,
+  a shadow host's unslotted children, an inline `display`, `visibility` or
+  `content-visibility` that hides or depends on `var()`, template content,
+  `<noscript>`) is left out, while text a stylesheet hides still
   reaches the model, marked untrusted. On the Model API backend each host asks in
   every mode but Bypass (Plan refuses), and a `PermissionRequest` hook's
   allow does not replace that card; on Muse Code the `ide` tool is listed

@@ -869,10 +869,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const ideTools = [diagnostics]
   // Web fetch (M69, PLAN.md D49): resolved, checked and pinned here, for the
   // Model API backend's `web_fetch` and Muse Code's `mcp__ide__webFetch`.
-  // HTML is converted on a worker of its own bundle, loaded at the first page.
+  // HTML is converted on a worker of its own bundle, started for each page.
   const webFetch = createWebFetcher(
     log,
-    pageConverter(vscode.Uri.joinPath(context.extensionUri, 'dist', PAGE_WORKER_FILE).fsPath),
+    pageConverter(vscode.Uri.joinPath(context.extensionUri, 'dist', PAGE_WORKER_FILE).fsPath, log),
   )
   const askWebFetch = oneQuestionPerUrl(isWebFetchAllowed)
   const ideServer = new IdeMcpServer(

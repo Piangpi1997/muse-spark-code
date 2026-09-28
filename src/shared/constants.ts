@@ -810,6 +810,9 @@ export const WEB_FETCH_CONVERT_MAX_CHARS = WEB_FETCH_MAX_CONTENT_CHARS * 2
 // faster than its size (measured on parse5 8.0.1, docs/certification/m69.md).
 export const WEB_FETCH_CONVERT_TIMEOUT_MS = 10_000
 export const WEB_FETCH_CONVERT_MAX_HEAP_MIB = 512
+// At most this many pages convert at once in a window (each worker may use
+// the heap above): subagents fetching together wait their turn.
+export const WEB_FETCH_CONVERT_MAX_WORKERS = 2
 // The converter's bundle, beside dist/extension.js.
 export const PAGE_WORKER_FILE = 'pageWorker.js'
 // RFC 8305's connection attempt delay: the next checked address is tried
@@ -2041,9 +2044,11 @@ export const MODEL_TEXT = {
     "the response's compression could not be decoded: it is unsupported or damaged",
   webFetchTimeout: 'no complete response within {seconds} seconds',
   webFetchConversionTimeout:
-    "the page's HTML took longer than {seconds} seconds to convert (a page nested to be slow to parse), so none of it was read",
+    'the page arrived, but its HTML could not be converted in the time allowed (at most {seconds} seconds; for example, a page nested to be slow to parse), so none of it was read',
   webFetchConversionMemory:
     "the page's HTML needed more than {max} MiB to convert, so none of it was read",
+  webFetchUndecodable:
+    'the page is in the {encoding} encoding, which this computer has no decoder for, so none of it was read',
   webFetchConversionFailed:
     "the page's HTML could not be converted ({detail}), so none of it was read",
   webFetchCertificate:

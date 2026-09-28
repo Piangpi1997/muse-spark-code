@@ -19,13 +19,15 @@ export interface HtmlJob {
   readonly bytes: Uint8Array
   /** The Content-Type header's `charset`, when it names one. */
   readonly charset: string | undefined
+  /** An XHTML page: its encoding is sniffed as XML's (no `<meta>` prescan). */
+  readonly isXml: boolean
   /** The page's final URL, against which relative links resolve (unless a `<base>` says otherwise). */
   readonly url: string
   readonly maxChars: number
 }
 
-/** Why a page was not converted: too slow, too large, or the converter failed. */
-export type HtmlConversionFailure = 'timeout' | 'memory' | 'failed'
+/** Why a page was not converted: too slow, too large, in an encoding this runtime cannot decode, or the converter failed. */
+export type HtmlConversionFailure = 'timeout' | 'memory' | 'failed' | 'undecodable'
 
 export type HtmlConversion =
   | { readonly ok: true; readonly page: MarkdownPage }

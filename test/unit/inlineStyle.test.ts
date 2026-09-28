@@ -27,9 +27,33 @@ describe('inline styles that hide an element (M69)', () => {
     // An invalid later value is dropped, as a browser drops it.
     expect(isHiddenByStyle('display: none; display: nonsense')).toBe(true)
     expect(isHiddenByStyle('display: none; display: 12px')).toBe(true)
-    // A value resolved later is valid as written, and not known here.
-    expect(isHiddenByStyle('display: none; display: var(--shown)')).toBe(false)
     expect(isHiddenByStyle('display: none; display: inline flow-root')).toBe(false)
+    expect(isHiddenByStyle('display: none; display: list-item block flow')).toBe(false)
+    // What display's grammar rejects leaves the earlier none standing.
+    for (const value of [
+      'block block',
+      'none none',
+      'inherit inherit',
+      'flex grid',
+      'run-in',
+      'list-item table',
+    ]) {
+      expect(isHiddenByStyle(`display: none; display: ${value}`), value).toBe(true)
+    }
+  })
+
+  it('counts a value resolved later (var()) on a hiding property as hiding', () => {
+    expect(isHiddenByStyle('display: var(--nope, none)')).toBe(true)
+    expect(isHiddenByStyle('--h: none; display: var(--h)')).toBe(true)
+    expect(isHiddenByStyle('visibility: var(--v)')).toBe(true)
+    expect(isHiddenByStyle('display: none; display: var(--shown)')).toBe(true)
+    expect(isHiddenByStyle('color: var(--c)')).toBe(false)
+  })
+
+  it('nests blocks as CSS does: a stray closing bracket closes nothing', () => {
+    expect(isHiddenByStyle('display:none; x:(]; display:block')).toBe(true)
+    expect(isHiddenByStyle('display:none; x:(a); display:block')).toBe(false)
+    expect(isHiddenByStyle('x:[}; display:none')).toBe(false)
   })
 
   it('reads only declarations: not a string, a custom property or another property', () => {

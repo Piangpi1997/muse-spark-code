@@ -42,6 +42,7 @@ export type WebFetchFailureKind =
   | 'conversionTimeout'
   | 'conversionMemory'
   | 'conversionFailed'
+  | 'undecodable'
   | 'timeout'
   | 'certificate'
   | 'proxyCredentials'
@@ -169,6 +170,13 @@ function responseSentences(kind: WebFetchFailureKind, facts: FailureFacts): Sent
       return [
         fill(MODEL_TEXT.webFetchConversionMemory, { max: String(WEB_FETCH_CONVERT_MAX_HEAP_MIB) }),
         fill(UI_TEXT.webFetchConversionMemory, { max: formatBytes(max) }),
+      ]
+    }
+    case 'undecodable': {
+      const encoding = facts.encoding ?? ''
+      return [
+        fill(MODEL_TEXT.webFetchUndecodable, { encoding }),
+        fill(UI_TEXT.webFetchUndecodable, { encoding }),
       ]
     }
     case 'conversionFailed': {

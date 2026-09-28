@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Bundles the extension host entry, the Model API backend, the search worker,
 // web fetch's page converter worker (M69: parse5 and the HTML converter,
-// loaded on a worker thread at the first page, never at activation), the
+// loaded on a worker thread started for each page, never at activation), the
 // webview, and (in dev mode) the integration tests with esbuild.
 //
 //   node scripts/build.mjs               dev build + integration test bundles

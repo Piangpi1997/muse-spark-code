@@ -94,6 +94,8 @@ function world(options: {
   timeoutMs?: number
   /** What the converter answers, instead of converting in-process. */
   conversion?: HtmlConversion
+  /** The converter runs until its signal stops it, as the worker does. */
+  isConversionEndless?: boolean
 }) {
   const lookups: string[] = []
   const requests: PinnedTarget[] = []
@@ -153,8 +155,14 @@ function world(options: {
       })
     },
     // The converter in-process: the worker that runs it is pageConverter's test.
-    convertHtml: (job: HtmlJob): Promise<HtmlConversion> =>
-      Promise.resolve(options.conversion ?? { ok: true, page: convertHtmlJob(job) }),
+    convertHtml: (job: HtmlJob, signal: AbortSignal): Promise<HtmlConversion> =>
+      options.isConversionEndless === true
+        ? new Promise((resolve) => {
+            signal.addEventListener('abort', () => {
+              resolve({ ok: false, kind: 'failed', detail: 'STOPPED' })
+            })
+          })
+        : Promise.resolve(options.conversion ?? { ok: true, page: convertHtmlJob(job) }),
     newMarker: () => MARKER,
     ...(options.timeoutMs !== undefined && { timeoutMs: options.timeoutMs }),
   }
@@ -516,6 +524,29 @@ describe('fetchWebPage (M69)', () => {
     expect(posed.reason).toBe(fill(MODEL_TEXT.webFetchNetwork, { detail: 'ECONNRESET' }))
   })
 
+  it('refuses a page in an encoding with no decoder, and reads a text page as its encoding says', async () => {
+    const undecodable = world({
+      answers: { 'docs.example.com': [[PUBLIC]] },
+      replies: { [DOCS]: { headers: { 'content-type': 'text/html' }, body: '<p>x' } },
+      conversion: { ok: false, kind: 'undecodable', detail: 'x-rare' },
+    })
+    const refused = failure(await undecodable.fetch(DOCS))
+    expect(refused.kind).toBe('undecodable')
+    expect(refused.reason).toBe(fill(MODEL_TEXT.webFetchUndecodable, { encoding: 'x-rare' }))
+    // A text page in x-user-defined: its table, never UTF-8.
+    const userDefined = world({
+      answers: { 'docs.example.com': [[PUBLIC]] },
+      replies: {
+        [DOCS]: {
+          headers: { 'content-type': 'text/plain; charset=x-user-defined' },
+          body: Buffer.from([0x41, 0x80]),
+        },
+      },
+    })
+    const read = await userDefined.fetch(DOCS)
+    expect(read.kind === 'page' && read.text.includes('A\u{F780}')).toBe(true)
+  })
+
   it('refuses a page its converter could not convert, naming why, and reads nothing of it', async () => {
     const cases: readonly [HtmlConversion, string][] = [
       [{ ok: false, kind: 'timeout', detail: '10000' }, 'conversionTimeout'],
@@ -540,6 +571,23 @@ describe('fetchWebPage (M69)', () => {
     expect(failure(await slow.fetch(DOCS)).reason).toBe(
       fill(MODEL_TEXT.webFetchConversionTimeout, { seconds: '10' }),
     )
+  })
+
+  it("names the fetch's deadline passing during the conversion as the conversion's, not the download's", async () => {
+    const w = world({
+      answers: { 'docs.example.com': [[PUBLIC]] },
+      replies: { [DOCS]: { headers: { 'content-type': 'text/html' }, body: '<p>x' } },
+      isConversionEndless: true,
+      timeoutMs: 200,
+    })
+    expect(failureKind(await w.fetch(DOCS))).toBe('conversionTimeout')
+    // A stopped turn still ends the fetch as stopped.
+    const stop = new AbortController()
+    const stopping = w.fetch(DOCS, stop.signal)
+    setTimeout(() => {
+      stop.abort()
+    }, 20)
+    await expect(stopping).rejects.toThrow()
   })
 
   it('follows a redirect on the same host, resolving and pinning the new hop again', async () => {

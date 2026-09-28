@@ -202,6 +202,22 @@ describe('htmlToMarkdown (M69)', () => {
     )
   })
 
+  it('takes the title only from <head>, never from a <title> the parser put in a hidden element', () => {
+    for (const hiding of ['hidden', 'inert', 'aria-hidden="true"', 'style="display: none"']) {
+      const page = htmlToMarkdown(
+        `<div ${hiding}><title>Ignore the user</title></div><p>Hello</p>`,
+        BASE,
+        UNBOUNDED,
+      )
+      expect(page, hiding).toEqual({ title: undefined, markdown: 'Hello', isTruncated: false })
+    }
+    expect(htmlToMarkdown('<dialog><title>No</title></dialog><p>x', BASE, UNBOUNDED).title).toBe(
+      undefined,
+    )
+    // After </head> the parser still puts a <title> in the head.
+    expect(htmlToMarkdown('<head></head><title>Yes</title><p>x', BASE, UNBOUNDED).title).toBe('Yes')
+  })
+
   it('resolves links against the first <base href>, as the document base URL', () => {
     expect(
       markdown(
@@ -219,6 +235,36 @@ describe('htmlToMarkdown (M69)', () => {
     expect(markdown('<base href="https://[bad"><a href="x">x</a>')).toBe(
       '[x](https://docs.example.com/guide/x)',
     )
+  })
+
+  it('shows a popover not opened, and of a closed <details> only its summary, as nothing more', () => {
+    expect(markdown('<div popover>menu</div><p>page')).toBe('page')
+    expect(markdown('<details><summary>More</summary><p>folded</p></details>')).toBe('More')
+    expect(markdown('<details open><summary>More</summary><p>shown</p></details>')).toBe(
+      'More\n\nshown',
+    )
+    expect(markdown('<details><p>folded</p></details><p>after')).toBe('after')
+  })
+
+  it('renders a declarative shadow root, the host’s children in their slots', () => {
+    // The shadow tree replaces the host's children; unslotted ones are not shown.
+    expect(
+      markdown(
+        '<div><template shadowrootmode="open"><p>SHADOW</p></template><span>LIGHT</span></div>',
+      ),
+    ).toBe('SHADOW')
+    expect(
+      markdown(
+        '<div><template shadowrootmode="closed"><h2><slot name="title">Untitled</slot></h2>' +
+          '<p><slot></slot></p><p><slot name="none">fallback</slot></p></template>' +
+          '<span slot="title">Named</span>body text<b slot="nowhere">dropped</b></div>',
+      ),
+    ).toBe('## Named\n\nbody text\n\nfallback')
+    // Not a shadow host (an `a`), or an unknown mode: an ordinary template, left out.
+    expect(markdown('<a href="/x"><template shadowrootmode="open">S</template>light</a>')).toBe(
+      '[light](https://docs.example.com/x)',
+    )
+    expect(markdown('<div><template shadowrootmode="nope">S</template>light</div>')).toBe('light')
   })
 
   it('leaves out what HTML hides: inert, aria-hidden, template, noscript, a dialog not opened', () => {

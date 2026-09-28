@@ -31,7 +31,6 @@
 
 import { Buffer } from 'node:buffer'
 import { pipeline, Readable, type Transform } from 'node:stream'
-import { TextDecoder } from 'node:util'
 import { createBrotliDecompress, createGunzip, createInflate } from 'node:zlib'
 import * as z from 'zod/mini'
 import {
@@ -65,6 +64,8 @@ import {
   webFetchFailure,
 } from './fetchFailure'
 import type { HtmlConversionFailure, HtmlConverter } from './htmlConversion'
+import { mimeParameter } from './mimeType'
+import { decodeWithBom, encodingOf, UndecodableText } from './textDecoding'
 import { approvalHost, type CheckedPageUrl, checkPageUrl } from './pageUrl'
 import { addressFamily, isPublicAddress, type Nat64Prefix } from './publicAddress'
 
@@ -158,12 +159,12 @@ export type WebFetcher = (
 ) => Promise<WebFetchResult>
 
 const MEDIA_TYPE_SEPARATOR = ';'
-const CHARSET_PARAMETER = 'charset='
-const DEFAULT_CHARSET = 'utf8'
+const CHARSET = 'charset'
 const IDENTITY = 'identity'
-const OPENING_QUOTE = /^["']/
-// Where a charset's value ends in a Content-Type header.
-const CHARSET_END = /[\s"';/>]/
+// A text page's encoding when nothing declares one.
+const UTF_8 = 'utf8'
+// XHTML is sniffed as XML: no `<meta>` prescan.
+const XHTML = 'application/xhtml+xml'
 const ADDRESS_LIST_SEPARATOR = ', '
 // A media type (`type/subtype`) or a coding: RFC 9110 token characters.
 const TOKEN = /^[\w!#$%&'*+.^`|~-]+(?:\/[\w!#$%&'*+.^`|~-]+)?$/
@@ -457,39 +458,23 @@ function mediaTypeOf(contentType: string): string {
   return (contentType.split(MEDIA_TYPE_SEPARATOR)[0] ?? '').trim().toLowerCase()
 }
 
-/** The `charset` parameter in the text, unquoted; undefined when absent. */
-function charsetIn(text: string): string | undefined {
-  const at = text.toLowerCase().indexOf(CHARSET_PARAMETER)
-  if (at === -1) {
-    return undefined
-  }
-  const rest = text.slice(at + CHARSET_PARAMETER.length).replace(OPENING_QUOTE, '')
-  const end = rest.search(CHARSET_END)
-  const value = (end === -1 ? rest : rest.slice(0, end)).trim()
-  return value === '' ? undefined : value
-}
-
-/** A decoder for the label, or undefined for one this runtime does not know. */
-function decoderFor(label: string | undefined): TextDecoder | undefined {
-  if (label === undefined) {
-    return undefined
-  }
-  try {
-    return new TextDecoder(label)
-  } catch {
-    // An unknown label is ignored, as the WHATWG encoding rules say.
-    return undefined
-  }
-}
-
 /**
- * A text body as text: the header's charset, else UTF-8 (a byte order mark
- * wins over both); a label nobody knows counts as none. An HTML page is
+ * A text body as text: a byte order mark, else the header's charset, else
+ * UTF-8 (a label nobody knows counts as none); an encoding this runtime
+ * cannot decode refuses the page, never reads it as UTF-8. An HTML page is
  * decoded by its converter, as HTML decodes it (htmlCharset.ts).
  */
 function decodeText(bytes: Uint8Array, contentType: string): string {
-  const decoder = decoderFor(charsetIn(contentType)) ?? new TextDecoder(DEFAULT_CHARSET)
-  return decoder.decode(bytes)
+  const label = mimeParameter(contentType, CHARSET)
+  const encoding = (label === undefined ? undefined : encodingOf(label)) ?? UTF_8
+  try {
+    return decodeWithBom(bytes, encoding)
+  } catch (error: unknown) {
+    if (error instanceof UndecodableText) {
+      refuse('undecodable', { encoding: shownToken(error.encoding) })
+    }
+    throw error
+  }
 }
 
 /** A decompressor's output, and whether the body under it failed (the network, not the data). */
@@ -612,6 +597,7 @@ const CONVERSION_FAILURES: Readonly<Record<HtmlConversionFailure, WebFetchFailur
   timeout: 'conversionTimeout',
   memory: 'conversionMemory',
   failed: 'conversionFailed',
+  undecodable: 'undecodable',
 }
 
 /**
@@ -638,16 +624,22 @@ async function contentOf(
   const converted = await convertHtml(
     {
       bytes: body.bytes,
-      charset: charsetIn(body.contentType),
+      charset: mimeParameter(body.contentType, CHARSET),
+      isXml: mediaTypeOf(body.contentType) === XHTML,
       url: urls.final.href,
       maxChars: WEB_FETCH_CONVERT_MAX_CHARS,
     },
     signal,
   )
   if (!converted.ok) {
-    // Stopped by the turn or the fetch's deadline: those name the failure.
-    signal.throwIfAborted()
-    return refuse(CONVERSION_FAILURES[converted.kind], { detail: converted.detail })
+    // The page arrived; the fetch's deadline passed while it was converted.
+    // (A stopped turn is rethrown by fetchWebPage, whatever is refused here.)
+    return signal.aborted
+      ? refuse('conversionTimeout')
+      : refuse(CONVERSION_FAILURES[converted.kind], {
+          detail: converted.detail,
+          encoding: shownToken(converted.detail),
+        })
   }
   const { page } = converted
   const title =
