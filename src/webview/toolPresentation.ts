@@ -17,9 +17,11 @@ import {
   SCHEDULE_TOOLS,
   SHELL_TOOLS,
   UI_TEXT,
+  WEB_FETCH_TOOLS,
   WORKFLOW_TOOL,
 } from '../shared/constants'
-import { fill, plural } from '../shared/l10n/text'
+import { fill, formatBytes, plural } from '../shared/l10n/text'
+import { parseWebPageHeader } from '../shared/webPage'
 import type { PatchSummary } from './state/transcriptEntries'
 
 export type ToolBody =
@@ -31,6 +33,7 @@ export type ToolBody =
   | 'goal'
   | 'schedule'
   | 'web'
+  | 'fetch'
   | 'image'
   | 'workflow'
   | 'generic'
@@ -179,6 +182,10 @@ function otherPresentation(
   if (tool === MODEL_API_WEB_SEARCH_TOOL) {
     return { summary: parsed.query ?? parsed.url ?? '', body: 'web' }
   }
+  // The page a fetch read (M69): its URL beside the label, its size below.
+  if (WEB_FETCH_TOOLS.has(tool)) {
+    return { summary: parsed.url ?? '', body: 'fetch' }
+  }
   if (IMAGE_MAKING_TOOLS.has(tool)) {
     return { summary: parsed.path ?? '', body: 'image' }
   }
@@ -235,6 +242,17 @@ export function changeSummary(summary: PatchSummary | undefined): string | undef
   return summary.removed > 0 && summary.added === 0
     ? plural(UI_TEXT.removedLines, summary.removed)
     : UI_TEXT.modified
+}
+
+/**
+ * "Fetched 48.2 kB (text/html)" for a web fetch's row (M69), read from the
+ * first line of its result; undefined for a result that is not a page.
+ */
+export function fetchedSize(output: string): string | undefined {
+  const facts = parseWebPageHeader(output)
+  return facts === undefined
+    ? undefined
+    : fill(UI_TEXT.webFetchSize, { size: formatBytes(facts.bytes), type: facts.type })
 }
 
 /** The written file's content for a Write row without a fetched patch. */

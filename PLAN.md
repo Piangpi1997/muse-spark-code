@@ -156,6 +156,7 @@ tested on chunk splits inside frames and inside multi-byte characters.
 | `npm-run-all2`                                                          | 9.0.3                             | Runs gate scripts in sequence/parallel.                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | `rimraf`                                                                | 6.1.3                             | Cross-platform clean.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | `axe-core`                                                              | 4.13.0                            | The accessibility gate (M37, D32): WCAG 2.0 to 2.2, levels A and AA, run inside the harness page. MPL-2.0; a dev dependency, never bundled.                                                                                                                                                                                                                                                                                                                                                          |
+| `entities`                                                              | 8.1.0                             | M69 (D49): web fetch's HTML converter decodes character references with its `decodeHTML` / `decodeHTMLAttribute`, the WHATWG table, instead of a partial table of our own. BSD-2-Clause, no dependencies, no peers, `sideEffects: false`; published 2026-09-07 (outside the 7-day window); already in the lockfile through jsdom and parse5; `npm audit` clean. Its `decode` entry adds 23.4 KiB to `dist/extension.js` only (not `modelApi.js`).                                                    |
 
 Deprecated and avoided: `@vscode/webview-ui-toolkit` (archived; npm marks it
 deprecated). Webview controls are hand-built on VS Code CSS theme variables.
@@ -4485,7 +4486,8 @@ merged as PR #30 (`bdaede4`).
 ### M44b — Web fetch on the Model API backend (D36)
 
 **Status 2026-09-27: folded into M69 (D49), which also serves it to Muse
-Code through the `ide` server.** Muse Code's own
+Code through the `ide` server; built there on 2026-09-28 with every rule
+below (see M69's status).** Muse Code's own
 `web_fetch` is gated off in 1.3.0, and the Model API backend has no fetch
 tool. The D36 inventory named the network-safety design this needs before
 the model may read a page:
@@ -6378,6 +6380,68 @@ full gate. A paid item follows D30/D48.
   - Muse Code: `mcp__ide__webFetch`, since Muse Code's own `web_fetch`
     is switched off.
 - **Size.** S.
+- **Status 2026-09-28: built and certified on `feature/m69-web-fetch`**
+  (`docs/certification/m69.md`); not pushed. Built to M44b's safeguards
+  and the plan review's six rules:
+  - **Destinations** (`src/core/web/publicAddress.ts`, `pageUrl.ts`):
+    `https:` only, no credentials, 2,048 characters at most; local and
+    reserved names (`localhost`, `local`, `internal`, `home.arpa`, `test`,
+    `invalid`, `example`, `onion`, `alt`, and any single-label name) refused
+    before any lookup. IPv4 is public outside IANA's special-purpose blocks
+    and Azure's WireServer (so 169.254.169.254, 100.100.100.200 and
+    192.0.0.192 are refused); IPv6 only inside 2000::/3 and outside
+    2001::/23, 2001:db8::/32 and 3fff::/20, with IPv4-mapped, -compatible,
+    NAT64 and 6to4 judged by the IPv4 inside. Every DNS answer is checked:
+    one non-public answer refuses the name.
+  - **Pinning** (`src/host/web/pinnedRequest.ts`): Node's `https` connects
+    to the checked address, with `servername` and `Host` carrying the name,
+    so TLS still verifies it. VS Code's patched `fetch` cannot pin (it
+    replaces a caller's dispatcher with its own agent, keeping only CA and
+    HTTP/2 options: @vscode/proxy-agent `createFetchPatch`, read
+    2026-09-27); its patched `https` can, and does so through the proxy:
+    the integration test shows a loopback proxy receiving
+    `CONNECT 203.0.113.7:443` and a ClientHello naming the host, on VS Code
+    1.139.1 and 1.125.0. Only an answer that arrived over TLS is read: a proxy's
+    own refusal of the tunnel is reported as `Proxy response (N)`, M56's
+    proxy failure, never read as the page. The checked addresses are tried
+    in the resolver's order (ADDRCONFIG), never re-resolved.
+  - **Redirects**: same host (host and port) followed, each hop checked,
+    resolved and pinned again, at most `WEB_FETCH_MAX_REDIRECTS` (5); a
+    redirect to another host is handed back to the model as a URL to fetch
+    in a new call, so each host is approved on its own; into a refused URL
+    it fails naming the redirect.
+  - **Bounds**: 5 MiB after decompression (gzip, deflate, br; another
+    coding refused), declared or streamed; 30 s for the whole fetch; an
+    allow-list of text types; the header's charset, else HTML's `<meta>`,
+    else UTF-8. HTML becomes Markdown in one linear pass
+    (`htmlToMarkdown.ts`, with `entities` for character references, the
+    one new dependency, D3); inline nesting, list and quote indents and
+    table width are capped so a hostile page stays linear. The model reads
+    the first 50,000 characters and is told the total.
+  - **Approvals**: a new `network` tool class. Bypass allows, Plan
+    (`denyUnmatched`) refuses (its rules allow workspace reads, not network
+    reads), Manual, Edit automatically and Auto ask, per host: the card
+    (`webFetch` subject) names the URL as it will be fetched, and "Always
+    allow in this session" is keyed on the host. Restricted Mode: not
+    offered, refused if called. A URL the fetch would refuse is refused
+    before any card.
+  - **Untrusted content**: the model's text is the header line, a notice
+    that the page is untrusted data, and the content between markers with
+    8 random bytes the page cannot know; the instructions say the same.
+  - **Muse Code**: `webFetch` on the `ide` server, listed only while the
+    workspace is trusted and `museSpark.sandboxNetwork` is not
+    `restricted` (the list is read per request), with MCP annotations
+    `readOnlyHint: false, openWorldHint: true`, and the extension's own
+    modal (Allow once / Reject, naming host and URL) before every call,
+    whatever Muse Code's mode. Live (4 model attempts, contributor model,
+    empty folder): Muse Code listed and called it, asked its own approval in
+    on-request mode, and passed our text through verbatim as the row's
+    output, which the row's size line reads (AGENTS rule 13).
+  - **Row**: the URL beside the label, "Fetched 48.2 kB (text/html)" under
+    it, and what the model read in the body; harness scenario `web-fetch`.
+  - **Left**: a machine-scoped switch to turn web fetch off entirely, and
+    whether Muse Code's "Always allow this MCP tool" should also silence the
+    extension's own modal, are the owner's (§3 is untouched until asked).
 
 ### M70 — Review (D49)
 
@@ -6867,6 +6931,23 @@ Every lint or scanner suppression (`eslint-disable`, `@ts-expect-error`, `nosemg
   never across a redirect. Residual risk: a server's own `readOnlyHint` is
   trusted, as Muse Code trusts it; a result's text reaches the model as
   data it may be steered by (prompt injection), as a web page's would.
+- Web fetch (M69, D49) reaches the internet from the user's machine. The
+  controls: `https:` only; every DNS answer checked against the non-public
+  ranges and the connection pinned to a checked address (through a proxy,
+  the tunnel is asked for that address, and only a TLS answer is read);
+  same-host redirects checked and pinned again, another host's handed back;
+  size, time and type bounds; per-host approval in every mode but Bypass,
+  Plan and Restricted Mode refusing; on Muse Code the extension's modal
+  before every call. Residual risks: (1) an intranet service on a public
+  address, or a split-horizon name that answers public addresses here,
+  looks like the internet; (2) the URL is model-written and reaches the
+  host the user approved, so it can carry conversation text there (the
+  card and the modal name it whole; a session rule covers one host); (3)
+  the page's text steers the model like any tool output (the markers and
+  the notice are a signal, not a guarantee); (4) on a network where only
+  the proxy can resolve names, the local check refuses every fetch, which
+  fails closed; (5) a Muse Code call whose MCP request Muse Code abandons
+  still fetches once the user allows it, bounded by the 30-second deadline.
 - Contributor-tier models send content Meta may train on; guarded by opt-in
   dialog and `confidentialWorkspace` setting.
 - The Marketplace token (M28, 2026-09-23): the publish job runs in the

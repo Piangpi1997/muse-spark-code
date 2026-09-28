@@ -183,6 +183,15 @@ stand when it runs, never a copy taken at activation. Tests never need a
 proxy or a certificate: they use the failure shapes Node 24 was seen to
 throw (`docs/certification/m56.md`).
 
+Web fetch (PLAN.md M69) is the one exception to `fetch`: it must connect to
+the address it checked, which VS Code's patched `fetch` cannot do, so it
+uses Node's `https` (`src/host/web/pinnedRequest.ts`), which VS Code patches
+for its proxy and certificates too. Keep every destination check in
+`src/core/web/` and test it over the fake resolver and transport in
+`test/unit/webFetch.test.ts`; unit tests never reach the internet. What
+only VS Code can show (the proxy asked for the pinned address) is in
+`test/integration/webFetch.test.ts`, against a loopback proxy.
+
 ## Licence
 
 By contributing you agree that your contribution is licensed under the MIT

@@ -7,6 +7,40 @@ happened, not what was planned; superseded entries are kept.
 
 ## [Unreleased]
 
+### Added
+
+- **Web fetch on both backends** (M69, PLAN.md D49; folds in M44b). The
+  model can read one public web page it found or you named: `web_fetch` on
+  the Model API backend, and `mcp__ide__webFetch` on Muse Code, whose own
+  `web_fetch` is switched off. The extension fetches the page from your
+  machine; it is free, not Meta's paid search.
+  - `https://` only, public internet addresses only: the name is resolved
+    here and refused when any answer is loopback, private, link-local,
+    carrier-grade NAT, cloud metadata or reserved (IPv4-mapped, NAT64 and
+    6to4 forms judged by the IPv4 inside), and local or reserved names are
+    refused before any lookup. The connection goes to the address that was
+    checked, never to a second lookup; TLS still verifies the name.
+  - Same-host redirects are checked and pinned again, at most five; a
+    redirect to another host is handed back to the model. 5 MiB after
+    decompression, 30 seconds, an allow-list of text types; HTML becomes
+    Markdown, text stays as it is, anything else is refused with the reason.
+  - Through VS Code's proxy and certificates: the proxy is asked to tunnel
+    to the checked address, and a proxy's own answer is refused as such,
+    never read as the page.
+  - On the Model API backend it asks per host in Manual, Edit automatically
+    and Auto ("Always allow in this session" covers that host), runs in
+    Bypass, and is refused in Plan and in Restricted Mode. On Muse Code the
+    tool is listed only in a trusted workspace whose
+    `museSpark.sandboxNetwork` is not `restricted`, declares itself
+    open-world and not read-only, and the extension asks in its own dialog
+    before every fetch.
+  - The model receives the page between random markers, with a note that it
+    is untrusted content; the row shows the URL, the size and type, and what
+    the model read. 23 new strings in fifteen languages.
+- **Dependency.** `entities` 8.1.0 (BSD-2-Clause, already in the tree
+  through the test tools) decodes HTML's character references for web
+  fetch's converter; it adds about 23 KiB to `dist/extension.js` only.
+
 ### Changed
 
 - **Every paid use asks first, in a popup** (M58, PLAN.md D48): **Allow

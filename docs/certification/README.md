@@ -72,3 +72,4 @@ The PNGs beside the records are that day's harness renders.
 - [0.9.1](release-0.9.1.md): Muse Code 1.4.0 on Windows: rename, fork and the sandbox warning limited for every version; known 1.4.0 schema fingerprints (PLAN.md D26 amendment)
 - [M57](m57.md): the Model API backend out of the activation bundle into `dist/modelApi.js`, the identity audit and the bundle-split gate (PLAN.md D6)
 - [M58](m58.md): a popup before every paid use: Allow once, Allow always in this workspace, or Deny (PLAN.md D48)
+- [M69](m69.md): web fetch on both backends: public HTTPS pages, every DNS answer checked and the connection pinned (through VS Code's proxy too), per-host approval, untrusted-content markers; Muse Code through the `ide` server (PLAN.md D49, folds in M44b)

@@ -74,6 +74,9 @@ import { canonicalPath } from './host/canonicalPath'
 import { loadToolImage } from './core/toolImages'
 import { ModelApiClient } from './core/backends/modelapi/client'
 import { ideImageTools } from './host/ide/imageTools'
+import { ideWebFetchTools, isIdeWebFetchOffered } from './host/ide/webFetchTool'
+import { isWebFetchAllowed } from './host/web/webFetchConfirm'
+import { createWebFetcher } from './host/web/webFetcher'
 import { usablePaidFeatures } from './shared/paid'
 import { createCliFeatures } from './host/cliFeatures'
 import { createWorktreeFeatures } from './host/worktreeFeatures'
@@ -807,9 +810,22 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     log,
   })
   const ideTools = [diagnostics]
+  // Web fetch (M69, PLAN.md D49): resolved, checked and pinned here, for the
+  // Model API backend's `web_fetch` and Muse Code's `mcp__ide__webFetch`.
+  const webFetch = createWebFetcher(log)
   const ideServer = new IdeMcpServer(
     () => [
       diagnostics,
+      // The server is attached in Restricted Mode too, and has no session
+      // identity: the tool is listed only in a trusted workspace whose
+      // sandbox network setting allows the network, and every call asks.
+      ...ideWebFetchTools({
+        isOffered: () =>
+          isIdeWebFetchOffered(vscode.workspace.isTrusted, currentSettings().sandboxNetwork),
+        fetchPage: webFetch,
+        confirm: isWebFetchAllowed,
+        log,
+      }),
       ...ideImageTools({
         isOffered: () => isKeyStored && paid.gate.isOn('imageGeneration'),
         keyGeneration: () => auth.admissionGeneration,
@@ -1015,6 +1031,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         }),
       ),
     ideTools,
+    webFetch,
     allowsPaidUse: async (request, requiresAsking) =>
       await paid.consent.allows(request, requiresAsking),
     isPaidUseRemembered: (feature) => paid.consent.isRemembered(feature),

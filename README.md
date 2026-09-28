@@ -29,7 +29,8 @@ two.
 [Get started](#get-started) · [Backends](#backends) ·
 [Permission modes](#permission-modes) ·
 [Rules, skills and memory](#rules-skills-and-memory) ·
-[Muse Code's own tools](#muse-codes-own-tools) · [The panel](#the-panel) ·
+[Muse Code's own tools](#muse-codes-own-tools) · [Web fetch](#web-fetch) ·
+[The panel](#the-panel) ·
 [Voice dictation](#voice-dictation) · [Paid features](#paid-features) ·
 [Languages](#languages) ·
 [Limits](#limits) ·
@@ -270,7 +271,9 @@ approval needs an explicit choice. Edit automatically resumes when it is
 the only panel holding that session.
 
 "Always allow in this session" on a command allows that exact command line
-again, nothing broader; on an MCP tool, that tool. An MCP tool asks like a
+again, nothing broader; on an MCP tool, that tool; on a [web fetch](#web-fetch),
+that host. A web fetch asks in Manual, Edit automatically and Auto, and
+Plan refuses it. An MCP tool asks like a
 command on the Model API backend; Auto runs one its server marks read-only
 without asking, as Muse Code does, and Plan refuses all but those, which ask. The Model API backend's file tools refuse any path
 that leaves the workspace, including through a symbolic link or junction
@@ -412,6 +415,9 @@ the ones that answer in JSON are shown as what they mean:
   API schedules described below.
 - **Web search**: the results as links that open in your browser, with
   their snippets. Search rows on the Model API backend look the same.
+- **Fetch page**: Muse Code's own `web_fetch` is switched off, so the
+  extension offers it one of its own, `mcp__ide__webFetch`; see
+  [Web fetch](#web-fetch).
 - **Background work**: a command Muse Code moved to the background shows
   what it printed and that it is still running, and it stays running after
   the turn ends instead of reading "Interrupted". See **Background work**
@@ -617,6 +623,46 @@ Muse Code has its own subscription-backed `cron_create`, `cron_list` and
 those are not the Model API jobs shown by this panel. Muse Code 1.3.0 does
 not expose scheduler controls over MSP or a `muse cron` CLI command, so the
 panel cannot present an authoritative native job list or direct cancel.
+
+## Web fetch
+
+The model can read one public web page it found or you
+named: `web_fetch` on the Model API backend, `mcp__ide__webFetch` on Muse
+Code (whose own `web_fetch` is off). The extension fetches the page itself,
+from your machine, and hands the model its text. It costs nothing: it is not
+Meta's paid web search.
+
+- **What it reads.** `https://` pages only. HTML comes back as Markdown
+  (scripts, styles, forms' controls, media and hidden parts left out); plain
+  text, Markdown, JSON, XML, CSV, YAML, CSS and JavaScript come back as they
+  are; anything else is refused with the reason. At most 5 MiB (after
+  decompression) within 30 seconds; the model reads the first 50,000
+  characters, and is told when there was more.
+- **Where it may go.** Public internet addresses only. The name is looked up
+  on your machine and refused when any answer is loopback, private,
+  link-local, carrier-grade NAT, a cloud metadata address or otherwise
+  reserved; local and reserved names (`localhost`, `*.local`, `*.internal`,
+  single-label intranet names) are refused before any lookup. The request
+  then goes to the address that was checked, never to a second lookup, and
+  TLS still verifies the page's name. A redirect on the same host is checked
+  and pinned the same way, at most five times; a redirect to another host is
+  handed back to the model, which asks again.
+- **Asking.** Each host is approved on its own: the Model API backend's card
+  names the URL, and "Always allow in this session" covers that host only.
+  Bypass runs it, Plan refuses it, Restricted Mode turns it off. On Muse
+  Code the extension asks in its own dialog before every fetch, whatever
+  mode Muse Code runs in, and offers the tool only in a trusted workspace
+  whose `museSpark.sandboxNetwork` is not `restricted`.
+- **Untrusted content.** The model receives the page between two markers
+  with a random value the page cannot know, and a note that the page is
+  data from the web, not instructions. The row shows the URL, the size and
+  type, and exactly what the model read.
+- **Proxies.** The request takes VS Code's proxy and certificate settings,
+  as the extension's other requests do. Through a proxy the extension still
+  checks the address itself and asks the proxy for a tunnel to that
+  address; a proxy that refuses a tunnel to an address is reported as the
+  proxy's refusal, and a network where only the proxy can look names up
+  cannot use web fetch.
 
 ## The panel
 
@@ -1406,6 +1452,13 @@ stopped and the next message resumes the same session.
 - Behind a corporate network the extension's requests use VS Code's proxy
   and certificate settings, and Muse Code gets the proxy and certificate
   variables described under [Proxies and certificates](#proxies-and-certificates).
+- [Web fetch](#web-fetch) downloads the pages the model names from your
+  machine, after you approve each host (on Muse Code, each fetch), and sends
+  their text to the model like any other tool output. The full address goes
+  to that site, so a URL the model writes can carry what the conversation
+  holds; the approval names it whole. Only public `https://` addresses are
+  fetched, the address checked is the address used, and the log names the
+  host only.
 - Workspace rules, skill files and the memory snapshot are read only in a
   trusted workspace; on the Model API backend their text is part of what
   goes to Meta with each request, on the CLI backend Muse Code sends them

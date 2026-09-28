@@ -1,0 +1,62 @@
+// The window's web fetch (M69, PLAN.md D49): the core fetch over this
+// machine's resolver and the pinned HTTPS transport, shared by the Model API
+// backend's `web_fetch` and the `ide` server's `webFetch` for Muse Code. The
+// log names the host and the outcome only: a path or a query can carry
+// what the conversation put there.
+
+import { randomBytes } from 'node:crypto'
+import { ADDRCONFIG } from 'node:dns'
+import { lookup } from 'node:dns/promises'
+import { fetchWebPage, type WebFetcher, type WebFetchResult } from '../../core/web/webFetch'
+import { WEB_FETCH_MARKER_BYTES } from '../../shared/constants'
+import type { Logger } from '../logger'
+import { pinnedHttpsRequest } from './pinnedRequest'
+
+/**
+ * Every address the name resolves to, as the operating system's resolver
+ * answers a connection's lookup (Node's `net` asks with ADDRCONFIG: no IPv6
+ * answers on a machine without an IPv6 address), in its order.
+ */
+async function resolveAll(host: string): Promise<readonly string[]> {
+  const answers = await lookup(host, { all: true, order: 'verbatim', hints: ADDRCONFIG })
+  return answers.map((answer) => answer.address)
+}
+
+function hostOf(url: string): string {
+  try {
+    return new URL(url).host
+  } catch {
+    return '(not a URL)'
+  }
+}
+
+function outcomeOf(result: WebFetchResult): string {
+  switch (result.kind) {
+    case 'page': {
+      const { page } = result
+      return `HTTP ${String(page.status)}, ${page.type}, ${String(page.bytes)} bytes`
+    }
+    case 'moved': {
+      return `redirected to another host (${hostOf(result.location)}); handed back to the model`
+    }
+    case 'failed': {
+      return `refused or failed: ${result.failure.kind}`
+    }
+  }
+}
+
+export function createWebFetcher(log: Logger): WebFetcher {
+  return async (url, signal) => {
+    const result = await fetchWebPage(
+      url,
+      {
+        resolve: resolveAll,
+        request: pinnedHttpsRequest,
+        newMarker: () => randomBytes(WEB_FETCH_MARKER_BYTES).toString('hex'),
+      },
+      signal,
+    )
+    log.info(`Web fetch from ${hostOf(url)}: ${outcomeOf(result)}`)
+    return result
+  }
+}

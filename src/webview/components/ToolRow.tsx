@@ -1,7 +1,8 @@
-// One tool call: status dot, label, argument summary, change line, and a
-// collapsible body (shell IN/OUT, edit diff, read output, a memory note, a
-// goal, scheduled prompts, search results, a workflow's script and launch,
-// or generic args/output), the
+// One tool call: status dot, label, argument summary, change line (an
+// edit's lines, a fetched page's size), and a collapsible body (shell
+// IN/OUT, edit diff, read output, a fetched page, a memory note, a goal,
+// scheduled prompts, search results, a workflow's script and launch, or
+// generic args/output), the
 // picture a tool read or made, plus the approval or question card when the
 // host is waiting.
 
@@ -22,6 +23,7 @@ import { backgroundRun, readableText } from '../toolDetails'
 import {
   changeSummary,
   describeTool,
+  fetchedSize,
   type ToolPresentation,
   writtenContent,
 } from '../toolPresentation'
@@ -320,7 +322,12 @@ function ToolRowView({
   const [isOpen, setIsOpen] = useState(
     presentation.body === 'shell' || presentation.body === 'edit' || imagePaths.length > 0,
   )
-  const change = changeSummary(entry.patchSummary)
+  // An edit's lines, or a fetched page's size (M69).
+  const change =
+    changeSummary(entry.patchSummary) ??
+    (presentation.body === 'fetch' && entry.status === 'completed'
+      ? fetchedSize(entry.output)
+      : undefined)
   const isFailed = isFailedStatus(entry.status) || entry.status === TOOL_STATUS_INTERRUPTED
   // A finished edit with a stored patch can be reviewed in the editor.
   const reviewRef =
@@ -366,7 +373,8 @@ function ToolRowView({
       body = <EditBody entry={entry} files={files} onExpand={openReview} />
       break
     }
-    case 'read': {
+    case 'read':
+    case 'fetch': {
       body =
         entry.output === '' ? null : (
           <Clipped text={entry.output} className="tool-output" onOpen={openOutput} />

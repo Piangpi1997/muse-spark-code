@@ -99,13 +99,32 @@ Only the latest release on the Visual Studio Marketplace receives fixes.
   Windows each stdio server runs in a job object that ends its descendants.
   Remote error bodies and authentication challenges stay out of tool
   errors and logs.
+- **Web fetch (both backends).** The model can ask the extension to read a
+  page. Only `https://` URLs without credentials, of at most 2,048
+  characters, on public internet addresses: the name is resolved on the
+  user's machine and refused when any answer is loopback, private,
+  link-local, carrier-grade NAT, a cloud metadata address or reserved
+  (IPv4 carried inside IPv6 is judged as IPv4), and local or reserved names
+  are refused before any lookup. The connection is pinned to the checked
+  address (TLS verifies the name); through a proxy the tunnel is asked for
+  that address, and only an answer that arrived over TLS is read. Same-host
+  redirects are checked and pinned again (at most five); another host's is
+  handed back to the model, which asks again. 5 MiB after decompression,
+  30 seconds, text types only. On the Model API backend each host asks in
+  every mode but Bypass (Plan refuses); on Muse Code the `ide` tool is listed
+  only in a trusted workspace without `sandboxNetwork: restricted`, carries
+  `readOnlyHint: false, openWorldHint: true`, and the extension asks before
+  every call. The page reaches the model between random markers as
+  untrusted content. Residual risk: an intranet service on a public address
+  looks like the internet, and the URL itself can carry conversation text
+  to the host the user approved (PLAN.md §9).
 - **Webview.** `default-src 'none'`, a per-load script nonce, no remote
   origins, no inline styles; every message between the host and the
   webview is validated against a schema.
 - **Prompt injection.** Workspace files, rules and skills reach the model by
-  design in a trusted workspace; the permission modes and the approval
-  cards are the control, and the Diagnostics report and the log show what
-  ran.
+  design in a trusted workspace, and so do fetched web pages (marked as
+  untrusted content); the permission modes and the approval cards are the
+  control, and the Diagnostics report and the log show what ran.
 - **Release pipeline.** A tag is released only when it names the manifest
   version and points at a commit on `main`; the Marketplace PAT reaches one
   step, after an install that runs no package scripts; no checkout keeps a

@@ -398,6 +398,33 @@ export const EN = {
   toolReadImageInvalid: 'The file `{path}` is not a supported image.',
   toolVisualFileMissing: 'The file `{path}` was not found.',
   toolVisualReadFailed: 'The file `{path}` could not be read.',
+  // M69 (PLAN.md D49): web fetch. The row's line under a fetched page: its
+  // size and content type (text/html).
+  webFetchSize: 'Fetched {size} ({type})',
+  // Before each fetch Muse Code asks the extension for.
+  webFetchConfirmTitle: 'Muse Code wants to fetch a page from {host}',
+  webFetchConfirmDetail:
+    'The extension will download {url} from this computer and give its text to Muse Code. The whole address is sent to {host}, so anything written into it leaves the conversation.',
+  // Why a fetch did not happen or did not finish.
+  webFetchInvalidUrl: 'That is not a complete web address.',
+  webFetchNotHttps: 'Only https:// pages are fetched.',
+  webFetchCredentials: 'An address with a user name or password is refused.',
+  webFetchUrlTooLong: 'The address is longer than {max} characters.',
+  webFetchReservedHost: '{host} is a local or reserved name, not a public site.',
+  webFetchPrivateAddress:
+    '{host} leads to {address}, which is not a public internet address. Nothing was fetched.',
+  webFetchUnresolved: '{host} could not be found from this computer.',
+  webFetchTooManyRedirects: 'The page redirected more than {max} times.',
+  webFetchRedirectWithoutLocation: 'The server answered {status} without saying where to go.',
+  webFetchRedirectRefused: 'The page redirected to an address that is refused: {reason}',
+  webFetchHttpStatus: 'The server answered {status}.',
+  webFetchTooLarge: 'The page is larger than {size}.',
+  webFetchNoContentType: 'The server did not say what the page contains.',
+  webFetchContentType: 'The page is {type}, not HTML or text.',
+  webFetchEncoding: 'The page is compressed with {encoding}, which cannot be read.',
+  webFetchCharset: 'The page’s character set {charset} cannot be read.',
+  webFetchTimeout: 'The page did not arrive within {duration}.',
+  webFetchNetwork: 'The request failed: {detail}',
   textFileTooLarge: 'Text files must be 1 MB or smaller.',
   textFilesOverBudget:
     'Attachments fill Muse Code’s message limit. Remove an attachment or shorten the message.',
@@ -430,6 +457,8 @@ export const EN = {
   approvalAction: 'Muse wants to {action}',
   /** A bare tool name (subject kind "tool", e.g. subagent_spawn), M18. */
   approvalUseTool: 'Muse wants to use {action}',
+  /** A web fetch on the Model API backend (M69): {action} is the URL, shown as code. */
+  approvalFetch: 'Muse wants to fetch {action}',
   // {paths} is the list of images an edit starts from, shown as code.
   approvalImageSources: 'Starting from {paths}',
   // The paid-use popup before an image, on either backend (M34, M44, M58).
@@ -864,6 +893,8 @@ export const EN = {
     // The same, made by the extension's ide server for Muse Code (M44).
     mcp__ide__generateImage: 'Image',
     mcp__ide__editImage: 'Edit image',
+    // The extension's web fetch for Muse Code, through the ide server (M69).
+    mcp__ide__webFetch: 'Fetch page',
     // Muse Code's own tools (M43): captured live 2026-09-25, the rest named
     // from the CLI's tool list (PLAN.md D36).
     read_memory: 'Read memory',

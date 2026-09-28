@@ -50,6 +50,7 @@ import {
   MODEL_API_SCHEDULED_TOOL,
   MODEL_API_SUBAGENT_TOOLS,
   MODEL_API_TOOLS,
+  WEB_FETCH_SUBJECT_KIND,
   MODEL_API_VERSION,
   MODEL_API_WEB_SEARCH_TOOL,
   MODEL_TEXT,
@@ -136,6 +137,9 @@ import { textFileInput } from '../../textAttachment'
 import { isProtectedPath } from '../../protectedPaths'
 import { confineWorkspacePath } from '../../workspacePath'
 import type { McpTool } from '../../mcp'
+import type { WebFetcher, WebFetchResult } from '../../web/webFetch'
+import type { WebFetchFailure } from '../../web/fetchFailure'
+import { approvalHost, checkPageUrl } from '../../web/pageUrl'
 import type { MemoryStore } from '../../memory/memoryStore'
 import {
   type ConfirmedModelRequest,
@@ -217,6 +221,7 @@ import {
   executeTool,
   parseQuestions,
   readSkillArgs,
+  webFetchArgs,
   type ShellResult,
   shellOutcome,
   shellText,
@@ -304,6 +309,11 @@ export interface ModelApiHostDeps extends ModelApiPaidHooks {
    * session-start snapshot; undefined leaves them out.
    */
   readonly memory: MemoryStore | undefined
+  /**
+   * The window's web fetch (M69, PLAN.md D49): resolved, checked and pinned
+   * in the activation bundle; undefined leaves `web_fetch` out.
+   */
+  readonly webFetch?: WebFetcher | undefined
 }
 
 const NO_ENVIRONMENT: EnvironmentFacts = { git: undefined }
@@ -690,6 +700,22 @@ function pressureFor(used: number, window: number): string {
 
 function toolFailure(reason: string): ToolOutcome {
   return { output: `Error: ${reason}`, visibleOutput: reason, failureReason: reason }
+}
+
+/** A web fetch that did not happen: the model's reason, the row's in the user's language. */
+function webFetchRefusal(failure: WebFetchFailure): ToolOutcome {
+  return {
+    output: `Error: ${failure.reason}`,
+    visibleOutput: failure.visibleReason,
+    failureReason: failure.visibleReason,
+  }
+}
+
+/** What the model and the row receive for a web fetch (M69). */
+function webFetchOutcome(result: WebFetchResult): ToolOutcome {
+  return result.kind === 'failed'
+    ? webFetchRefusal(result.failure)
+    : { output: result.text, visibleOutput: result.text }
 }
 
 /**
@@ -1472,6 +1498,7 @@ export class ModelApiSession implements AgentSession {
         shellName: shell.shellName,
         hasShell,
         hasMemory,
+        hasWebFetch: hasShell && this.deps.webFetch !== undefined,
         today: new Date(this.deps.now()).toISOString().slice(0, ISO_DATE_LENGTH),
         environment: this.environment ?? NO_ENVIRONMENT,
         context,
@@ -1532,6 +1559,8 @@ export class ModelApiSession implements AgentSession {
       hasSubagents: !this.isSubagent && this.deps.isPaidFeatureOn('subagents'),
       isSubagent: this.isSubagent,
       hasMemory,
+      // Trusted workspaces only, as the shell (M69).
+      hasWebFetch: hasShell && this.deps.webFetch !== undefined,
     })
     const ide = (this.deps.ideTools ?? []).map(
       (tool) => mcpFunctionDefinition(ideFunctionName(tool), tool).definition,
@@ -3611,6 +3640,45 @@ export class ModelApiSession implements AgentSession {
     return { outcome: await runMemoryCall(memory, placed.value), isRejected: false }
   }
 
+  /**
+   * A web fetch (M69, PLAN.md D49): refused in Restricted Mode, and for a
+   * URL the fetch would refuse anyway, before any card; then judged as a
+   * network tool per host, its card naming the URL as it will be fetched.
+   * The fetch itself resolves, checks and pins every hop.
+   */
+  private async decideAndRunWebFetch(
+    itemId: string,
+    call: FunctionCallItem,
+    signal: AbortSignal,
+    shouldForceApproval: boolean,
+  ): Promise<CallResult> {
+    const fetchPage = this.deps.webFetch
+    if (fetchPage === undefined) {
+      return { outcome: toolFailure(`unknown tool ${call.name}`), isRejected: false }
+    }
+    if (!this.deps.isWorkspaceTrusted()) {
+      return { outcome: toolFailure(MODEL_TEXT.webFetchRestrictedMode), isRejected: true }
+    }
+    const parsed = webFetchArgs.safeParse(argumentsOf(call))
+    if (!parsed.success) {
+      return { outcome: toolFailure('invalid arguments: url is required'), isRejected: false }
+    }
+    const checked = checkPageUrl(parsed.data.url)
+    if (!checked.ok) {
+      return { outcome: webFetchRefusal(checked.failure), isRejected: false }
+    }
+    const url = checked.url.href
+    const refusal = await this.judge(
+      itemId,
+      call,
+      signal,
+      { toolName: call.name, toolClass: 'network', command: approvalHost(checked.url) },
+      { kind: WEB_FETCH_SUBJECT_KIND, target: url, toolName: call.name },
+      shouldForceApproval,
+    )
+    return refusal ?? { outcome: webFetchOutcome(await fetchPage(url, signal)), isRejected: false }
+  }
+
   /** The permission check and, when it allows, the tool itself. May throw (an abort, an I/O error). */
   private async decideAndRun(
     turnId: string,
@@ -3637,6 +3705,9 @@ export class ModelApiSession implements AgentSession {
     }
     if (isMemoryTool(call.name)) {
       return await this.decideAndRunMemory(itemId, call, signal, toolClass, shouldForceApproval)
+    }
+    if (toolClass === 'network') {
+      return await this.decideAndRunWebFetch(itemId, call, signal, shouldForceApproval)
     }
     if (
       this.isSubagent &&

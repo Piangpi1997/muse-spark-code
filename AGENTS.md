@@ -94,12 +94,15 @@ src/host/**           VS Code adapters (views, conversation, backend managers,
                       the Model API bundle's entry (dist/modelApi.js, loaded
                       when that backend first starts) and the search worker,
                       commands, auth, settings, mentions,
-                      editor tracking, usage trace logs, voice, the diagnostics
-                      MCP server, the MCP servers' spawner, the network posture)
+                      editor tracking, usage trace logs, voice, the IDE tool
+                      MCP server (diagnostics, images, web fetch), the MCP
+                      servers' spawner, the network posture, web fetch's
+                      pinned transport)
 src/core/**           backend-agnostic logic; must not import `vscode`
                       (MSP host, Model API client and tools, the MCP client,
                       context, Muse Code's memory, export, worktrees, usage,
-                      dictation, Muse Voice, the paid gate, network failures)
+                      dictation, Muse Voice, the paid gate, network failures,
+                      web fetch: public-address checks and the HTML converter)
 src/shared/**         constants + zod protocol shared by host and webview
 src/shared/l10n/**    the English table (en.ts), fill/plural/Intl helpers, the
                       table checks and the list of translated languages

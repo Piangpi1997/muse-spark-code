@@ -83,6 +83,7 @@ export const SCENARIOS = [
   'paid-voice',
   'muse-tools',
   'muse-web',
+  'web-fetch',
   'paid-edit',
   'paid-image-cli',
   'goal',
