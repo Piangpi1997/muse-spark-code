@@ -11,6 +11,7 @@ import {
   type CheckOutcome,
   type CheckSkip,
   MODEL_TEXT,
+  VERIFY_AUTHORIZE_ATTEMPTS,
 } from '../../../shared/constants'
 import { fill } from '../../../shared/l10n/text'
 import type { EditedFile, FileDiagnostics } from '../../verify/diagnosticsReport'
@@ -115,6 +116,43 @@ export function skippedCheck(
     },
     text: fill(MODEL_TEXT.checkNotRun, { name: check.name, reason: skipReason(skip, detail) }),
   }
+}
+
+/** Why a verify command may not run. */
+export interface Refusal {
+  readonly skip: CheckSkip
+  readonly detail?: string
+}
+
+/**
+ * A verify command's permission, then its guard (then_run's: the file still
+ * holds what the edit left), before it runs. A file that decides what the
+ * command runs may be edited while this waits (a subagent's edit during the
+ * guard's read): a session rule that answered then no longer holds, so the
+ * command is authorized again, and guarded again (Grok's review of PR #54's
+ * fourth round). The second time the rule no longer answers. Undefined when
+ * the command may run, else why not.
+ */
+export async function authorizeThenGuard(steps: {
+  /** Whether a file that decides what the command runs was edited since the user's message. */
+  readonly isRuleLapsed: () => boolean
+  readonly authorize: () => Promise<Refusal | undefined>
+  readonly guard?: () => Promise<boolean>
+}): Promise<Refusal | undefined> {
+  for (let attempt = 0; attempt < VERIFY_AUTHORIZE_ATTEMPTS; attempt += 1) {
+    const wasLapsed = steps.isRuleLapsed()
+    const refusal = await steps.authorize()
+    if (refusal !== undefined) {
+      return refusal
+    }
+    if (steps.guard !== undefined && !(await steps.guard())) {
+      return { skip: 'changed' }
+    }
+    if (wasLapsed || !steps.isRuleLapsed()) {
+      return undefined
+    }
+  }
+  return undefined
 }
 
 /** The checks' part of a message: a heading and each check. */

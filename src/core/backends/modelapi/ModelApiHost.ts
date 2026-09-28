@@ -84,6 +84,7 @@ import {
   UI_TEXT,
   USER_SHELL_ITEM_KIND,
   USER_SHELL_TIMEOUT_MS,
+  VERIFY_COMMAND_RULE_KEY,
   VERIFY_NOTE_MAX_CHARS,
   VERIFY_SHOWN_FILES_MAX,
   VERIFY_TOOLS,
@@ -250,6 +251,7 @@ import {
   waitArgs,
 } from './subagentTools'
 import {
+  authorizeThenGuard,
   type CheckRun,
   checksSection,
   finishedCheck,
@@ -2462,7 +2464,7 @@ export class ModelApiSession implements AgentSession {
       (choice) => choice.choiceId === decision.choiceId,
     )
     if (isOffered && decision.choiceId === APPROVAL_CHOICE_IDS.allowSession) {
-      this.permissions.allowForSession(call.name, query.command)
+      this.permissions.allowForSession(query.toolName, query.command)
     }
     // Only the two allow choices this card offered approve; anything else refuses.
     const isApproved =
@@ -3651,8 +3653,9 @@ export class ModelApiSession implements AgentSession {
    * Whether a command may run now, by the shell tool's own permission path
    * (M68, PLAN.md D49): never where the mode refuses a shell command, and
    * with the shell's approval card wherever a shell command would ask,
-   * "always allow in this session" keyed on `ruleCommand` as the shell tool
-   * keys it. A hook that demanded a question (`isForced`) gets one; a
+   * "always allow in this session" keyed on `ruleCommand` under the verify
+   * loop's own key (`VERIFY_COMMAND_RULE_KEY`), apart from the shell tool's
+   * rules. A hook that demanded a question (`isForced`) gets one; a
    * session rule does not answer once the conversation edited a file that
    * may decide what `ruleCommand` runs, judged on the command the rule is
    * keyed on, a hook's rewrite included (PR #54, fourth Codex round). A
@@ -3665,8 +3668,10 @@ export class ModelApiSession implements AgentSession {
     signal: AbortSignal,
   ): Promise<{ readonly skip: CheckSkip; readonly detail?: string } | undefined> {
     const shell = shellToolFor(this.deps.platform)
+    // Keyed apart from the shell tool: a check's grant never answers for the
+    // model's own shell call of the same command (PR #54, fourth Codex round).
     const query: PermissionQuery = {
-      toolName: shell.name,
+      toolName: VERIFY_COMMAND_RULE_KEY,
       toolClass: 'shell',
       command: request.ruleCommand,
     }
@@ -3751,16 +3756,19 @@ export class ModelApiSession implements AgentSession {
       line = updated
       ruleCommand = updated
     }
-    const refusal = await this.authorizeCommand(
-      itemId,
-      { ...request, line, ruleCommand, isForced: request.isForced || pre.forceApproval },
-      signal,
-    )
+    const authorized: VerifyCommand = {
+      ...request,
+      line,
+      ruleCommand,
+      isForced: request.isForced || pre.forceApproval,
+    }
+    const refusal = await authorizeThenGuard({
+      isRuleLapsed: () => this.changesWhatRunsNow(ruleCommand),
+      authorize: () => this.authorizeCommand(itemId, authorized, signal),
+      ...(request.guard !== undefined && { guard: request.guard }),
+    })
     if (refusal !== undefined) {
       return { kind: 'skipped', ...refusal }
-    }
-    if (request.guard !== undefined && !(await request.guard())) {
-      return { kind: 'skipped', skip: 'changed' }
     }
     const startedAt = this.deps.now()
     const result = await this.runCommand(line, request.timeoutMs, signal)

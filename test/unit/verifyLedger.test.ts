@@ -2,8 +2,9 @@
 // runs recorded against the state they saw, a round's verdict from the runs
 // still on the latest state, the fix loop's count, and one reset.
 
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { type CheckScope, VerifyLedger } from '../../src/core/backends/modelapi/verifyLedger'
+import { authorizeThenGuard } from '../../src/core/backends/modelapi/verifyLoop'
 import { CHECK_FIX_MAX_ROUNDS, type CheckOutcome } from '../../src/shared/constants'
 
 const A = { relative: 'src/a.ts', absolute: '/ws/src/a.ts' }
@@ -210,5 +211,56 @@ describe('VerifyLedger', () => {
       'eslint.config.js',
       'package.json',
     ])
+  })
+})
+
+// Grok's review of PR #54's fourth round: a rule that answered may lapse
+// while the command waits on its guard; the command is authorized again.
+describe('authorizeThenGuard', () => {
+  it('authorizes again, and guards again, when the rule lapsed during the guard', async () => {
+    let isLapsed = false
+    const authorize = vi.fn(() => Promise.resolve(undefined))
+    const guard = vi.fn(() => {
+      // A subagent edits the script while the guard reads the file.
+      isLapsed = true
+      return Promise.resolve(true)
+    })
+    expect(await authorizeThenGuard({ isRuleLapsed: () => isLapsed, authorize, guard })).toBe(
+      undefined,
+    )
+    expect(authorize).toHaveBeenCalledTimes(2)
+    expect(guard).toHaveBeenCalledTimes(2)
+  })
+
+  it('refuses when the second authorization refuses, and runs once when nothing lapsed', async () => {
+    let isLapsed = false
+    let asked = 0
+    const refusal = await authorizeThenGuard({
+      isRuleLapsed: () => isLapsed,
+      authorize: () => {
+        asked += 1
+        return Promise.resolve(asked === 2 ? { skip: 'rejected' as const } : undefined)
+      },
+      guard: () => {
+        isLapsed = true
+        return Promise.resolve(true)
+      },
+    })
+    expect(refusal).toEqual({ skip: 'rejected' })
+    const once = vi.fn(() => Promise.resolve(undefined))
+    expect(await authorizeThenGuard({ isRuleLapsed: () => false, authorize: once })).toBe(undefined)
+    expect(once).toHaveBeenCalledTimes(1)
+    // A rule already lapsed at the start is not asked about twice.
+    const lapsed = vi.fn(() => Promise.resolve(undefined))
+    await authorizeThenGuard({ isRuleLapsed: () => true, authorize: lapsed })
+    expect(lapsed).toHaveBeenCalledTimes(1)
+    // A guard that fails refuses as "changed".
+    expect(
+      await authorizeThenGuard({
+        isRuleLapsed: () => false,
+        authorize: once,
+        guard: () => Promise.resolve(false),
+      }),
+    ).toEqual({ skip: 'changed' })
   })
 })

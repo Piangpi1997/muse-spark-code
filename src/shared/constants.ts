@@ -1388,6 +1388,14 @@ export const VERIFY_TOOLS = {
   verifyEdits: 'verify_edits',
 } as const
 export const VERIFY_ROW_TOOLS: ReadonlySet<string> = new Set(Object.values(VERIFY_TOOLS))
+// The session-rule key of the verify loop's commands (checks, run_checks,
+// then_run): their "Always allow in this session" is theirs alone and never
+// answers for the model's own shell calls, nor the shell's for them (PR #54,
+// fourth Codex round). Their cards and hooks still show the shell tool.
+export const VERIFY_COMMAND_RULE_KEY = 'verify_command'
+// A verify command is authorized at most twice: again when a file that
+// decides what it runs was edited while it was being authorized (M68).
+export const VERIFY_AUTHORIZE_ATTEMPTS = 2
 export const THEN_RUN_ARGUMENT = 'then_run'
 // `museSpark.checkCommands`: at most this many, each within these lengths.
 export const CHECK_COMMANDS_MAX = 8

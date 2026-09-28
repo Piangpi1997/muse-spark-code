@@ -2741,6 +2741,7 @@ only the extension-side uses reach it.
 | Q7  | **Resolved 2026-09-22:** owner pressed F5 and confirmed the Muse Spark chat shell renders in the Extension Development Host (verbal confirmation; no screenshot filed).                                                                                                                                                                                                                                                                                                                                                                                                                             | Closed.                                                                          |
 | Q8  | **Resolved 2026-09-22:** owner signed in; publisher is `RandyNorthrup`. Publishing ran by hand from the CI artifact with a clipboard PAT for 0.1.0–0.5.0; since 2026-09-23 the `VSCE_PAT` repository secret lets `release.yml` publish every `v*` tag.                                                                                                                                                                                                                                                                                                                                              | Closed.                                                                          |
 | Q9  | The Muse Code user rules file: `/rules import` writes one into the config root and the model is told "if user and project rules conflict, project rules win", but its file name is not printed by `muse --help`, `muse skills`, the settings skill or the binary's strings. The Model API backend cannot mirror what it cannot name.                                                                                                                                                                                                                                                                | Not loaded on the Model API backend; the CLI backend loads it itself.            |
+| Q10 | Should a shell tool session rule ("Always allow in this session" for a shell command) lapse when the model edits a file the command names or that decides what it runs, as the verify loop's rules do since M68? Today the shell tool keeps its pre-M68 behaviour: its rules are keyed on the exact command line and answer whatever the model edited. The verify loop's grants are kept apart from it (PR #54).                                                                                                                                                                                    | The shell tool's rules keep answering; only the verify loop's lapse.             |
 
 ## 4. Architecture
 
@@ -6659,8 +6660,10 @@ timeoutSeconds? }`, at most 8, names unique, 300 s unless set, 600 s at
     ask); the card is the shell's own (`shell` subject, so Edit
     automatically never answers it), with the PermissionRequest hook seeing
     it as a shell call; "always allow in this session" is keyed on the
-    configured command without its paths, as the shell tool keys a command
-    line, so it also allows the shell tool's own `npm run lint`. A check the
+    configured command without its paths, under the verify loop's own key
+    (`VERIFY_COMMAND_RULE_KEY`) since PR #54's fourth Codex round: a
+    check's or `then_run`'s grant never answers for the model's own shell
+    call of the same command, nor the shell's for them. A check the
     user rejects is not asked again until their next message. In Restricted
     Mode the automatic checks are left out rather than refused one by one.
     Superseded by the M68 review: checks, `run_checks` and `then_run` go

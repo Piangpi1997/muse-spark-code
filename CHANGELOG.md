@@ -24,7 +24,8 @@ happened, not what was planned; superseded entries are kept.
   `then_run` command as a shell call (deny, rewrite, ask, add context, stop
   the turn), and a hook's denial is shown apart from your Reject. Each asks
   wherever a shell command would ask (every mode but Bypass permissions),
-  "Always allow in this session" allows that command until the agent edits a
+  "Always allow in this session" allows that check (never the agent's own
+  shell call of the same command) until the agent edits a
   file that decides what it runs (`package.json`, a `Makefile`, a config
   the tools load, a file it names; any file, for a command with quotes,
   variables or other shell syntax), and none runs in Plan mode or Restricted

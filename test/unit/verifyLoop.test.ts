@@ -682,22 +682,29 @@ describe('an automatic check takes the shell tool’s permission path, per mode'
     expect(outputs(t.api.responseBodies()[1])[1]).toContain(MODEL_TEXT.checkSkipRestricted)
   })
 
-  it('"Always allow in this session" works as it does for that command', async () => {
+  it('"Always allow in this session" holds for the check, and only for the check', async () => {
     const t = setup({ checks: [LINT], shell: lintShell() })
     const { cards, turn } = await start(t, 'onRequest', () => 'allow_session')
     t.api.script(
       { calls: [editCall('1', '2')] },
       { calls: [editCall('2', '3')] },
-      // The model's own shell call of the same command is allowed by the same rule.
+      // The model's own shell call of the same command is not allowed by the
+      // check's rule (PR #54, fourth Codex round): it asks. The check's rule
+      // still answers for the check afterwards.
       { calls: [{ name: 'bash', arguments: '{"command":"npm run lint","description":"lint"}' }] },
+      { calls: [editCall('3', '4')] },
       { text: 'ok' },
     )
     await turn()
-    expect(cards).toHaveLength(1)
+    expect(cards.map((card) => [card.toolName, card.subject])).toEqual([
+      ['bash', { kind: 'shell', command: "npm run lint -- 'src/a.ts'" }],
+      ['bash', { kind: 'shell', command: 'npm run lint' }],
+    ])
     expect(t.io.shellCalls.map((call) => call.command)).toEqual([
       "npm run lint -- 'src/a.ts'",
       "npm run lint -- 'src/a.ts'",
       'npm run lint',
+      "npm run lint -- 'src/a.ts'",
     ])
   })
 
