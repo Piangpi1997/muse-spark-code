@@ -900,6 +900,10 @@ export const EN = {
     snooze_reminder: 'Snooze reminder',
     submit_reminder_decision: 'Reminder',
     submit_result: 'Result',
+    // M68 (PLAN.md D49): the verify loop on the Model API backend: the
+    // model's own call, and the automatic check after a round of edits.
+    run_checks: 'Run checks',
+    verify_edits: 'Check edits',
   },
   // A tool from an MCP server the table does not name (`mcp__<server>__<tool>`).
   mcpToolLabel: '{tool} ({server})',
@@ -1323,6 +1327,39 @@ export const EN = {
   // Muse Code refused a permission mode above the ceiling its configuration sets.
   approvalModeCeiling:
     'Muse Code’s configuration (its default permission profile, or a policy your administrator manages) does not allow this permission mode. Choose a stricter one, such as Manual, and send again.',
+  // M68 (PLAN.md D49): the verify loop's rows. {count}: the edited files'
+  // errors or warnings.
+  verifyErrors: forms({ one: '{count} error', other: '{count} errors' }),
+  verifyWarnings: forms({ one: '{count} warning', other: '{count} warnings' }),
+  verifyClean: 'No errors or warnings',
+  // {name}: a check's name from museSpark.checkCommands, as the user wrote it.
+  checkOutcomes: {
+    passed: '{name} passed',
+    failed: '{name} failed',
+    timedOut: '{name} timed out',
+    cancelled: '{name} stopped',
+    notRun: '{name} not run',
+  },
+  // Why a check or a then_run command did not run.
+  checkSkips: {
+    rejected: 'rejected',
+    refused: 'the permission mode refuses shell commands',
+    restricted: 'shell commands are off in Restricted Mode',
+    unsafePath: 'a file name cannot be passed to it safely',
+    changed: 'the file changed after the edit',
+  },
+  // An edit's then_run: the command it ran right after the edit.
+  thenRunLabel: 'Then ran',
+  // {reason}: one of checkSkips.
+  thenRunNotRun: 'Not run: {reason}',
+  thenRunTimedOut: 'Stopped at its time limit',
+  // The fix loop reached its limit. {count}: the failing rounds in a row.
+  checksStoppedNotice: forms({
+    one: 'The checks still failed after {count} round of fixes, so they will not run again automatically in this turn.',
+    other:
+      'The checks still failed after {count} rounds of fixes in a row, so they will not run again automatically in this turn.',
+  }),
+  exportThenRunLabel: 'Then ran:',
 }
 
 /** The shape every table has: English's keys, with any language's plural forms. */

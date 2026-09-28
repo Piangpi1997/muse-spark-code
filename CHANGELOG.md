@@ -7,8 +7,42 @@ happened, not what was planned; superseded entries are kept.
 
 ## [Unreleased]
 
+### Added
+
+- **The agent checks its own edits** (M68, PLAN.md D49). On the Model API
+  backend, after each round of tool calls that edited files, the next
+  request carries the edited files' errors and warnings from VS Code's
+  language servers, with what changed since each file's previous check
+  (`museSpark.diagnosticsAfterEdits`, on by default), and the results of
+  your **check commands** (`museSpark.checkCommands`: lint, test or
+  type-check commands, none by default). A **Check edits** row shows the
+  files, their problems and how each check ended.
+- **Check commands take the shell tool's permission path.** Each asks
+  wherever a shell command would ask (every mode but Bypass permissions),
+  "Always allow in this session" allows that command, and none runs in Plan
+  mode or Restricted Mode. `changedFiles` passes the edited files after
+  `--`, each quoted as one argument, and refuses a file name that starts
+  with `-`; `timeoutSeconds` caps each run. After three failing rounds in a
+  row the checks stop for the turn, and the model and the panel say so.
+- **`run_checks`**, the model's own call of the checks, and **`then_run`**
+  on `write_file` and `edit_file`: one command run right after the edit,
+  asked for like any shell command, run only if the file still holds what
+  the edit wrote, and shown under the diff as the call's second result
+  (SoL-Pi's Action Fusion, reimplemented from its description).
+- **Format on edit** (`museSpark.formatOnEdit`, off by default): the file's
+  formatter runs on each file the Model API backend's edit tools write,
+  before anything checks it.
+- **Muse Code** is told with each message to check the files it edits with
+  `mcp__ide__getDiagnostics` and to run your check commands.
+
 ### Changed
 
+- **The diagnostics tool reads a file no editor shows.** VS Code's language
+  servers report only on files an editor shows (TypeScript and JSON,
+  measured in VS Code 1.139.1 and 1.125.0), so when the agent asks
+  `getDiagnostics` about one such file, on either backend, the extension
+  opens it beside your editor, as a preview and without taking focus, and
+  waits up to 8 seconds for its report.
 - **Every paid use asks first, in a popup** (M58, PLAN.md D48): **Allow
   once**, **Allow always in this workspace**, or **Deny**, in every
   permission mode, Bypass included. It covers each image (on either

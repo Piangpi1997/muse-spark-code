@@ -38,6 +38,7 @@ import {
   WebBody,
   WorkflowBody,
 } from './ToolBodies'
+import { ThenRunBlock, VerifyBody, verifySummaryText } from './VerifyParts'
 
 type ToolEntry = Extract<TranscriptEntry, { kind: 'tool' }>
 
@@ -321,6 +322,7 @@ function ToolRowView({
     presentation.body === 'shell' || presentation.body === 'edit' || imagePaths.length > 0,
   )
   const change = changeSummary(entry.patchSummary)
+  const verified = verifySummaryText(entry.verifySummary)
   const isFailed = isFailedStatus(entry.status) || entry.status === TOOL_STATUS_INTERRUPTED
   // A finished edit with a stored patch can be reviewed in the editor.
   const reviewRef =
@@ -363,7 +365,12 @@ function ToolRowView({
       break
     }
     case 'edit': {
-      body = <EditBody entry={entry} files={files} onExpand={openReview} />
+      body = (
+        <>
+          <EditBody entry={entry} files={files} onExpand={openReview} />
+          {entry.thenRun === undefined ? null : <ThenRunBlock result={entry.thenRun} />}
+        </>
+      )
       break
     }
     case 'read': {
@@ -399,6 +406,10 @@ function ToolRowView({
     }
     case 'workflow': {
       body = <WorkflowBody entry={entry} />
+      break
+    }
+    case 'verify': {
+      body = <VerifyBody output={entry.output} onOpen={openOutput} />
       break
     }
     case 'generic': {
@@ -488,6 +499,7 @@ function ToolRowView({
         ) : null}
       </div>
       {change === undefined ? null : <div className="tool-change">{change}</div>}
+      {verified === undefined ? null : <div className="tool-change">{verified}</div>}
       {isFailed ? (
         <div className="tool-failure">
           {outcomeText(entry.status)}

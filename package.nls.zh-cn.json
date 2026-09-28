@@ -91,5 +91,12 @@
   "config.sandboxNetwork.enumDescriptions.enabled": "命令可以完全访问网络。",
   "config.modelApiPromptCacheRetention.description": "请求 Meta 保留你的 Model API 请求中已缓存的开头部分（指令、工具和目前为止的对话）多长时间；这部分按较低的缓存输入费率计费。这只是提示：Meta 可能会更早将其移除。",
   "config.modelApiPromptCacheRetention.enumDescriptions.24h": "最多 24 小时，因此暂停后回到的对话仍可从缓存读取。价格与保留在内存中相同。",
-  "config.modelApiPromptCacheRetention.enumDescriptions.inMemory": "Meta 的默认值：保留在内存中，在负载较高或一段时间不活动后会更早移除。"
+  "config.modelApiPromptCacheRetention.enumDescriptions.inMemory": "Meta 的默认值：保留在内存中，在负载较高或一段时间不活动后会更早移除。",
+  "config.diagnosticsAfterEdits.description": "每轮编辑后，把 VS Code 语言服务器报告的已编辑文件的错误和警告，连同自上次检查以来的变化，交给模型 (Model API 后端)，或提示 Muse Code 自行检查。默认开启。",
+  "config.checkCommands.description": "Model API 后端在每轮编辑后、模型下一次请求之前运行的 lint、测试或类型检查命令；模型也可以用 run_checks 运行它们，并提示 Muse Code 自行运行。每条命令都像 shell 工具运行命令那样运行：在 shell 命令会询问的地方都会询问 (除“绕过权限”外的所有权限模式)，在规划模式和受限模式下从不运行，并在时间限制处停止。连续三轮失败后，本轮剩余时间内不再运行。",
+  "config.checkCommands.name.description": "检查的简短名称，例如 lint 或 test。",
+  "config.checkCommands.command.description": "由 shell 工具的 shell (Windows 上为 PowerShell，其他系统为 bash) 在工作区根目录运行的命令行。",
+  "config.checkCommands.changedFiles.description": "在 -- 之后添加已编辑的文件，每个文件作为一个带引号的参数。若有文件名以 - 开头，则不运行该检查。",
+  "config.checkCommands.timeoutSeconds.description": "命令被停止前的秒数 (未设置时为 300)。",
+  "config.formatOnEdit.description": "对 Model API 后端编辑工具写入的每个文件，在检查前运行该文件的格式化程序。默认关闭。"
 }

@@ -194,4 +194,28 @@ describe('diagnosticsTool (POSIX root and no root)', () => {
       'src/a.ts cannot be read as a file URI or path: src/a.ts is relative and no folder is open',
     )
   })
+
+  // M68: the servers report only on a file an editor shows, so a request for
+  // one file shows it and waits before reading; the whole workspace does not.
+  it('settles a named file before reading its diagnostics, and only a named one', async () => {
+    const settled: string[] = []
+    let current: readonly DiagnosticEntry[] = []
+    const tool = diagnosticsTool({
+      getDiagnostics: () => current,
+      workspaceRoot: '/home/me/ws',
+      platform: 'linux',
+      relativeInRoot: relativeIn('/home/me/ws', 'linux'),
+      settleFile: (absolutePath, relative) => {
+        settled.push(`${absolutePath} ${relative}`)
+        current = [at('src/a.ts', 'reported once shown')]
+        return Promise.resolve()
+      },
+    })
+    expect(await tool.call({})).toBe('No diagnostics.')
+    expect(settled).toEqual([])
+    expect(await tool.call({ uri: 'src/a.ts' })).toBe('src/a.ts:1:1: error: reported once shown')
+    expect(settled).toEqual([`${path.posix.join('/home/me/ws', 'src/a.ts')} src/a.ts`])
+    await expect(tool.call({ uri: '../outside.ts' })).rejects.toThrow('does not name a file')
+    expect(settled).toHaveLength(1)
+  })
 })

@@ -794,7 +794,9 @@
     "TodoWrite": "Tareas",
     "snooze_reminder": "Posponer recordatorio",
     "submit_reminder_decision": "Recordatorio",
-    "submit_result": "Resultado"
+    "submit_result": "Resultado",
+    "run_checks": "Ejecutar comprobaciones",
+    "verify_edits": "Comprobar ediciones"
   },
   "mcpToolLabel": "{tool} ({server})",
   "memoryScopes": {
@@ -1159,5 +1161,39 @@
   "networkProxyCredentials": "El proxy pidió credenciales y no aceptó las que recibió. Compruebe http.proxy y http.proxyAuthorization, o las credenciales que le pidió VS Code.",
   "networkProxyRefused": "El proxy rechazó la conexión (HTTP {status}). Compruebe que permite api.meta.ai.",
   "networkUnreachable": "No se pudo acceder al servidor de Meta. Compruebe la conexión de red, y http.proxy y http.proxySupport si usa un proxy.",
-  "approvalModeCeiling": "La configuración de Muse Code (su perfil de permisos predeterminado o una directiva que administra su administrador) no permite este modo de permisos. Elija uno más estricto, como Manual, y vuelva a enviar."
+  "approvalModeCeiling": "La configuración de Muse Code (su perfil de permisos predeterminado o una directiva que administra su administrador) no permite este modo de permisos. Elija uno más estricto, como Manual, y vuelva a enviar.",
+  "verifyErrors": {
+    "one": "{count} error",
+    "many": "{count} de errores",
+    "other": "{count} errores"
+  },
+  "verifyWarnings": {
+    "one": "{count} advertencia",
+    "many": "{count} de advertencias",
+    "other": "{count} advertencias"
+  },
+  "verifyClean": "Sin errores ni advertencias",
+  "checkOutcomes": {
+    "passed": "{name}: superada",
+    "failed": "{name}: fallida",
+    "timedOut": "{name}: tiempo agotado",
+    "cancelled": "{name}: detenida",
+    "notRun": "{name}: no ejecutada"
+  },
+  "checkSkips": {
+    "rejected": "rechazado",
+    "refused": "el modo de permisos no admite comandos de shell",
+    "restricted": "los comandos de shell están desactivados en modo restringido",
+    "unsafePath": "no se le puede pasar un nombre de archivo con seguridad",
+    "changed": "el archivo cambió después de la edición"
+  },
+  "thenRunLabel": "Después se ejecutó",
+  "thenRunNotRun": "No se ejecutó: {reason}",
+  "thenRunTimedOut": "Detenido al llegar a su límite de tiempo",
+  "checksStoppedNotice": {
+    "one": "Las comprobaciones seguían fallando tras {count} ronda de correcciones, así que no volverán a ejecutarse automáticamente en este turno.",
+    "many": "Las comprobaciones seguían fallando tras {count} de rondas de correcciones seguidas, así que no volverán a ejecutarse automáticamente en este turno.",
+    "other": "Las comprobaciones seguían fallando tras {count} rondas de correcciones seguidas, así que no volverán a ejecutarse automáticamente en este turno."
+  },
+  "exportThenRunLabel": "Después se ejecutó:"
 }

@@ -19,6 +19,14 @@ import { resolveAgainstRoot } from './workspaceRoot'
 
 export type DiagnosticSeverity = 'error' | 'warning' | 'information' | 'hint'
 
+/** VS Code's `DiagnosticSeverity` values, in order: `Error` is 0, `Hint` is 3. */
+export const DIAGNOSTIC_SEVERITIES: readonly DiagnosticSeverity[] = [
+  'error',
+  'warning',
+  'information',
+  'hint',
+]
+
 export interface DiagnosticEntry {
   /**
    * Relative to the root with forward slashes (`rootRelativePath`);
@@ -71,7 +79,8 @@ function clipMessage(message: string): string {
 }
 
 type PathRequest =
-  { readonly ok: true; readonly path: string } | { readonly ok: false; readonly reason: string }
+  | { readonly ok: true; readonly path: string; readonly fsPath: string }
+  | { readonly ok: false; readonly reason: string }
 
 /**
  * The workspace-relative path a request names: a `file:` URI (as VS Code
@@ -94,7 +103,7 @@ function requestedPath(given: string, deps: DiagnosticsToolDeps): PathRequest {
   const relative = deps.relativeInRoot(fsPath)
   return relative === undefined
     ? { ok: false, reason: `${given} does not name a file in the workspace` }
-    : { ok: true, path: relative }
+    : { ok: true, path: relative, fsPath }
 }
 
 function formatEntry(entry: WorkspaceDiagnostic): string {
@@ -102,8 +111,14 @@ function formatEntry(entry: WorkspaceDiagnostic): string {
   return `${entry.path}:${String(entry.line)}:${String(entry.column)}: ${entry.severity}: ${clipMessage(entry.message)}${source}`
 }
 
-/** The tool's text for `entries`, worst first, capped with a count. */
-export function formatDiagnostics(entries: readonly WorkspaceDiagnostic[]): string {
+/**
+ * The tool's text for `entries`, worst first, capped at `max` with a count
+ * (the verify loop sends fewer than the tool, M68).
+ */
+export function formatDiagnostics(
+  entries: readonly WorkspaceDiagnostic[],
+  max: number = DIAGNOSTICS_MAX_ENTRIES,
+): string {
   if (entries.length === 0) {
     return NO_DIAGNOSTICS
   }
@@ -113,9 +128,9 @@ export function formatDiagnostics(entries: readonly WorkspaceDiagnostic[]): stri
       a.path.localeCompare(b.path) ||
       a.line - b.line,
   )
-  const shown = sorted.slice(0, DIAGNOSTICS_MAX_ENTRIES).map((entry) => formatEntry(entry))
-  if (sorted.length > DIAGNOSTICS_MAX_ENTRIES) {
-    shown.push(`… ${String(sorted.length - DIAGNOSTICS_MAX_ENTRIES)} more not shown`)
+  const shown = sorted.slice(0, max).map((entry) => formatEntry(entry))
+  if (sorted.length > max) {
+    shown.push(`… ${String(sorted.length - max)} more not shown`)
   }
   return shown.join('\n')
 }
@@ -127,6 +142,12 @@ export interface DiagnosticsToolDeps {
   readonly platform: NodeJS.Platform
   /** An absolute path relative to the root, undefined outside it (`rootRelativePath`). */
   readonly relativeInRoot: (absolutePath: string) => string | undefined
+  /**
+   * Shows a file the request names and waits for its language server (M68):
+   * the servers report only on files an editor shows. Absent, the tool reads
+   * what VS Code holds now.
+   */
+  readonly settleFile?: (absolutePath: string, relative: string) => Promise<void>
 }
 
 /** Paths compare as the platform's file system does: case-insensitively on Windows. */
@@ -138,7 +159,7 @@ export function diagnosticsTool(deps: DiagnosticsToolDeps): McpTool {
   return {
     name: IDE_MCP_TOOL_DIAGNOSTICS,
     description:
-      "Language-server diagnostics: the errors and warnings in VS Code's Problems panel for the files in the workspace, worst first. Optionally scoped to one file.",
+      "Language-server diagnostics: the errors and warnings in VS Code's Problems panel for the files in the workspace, worst first. Optionally scoped to one file, which is then shown in an editor so its language server reports on it.",
     inputSchema: {
       type: 'object',
       properties: {
@@ -150,20 +171,21 @@ export function diagnosticsTool(deps: DiagnosticsToolDeps): McpTool {
     },
     // A request that names no workspace file rejects, so the server answers
     // with an error result the model can read.
-    call: (args) => {
+    call: async (args) => {
       const uri = args[URI_ARGUMENT]
       const { platform } = deps
-      const entries = deps.getDiagnostics().filter((entry) => isInWorkspace(entry))
+      const inWorkspace = () => deps.getDiagnostics().filter((entry) => isInWorkspace(entry))
       if (typeof uri !== 'string' || uri === '') {
-        return Promise.resolve(formatDiagnostics(entries))
+        return formatDiagnostics(inWorkspace())
       }
       const request = requestedPath(uri, deps)
       if (!request.ok) {
-        return Promise.reject(new Error(request.reason))
+        throw new Error(request.reason)
       }
+      await deps.settleFile?.(request.fsPath, request.path)
       const wanted = pathKey(request.path, platform)
-      return Promise.resolve(
-        formatDiagnostics(entries.filter((entry) => pathKey(entry.path, platform) === wanted)),
+      return formatDiagnostics(
+        inWorkspace().filter((entry) => pathKey(entry.path, platform) === wanted),
       )
     },
   }

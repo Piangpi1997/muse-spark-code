@@ -714,6 +714,8 @@ function toolEntry(item: ItemSnapshot): TranscriptEntry {
     backgroundInitiator: item.backgroundInitiator,
     paid: item.paid,
     images: reportedImages(item),
+    verifySummary: item.verifySummary,
+    thenRun: item.thenRun,
     approval: undefined,
     approvalOutcome: undefined,
     question: undefined,
@@ -857,6 +859,8 @@ function mergeItem(entry: TranscriptEntry, item: ItemSnapshot, at: number): Tran
         backgroundInitiator: item.backgroundInitiator ?? entry.backgroundInitiator,
         paid: item.paid ?? entry.paid,
         images: reportedImages(item) ?? entry.images,
+        verifySummary: item.verifySummary ?? entry.verifySummary,
+        thenRun: item.thenRun ?? entry.thenRun,
         // The host has moved on: a button waiting for it is free again (M46).
         taskRequest: undefined,
       }

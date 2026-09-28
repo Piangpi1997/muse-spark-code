@@ -91,5 +91,12 @@
   "config.sandboxNetwork.enumDescriptions.enabled": "Komutlar için tam ağ erişimi.",
   "config.modelApiPromptCacheRetention.description": "Model API isteklerinizin önbelleğe alınmış başlangıcının (yönergeler, araçlar ve şimdiye kadarki konuşma) Meta tarafından ne kadar süre tutulmasının isteneceği; bu kısım daha düşük önbelleğe alınmış girdi ücretiyle faturalandırılır. Yalnızca bir ipucudur: Meta bunu daha erken çıkarabilir.",
   "config.modelApiPromptCacheRetention.enumDescriptions.24h": "24 saate kadar; böylece bir aradan sonra döndüğünüz konuşma önbellekten okumaya devam eder. Bellekte tutmayla aynı fiyattır.",
-  "config.modelApiPromptCacheRetention.enumDescriptions.inMemory": "Meta'nın varsayılanı: bellekte tutulur ve yük altında veya bir süre işlem yapılmadığında daha erken çıkarılır."
+  "config.modelApiPromptCacheRetention.enumDescriptions.inMemory": "Meta'nın varsayılanı: bellekte tutulur ve yük altında veya bir süre işlem yapılmadığında daha erken çıkarılır.",
+  "config.diagnosticsAfterEdits.description": "Her düzenleme turundan sonra, düzenlenen dosyaların VS Code dil sunucularından gelen hata ve uyarılarını önceki denetimlerinden bu yana değişenlerle birlikte modele verir (Model API arka ucu) ya da Muse Code’a bunları kendisinin denetlemesini söyler. Varsayılan olarak açıktır.",
+  "config.checkCommands.description": "Model API arka ucunun her düzenleme turundan sonra, modelin bir sonraki isteğinden önce çalıştırdığı lint, test veya tür denetimi komutları; model bunları run_checks ile de çalıştırabilir, Muse Code’a da bunları kendisinin çalıştırması söylenir. Her biri, kabuk aracının bir komutu çalıştırdığı gibi çalışır: bir kabuk komutunun soracağı her yerde sorar (İzinleri atla dışındaki tüm izin modlarında), Planlama modunda veya Kısıtlı Mod’da asla çalışmaz ve süre sınırında durur. Art arda üç başarısız turdan sonra turun geri kalanında dururlar.",
+  "config.checkCommands.name.description": "Denetim için kısa bir ad, örneğin lint veya test.",
+  "config.checkCommands.command.description": "Kabuk aracının kabuğunun çalışma alanı kökünde çalıştırdığı komut satırı (Windows’ta PowerShell, diğerlerinde bash).",
+  "config.checkCommands.changedFiles.description": "Düzenlenen dosyaları -- sonrasına, her birini tırnak içinde tek bir bağımsız değişken olarak ekler. - ile başlayan bir dosya adı denetimin çalışmasını engeller.",
+  "config.checkCommands.timeoutSeconds.description": "Komut durdurulmadan önceki saniye sayısı (ayarlanmazsa 300).",
+  "config.formatOnEdit.description": "Model API arka ucunun düzenleme araçlarının yazdığı her dosyada, dosya denetlenmeden önce dosyanın biçimlendiricisini çalıştırır. Varsayılan olarak kapalıdır."
 }

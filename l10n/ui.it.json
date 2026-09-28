@@ -794,7 +794,9 @@
     "TodoWrite": "Attività",
     "snooze_reminder": "Posticipa promemoria",
     "submit_reminder_decision": "Promemoria",
-    "submit_result": "Risultato"
+    "submit_result": "Risultato",
+    "run_checks": "Esegui controlli",
+    "verify_edits": "Controlla modifiche"
   },
   "mcpToolLabel": "{tool} ({server})",
   "memoryScopes": {
@@ -1159,5 +1161,39 @@
   "networkProxyCredentials": "Il proxy ha chiesto delle credenziali e non ha accettato quelle ricevute. Controlla http.proxy e http.proxyAuthorization, oppure le credenziali che VS Code ti ha chiesto.",
   "networkProxyRefused": "Il proxy ha rifiutato la connessione (HTTP {status}). Verifica che consenta api.meta.ai.",
   "networkUnreachable": "Impossibile raggiungere il server di Meta. Controlla la connessione di rete e, se usi un proxy, http.proxy e http.proxySupport.",
-  "approvalModeCeiling": "La configurazione di Muse Code (il suo profilo di autorizzazioni predefinito o un criterio gestito dal tuo amministratore) non consente questa modalità di autorizzazione. Scegline una più restrittiva, ad esempio Manuale, e invia di nuovo."
+  "approvalModeCeiling": "La configurazione di Muse Code (il suo profilo di autorizzazioni predefinito o un criterio gestito dal tuo amministratore) non consente questa modalità di autorizzazione. Scegline una più restrittiva, ad esempio Manuale, e invia di nuovo.",
+  "verifyErrors": {
+    "one": "{count} errore",
+    "many": "{count} di errori",
+    "other": "{count} errori"
+  },
+  "verifyWarnings": {
+    "one": "{count} avviso",
+    "many": "{count} di avvisi",
+    "other": "{count} avvisi"
+  },
+  "verifyClean": "Nessun errore o avviso",
+  "checkOutcomes": {
+    "passed": "{name}: superato",
+    "failed": "{name}: non riuscito",
+    "timedOut": "{name}: tempo scaduto",
+    "cancelled": "{name}: arrestato",
+    "notRun": "{name}: non eseguito"
+  },
+  "checkSkips": {
+    "rejected": "rifiutato",
+    "refused": "la modalità di autorizzazione rifiuta i comandi shell",
+    "restricted": "i comandi shell sono disattivati in Modalità con restrizioni",
+    "unsafePath": "un nome file non può essergli passato in sicurezza",
+    "changed": "il file è cambiato dopo la modifica"
+  },
+  "thenRunLabel": "Poi eseguito",
+  "thenRunNotRun": "Non eseguito: {reason}",
+  "thenRunTimedOut": "Arrestato al limite di tempo",
+  "checksStoppedNotice": {
+    "one": "I controlli non riuscivano ancora dopo {count} ciclo di correzioni, quindi in questo turno non verranno più eseguiti automaticamente.",
+    "many": "I controlli non riuscivano ancora dopo {count} di cicli di correzioni consecutivi, quindi in questo turno non verranno più eseguiti automaticamente.",
+    "other": "I controlli non riuscivano ancora dopo {count} cicli di correzioni consecutivi, quindi in questo turno non verranno più eseguiti automaticamente."
+  },
+  "exportThenRunLabel": "Poi eseguito:"
 }

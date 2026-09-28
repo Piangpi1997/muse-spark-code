@@ -760,7 +760,9 @@
     "TodoWrite": "タスク",
     "snooze_reminder": "リマインダーをスヌーズ",
     "submit_reminder_decision": "リマインダー",
-    "submit_result": "結果"
+    "submit_result": "結果",
+    "run_checks": "チェックを実行",
+    "verify_edits": "編集をチェック"
   },
   "mcpToolLabel": "{tool} ({server})",
   "memoryScopes": {
@@ -1095,5 +1097,33 @@
   "networkProxyCredentials": "プロキシが資格情報を要求し、受け取った資格情報を受け入れませんでした。http.proxy と http.proxyAuthorization、または VS Code から求められた資格情報を確認してください。",
   "networkProxyRefused": "プロキシが接続を拒否しました (HTTP {status})。api.meta.ai が許可されていることを確認してください。",
   "networkUnreachable": "Meta のサーバーに接続できませんでした。ネットワーク接続と、プロキシを使用している場合は http.proxy と http.proxySupport を確認してください。",
-  "approvalModeCeiling": "Muse Code の構成 (既定の権限プロファイル、または管理者が管理するポリシー) では、この権限モードは許可されていません。手動モードなどのより厳しいモードを選択して、もう一度送信してください。"
+  "approvalModeCeiling": "Muse Code の構成 (既定の権限プロファイル、または管理者が管理するポリシー) では、この権限モードは許可されていません。手動モードなどのより厳しいモードを選択して、もう一度送信してください。",
+  "verifyErrors": {
+    "other": "エラー {count} 件"
+  },
+  "verifyWarnings": {
+    "other": "警告 {count} 件"
+  },
+  "verifyClean": "エラーや警告はありません",
+  "checkOutcomes": {
+    "passed": "{name}: 成功",
+    "failed": "{name}: 失敗",
+    "timedOut": "{name}: タイムアウト",
+    "cancelled": "{name}: 停止",
+    "notRun": "{name}: 未実行"
+  },
+  "checkSkips": {
+    "rejected": "拒否されました",
+    "refused": "権限モードがシェル コマンドを拒否します",
+    "restricted": "制限モードではシェル コマンドはオフです",
+    "unsafePath": "ファイル名を安全に渡せません",
+    "changed": "編集後にファイルが変更されました"
+  },
+  "thenRunLabel": "続けて実行",
+  "thenRunNotRun": "実行されませんでした: {reason}",
+  "thenRunTimedOut": "制限時間で停止しました",
+  "checksStoppedNotice": {
+    "other": "修正を {count} 回続けてもチェックが失敗したため、このターンではもう自動で実行しません。"
+  },
+  "exportThenRunLabel": "続けて実行:"
 }

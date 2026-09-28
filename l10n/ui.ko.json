@@ -760,7 +760,9 @@
     "TodoWrite": "할 일",
     "snooze_reminder": "알림 미루기",
     "submit_reminder_decision": "알림",
-    "submit_result": "결과"
+    "submit_result": "결과",
+    "run_checks": "검사 실행",
+    "verify_edits": "편집 검사"
   },
   "mcpToolLabel": "{tool} ({server})",
   "memoryScopes": {
@@ -1095,5 +1097,33 @@
   "networkProxyCredentials": "프록시가 자격 증명을 요청했지만 받은 자격 증명을 수락하지 않았습니다. http.proxy와 http.proxyAuthorization 또는 VS Code가 요청한 자격 증명을 확인하세요.",
   "networkProxyRefused": "프록시가 연결을 거부했습니다(HTTP {status}). api.meta.ai를 허용하는지 확인하세요.",
   "networkUnreachable": "Meta 서버에 연결할 수 없습니다. 네트워크 연결을 확인하고, 프록시를 사용하는 경우 http.proxy와 http.proxySupport도 확인하세요.",
-  "approvalModeCeiling": "Muse Code 구성(기본 권한 프로필 또는 관리자가 관리하는 정책)에서 이 권한 모드를 허용하지 않습니다. 수동과 같은 더 엄격한 모드를 선택하고 다시 보내세요."
+  "approvalModeCeiling": "Muse Code 구성(기본 권한 프로필 또는 관리자가 관리하는 정책)에서 이 권한 모드를 허용하지 않습니다. 수동과 같은 더 엄격한 모드를 선택하고 다시 보내세요.",
+  "verifyErrors": {
+    "other": "오류 {count}개"
+  },
+  "verifyWarnings": {
+    "other": "경고 {count}개"
+  },
+  "verifyClean": "오류나 경고 없음",
+  "checkOutcomes": {
+    "passed": "{name}: 통과",
+    "failed": "{name}: 실패",
+    "timedOut": "{name}: 시간 초과",
+    "cancelled": "{name}: 중지됨",
+    "notRun": "{name}: 실행 안 됨"
+  },
+  "checkSkips": {
+    "rejected": "거부됨",
+    "refused": "권한 모드에서 셸 명령을 거부함",
+    "restricted": "제한 모드에서는 셸 명령이 꺼져 있음",
+    "unsafePath": "파일 이름을 안전하게 전달할 수 없음",
+    "changed": "편집 후 파일이 변경됨"
+  },
+  "thenRunLabel": "이어서 실행함",
+  "thenRunNotRun": "실행 안 됨: {reason}",
+  "thenRunTimedOut": "시간 제한에서 중지됨",
+  "checksStoppedNotice": {
+    "other": "수정을 {count}번 연속으로 해도 검사가 실패해서 이번 턴에서는 더 이상 자동으로 실행하지 않습니다."
+  },
+  "exportThenRunLabel": "이어서 실행함:"
 }

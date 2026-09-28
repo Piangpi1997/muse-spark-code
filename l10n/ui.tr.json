@@ -777,7 +777,9 @@
     "TodoWrite": "Görevler",
     "snooze_reminder": "Hatırlatıcıyı ertele",
     "submit_reminder_decision": "Hatırlatıcı",
-    "submit_result": "Sonuç"
+    "submit_result": "Sonuç",
+    "run_checks": "Denetimleri çalıştır",
+    "verify_edits": "Düzenlemeleri denetle"
   },
   "mcpToolLabel": "{tool} ({server})",
   "memoryScopes": {
@@ -1127,5 +1129,36 @@
   "networkProxyCredentials": "Ara sunucu kimlik bilgileri istedi ve aldıklarını kabul etmedi. http.proxy ve http.proxyAuthorization ayarlarını veya VS Code'un sizden istediği kimlik bilgilerini denetleyin.",
   "networkProxyRefused": "Ara sunucu bağlantıyı reddetti (HTTP {status}). api.meta.ai adresine izin verdiğini denetleyin.",
   "networkUnreachable": "Meta'nın sunucusuna ulaşılamadı. Ağ bağlantısını ve ara sunucu kullanıyorsanız http.proxy ile http.proxySupport ayarlarını denetleyin.",
-  "approvalModeCeiling": "Muse Code'un yapılandırması (varsayılan izin profili veya yöneticinizin yönettiği bir ilke) bu izin moduna izin vermiyor. El ile gibi daha katı bir mod seçin ve yeniden gönderin."
+  "approvalModeCeiling": "Muse Code'un yapılandırması (varsayılan izin profili veya yöneticinizin yönettiği bir ilke) bu izin moduna izin vermiyor. El ile gibi daha katı bir mod seçin ve yeniden gönderin.",
+  "verifyErrors": {
+    "one": "{count} hata",
+    "other": "{count} hata"
+  },
+  "verifyWarnings": {
+    "one": "{count} uyarı",
+    "other": "{count} uyarı"
+  },
+  "verifyClean": "Hata veya uyarı yok",
+  "checkOutcomes": {
+    "passed": "{name}: başarılı",
+    "failed": "{name}: başarısız",
+    "timedOut": "{name}: zaman aşımı",
+    "cancelled": "{name}: durduruldu",
+    "notRun": "{name}: çalıştırılmadı"
+  },
+  "checkSkips": {
+    "rejected": "reddedildi",
+    "refused": "izin modu kabuk komutlarını reddediyor",
+    "restricted": "Kısıtlı Mod’da kabuk komutları kapalı",
+    "unsafePath": "bir dosya adı ona güvenle aktarılamıyor",
+    "changed": "dosya düzenlemeden sonra değişti"
+  },
+  "thenRunLabel": "Ardından çalıştırıldı",
+  "thenRunNotRun": "Çalıştırılmadı: {reason}",
+  "thenRunTimedOut": "Süre sınırında durduruldu",
+  "checksStoppedNotice": {
+    "one": "Denetimler {count} düzeltme turundan sonra da başarısız oldu; bu turda artık otomatik olarak çalışmayacaklar.",
+    "other": "Denetimler art arda {count} düzeltme turundan sonra da başarısız oldu; bu turda artık otomatik olarak çalışmayacaklar."
+  },
+  "exportThenRunLabel": "Ardından çalıştırıldı:"
 }

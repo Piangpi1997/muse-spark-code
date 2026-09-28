@@ -811,7 +811,9 @@
     "TodoWrite": "Zadania",
     "snooze_reminder": "Odłóż przypomnienie",
     "submit_reminder_decision": "Przypomnienie",
-    "submit_result": "Wynik"
+    "submit_result": "Wynik",
+    "run_checks": "Uruchom sprawdzenia",
+    "verify_edits": "Sprawdź edycje"
   },
   "mcpToolLabel": "{tool} ({server})",
   "memoryScopes": {
@@ -1191,5 +1193,42 @@
   "networkProxyCredentials": "Serwer proxy zażądał poświadczeń i nie przyjął tych, które otrzymał. Sprawdź http.proxy i http.proxyAuthorization albo poświadczenia, o które poprosił VS Code.",
   "networkProxyRefused": "Serwer proxy odrzucił połączenie (HTTP {status}). Sprawdź, czy zezwala na api.meta.ai.",
   "networkUnreachable": "Nie można połączyć się z serwerem Meta. Sprawdź połączenie sieciowe oraz http.proxy i http.proxySupport, jeśli korzystasz z serwera proxy.",
-  "approvalModeCeiling": "Konfiguracja Muse Code (jej domyślny profil uprawnień lub zasada zarządzana przez Twojego administratora) nie zezwala na ten tryb uprawnień. Wybierz bardziej restrykcyjny, na przykład „Ręczny”, i wyślij ponownie."
+  "approvalModeCeiling": "Konfiguracja Muse Code (jej domyślny profil uprawnień lub zasada zarządzana przez Twojego administratora) nie zezwala na ten tryb uprawnień. Wybierz bardziej restrykcyjny, na przykład „Ręczny”, i wyślij ponownie.",
+  "verifyErrors": {
+    "one": "{count} błąd",
+    "few": "{count} błędy",
+    "many": "{count} błędów",
+    "other": "{count} błędu"
+  },
+  "verifyWarnings": {
+    "one": "{count} ostrzeżenie",
+    "few": "{count} ostrzeżenia",
+    "many": "{count} ostrzeżeń",
+    "other": "{count} ostrzeżenia"
+  },
+  "verifyClean": "Brak błędów i ostrzeżeń",
+  "checkOutcomes": {
+    "passed": "{name}: zaliczone",
+    "failed": "{name}: niezaliczone",
+    "timedOut": "{name}: przekroczono limit czasu",
+    "cancelled": "{name}: zatrzymane",
+    "notRun": "{name}: nieuruchomione"
+  },
+  "checkSkips": {
+    "rejected": "odrzucono",
+    "refused": "tryb uprawnień nie pozwala na polecenia powłoki",
+    "restricted": "polecenia powłoki są wyłączone w trybie ograniczonym",
+    "unsafePath": "nazwy pliku nie da się mu bezpiecznie przekazać",
+    "changed": "plik zmienił się po edycji"
+  },
+  "thenRunLabel": "Następnie uruchomiono",
+  "thenRunNotRun": "Nie uruchomiono: {reason}",
+  "thenRunTimedOut": "Zatrzymano po upływie limitu czasu",
+  "checksStoppedNotice": {
+    "one": "Sprawdzenia nadal kończyły się błędem po {count} rundzie poprawek, więc w tej turze nie uruchomią się już automatycznie.",
+    "few": "Sprawdzenia nadal kończyły się błędem po {count} kolejnych rundach poprawek, więc w tej turze nie uruchomią się już automatycznie.",
+    "many": "Sprawdzenia nadal kończyły się błędem po {count} kolejnych rundach poprawek, więc w tej turze nie uruchomią się już automatycznie.",
+    "other": "Sprawdzenia nadal kończyły się błędem po {count} rundy poprawek z rzędu, więc w tej turze nie uruchomią się już automatycznie."
+  },
+  "exportThenRunLabel": "Następnie uruchomiono:"
 }

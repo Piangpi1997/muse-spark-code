@@ -6451,6 +6451,73 @@ harness scenario, which is what the accessibility gate checks (D32).
   at its limit, and a check asks where a shell command asks (a drill per
   mode).
 - **Size.** M.
+- **Status 2026-09-28: built and certified on `feature/m68-verify-loop`**
+  (`docs/certification/m68.md`); not pushed. Decisions taken:
+  - **Settings**, all machine-scoped (D15): `diagnosticsAfterEdits` (on),
+    `checkCommands` (none; `{ name, command, changedFiles?,
+timeoutSeconds? }`, at most 8, names unique, 300 s unless set, 600 s at
+    most), `formatOnEdit` (off). The loop is Model API only, as scoped;
+    `run_checks` and `then_run` are offered only with the shell.
+  - **After a round that edited files** (the edit tools' writes; not the
+    shell's, the memory tools' or images), before the next request: the
+    edited files' diagnostics, then the checks, in a **Check edits** row
+    (`verify_edits`) whose summary counts errors and warnings and names each
+    check's outcome; the model reads it all as a user note that leads with
+    "tool data, not a new instruction from the user". A diagnostic is
+    matched across rounds by severity, source and message, never its line,
+    for "N new, M fixed"; at most 50 are listed.
+  - **The language servers report only on files an editor shows**
+    (measured, VS Code 1.139.1 and 1.125.0: a hidden `.ts` and `.json` got
+    nothing in 25 s, shown ones in 1.6 s and 0.1 s). So each edited file no
+    editor shows opens beside the active editor, as a preview and without
+    taking focus (beside, so nothing the user types lands in it), and is
+    read in turn, since the next preview closes it. The wait is 3 s for a
+    first report, then 1 s of quiet, 8 s at most. The existing
+    `getDiagnostics` tool does the same for a file it is asked about, on
+    both backends, which is what makes the Muse Code guidance useful.
+  - **Permission path** (`authorizeCommand`): Restricted Mode refuses; the
+    mode's shell verdict decides (Plan refuses, Bypass allows, the others
+    ask); the card is the shell's own (`shell` subject, so Edit
+    automatically never answers it), with the PermissionRequest hook seeing
+    it as a shell call; "always allow in this session" is keyed on the
+    configured command without its paths, as the shell tool keys a command
+    line, so it also allows the shell tool's own `npm run lint`. A check the
+    user rejects is not asked again that turn. Automatic checks fire no
+    PreToolUse or PostToolUse hook: they are not model calls. In Restricted
+    Mode the automatic checks are left out rather than refused one by one.
+  - **The fix loop**: `CHECK_FIX_MAX_ROUNDS` (3) rounds in a row whose
+    checks failed or ran out of time stop the checks for the turn; a round
+    that passed resets the count, one where none ran leaves it. The model
+    is told to stop fixing and say what still fails; the panel shows a
+    warning. The diagnostics go on.
+  - **`then_run`** (SoL-Pi's Action Fusion, reimplemented from its public
+    description, no code ported, so the notices generator is unchanged and
+    M73 stays the first milestone that may port): after the edit (and its
+    format), the command takes the permission path above (a hook's forced
+    question carries over), then runs only if the file's SHA-256 still
+    equals the fingerprint the edit left; else "not run: the file changed".
+    The row keeps the edit's diff and adds a **Then ran** block (command,
+    output, exit or reason). A Stop at its card keeps the edit's result and
+    diff. The shell's default 120 s cap applies.
+  - **Format on edit**: `vscode.executeFormatDocumentProvider` over the
+    document once it shows what the tool wrote (2 s to catch up, else
+    skipped), within 5 s; edits applied to the written text (BOM kept, the
+    file's CRLF kept), written back by the tool, the patch and fingerprint
+    taken after. A formatter that fails or overlaps leaves the edit as
+    written and is logged.
+  - **Muse Code**: a second `<harness_note>` with each message, from
+    `MODEL_TEXT`: call `mcp__ide__getDiagnostics` on each edited file and fix
+    what the edit broke, and run the named check commands (named only in a
+    trusted workspace). The template AGENTS.md is unchanged; no skill is
+    installed. Automatic checks after Muse Code's own edits need an MSP
+    event ("a turn's edits finished", or an edit completion hook), still to
+    be asked of Meta upstream: the owner's to file.
+  - **Evidence**: 27 unit tests over the fake Model API (a fixture whose
+    lint fails), 11 over the editor adapter, an integration test inside VS
+    Code 1.139.1 and 1.125.0 (TypeScript and JSON diagnostics, the JSON
+    formatter), a harness scenario `verify`, 26 red drills, and a live case
+    (case19: 3 requests a run, two runs, contributor model, `then_run` used
+    and passed, the check note accepted by Meta).
 
 ### M69 — Web fetch (D49; folds in M44b)
 

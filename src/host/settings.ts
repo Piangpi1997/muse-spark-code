@@ -4,9 +4,11 @@
 // documented default so one bad key cannot take the whole panel down.
 
 import * as z from 'zod/mini'
+import { checkCommandsSchema } from '../core/verify/checkCommands'
 import {
   BACKEND_MODES,
   type BackendMode,
+  type CheckCommandSetting,
   type EnvironmentVariable,
   PROMPT_CACHE_RETENTIONS,
   type PromptCacheRetention,
@@ -44,6 +46,10 @@ export interface ExtensionSettings extends SettingsSnapshot {
   readonly modelApiSubagents: boolean
   /** Explicit machine opt-in for external hook commands (M51). */
   readonly modelApiHooks: boolean
+  /** The verify loop (M68, PLAN.md D49): diagnostics after edits, check commands, format on edit. */
+  readonly diagnosticsAfterEdits: boolean
+  readonly checkCommands: readonly CheckCommandSetting[]
+  readonly formatOnEdit: boolean
 }
 
 /**
@@ -75,6 +81,9 @@ const settingSchemas = {
   modelApiScheduledPrompts: z.boolean(),
   modelApiSubagents: z.boolean(),
   modelApiHooks: z.boolean(),
+  diagnosticsAfterEdits: z.boolean(),
+  checkCommands: checkCommandsSchema,
+  formatOnEdit: z.boolean(),
 } as const
 
 type SettingKey = keyof typeof settingSchemas
@@ -142,6 +151,9 @@ export function readSettings(config: SettingsSource, log: Logger): ExtensionSett
     modelApiScheduledPrompts: readSetting(config, 'modelApiScheduledPrompts', log),
     modelApiSubagents: readSetting(config, 'modelApiSubagents', log),
     modelApiHooks: readSetting(config, 'modelApiHooks', log),
+    diagnosticsAfterEdits: readSetting(config, 'diagnosticsAfterEdits', log),
+    checkCommands: readSetting(config, 'checkCommands', log),
+    formatOnEdit: readSetting(config, 'formatOnEdit', log),
   }
 }
 

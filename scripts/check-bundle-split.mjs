@@ -53,6 +53,9 @@ const LAZY_ONLY = [
   'subagentTools.ts',
   'toolHookPayload.ts',
   'tools.ts',
+  // The verify loop's session side and its tool surface (M68).
+  'verifyLoop.ts',
+  'verifyTools.ts',
   'mcp/connection.ts',
   'mcp/functions.ts',
   'mcp/http.ts',

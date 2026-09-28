@@ -18,6 +18,7 @@ import type { ModelApiHost, ModelApiPaidHooks } from '../../core/backends/modela
 import type { SessionStore } from '../../core/backends/modelapi/sessionStore'
 import type { ScheduleStore } from '../../shared/schedule'
 import type { ToolIo } from '../../core/backends/modelapi/tools'
+import type { VerifyHooks } from '../../core/backends/modelapi/verifyLoop'
 import type { ContextIo } from '../../core/context/contextFiles'
 import type { McpTool } from '../../core/mcp'
 import type { MemoryStore } from '../../core/memory/memoryStore'
@@ -61,6 +62,8 @@ export interface ModelApiBackendManagerDeps extends ModelApiPaidHooks {
   readonly ideTools?: readonly McpTool[] | undefined
   /** Muse Code's memory, shared with the Memory view (M49, PLAN.md D41). */
   readonly memory: MemoryStore | undefined
+  /** The verify loop's settings and the editor's diagnostics and formatter (M68, PLAN.md D49). */
+  readonly verify?: VerifyHooks | undefined
   /** The Model API bundle, dist/modelApi.js beside the running bundle (M57, PLAN.md D6). */
   readonly bundlePath: string
   /** How the bundle is loaded: Node's `require` unless a test hands in the source module. */
@@ -186,6 +189,7 @@ export class ModelApiBackendManager {
         noteSubagentUsage: this.deps.noteSubagentUsage,
         isHooksEnabled: this.deps.isHooksEnabled,
         memory: this.deps.memory,
+        verify: this.deps.verify,
       },
       hookSettingsPath: this.deps.hookSettingsPath,
       createMcpServers:

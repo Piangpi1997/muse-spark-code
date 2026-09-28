@@ -13,7 +13,9 @@ import {
   type PatchSummary,
   type Question,
   questionSchema,
+  type ThenRunResult,
   todoItemSchema,
+  type VerifySummary,
 } from '../../../shared/agentEvents'
 import {
   IMAGE_EXTENSIONS,
@@ -39,7 +41,9 @@ import {
   TOOL_OUTPUT_CLIP_MARKER,
   TOOL_OUTPUT_ELIDED_MARKER,
   TOOL_OUTPUT_MAX_CHARS,
+  type CheckCommandSetting,
   UI_TEXT,
+  VERIFY_TOOLS,
 } from '../../../shared/constants'
 import {
   ADD_MARKER,
@@ -66,6 +70,7 @@ import { MEMORY_TOOL_DEFINITIONS } from './memoryTools'
 import type { ToolClass } from './permissions'
 import type { FunctionOutputPart, FunctionToolDefinition } from './schemas'
 import { SUBAGENT_TOOL_DEFINITIONS } from './subagentTools'
+import { runChecksDefinition, THEN_RUN_PROPERTY } from './verifyTools'
 
 export interface ShellResult {
   readonly stdout: string
@@ -225,6 +230,11 @@ export interface ToolContext {
    * model has seen (D27).
    */
   readonly seen: Map<string, string>
+  /**
+   * Format on edit (M68): the text the file's formatter makes of what an
+   * edit just wrote, or undefined for none. Present only while it is on.
+   */
+  readonly format?: (absolutePath: string, text: string) => Promise<string | undefined>
 }
 
 const FINGERPRINT_HASH = 'sha256'
@@ -248,6 +258,10 @@ export interface ToolOutcome {
   readonly patch?: { readonly document: string; readonly summary: PatchSummary }
   /** `read_file` of a PDF or an image: the file itself, sent after the round's outputs. */
   readonly visibleFile?: VisibleFile
+  /** `run_checks` (M68): what the row sums up. */
+  readonly verifySummary?: VerifySummary
+  /** An edit's `then_run` (M68): the command's result beside the edit's. */
+  readonly thenRun?: ThenRunResult
 }
 
 const TOOL_CLASSES: Readonly<Record<string, ToolClass>> = {
@@ -278,6 +292,9 @@ const TOOL_CLASSES: Readonly<Record<string, ToolClass>> = {
   [MODEL_API_TOOLS.getGoal]: 'interactive',
   [MODEL_API_TOOLS.updateGoal]: 'interactive',
   [MODEL_API_TOOLS.reportProgress]: 'interactive',
+  // M68: the call itself asks nothing; each check it runs takes the shell
+  // tool's permission path, one command at a time.
+  [VERIFY_TOOLS.runChecks]: 'interactive',
 }
 
 export function classifyTool(name: string): ToolClass | undefined {
@@ -333,6 +350,8 @@ export interface ToolDefinitionOptions {
   readonly isSubagent?: boolean
   /** Muse Code's memory tools, trusted workspaces only (M49, PLAN.md D41). */
   readonly hasMemory?: boolean
+  /** The user's check commands (M68): `run_checks` is offered with the shell while there are any. */
+  readonly checks?: readonly CheckCommandSetting[]
 }
 
 const DEFAULT_TOOL_OPTIONS: ToolDefinitionOptions = { hasShell: true, hasSkills: false }
@@ -343,6 +362,10 @@ export function toolDefinitions(
   options: ToolDefinitionOptions = DEFAULT_TOOL_OPTIONS,
 ): readonly FunctionToolDefinition[] {
   const shell = shellToolFor(platform)
+  // `then_run` needs the shell, so it is offered only with it (M68).
+  const thenRun = options.hasShell ? THEN_RUN_PROPERTY : {}
+  const checks = options.hasShell ? (options.checks ?? []) : []
+  const runChecks = checks.length === 0 ? undefined : runChecksDefinition(checks)
   const define = (
     name: string,
     description: string,
@@ -378,13 +401,14 @@ export function toolDefinitions(
         path: PATH_PROPERTY,
         find: { type: 'string', description: 'The exact text to replace' },
         replace: { type: 'string', description: 'The replacement text' },
+        ...thenRun,
       },
       ['path', 'find', 'replace'],
     ),
     define(
       MODEL_API_TOOLS.writeFile,
       'Create or overwrite a file with the given content.',
-      { path: PATH_PROPERTY, content: { type: 'string' } },
+      { path: PATH_PROPERTY, content: { type: 'string' }, ...thenRun },
       ['path', 'content'],
     ),
     define(
@@ -426,6 +450,9 @@ export function toolDefinitions(
           ),
         ]
       : []),
+    ...(runChecks === undefined
+      ? []
+      : [define(runChecks.name, runChecks.description, runChecks.properties, runChecks.required)]),
     ...(options.hasImageGeneration === true
       ? [
           define(
@@ -620,9 +647,35 @@ function fileText(text: string, shape: TextShape): string {
   return shape.hasBom ? `${BOM}${body}` : body
 }
 
-/** What the model last saw of a file, to know it is not overwriting an unseen change. */
-function fingerprint(raw: string): string {
+/**
+ * What the model last saw of a file, to know it is not overwriting an unseen
+ * change; and what an edit left, which `then_run`'s guard compares (M68).
+ */
+export function fingerprint(raw: string): string {
   return createHash(FINGERPRINT_HASH).update(raw).digest('hex')
+}
+
+/**
+ * Format on edit (M68): what the edit wrote, as the file's formatter leaves
+ * it, written back when it changed; the text on disk either way. It runs
+ * before the fingerprint is taken, so `then_run` checks the formatted file.
+ */
+async function formatWritten(
+  written: string,
+  checkedAbsolute: string,
+  context: ToolContext,
+): Promise<string> {
+  const formatted = await context.format?.(checkedAbsolute, written)
+  if (formatted === undefined || formatted === written) {
+    return written
+  }
+  await context.io.writeFile(checkedAbsolute, formatted, checkedAbsolute)
+  return formatted
+}
+
+/** The model's result line, and the note when the formatter changed the file. */
+function editedLine(line: string, isFormatted: boolean): string {
+  return isFormatted ? `${line}. ${MODEL_TEXT.formattedAfterEdit}` : line
 }
 
 /**
@@ -923,13 +976,17 @@ async function writeFile(
   const { before, relative, absolute, checkedAbsolute } = file
   if (before === undefined) {
     await context.io.writeFile(checkedAbsolute, args.content, checkedAbsolute)
-    context.seen.set(absolute, fingerprint(args.content))
+    const created = await formatWritten(args.content, checkedAbsolute, context)
+    context.seen.set(absolute, fingerprint(created))
     return patchOutcome(
       relative,
       undefined,
-      args.content,
+      created,
       `created ${relative}`,
-      `created ${relative} (${String(args.content.length)} characters)`,
+      editedLine(
+        `created ${relative} (${String(args.content.length)} characters)`,
+        created !== args.content,
+      ),
     )
   }
   // Claude Code's rule: a file is replaced only as the model last saw it (D27).
@@ -945,13 +1002,14 @@ async function writeFile(
       : normalized
   const after = fileText(text, shape)
   await context.io.writeFile(checkedAbsolute, after, checkedAbsolute)
-  context.seen.set(absolute, fingerprint(after))
+  const final = await formatWritten(after, checkedAbsolute, context)
+  context.seen.set(absolute, fingerprint(final))
   return patchOutcome(
     relative,
     modelText(before, shape),
-    text,
+    final === after ? text : modelText(final, shapeOf(final)),
     `wrote ${relative}`,
-    `wrote ${relative} (${String(args.content.length)} characters)`,
+    editedLine(`wrote ${relative} (${String(args.content.length)} characters)`, final !== after),
   )
 }
 
@@ -990,8 +1048,15 @@ async function editFile(
   const updated = `${current.slice(0, first)}${replace}${current.slice(first + find.length)}`
   const after = fileText(updated, shape)
   await context.io.writeFile(checkedAbsolute, after, checkedAbsolute)
-  context.seen.set(absolute, fingerprint(after))
-  return patchOutcome(relative, current, updated, 'edited', `edited ${relative}`)
+  const final = await formatWritten(after, checkedAbsolute, context)
+  context.seen.set(absolute, fingerprint(final))
+  return patchOutcome(
+    relative,
+    current,
+    final === after ? updated : modelText(final, shapeOf(final)),
+    'edited',
+    editedLine(`edited ${relative}`, final !== after),
+  )
 }
 
 async function listMatching(

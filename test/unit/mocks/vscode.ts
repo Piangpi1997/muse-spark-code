@@ -92,6 +92,8 @@ export const window = {
   showInputBox: vi.fn<typeof vscode.window.showInputBox>(),
   showSaveDialog: vi.fn<typeof vscode.window.showSaveDialog>(),
   showTextDocument: vi.fn<typeof vscode.window.showTextDocument>(),
+  // The editors on screen: the verify loop shows a file only when none does (M68).
+  visibleTextEditors: [] as readonly vscode.TextEditor[],
 }
 
 export const workspace = {
@@ -101,6 +103,23 @@ export const workspace = {
     // The Memory view's delete, to the trash (M49).
     delete: vi.fn<typeof vscode.workspace.fs.delete>(),
   },
+  // The verify loop (M68): the documents the language servers and the
+  // formatter read, and the editor's indentation settings.
+  openTextDocument: vi.fn<(uri: vscode.Uri) => Thenable<vscode.TextDocument>>(),
+  getConfiguration:
+    vi.fn<
+      (section?: string, scope?: vscode.ConfigurationScope | null) => vscode.WorkspaceConfiguration
+    >(),
+}
+
+export const EndOfLine = { LF: 1, CRLF: 2 } as const
+
+/** Fired by tests as a language server would report (M68). */
+export const diagnosticsChanged = new EventEmitter<vscode.DiagnosticChangeEvent>()
+
+export const languages = {
+  getDiagnostics: vi.fn<() => [vscode.Uri, vscode.Diagnostic[]][]>(),
+  onDidChangeDiagnostics: diagnosticsChanged.event,
 }
 
 export const env = {

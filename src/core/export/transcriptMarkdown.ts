@@ -99,6 +99,12 @@ function toolSection(item: ItemSnapshot, heading: string): string {
     const { files, added, removed } = item.patchSummary
     lines.push(note(plural(UI_TEXT.exportFilesChanged, files, { added, removed })), '')
   }
+  // An edit's then_run (M68): the command and what it printed.
+  if (item.thenRun !== undefined) {
+    const { command, output } = item.thenRun
+    const ran = [`$ ${command}`, ...(output === '' ? [] : [output])].join('\n')
+    lines.push(UI_TEXT.exportThenRunLabel, '', fenced(ran), '')
+  }
   if (item.failureReason !== undefined) {
     lines.push(note(fill(UI_TEXT.exportFailure, { reason: item.failureReason })), '')
   }

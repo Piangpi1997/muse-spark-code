@@ -19,6 +19,13 @@ security notes for contributors are in `PLAN.md` §9.
   next request, so the model knows what you ran; Muse Code also keeps it in
   its session log. So does what a command moved to the background printed
   when it ends.
+- **Checks after the agent's edits (Model API backend).** After a round of
+  edits, the edited files' errors and warnings from VS Code's language
+  servers (`museSpark.diagnosticsAfterEdits`, on by default), and the
+  commands and output of your check commands (`museSpark.checkCommands`,
+  none by default) and of an edit's `then_run`, go to Meta with the next
+  request, as the shell tool's output does. On Muse Code the extension
+  sends only a note naming your check commands; Muse Code runs them itself.
 - **Through the Muse Code CLI** (what `museSpark.backend` at `auto` picks
   when the CLI is installed and signed in), the extension hands
   your messages to Meta's `muse serve` process on your machine, which talks

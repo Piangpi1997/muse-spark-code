@@ -777,7 +777,9 @@
     "TodoWrite": "Aufgaben",
     "snooze_reminder": "Erinnerung zurückstellen",
     "submit_reminder_decision": "Erinnerung",
-    "submit_result": "Ergebnis"
+    "submit_result": "Ergebnis",
+    "run_checks": "Prüfungen ausführen",
+    "verify_edits": "Änderungen prüfen"
   },
   "mcpToolLabel": "{tool} ({server})",
   "memoryScopes": {
@@ -1127,5 +1129,36 @@
   "networkProxyCredentials": "Der Proxy hat Anmeldeinformationen verlangt und die erhaltenen nicht akzeptiert. Prüfen Sie http.proxy und http.proxyAuthorization oder die Anmeldeinformationen, nach denen VS Code Sie gefragt hat.",
   "networkProxyRefused": "Der Proxy hat die Verbindung abgelehnt (HTTP {status}). Prüfen Sie, ob er api.meta.ai zulässt.",
   "networkUnreachable": "Der Server von Meta war nicht erreichbar. Prüfen Sie die Netzwerkverbindung sowie http.proxy und http.proxySupport, wenn Sie einen Proxy verwenden.",
-  "approvalModeCeiling": "Die Konfiguration von Muse Code (ihr Standard-Berechtigungsprofil oder eine von Ihrem Administrator verwaltete Richtlinie) lässt diesen Berechtigungsmodus nicht zu. Wählen Sie einen strengeren, etwa „Manuell“, und senden Sie erneut."
+  "approvalModeCeiling": "Die Konfiguration von Muse Code (ihr Standard-Berechtigungsprofil oder eine von Ihrem Administrator verwaltete Richtlinie) lässt diesen Berechtigungsmodus nicht zu. Wählen Sie einen strengeren, etwa „Manuell“, und senden Sie erneut.",
+  "verifyErrors": {
+    "one": "{count} Fehler",
+    "other": "{count} Fehler"
+  },
+  "verifyWarnings": {
+    "one": "{count} Warnung",
+    "other": "{count} Warnungen"
+  },
+  "verifyClean": "Keine Fehler oder Warnungen",
+  "checkOutcomes": {
+    "passed": "{name} bestanden",
+    "failed": "{name} fehlgeschlagen",
+    "timedOut": "{name}: Zeitlimit überschritten",
+    "cancelled": "{name} angehalten",
+    "notRun": "{name} nicht ausgeführt"
+  },
+  "checkSkips": {
+    "rejected": "abgelehnt",
+    "refused": "der Berechtigungsmodus lässt keine Shell-Befehle zu",
+    "restricted": "Shell-Befehle sind im eingeschränkten Modus aus",
+    "unsafePath": "ein Dateiname lässt sich nicht sicher übergeben",
+    "changed": "die Datei hat sich nach der Bearbeitung geändert"
+  },
+  "thenRunLabel": "Danach ausgeführt",
+  "thenRunNotRun": "Nicht ausgeführt: {reason}",
+  "thenRunTimedOut": "Beim Zeitlimit angehalten",
+  "checksStoppedNotice": {
+    "one": "Die Prüfungen schlugen auch nach {count} Korrekturrunde fehl und laufen in diesem Durchgang nicht mehr automatisch.",
+    "other": "Die Prüfungen schlugen auch nach {count} Korrekturrunden in Folge fehl und laufen in diesem Durchgang nicht mehr automatisch."
+  },
+  "exportThenRunLabel": "Danach ausgeführt:"
 }

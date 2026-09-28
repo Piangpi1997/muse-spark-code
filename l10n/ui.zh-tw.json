@@ -760,7 +760,9 @@
     "TodoWrite": "工作",
     "snooze_reminder": "延後提醒",
     "submit_reminder_decision": "提醒",
-    "submit_result": "結果"
+    "submit_result": "結果",
+    "run_checks": "執行檢查",
+    "verify_edits": "檢查編輯"
   },
   "mcpToolLabel": "{tool}（{server}）",
   "memoryScopes": {
@@ -1095,5 +1097,33 @@
   "networkProxyCredentials": "Proxy 要求提供認證，但不接受收到的認證。請檢查 http.proxy 和 http.proxyAuthorization，或 VS Code 向您詢問的認證。",
   "networkProxyRefused": "Proxy 拒絕了連線（HTTP {status}）。請檢查它是否允許 api.meta.ai。",
   "networkUnreachable": "無法連線到 Meta 的伺服器。請檢查網路連線；如果使用 Proxy，也請檢查 http.proxy 和 http.proxySupport。",
-  "approvalModeCeiling": "Muse Code 的設定（其預設權限設定檔，或由系統管理員管理的原則）不允許此權限模式。請選擇更嚴格的模式（例如「手動」），然後重新傳送。"
+  "approvalModeCeiling": "Muse Code 的設定（其預設權限設定檔，或由系統管理員管理的原則）不允許此權限模式。請選擇更嚴格的模式（例如「手動」），然後重新傳送。",
+  "verifyErrors": {
+    "other": "{count} 個錯誤"
+  },
+  "verifyWarnings": {
+    "other": "{count} 個警告"
+  },
+  "verifyClean": "沒有錯誤或警告",
+  "checkOutcomes": {
+    "passed": "{name}：通過",
+    "failed": "{name}：失敗",
+    "timedOut": "{name}：逾時",
+    "cancelled": "{name}：已停止",
+    "notRun": "{name}：未執行"
+  },
+  "checkSkips": {
+    "rejected": "已拒絕",
+    "refused": "權限模式拒絕 shell 命令",
+    "restricted": "限制模式下 shell 命令已關閉",
+    "unsafePath": "無法安全地傳入某個檔案名稱",
+    "changed": "編輯後檔案已變更"
+  },
+  "thenRunLabel": "隨後執行",
+  "thenRunNotRun": "未執行：{reason}",
+  "thenRunTimedOut": "已在時間限制處停止",
+  "checksStoppedNotice": {
+    "other": "連續修正 {count} 次後檢查仍然失敗，這個回合不再自動執行檢查。"
+  },
+  "exportThenRunLabel": "隨後執行："
 }

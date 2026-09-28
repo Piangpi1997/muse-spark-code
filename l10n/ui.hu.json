@@ -777,7 +777,9 @@
     "TodoWrite": "Feladatok",
     "snooze_reminder": "Emlékeztető elhalasztása",
     "submit_reminder_decision": "Emlékeztető",
-    "submit_result": "Eredmény"
+    "submit_result": "Eredmény",
+    "run_checks": "Ellenőrzések futtatása",
+    "verify_edits": "Szerkesztések ellenőrzése"
   },
   "mcpToolLabel": "{tool} ({server})",
   "memoryScopes": {
@@ -1127,5 +1129,36 @@
   "networkProxyCredentials": "A proxy hitelesítő adatokat kért, és nem fogadta el a kapottakat. Ellenőrizze a http.proxy és a http.proxyAuthorization beállítást, vagy azokat a hitelesítő adatokat, amelyeket a VS Code kért Öntől.",
   "networkProxyRefused": "A proxy elutasította a kapcsolatot (HTTP {status}). Ellenőrizze, hogy engedélyezi-e az api.meta.ai címet.",
   "networkUnreachable": "A Meta kiszolgálója nem érhető el. Ellenőrizze a hálózati kapcsolatot, és ha proxyt használ, a http.proxy és a http.proxySupport beállítást.",
-  "approvalModeCeiling": "A Muse Code konfigurációja (az alapértelmezett engedélyprofilja vagy a rendszergazda által felügyelt házirend) nem engedélyezi ezt az engedélyezési módot. Válasszon szigorúbbat, például a Kézi módot, és küldje el újra."
+  "approvalModeCeiling": "A Muse Code konfigurációja (az alapértelmezett engedélyprofilja vagy a rendszergazda által felügyelt házirend) nem engedélyezi ezt az engedélyezési módot. Válasszon szigorúbbat, például a Kézi módot, és küldje el újra.",
+  "verifyErrors": {
+    "one": "{count} hiba",
+    "other": "{count} hiba"
+  },
+  "verifyWarnings": {
+    "one": "{count} figyelmeztetés",
+    "other": "{count} figyelmeztetés"
+  },
+  "verifyClean": "Nincs hiba vagy figyelmeztetés",
+  "checkOutcomes": {
+    "passed": "{name}: sikeres",
+    "failed": "{name}: sikertelen",
+    "timedOut": "{name}: időtúllépés",
+    "cancelled": "{name}: leállítva",
+    "notRun": "{name}: nem futott"
+  },
+  "checkSkips": {
+    "rejected": "elutasítva",
+    "refused": "az engedélyezési mód nem enged shellparancsokat",
+    "restricted": "a shellparancsok korlátozott módban ki vannak kapcsolva",
+    "unsafePath": "egy fájlnevet nem lehet biztonságosan átadni neki",
+    "changed": "a fájl a szerkesztés után megváltozott"
+  },
+  "thenRunLabel": "Utána futtatva",
+  "thenRunNotRun": "Nem futott: {reason}",
+  "thenRunTimedOut": "Az időkorlátnál leállítva",
+  "checksStoppedNotice": {
+    "one": "Az ellenőrzések {count} javítási kör után is hibásak voltak, ezért ebben a körben már nem futnak le automatikusan.",
+    "other": "Az ellenőrzések {count} egymást követő javítási kör után is hibásak voltak, ezért ebben a körben már nem futnak le automatikusan."
+  },
+  "exportThenRunLabel": "Utána futtatva:"
 }

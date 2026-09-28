@@ -17,6 +17,7 @@ import {
   SCHEDULE_TOOLS,
   SHELL_TOOLS,
   UI_TEXT,
+  VERIFY_ROW_TOOLS,
   WORKFLOW_TOOL,
 } from '../shared/constants'
 import { fill, plural } from '../shared/l10n/text'
@@ -33,6 +34,7 @@ export type ToolBody =
   | 'web'
   | 'image'
   | 'workflow'
+  | 'verify'
   | 'generic'
 
 export interface ToolPresentation {
@@ -64,6 +66,8 @@ interface ParsedArgs {
   readonly currentWork: string | undefined
   /** `cron_delete`'s job id (M43). */
   readonly id: string | undefined
+  /** The files a verify row checked (M68). */
+  readonly paths: readonly string[] | undefined
 }
 
 const NO_ARGS: ParsedArgs = {
@@ -79,12 +83,22 @@ const NO_ARGS: ParsedArgs = {
   status: undefined,
   currentWork: undefined,
   id: undefined,
+  paths: undefined,
 }
 
 // `mcp__<server>__<tool>`: the name Muse Code gives an MCP server's tool.
 const MCP_TOOL = /^mcp__(.+?)__(.+)$/
 // A path's extension, for the picture check.
 const EXTENSION = /\.[^./\\]+$/
+
+/** A list of strings, or undefined for anything else. */
+function stringList(value: unknown): readonly string[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined
+  }
+  const entries: readonly unknown[] = value
+  return entries.every((entry): entry is string => typeof entry === 'string') ? entries : undefined
+}
 
 function parseArgs(args: string): ParsedArgs {
   try {
@@ -107,6 +121,7 @@ function parseArgs(args: string): ParsedArgs {
       status: pick('status'),
       currentWork: pick('current_work'),
       id: pick('id'),
+      paths: stringList(record['paths']),
     }
   } catch {
     return NO_ARGS
@@ -185,6 +200,10 @@ function otherPresentation(
   // The run itself is its own card below the row (M47); the row shows the script.
   if (tool === WORKFLOW_TOOL) {
     return { summary: '', body: 'workflow' }
+  }
+  // The verify loop's rows (M68) name the files they checked.
+  if (VERIFY_ROW_TOOLS.has(tool)) {
+    return { summary: parsed.paths?.join(', ') ?? '', body: 'verify' }
   }
   return {
     summary:

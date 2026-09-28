@@ -280,6 +280,12 @@ export interface ConversationDeps {
   readonly allowsPaidUse: (request: PaidUseRequest) => Promise<boolean>
   /** Account & usage's "Ask again": every paid feature asks again in this workspace (M58). */
   readonly forgetPaidUse: () => Promise<void>
+  /**
+   * The verify loop's note to Muse Code (M68, PLAN.md D49), read for each
+   * message: check the diagnostics of what it edits, run the user's checks.
+   * Undefined when there is nothing to say.
+   */
+  readonly verifyGuidance?: () => string | undefined
   readonly now: () => number
   readonly log: Logger
 }
@@ -2626,8 +2632,15 @@ export class ConversationController {
       if (this.sessionKind !== host.info.kind) {
         throw new Error(UI_TEXT.turnStoppedByRestart)
       }
+      // Muse Code also hears how to check its edits (M68): the Model API
+      // backend checks them itself and says so in its instructions.
+      const verifyNote = host.info.kind === 'museCode' ? this.deps.verifyGuidance?.() : undefined
+      const verifyParts: readonly TurnPart[] =
+        verifyNote === undefined ? [] : [{ type: 'text', text: verifyNote }]
       const note: readonly TurnPart[] =
-        host.info.kind === 'museCode' ? [{ type: 'text', text: CHOICE_STEERING_NOTE }] : []
+        host.info.kind === 'museCode'
+          ? [{ type: 'text', text: CHOICE_STEERING_NOTE }, ...verifyParts]
+          : []
       const parts = [...typed, ...referenced, ...(context === undefined ? [] : [context]), ...note]
       // MSP stores no text-file attachment metadata: keep each name in the
       // durable card while the full content travels only to the model (M54).

@@ -794,7 +794,9 @@
     "TodoWrite": "Tâches",
     "snooze_reminder": "Reporter le rappel",
     "submit_reminder_decision": "Rappel",
-    "submit_result": "Résultat"
+    "submit_result": "Résultat",
+    "run_checks": "Lancer les vérifications",
+    "verify_edits": "Vérifier les modifications"
   },
   "mcpToolLabel": "{tool} ({server})",
   "memoryScopes": {
@@ -1159,5 +1161,39 @@
   "networkProxyCredentials": "Le proxy a demandé des identifiants et n’a pas accepté ceux qu’il a reçus. Vérifiez http.proxy et http.proxyAuthorization, ou les identifiants que VS Code vous a demandés.",
   "networkProxyRefused": "Le proxy a refusé la connexion (HTTP {status}). Vérifiez qu’il autorise api.meta.ai.",
   "networkUnreachable": "Le serveur de Meta est injoignable. Vérifiez la connexion réseau, ainsi que http.proxy et http.proxySupport si vous utilisez un proxy.",
-  "approvalModeCeiling": "La configuration de Muse Code (son profil d’autorisations par défaut, ou une stratégie gérée par votre administrateur) n’autorise pas ce mode d’autorisation. Choisissez-en un plus strict, par exemple Manuel, puis renvoyez le message."
+  "approvalModeCeiling": "La configuration de Muse Code (son profil d’autorisations par défaut, ou une stratégie gérée par votre administrateur) n’autorise pas ce mode d’autorisation. Choisissez-en un plus strict, par exemple Manuel, puis renvoyez le message.",
+  "verifyErrors": {
+    "one": "{count} erreur",
+    "many": "{count} d’erreurs",
+    "other": "{count} erreurs"
+  },
+  "verifyWarnings": {
+    "one": "{count} avertissement",
+    "many": "{count} d’avertissements",
+    "other": "{count} avertissements"
+  },
+  "verifyClean": "Aucune erreur ni aucun avertissement",
+  "checkOutcomes": {
+    "passed": "{name} : réussie",
+    "failed": "{name} : échouée",
+    "timedOut": "{name} : délai dépassé",
+    "cancelled": "{name} : arrêtée",
+    "notRun": "{name} : non lancée"
+  },
+  "checkSkips": {
+    "rejected": "refusé",
+    "refused": "le mode d’autorisation refuse les commandes shell",
+    "restricted": "les commandes shell sont désactivées en mode Restreint",
+    "unsafePath": "un nom de fichier ne peut pas lui être transmis sans risque",
+    "changed": "le fichier a changé après la modification"
+  },
+  "thenRunLabel": "Puis exécuté",
+  "thenRunNotRun": "Non exécuté : {reason}",
+  "thenRunTimedOut": "Arrêté à sa limite de temps",
+  "checksStoppedNotice": {
+    "one": "Les vérifications échouaient encore après {count} série de corrections ; elles ne seront plus lancées automatiquement pendant ce tour.",
+    "many": "Les vérifications échouaient encore après {count} de séries de corrections d’affilée ; elles ne seront plus lancées automatiquement pendant ce tour.",
+    "other": "Les vérifications échouaient encore après {count} séries de corrections d’affilée ; elles ne seront plus lancées automatiquement pendant ce tour."
+  },
+  "exportThenRunLabel": "Puis exécuté :"
 }

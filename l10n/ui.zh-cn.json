@@ -760,7 +760,9 @@
     "TodoWrite": "任务",
     "snooze_reminder": "推迟提醒",
     "submit_reminder_decision": "提醒",
-    "submit_result": "结果"
+    "submit_result": "结果",
+    "run_checks": "运行检查",
+    "verify_edits": "检查编辑"
   },
   "mcpToolLabel": "{tool}（{server}）",
   "memoryScopes": {
@@ -1095,5 +1097,33 @@
   "networkProxyCredentials": "代理要求提供凭据，但未接受收到的凭据。请检查 http.proxy 和 http.proxyAuthorization，或 VS Code 向你询问的凭据。",
   "networkProxyRefused": "代理拒绝了连接（HTTP {status}）。请检查它是否允许 api.meta.ai。",
   "networkUnreachable": "无法连接到 Meta 的服务器。请检查网络连接；如果使用代理，还请检查 http.proxy 和 http.proxySupport。",
-  "approvalModeCeiling": "Muse Code 的配置（其默认权限配置文件，或由管理员管理的策略）不允许此权限模式。请选择更严格的模式（例如“手动”），然后重新发送。"
+  "approvalModeCeiling": "Muse Code 的配置（其默认权限配置文件，或由管理员管理的策略）不允许此权限模式。请选择更严格的模式（例如“手动”），然后重新发送。",
+  "verifyErrors": {
+    "other": "{count} 个错误"
+  },
+  "verifyWarnings": {
+    "other": "{count} 个警告"
+  },
+  "verifyClean": "没有错误或警告",
+  "checkOutcomes": {
+    "passed": "{name}：通过",
+    "failed": "{name}：失败",
+    "timedOut": "{name}：超时",
+    "cancelled": "{name}：已停止",
+    "notRun": "{name}：未运行"
+  },
+  "checkSkips": {
+    "rejected": "已拒绝",
+    "refused": "权限模式拒绝 shell 命令",
+    "restricted": "受限模式下 shell 命令已关闭",
+    "unsafePath": "无法安全地传入某个文件名",
+    "changed": "编辑后文件已更改"
+  },
+  "thenRunLabel": "随后运行",
+  "thenRunNotRun": "未运行：{reason}",
+  "thenRunTimedOut": "已在时间限制处停止",
+  "checksStoppedNotice": {
+    "other": "连续修正 {count} 轮后检查仍然失败，本轮不再自动运行检查。"
+  },
+  "exportThenRunLabel": "随后运行："
 }

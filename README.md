@@ -618,6 +618,56 @@ those are not the Model API jobs shown by this panel. Muse Code 1.3.0 does
 not expose scheduler controls over MSP or a `muse cron` CLI command, so the
 panel cannot present an authoritative native job list or direct cancel.
 
+## Checking edits
+
+The agent sees what its edits did without asking for it.
+
+**On the Model API backend**, after each round of tool calls that edited
+files, and before the next request to Meta:
+
+- **Diagnostics** (`diagnosticsAfterEdits`, on by default): the edited
+  files' errors and warnings from VS Code's language servers, with what
+  changed since each file's previous check (new, fixed). VS Code's servers
+  report only on a file an editor shows, so each edited file no editor shows
+  opens beside your editor, as a preview and without taking focus, for up to
+  8 seconds while its server reports. At most 50 problems are listed.
+- **Check commands** (`checkCommands`, none by default): your lint, test or
+  type-check commands, for example
+  `[{ "name": "lint", "command": "npm run lint", "changedFiles": true }]`.
+  Each runs as the shell tool runs a command, from the workspace root, in a
+  job object on Windows, with no sandbox: it **asks wherever a shell command
+  would ask** (every permission mode but Bypass permissions), "Always allow
+  in this session" allows that command for the conversation, and it never
+  runs in Plan mode or Restricted Mode. The model can change what a check
+  runs (a `package.json` script, a config file), which is why it asks.
+  `changedFiles` adds the edited files after `--`, each quoted as one
+  argument; a file name that starts with `-` keeps the check from running.
+  `timeoutSeconds` (300 unless set, 600 at most) caps each run. A check you
+  reject is not asked again in that turn.
+- **The fix loop is bounded.** After three rounds in a row whose checks
+  failed, the checks stop for the rest of the turn; the model is told to
+  stop fixing and say what still fails, and the panel says so too.
+- **Format on edit** (`formatOnEdit`, off by default): each file an edit
+  tool writes goes through the formatter VS Code would use for it
+  (`editor.defaultFormatter`) before anything checks it; the row's diff
+  shows the formatted result, and the model is told to read the file again
+  before editing the same lines.
+
+A **Check edits** row shows what ran: the files, their errors and warnings,
+and how each check ended; open it for what the model read. The model can
+also call **run_checks** itself (the files it names, or those edited in the
+turn), and give `write_file` or `edit_file` a **`then_run`** command, such
+as the test of the code it changed: the command takes the same permission
+path as the shell tool, runs only if the file still holds what the edit
+wrote (after formatting), and its output is the call's second result, under
+the diff in the same row.
+
+**On Muse Code**, which runs its own tools, each message tells the agent to
+check the files it edits with `mcp__ide__getDiagnostics` and to run your
+check commands through its own shell and approvals. Checks that run
+automatically after Muse Code's own edits would need an event Muse Code does
+not send (an ask for Meta, PLAN.md M68).
+
 ## The panel
 
 **Composer.**
@@ -978,7 +1028,10 @@ started when a session first needs it; nothing else is exposed. On the
 Model API backend it runs inside the extension under the same name
 (`mcp__ide__getDiagnostics`), as a read in every mode. It reports the workspace's files only (the
 first folder), by relative path, each message cut at 1,000 characters, and
-past 200 problems a count instead of the rest.
+past 200 problems a count instead of the rest. VS Code's language servers
+report only on files an editor shows, so when the agent asks about one file
+that no editor shows, the extension opens it beside your editor, as a
+preview and without taking focus, and waits up to 8 seconds for its report.
 
 **Accessibility.** Every screen the panel shows is checked against WCAG 2.2
 AA's automated rules in Light Modern, Dark Modern and both High Contrast
@@ -1264,9 +1317,11 @@ All settings live under `museSpark.*`; changes apply to open panels
 immediately. The settings that choose what runs and what is billed
 (`initialPermissionMode`, `backend`, `shellSandbox`, `sandboxNetwork`,
 `allowDangerouslySkipPermissions`, `museBinaryPath`, `environmentVariables`,
-`modelApiHooks`, `modelApiPromptCacheRetention` and the five paid features,
-`modelApiWebSearch`, `modelApiImageGeneration`, `modelApiVoice`,
-`modelApiSubagents` and `modelApiScheduledPrompts`) are machine-scoped: they
+`modelApiHooks`, `modelApiPromptCacheRetention`, the verify loop's
+`checkCommands`, `formatOnEdit` and `diagnosticsAfterEdits`, and the five
+paid features, `modelApiWebSearch`, `modelApiImageGeneration`,
+`modelApiVoice`, `modelApiSubagents` and `modelApiScheduledPrompts`) are
+machine-scoped: they
 take effect from your user settings only, never from a repository's
 `.vscode/settings.json`. In a remote window (SSH, WSL, a dev
 container) machine settings live on the remote side, where a dev container
@@ -1301,6 +1356,9 @@ Bypass at once.
 | `modelApiSubagents`               | `false`     | [Paid](#paid-features): Model API child tasks, with a model-rate confirmation and a fresh four-request popup for every task                                                                                                                                                                                                                 |
 | `modelApiScheduledPrompts`        | `false`     | [Paid](#scheduled-prompts-model-api): a due prompt can run only after this machine-scoped gate and a separate confirmation of that occurrence's Model API token rates; never unattended                                                                                                                                                     |
 | `modelApiHooks`                   | `false`     | Run Muse Code's hook commands on the Model API backend in a trusted workspace: your administrator's, yours and the project's. They run as you, outside the agent's sandbox, without the Model API key; review them with **Muse Spark: Hooks** first. Machine-scoped                                                                         |
+| `diagnosticsAfterEdits`           | `true`      | [Checking edits](#checking-edits): after each round of edits the Model API model gets the edited files' errors and warnings from VS Code's language servers; Muse Code is told to read them itself. Machine-scoped                                                                                                                          |
+| `checkCommands`                   | `[]`        | [Checking edits](#checking-edits): `{ name, command, changedFiles?, timeoutSeconds? }` lint, test or type-check commands the Model API backend runs after each round of edits, each asking wherever a shell command asks; Muse Code is told to run them. Machine-scoped                                                                     |
+| `formatOnEdit`                    | `false`     | [Checking edits](#checking-edits): run the file's formatter on each file the Model API backend's edit tools write. Machine-scoped                                                                                                                                                                                                           |
 | `environmentVariables`            | `[]`        | `{ name, value }` pairs for the Muse Code process (an `XDG_CONFIG_HOME` here is where the extension looks for the CLI's sign-in and settings too). Never put API keys here; use Sign in. Changing it restarts the host                                                                                                                      |
 
 The Model API backend's shell tool applies `terminal.integrated.env.*` the

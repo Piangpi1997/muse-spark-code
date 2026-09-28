@@ -811,7 +811,9 @@
     "TodoWrite": "Úkoly",
     "snooze_reminder": "Odložení připomenutí",
     "submit_reminder_decision": "Připomenutí",
-    "submit_result": "Výsledek"
+    "submit_result": "Výsledek",
+    "run_checks": "Spustit kontroly",
+    "verify_edits": "Kontrola úprav"
   },
   "mcpToolLabel": "{tool} ({server})",
   "memoryScopes": {
@@ -1191,5 +1193,42 @@
   "networkProxyCredentials": "Proxy server požádal o přihlašovací údaje a ty, které dostal, nepřijal. Zkontrolujte http.proxy a http.proxyAuthorization nebo údaje, o které vás požádal VS Code.",
   "networkProxyRefused": "Proxy server odmítl připojení (HTTP {status}). Zkontrolujte, že povoluje api.meta.ai.",
   "networkUnreachable": "Server Meta není dostupný. Zkontrolujte připojení k síti, a pokud používáte proxy server, také http.proxy a http.proxySupport.",
-  "approvalModeCeiling": "Konfigurace Muse Code (její výchozí profil oprávnění nebo zásada, kterou spravuje váš správce) tento režim oprávnění nepovoluje. Zvolte přísnější režim, například Ruční, a odešlete zprávu znovu."
+  "approvalModeCeiling": "Konfigurace Muse Code (její výchozí profil oprávnění nebo zásada, kterou spravuje váš správce) tento režim oprávnění nepovoluje. Zvolte přísnější režim, například Ruční, a odešlete zprávu znovu.",
+  "verifyErrors": {
+    "one": "{count} chyba",
+    "few": "{count} chyby",
+    "many": "{count} chyby",
+    "other": "{count} chyb"
+  },
+  "verifyWarnings": {
+    "one": "{count} upozornění",
+    "few": "{count} upozornění",
+    "many": "{count} upozornění",
+    "other": "{count} upozornění"
+  },
+  "verifyClean": "Žádné chyby ani upozornění",
+  "checkOutcomes": {
+    "passed": "{name}: prošlo",
+    "failed": "{name}: selhalo",
+    "timedOut": "{name}: vypršel čas",
+    "cancelled": "{name}: zastaveno",
+    "notRun": "{name}: nespuštěno"
+  },
+  "checkSkips": {
+    "rejected": "odmítnuto",
+    "refused": "režim oprávnění nepovoluje příkazy prostředí",
+    "restricted": "příkazy prostředí jsou v Omezeném režimu vypnuté",
+    "unsafePath": "název souboru mu nelze bezpečně předat",
+    "changed": "soubor se po úpravě změnil"
+  },
+  "thenRunLabel": "Poté spuštěno",
+  "thenRunNotRun": "Nespuštěno: {reason}",
+  "thenRunTimedOut": "Zastaveno po vypršení časového limitu",
+  "checksStoppedNotice": {
+    "one": "Kontroly selhaly i po {count} pokusu o opravu, takže se v tomto kole už automaticky nespustí.",
+    "few": "Kontroly selhaly i po {count} pokusech o opravu za sebou, takže se v tomto kole už automaticky nespustí.",
+    "many": "Kontroly selhaly i po {count} pokusu o opravu za sebou, takže se v tomto kole už automaticky nespustí.",
+    "other": "Kontroly selhaly i po {count} pokusech o opravu za sebou, takže se v tomto kole už automaticky nespustí."
+  },
+  "exportThenRunLabel": "Poté spuštěno:"
 }

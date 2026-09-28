@@ -87,7 +87,14 @@
       "workflowChildUntitled",
       "workflowsLabel"
     ],
-    "es": ["usagePlan", "agentTokens", "permissionModes.manual", "toolLabels.shell", "goalTokens"],
+    "es": [
+      "usagePlan",
+      "agentTokens",
+      "permissionModes.manual",
+      "toolLabels.shell",
+      "goalTokens",
+      "verifyErrors.one"
+    ],
     "pt-br": [
       "agentTokens",
       "permissionModes.manual",

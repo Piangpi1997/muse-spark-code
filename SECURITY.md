@@ -46,8 +46,10 @@ Only the latest release on the Visual Studio Marketplace receives fixes.
   billed (`museBinaryPath`, `environmentVariables`, `backend`,
   `shellSandbox`, `sandboxNetwork`, `initialPermissionMode`,
   `allowDangerouslySkipPermissions`, `modelApiHooks`,
-  `modelApiPromptCacheRetention` and the five paid `modelApi*` features)
-  are machine-scoped in every workspace, trusted or not: a repository's
+  `modelApiPromptCacheRetention`, the verify loop's `checkCommands`,
+  `formatOnEdit` and `diagnosticsAfterEdits`, and the five paid
+  `modelApi*` features) are machine-scoped in every workspace, trusted or
+  not: a repository's
   `.vscode/settings.json` cannot point the extension at its own executable. In a remote window a dev container
   definition can write machine settings, so there Bypass permissions is
   never the starting mode and needs an explicit confirmation.
@@ -80,6 +82,17 @@ Only the latest release on the Visual Studio Marketplace receives fixes.
   without the sandbox for a Windows workspace under the user's profile
   (where the sandbox cannot enter), and `off` never sandboxes; both leave
   the approval cards in place.
+- **Check commands and `then_run` (Model API backend).** The commands the
+  extension runs after the agent's edits (`museSpark.checkCommands`,
+  machine-scoped, none by default) and the one an edit's `then_run` names
+  take the shell tool's own permission path: they ask wherever a shell
+  command would ask (every mode but Bypass permissions), never run in Plan
+  mode or Restricted Mode, and run with the shell tool's runner, job object
+  and time cap. The agent can change what a check runs (a `package.json`
+  script), which is why they ask. Edited file names reach a check only as
+  quoted arguments after `--`, and a name that starts with `-` or holds a
+  control character keeps the check from running. `then_run` runs only if
+  the file still holds what the edit wrote.
 - **Installing Muse Code.** The panel runs only Meta's published install
   command for the platform (`constants.ts` `MUSE_INSTALL_COMMANDS`), and
   only after a confirmation that shows it, in a visible terminal. It never
