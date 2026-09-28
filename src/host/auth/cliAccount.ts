@@ -16,9 +16,9 @@ import {
   type CredentialFileVerdict,
   credentialFileVerdict,
 } from '../../core/backends/musecode/credentialFile'
-import { MUSE_ACCOUNT_STATES, MUSE_CREDENTIAL_FILE_MAX_BYTES } from '../../shared/constants'
+import { MUSE_CREDENTIAL_FILE_MAX_BYTES } from '../../shared/constants'
 import type { Logger } from '../logger'
-import { type AccountState, isStoredSignIn } from './accountHost'
+import { type AccountState, isCapturedSignedOut, isStoredSignIn } from './accountHost'
 
 export interface CredentialFileReading {
   /** `<size>:<mtime>`: a write changes it. */
@@ -76,9 +76,7 @@ export function cliSignInFromAccount(account: AccountState | undefined): CliSign
   // docs/certification/sign-in-detection.md): another value, `envKey` masking
   // the stored lane, or a future state is not guessed at (AGENTS.md rule 13,
   // the review of PR #49).
-  return account.state === MUSE_ACCOUNT_STATES.loggedOut && account.credentialRequired
-    ? 'signedOut'
-    : 'unknown'
+  return isCapturedSignedOut(account) ? 'signedOut' : 'unknown'
 }
 
 /** What the structure settles alone; a Keychain pointer on macOS and anything unrecognized go to the CLI. */

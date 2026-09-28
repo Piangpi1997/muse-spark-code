@@ -211,6 +211,7 @@ captured frames.
 | AE    | `account/read`'s uncaptured `credentialRequired: false` read as a keyless sign-in (the review of PR #49) | `cliAccount.test.ts`     | exit 1, 1 failed: a signed-out answer with the flag false became `signedIn`                                                              |
 | AF    | The device flow's signed-out guard gated on `credentialRequired` again (the review of PR #49)            | `deviceSignIn.test.ts`   | exit 1, 1 failed: a rewritten file counted as a sign-in under the uncaptured value                                                       |
 | AG    | An empty version-2 file read as a Keychain pointer off macOS (the review of PR #49)                      | `credentialFile.test.ts` | exit 1, 2 failed: a signed-out macOS file copied to Windows or Linux blocked browser sign-in                                             |
+| AH    | `account/logout` confirmed on any answer but a stored sign-in (the review of PR #49)                     | `accountHost.test.ts`    | exit 1, 2 failed: `envKey` and the uncaptured `credentialRequired: false` confirmed a logout                                             |
 
 ## Not proved here
 

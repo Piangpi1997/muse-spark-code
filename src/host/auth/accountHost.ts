@@ -48,6 +48,16 @@ export function isStoredSignIn(account: AccountState): boolean {
   )
 }
 
+/**
+ * The answer every captured `account/read` after a sign-out gave
+ * (docs/certification/sign-in-detection.md). Nothing else counts as signed
+ * out: `envKey` masks the stored lane, and other answers were never
+ * captured (AGENTS.md rule 13, the review of PR #49).
+ */
+export function isCapturedSignedOut(account: AccountState): boolean {
+  return account.state === MUSE_ACCOUNT_STATES.loggedOut && account.credentialRequired
+}
+
 type AccountConnection = AccountSession['connection']
 
 /** An account method's `AccountState` answer; undefined when it failed or came in another shape. */
@@ -111,9 +121,10 @@ export async function probeAccount(
 
 /**
  * MSP `account/logout` on a short-lived host, confirmed by `account/read`:
- * `confirmed` when no stored credential is in use afterwards (`META_API_KEY`,
- * which no logout can unset, is the caller's to report); `unconfirmed` when
- * the host could not start, refused, or still reports a stored credential.
+ * `confirmed` only on the captured signed-out answer; `unconfirmed` when the
+ * host could not start or refused, or answered anything else: a stored
+ * credential, `envKey` (`META_API_KEY`, which no logout can unset, masks
+ * the stored lane), or a state never captured.
  */
 export async function logOutAccount(
   connect: () => Promise<AccountSession>,
@@ -126,8 +137,12 @@ export async function logOutAccount(
     async (connection) => {
       const answer = await requestAccount(connection, MUSE_ACCOUNT_LOGOUT)
       const after = answer === undefined ? undefined : await readAccountState(connection)
-      if (after === undefined || isStoredSignIn(after)) {
-        log.warn(`Muse Code did not confirm account/logout (${after?.state ?? 'no answer'})`)
+      if (after === undefined || !isCapturedSignedOut(after)) {
+        log.warn(
+          after?.state === MUSE_ACCOUNT_STATES.envKey
+            ? 'Muse Code runs on META_API_KEY, which hides whether account/logout cleared the stored sign-in'
+            : `Muse Code did not confirm account/logout (${after?.state ?? 'no answer'})`,
+        )
         return 'unconfirmed'
       }
       log.info(`Muse Code signed out through account/logout (now ${after.state})`)

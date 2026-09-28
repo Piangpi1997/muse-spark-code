@@ -105,18 +105,27 @@ describe('logOutAccount', () => {
     expect(allLogged(log)).not.toContain('person@example.com')
   })
 
-  it('leaves META_API_KEY to the caller: an environment key afterwards still confirms', async () => {
-    const envKey = { state: 'envKey', credentialRequired: true }
-    const t = host({ 'account/logout': envKey, 'account/read': envKey })
-    await expect(logOutAccount(t.connect, new FakeLogOutputChannel())).resolves.toBe('confirmed')
-  })
-
   it.each([
     ['the host cannot start', undefined],
     ['account/logout is refused', { 'account/logout': new Error('experimentalRequired') }],
     ['account/logout answers another shape', { 'account/logout': { ok: true } }],
     ['a stored sign-in remains', { 'account/logout': LOGGED_OUT, 'account/read': STORED_KEY }],
     ['account/read cannot confirm', { 'account/logout': LOGGED_OUT }],
+    // Only the captured signed-out answer confirms (the review of PR #49).
+    [
+      'META_API_KEY hides the stored lane',
+      {
+        'account/logout': { state: 'envKey', credentialRequired: true },
+        'account/read': { state: 'envKey', credentialRequired: true },
+      },
+    ],
+    [
+      'account/read answers the uncaptured credentialRequired false',
+      {
+        'account/logout': LOGGED_OUT,
+        'account/read': { state: 'loggedOut', credentialRequired: false },
+      },
+    ],
   ])('is false when %s', async (_name, answers) => {
     const log = new FakeLogOutputChannel()
     if (answers === undefined) {
