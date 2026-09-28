@@ -214,7 +214,8 @@ Creator's ACP Client, sublime-acp, Devin Desktop's custom agents).
   mode the editor is told, not the one it last ran in.
 - **Settings**: the model and the reasoning effort. A session loaded or
   resumed runs on the model and effort the editor is shown; one last run
-  on a model the agent does not list moves to the default.
+  on a model the agent does not list moves to the default. A session the
+  agent cannot set up this way is let go, and the editor's request fails.
 - **Commands**: the session's skills, run as `/name arguments`.
 - **Permission prompts**: the backend's own choices (allow once, allow for
   the session, reject). A prompt the editor cancels, or answers with a
@@ -226,6 +227,9 @@ Creator's ACP Client, sublime-acp, Devin Desktop's custom agents).
   or fewer than the question allows (at least one where it sets no
   bound, as in the panel), is declined.
 - **Sessions**: listed, loaded with their history, resumed and closed.
+  Closing a session (or loading it again) ends its running prompt as
+  cancelled and stops that turn, and an answer you give it afterwards
+  decides nothing.
 - **Prompts**: text, files as @mentions, attached excerpts, and PNG, JPEG,
   GIF and WebP images up to 10 MB.
 - **MCP servers** the editor offers (Zed's context servers, Jupyter AI's

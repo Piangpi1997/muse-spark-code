@@ -473,3 +473,84 @@ also took text: the form sends it as `oneOf`, so text is not an answer
 the form allows. And a multiple choice without bounds needs at least
 one pick, where the other session allowed none: this is the panel's
 card rule.
+
+## Codex on `4eb0156c`: two findings, closed by class (2026-09-28)
+
+- **State the agent shows comes from the backend (P1).** Muse Code's
+  `resumeSession` puts the model the agent asked for on the handle, since
+  `session/resume` takes none; the CLI keeps the model the session last
+  ran on. `matchAdvertised` now asks the backend (`listModels(sessionId)`,
+  its `isActive`, as the panel's `adopt` does) and keeps that model only
+  where the agent lists it; otherwise it sets the default. The sweep of
+  everything the agent shows: the mode is set explicitly on load and
+  resume (and sent with `session/start`); the effort is set explicitly on
+  every path; the model on a new session is the one `session/start`
+  asked for; the commands are `listSkills`' answer; the replayed history
+  and plan are the backend's. The Model API host's handle and
+  `listModels` both hold the session's real model, so it answers the same
+  way. The agent forks nothing.
+- **A session that fails setup is let go (P2).** `adopt` replaces
+  `register`. A new, loaded or resumed backend session is set up (the
+  effort; the mode, model and effort, then the replay) before the agent
+  holds it, so no request finds it and no id reaches the client until
+  then. Any failure there disposes it, including a handle whose events
+  cannot be followed.
+- **Reviewed before the push (Grok, `78a74430`): 1 P1, 2 P2, all
+  held.** Both hosts hand back a session they already hold, retained
+  (`MuseCodeHost.track`, `ModelApiHost.revive`). A first cut kept the
+  held wrapper until the reload was set up. So a failed reload had
+  already set the shared session to the starting mode while the kept
+  wrapper still showed its own, both wrappers followed the session
+  during setup, and a let-go wrapper could still decide an approval it
+  was waiting on. Now:
+
+  - `adopt` lets the held wrapper go before anything runs on the session
+    they share, and a failed reload leaves nothing held for that id; the
+    editor loads it again.
+  - A wrapper let go (closed, loaded again, never set up) decides
+    nothing more. A late permission answer, form answer or form failure
+    is dropped; a late paid-use answer is a denial.
+  - A prompt it was running ends `cancelled`, where it never answered
+    before.
+  - The fake host could not show this, as it made a new session on each
+    resume. The reload tests now hand the held one back (`retainOnResume`, `onNextResume`).
+
+- **Grok's second look (`5e2b85c3`): 2 P1, both held.**
+
+  - The agent told the editor a prompt had stopped without stopping its
+    turn. Muse Code's `dispose` sends only `task/stopAll`, and a reload
+    shares the session, so the turn went on unwatched. `release` (which
+    replaces `dispose`) now stops following the session at once, waits
+    for a turn still being started, and cancels it on the backend; a
+    turn that failed to start has nothing to stop.
+  - A load still being set up was not let go by a newer load of the same
+    session, so both followed it. `adopt` now keeps the loads being set up
+    by id. A newer load or a close lets them go too, and a load let go
+    during its setup fails rather than being held.
+  - A session let go changes nothing more on the backend (`ensureHeld`
+    before each mode, model and effort write and before a replay), so a
+    late setup cannot undo what the newer load set.
+  - `session/close` of an id neither held nor being set up is refused,
+    as before.
+
+| Drill | Break                                                             | Result                                                                                                      |
+| ----- | ----------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| N1    | the handle's model trusted again                                  | exit 1: 3 tests, "runs a loaded session on the model the backend reports, never the one its handle …"       |
+| N2    | no explicit set where the backend reports no model                | exit 1: 2 tests, "keeps a listed model the backend reports active, and sets the default …"                  |
+| R1    | a failed setup keeps the backend session                          | exit 1: 3 tests, "lets a new session go when its effort is refused, and holds nothing"                      |
+| R2    | the session held before it is set up                              | exit 1: 3 tests, "lets the held session go before a reload runs on it, and holds nothing …"                 |
+| R3    | a handle whose events cannot be followed kept                     | exit 1: "lets a session go whose events cannot be followed"                                                 |
+| R4    | the held session let go only once the reload is set up            | exit 1: "lets the held session go before a reload runs on it …", "follows a session loaded again once …"    |
+| D1    | a let-go session's late approval decided                          | exit 1: "ends a closed session's prompt cancelled, stops its turn, and its late approval …"                 |
+| D2    | a let-go session's late form answered                             | exit 1: "neither answers nor declines a question whose form is answered after its session closed"           |
+| D3    | a let-go session's failed form declined                           | exit 1: "… whose form is failed after its session closed"                                                   |
+| D4    | a let-go session's late paid-use answer allowed                   | exit 1: "denies a paid use answered after its session closed"                                               |
+| D5    | a let-go session's prompt left unanswered                         | exit 1: "ends a closed session's prompt cancelled, …"                                                       |
+| D6    | a let-go session's prompt goes on to its turn                     | exit 1: "ends a prompt cancelled when its session is closed while the skills are announced"                 |
+| R5    | a load being set up not let go by a newer load or a close         | exit 1: "lets a load still being set up go for a newer load of the same session", "… closes that session …" |
+| R6    | a load let go during its last setup step held anyway              | exit 1: "lets a resume go when the editor closes that session while its effort is being set"                |
+| H1    | a session let go keeps writing to the backend                     | exit 1: "lets a load still being set up go for a newer load of the same session"                            |
+| C1    | a let-go session's turn left running                              | exit 1: 3 tests, "ends a closed session's prompt cancelled, stops its turn, …"                              |
+| C2    | the turn cancelled before it started, or when it never did        | exit 1: both "closed while its turn is being started, it …"                                                 |
+| C3    | a prompt whose turn fails to start after a close answers an error | exit 1: "… it has nothing to stop when the turn fails to start"                                             |
+| X1    | a close of a session not held answered as done                    | exit 1: both "lets a resume go when the editor closes that session while its … is being set"                |

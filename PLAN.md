@@ -2970,7 +2970,19 @@ modelApi` (the key of D61). There is no "auto", so the bill is never a
 - **Load and resume run as advertised** (the Codex review of `a209130`):
   a loaded or resumed session gets the permission mode, a listed model and
   the effort the agent shows, or the load fails; the agent never shows a
-  mode stricter than the one in force. The client's answers to the
+  mode stricter than the one in force. What it shows comes from the
+  backend's answer or an explicit set, never from a value the session's
+  handle merely holds (Codex on `4eb0156c`: Muse Code's resumed handle
+  holds the model asked for, the CLI the one last used): the model is
+  the one `model/list` reports active for the session where the agent
+  lists it, else the default, set. A session is held, and its id
+  answered, only once it is set up; a new, loaded or resumed session
+  whose setup fails is let go. A session loaded again lets the one held
+  go first, and one still being set up by an earlier load, as both hosts
+  hand the same session back; a close lets both go. A session let go
+  changes nothing more on the backend, decides nothing on the editor's
+  late answers (a paid use is denied), and its running prompt ends
+  cancelled with its turn stopped on the backend, once started. The client's answers to the
   agent's own requests (permission, elicitation) are parsed with zod, and
   a form answer must be one the form allowed (its options, how many), or
   the question is declined. The agent's log names a backend failure by

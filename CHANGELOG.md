@@ -70,7 +70,12 @@ happened, not what was planned; superseded entries are kept.
   counts as its sign-in, as with the extension, but no shell command, hook
   or git the agent runs sees it or any other `*_API_KEY` variable. A
   loaded or resumed session now runs in the mode, model and effort the
-  editor shows (or fails to load); a question's form answer is used only
+  editor shows (or fails to load), the model as Muse Code reports it; a
+  session the agent could not set up is let go rather than left running,
+  and closing or reloading a session ends its running prompt as
+  cancelled and stops that turn, with any answer still owed to it
+  ignored;
+  a question's form answer is used only
   when it is one of the form's own options, in the allowed number; and the
   agent's log names a backend failure by its kind, never its message.
 - **The key outside VS Code, in the rules** (AGENTS.md rule 8, PLAN.md

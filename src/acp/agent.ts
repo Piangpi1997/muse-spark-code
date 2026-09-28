@@ -160,6 +160,16 @@ function startingModel(models: readonly ModelSummary[]): string {
   return model.modelId
 }
 
+/** Whether a turn being started (none: already started) did start. */
+async function hasStarted(starting: Promise<unknown> | undefined): Promise<boolean> {
+  try {
+    await starting
+    return true
+  } catch {
+    return false
+  }
+}
+
 /** The default effort where the model serves it, else the nearest tier it has. */
 function servedEffort(modelId: string, wanted: EffortLevel): EffortLevel {
   const levels = effortLevelsFor(modelId)
@@ -182,6 +192,10 @@ class AcpSession {
   private skills: readonly SkillSummary[] = []
   private areCommandsAnnounced = false
   private effort: EffortLevel = DEFAULT_EFFORT
+  /** Let go (closed, loaded again, or never set up): the editor's late answers decide nothing. */
+  private isDisposed = false
+  /** A turn being started (`sendTurn` not yet answered): a release waits for it, then stops it. */
+  private starting: Promise<unknown> | undefined
   public readonly sessionId: string
 
   public constructor(
@@ -387,6 +401,11 @@ class AcpSession {
       }
       choice = decidedChoice(response, event.availableChoices)
     }
+    if (this.isDisposed) {
+      // Let go while the editor was asked: the answer is for a session it
+      // no longer shows, which another session may now hold.
+      return
+    }
     if (choice === undefined) {
       this.deps.log.warn(
         `ACP session ${this.sessionId}: approval ${event.approvalId} offers no denial; stopping the turn`,
@@ -423,6 +442,9 @@ class AcpSession {
           requestedSchema: questionForm(event.questions),
         }
         const response = await this.client.request('elicitation/create', request)
+        if (this.isDisposed) {
+          return
+        }
         const answers = formAnswers(event.questions, response)
         if (answers !== undefined) {
           await this.session.answerQuestions(event.userInputId, answers)
@@ -442,7 +464,28 @@ class AcpSession {
     }
   }
 
+  /**
+   * A session let go changes nothing more on the backend, which a newer
+   * load may now hold, and replays nothing: the request fails instead.
+   */
+  private ensureHeld(): void {
+    if (this.isDisposed) {
+      throw RequestError.resourceNotFound(this.sessionId)
+    }
+  }
+
+  private async cancelTurn(): Promise<void> {
+    try {
+      await this.session.cancel()
+    } catch (error: unknown) {
+      this.deps.log.warn(`ACP session ${this.sessionId}: cancel failed: ${failureForLog(error)}`)
+    }
+  }
+
   private async declineQuestions(userInputId: string): Promise<void> {
+    if (this.isDisposed) {
+      return
+    }
     try {
       await this.session.cancelQuestions(userInputId)
     } catch (error: unknown) {
@@ -479,7 +522,8 @@ class AcpSession {
         options: paidUseOptions(canRemember),
       }
       const response = await this.client.request('session/request_permission', params)
-      answer = paidUseAnswer(permissionResponse(response), canRemember)
+      // A session let go while the editor was asked is billed for nothing.
+      answer = this.isDisposed ? 'deny' : paidUseAnswer(permissionResponse(response), canRemember)
     } catch (error: unknown) {
       this.deps.log.warn(
         `ACP session ${this.sessionId}: the paid-use question failed, denying: ${failureForLog(error)}`,
@@ -529,16 +573,24 @@ class AcpSession {
   }
 
   /**
-   * A loaded or resumed session made to run as the agent advertises it: its
-   * permission mode (the one shown, never stricter than the one in force),
-   * a model the agent lists (a contributor model the agent hides is left),
-   * and the effort shown. What the backend kept from before counts for
-   * nothing the agent shows.
+   * A loaded or resumed session made to run as the agent advertises it.
+   * Everything shown comes from the backend's answer or an explicit set,
+   * never from what the handle holds: Muse Code's resumed handle holds the
+   * model the agent asked for, while the CLI keeps the one the session last
+   * ran on. The permission mode shown is set; the model is the one the
+   * backend reports active where the agent lists it, else the default, set
+   * (a contributor model the agent hides is left); the effort shown is set.
    */
   public async matchAdvertised(): Promise<void> {
+    this.ensureHeld()
     await this.session.setApprovalMode(approvalModeFor(this.mode, true))
-    if (this.models.every((model) => model.modelId !== this.modelId)) {
+    const reported = await this.host.listModels(this.sessionId)
+    const active = reported.find((model) => model.isActive)
+    if (active !== undefined && this.models.some((model) => model.modelId === active.modelId)) {
+      this.modelId = active.modelId
+    } else {
       const listed = startingModel(this.models)
+      this.ensureHeld()
       await this.session.setModel(listed)
       this.modelId = listed
     }
@@ -548,6 +600,7 @@ class AcpSession {
   /** The session's standing effort, as the panel sets it on a new session. */
   public async applyEffort(effort: EffortLevel): Promise<void> {
     const served = servedEffort(this.modelId, effort)
+    this.ensureHeld()
     await this.session.setReasoningEffort(effortForThinking(served, true))
     this.effort = served
   }
@@ -559,6 +612,7 @@ class AcpSession {
     if (mode === undefined) {
       throw RequestError.invalidParams(undefined, modeId)
     }
+    this.ensureHeld()
     await this.session.setApprovalMode(approvalModeFor(mode, true))
     this.mode = mode
   }
@@ -571,6 +625,7 @@ class AcpSession {
       if (this.models.every((model) => model.modelId !== value)) {
         throw RequestError.invalidParams(undefined, value)
       }
+      this.ensureHeld()
       await this.session.setModel(value)
       this.modelId = value
       await this.applyEffort(this.effort)
@@ -587,6 +642,7 @@ class AcpSession {
 
   /** A loaded session's history, as the updates a live one would have sent. */
   public async replay(items: Parameters<UpdateTranslator['itemUpdates']>[0][]): Promise<void> {
+    this.ensureHeld()
     const history = new UpdateTranslator(this.cwd, true)
     for (const item of items) {
       for (const update of history.itemUpdates(item, true)) {
@@ -625,14 +681,19 @@ class AcpSession {
       this.pending = { resolve, reject, turnId: undefined, isCancelled: false }
     })
     try {
-      const submission = await this.session.sendTurn(
-        this.withSkill(parsed.parts),
-        parsed.displayText,
-      )
+      const starting = this.session.sendTurn(this.withSkill(parsed.parts), parsed.displayText)
+      this.starting = starting
+      const submission = await starting
       this.noteTurnId(submission.turnId)
     } catch (error: unknown) {
       this.pending = undefined
+      if (this.isDisposed) {
+        // Let go while the turn was starting: the prompt ended cancelled.
+        return 'cancelled'
+      }
       throw error
+    } finally {
+      this.starting = undefined
     }
     const reason = await finished
     await this.outbox
@@ -649,11 +710,7 @@ class AcpSession {
       return
     }
     this.pending.isCancelled = true
-    try {
-      await this.session.cancel()
-    } catch (error: unknown) {
-      this.deps.log.warn(`ACP session ${this.sessionId}: cancel failed: ${failureForLog(error)}`)
-    }
+    await this.cancelTurn()
   }
 
   /** The backend went away: the running prompt ends with its reason. */
@@ -662,8 +719,35 @@ class AcpSession {
     this.pending = undefined
   }
 
-  public dispose(): void {
+  public get isReleased(): boolean {
+    return this.isDisposed
+  }
+
+  /**
+   * Let go (closed, loaded again, or never set up). At once it stops
+   * following the backend, the editor's late answers decide nothing, and a
+   * prompt it was running ends cancelled. That turn is then stopped on the
+   * backend too, once it has started, as the editor was told; a turn left
+   * running would go on editing and billing with no one watching, and a
+   * session loaded again shares the backend session, so nothing else would
+   * stop it. Then the backend session is let go.
+   */
+  public async release(): Promise<void> {
+    if (this.isDisposed) {
+      return
+    }
+    this.isDisposed = true
+    if (this.preparing !== undefined) {
+      this.preparing.isCancelled = true
+    }
+    const wasRunning = this.pending !== undefined
+    this.pending?.resolve('cancelled')
+    this.pending = undefined
     this.unsubscribe()
+    // A turn that failed to start has nothing to stop.
+    if (wasRunning && (await hasStarted(this.starting))) {
+      await this.cancelTurn()
+    }
     this.session.dispose()
   }
 }
@@ -671,6 +755,8 @@ class AcpSession {
 /** The agent's state across the connection: the client's capabilities and the live sessions. */
 class AgentState {
   private readonly sessions = new Map<string, AcpSession>()
+  /** Sessions being set up (`adopt`), by id: a newer load or a close lets them go too. */
+  private readonly adopting = new Map<string, AcpSession>()
   private readonly watchedHosts = new WeakSet<AgentHost>()
   private clientCapabilities: ClientCapabilities = {}
 
@@ -714,28 +800,76 @@ class AgentState {
     return { host, models }
   }
 
-  private register(
+  /**
+   * A backend session the agent now owns (new, loaded or resumed), held only
+   * once `prepare` has set what the editor is shown: until then no request
+   * finds it, and if anything fails the backend session is let go and the
+   * request fails, so no session outlives a request that returned no id.
+   */
+  private async adopt(
     host: AgentHost,
     session: AgentSession,
     cwd: string,
     client: AgentContext,
     models: readonly ModelSummary[],
-  ): AcpSession {
-    const acp = new AcpSession(
-      session,
-      host,
-      cwd,
-      client,
-      this.clientCapabilities,
-      models,
-      this.deps,
-      this.deps.options.initialMode,
-      session.modelId,
-    )
-    // A session loaded again replaces the one held, which stops listening.
-    this.sessions.get(session.sessionId)?.dispose()
-    this.sessions.set(session.sessionId, acp)
+    prepare: (acp: AcpSession) => Promise<void>,
+  ): Promise<AcpSession> {
+    // A session loaded again replaces the one held, and one still being set
+    // up by an earlier load, before anything runs on it: both hosts hand
+    // back a session they hold, retained, so they would share it. Those stop
+    // following it and answering at once (`release`); if this load then
+    // fails, nothing is held for that id and the editor loads it again.
+    const { sessionId } = session
+    const superseded = this.releaseAll(sessionId)
+    let acp: AcpSession | undefined
+    try {
+      acp = new AcpSession(
+        session,
+        host,
+        cwd,
+        client,
+        this.clientCapabilities,
+        models,
+        this.deps,
+        this.deps.options.initialMode,
+        session.modelId,
+      )
+      this.adopting.set(sessionId, acp)
+      await superseded
+      await prepare(acp)
+      if (acp.isReleased) {
+        // A newer load of this session, or a close, let it go meanwhile.
+        throw RequestError.resourceNotFound(sessionId)
+      }
+    } catch (error: unknown) {
+      if (acp === undefined) {
+        session.dispose()
+      } else {
+        await acp.release()
+      }
+      throw error
+    } finally {
+      if (this.adopting.get(sessionId) === acp) {
+        this.adopting.delete(sessionId)
+      }
+    }
+    this.sessions.set(sessionId, acp)
     return acp
+  }
+
+  /**
+   * Lets go of the session held for `sessionId` and one being set up, so no
+   * request finds either; resolves once each has stopped its turn and let
+   * its backend session go. False when there was neither.
+   */
+  private async releaseAll(sessionId: string): Promise<boolean> {
+    const found = [this.sessions.get(sessionId), this.adopting.get(sessionId)].filter(
+      (acp) => acp !== undefined,
+    )
+    this.sessions.delete(sessionId)
+    this.adopting.delete(sessionId)
+    await Promise.all(found.map((acp) => acp.release()))
+    return found.length > 0
   }
 
   private watch(host: AgentHost): void {
@@ -826,8 +960,10 @@ class AgentState {
       approvalMode: approvalModeFor(this.deps.options.initialMode, true),
       ...(mcpServers !== undefined && { mcpServers }),
     })
-    const acp = this.register(host, session, cwd, client, models)
-    await acp.applyEffort(DEFAULT_EFFORT)
+    // The mode and model went with the start; the effort is set here.
+    const acp = await this.adopt(host, session, cwd, client, models, (started) =>
+      started.applyEffort(DEFAULT_EFFORT),
+    )
     return { sessionId: session.sessionId, modes: acp.modes(), configOptions: acp.configOptions() }
   }
 
@@ -844,22 +980,19 @@ class AgentState {
       startingModel(models),
       this.forwardedMcp(host, requestedMcp),
     )
-    const acp = this.register(host, loaded.session, cwd, client, models)
     // A session resumes on the approval mode, model and effort it last had,
     // which may differ from what the editor is told (a more permissive mode,
     // a hidden model): they are set before anything is replayed, as the
-    // panel sets its own on a resume.
-    try {
-      await acp.matchAdvertised()
-    } catch (error: unknown) {
-      // Nothing is shown that does not run: the load fails instead.
-      this.closeSession(loaded.session.sessionId)
-      throw error
-    }
-    if (isReplayed) {
-      await acp.replay([...loaded.history.items])
-      acp.sendPlan(loaded.history.todos)
-    }
+    // panel sets its own on a resume. Nothing is shown that does not run:
+    // if the backend refuses, the load fails instead.
+    const acp = await this.adopt(host, loaded.session, cwd, client, models, async (resumed) => {
+      await resumed.matchAdvertised()
+      if (!isReplayed) {
+        return
+      }
+      await resumed.replay([...loaded.history.items])
+      resumed.sendPlan(loaded.history.todos)
+    })
     return { modes: acp.modes(), configOptions: acp.configOptions() }
   }
 
@@ -893,9 +1026,11 @@ class AgentState {
     return found
   }
 
-  public closeSession(sessionId: string): void {
-    this.session(sessionId).dispose()
-    this.sessions.delete(sessionId)
+  /** The editor closes a session: the one held, or one still being set up. */
+  public async closeSession(sessionId: string): Promise<void> {
+    if (!(await this.releaseAll(sessionId))) {
+      throw RequestError.resourceNotFound(sessionId)
+    }
   }
 
   /** A paid use asked in the session it is for; one the agent does not hold is denied (M58). */
@@ -938,8 +1073,8 @@ export function createAcpAgent(deps: AcpAgentDeps): AgentApp {
     .onRequest('session/list', (context) =>
       state.listSessions(context.params.cwd ?? undefined, context.params.cursor ?? undefined),
     )
-    .onRequest('session/close', (context) => {
-      state.closeSession(context.params.sessionId)
+    .onRequest('session/close', async (context) => {
+      await state.closeSession(context.params.sessionId)
       return {}
     })
     .onRequest('session/set_mode', async (context) => {

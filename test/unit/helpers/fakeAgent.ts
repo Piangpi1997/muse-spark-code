@@ -153,6 +153,7 @@ export class FakeAgentHost implements AgentHost {
     return Promise.resolve(loaded)
   })
   public readonly listSessions = vi.fn<AgentHost['listSessions']>(() => Promise.resolve(this.page))
+  public readonly listModels = vi.fn<AgentHost['listModels']>(() => Promise.resolve(this.models))
 
   public constructor(public models: readonly ModelSummary[] = FAKE_MODELS) {}
 
@@ -177,10 +178,6 @@ export class FakeAgentHost implements AgentHost {
     for (const listener of this.exitListeners) {
       listener({ description, isExpected: false, isPersistent: false })
     }
-  }
-
-  public listModels(): Promise<readonly ModelSummary[]> {
-    return Promise.resolve(this.models)
   }
 
   public readSession(): Promise<never> {

@@ -3,6 +3,7 @@ import { MspError } from '@muse-code/sdk'
 import { describe, expect, it, vi } from 'vitest'
 import { type AcpAgentDeps, type BackendReadiness, createAcpAgent } from '../../src/acp/agent'
 import { AcpPaidUse } from '../../src/acp/paid'
+import type { AgentSession, ModelSummary } from '../../src/core/agent/agentBackend'
 import type {
   AgentEvent,
   ApprovalChoice,
@@ -12,7 +13,7 @@ import type {
 import { type AcpPaidFeature, UI_TEXT } from '../../src/shared/constants'
 import type { PaidUseRequest } from '../../src/shared/paid'
 import { approvalModeFor } from '../../src/shared/permissionModes'
-import { FakeAgentHost, type FakeAgentSession } from './helpers/fakeAgent'
+import { FAKE_MODELS, FakeAgentHost, type FakeAgentSession } from './helpers/fakeAgent'
 import { memoryPaidGrants } from './helpers/paidGrants'
 
 // M63 (PLAN.md D62): the agent driven by the ACP SDK's own client, in
@@ -53,7 +54,9 @@ interface Harness {
 interface HarnessOptions {
   readonly readiness?: BackendReadiness
   readonly answer?: PermissionAnswer
-  readonly elicitation?: acp.CreateElicitationResponse
+  /** The client's form answer, or a function answering when the test lets it. */
+  readonly elicitation?:
+    acp.CreateElicitationResponse | (() => Promise<acp.CreateElicitationResponse>)
   /** The client's form request fails instead of answering. */
   readonly isElicitationBroken?: boolean
   readonly canBypass?: boolean
@@ -123,7 +126,9 @@ function harness(options: HarnessOptions = {}): Harness {
       if (options.isElicitationBroken === true) {
         throw new Error('the form could not be shown')
       }
-      return options.elicitation ?? { action: 'cancel' }
+      return typeof options.elicitation === 'function'
+        ? options.elicitation()
+        : (options.elicitation ?? { action: 'cancel' })
     })
   return {
     host,
@@ -136,6 +141,20 @@ function harness(options: HarnessOptions = {}): Harness {
     log,
     run: (op) => client.connectWith(agent, op),
   }
+}
+
+/** Lets the agent act on what it just received, before a test checks it did nothing. */
+async function settled(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, WAIT_MS / 10))
+}
+
+/** Hands a held session back retained on the next resume, as both hosts do (Grok on 78a74430). */
+function retainOnResume(h: Harness, shared: FakeAgentSession): void {
+  const resume = h.host.resumeSession.getMockImplementation()!
+  h.host.resumeSession.mockImplementation(async (...args) => ({
+    ...(await resume(...args)),
+    session: shared,
+  }))
 }
 
 async function until(isMet: () => boolean): Promise<void> {
@@ -201,6 +220,33 @@ async function askInForm(h: Harness, question: Question): Promise<void> {
       )
     })
   })
+}
+
+/** The next session resumed, as `change` leaves it before the agent has it. */
+function onNextResume(h: Harness, change: (session: AgentSession) => void): void {
+  const resume = h.host.resumeSession.getMockImplementation()!
+  h.host.resumeSession.mockImplementationOnce(async (...args) => {
+    const loaded = await resume(...args)
+    change(loaded.session)
+    return loaded
+  })
+}
+
+/** A load whose resumed session `spoil` breaks first: it fails, and that session is let go. */
+async function failedLoad(
+  h: Harness,
+  spoil: (session: AgentSession) => void,
+  after: (client: acp.ClientContext) => Promise<void> = () => Promise.resolve(),
+): Promise<void> {
+  onNextResume(h, spoil)
+  await h.run(async (client) => {
+    await client.request('initialize', { protocolVersion: acp.PROTOCOL_VERSION })
+    await expect(
+      client.request('session/load', { sessionId: 'old-1', cwd: CWD, mcpServers: [] }),
+    ).rejects.toThrow()
+    await after(client)
+  })
+  expect(h.host.sessions[0]?.dispose).toHaveBeenCalledTimes(1)
 }
 
 /** Starts a session and a prompt, and waits until the backend has the turn. */
@@ -857,35 +903,39 @@ describe('the ACP agent (M63)', () => {
 
   it('fails a load whose mode the backend refuses, and lets that session go', async () => {
     const h = harness()
-    const resume = h.host.resumeSession.getMockImplementation()!
-    h.host.resumeSession.mockImplementationOnce(async (...args) => {
-      const loaded = await resume(...args)
-      vi.mocked(loaded.session.setApprovalMode).mockRejectedValue(new Error('refused'))
-      return loaded
-    })
-    await h.run(async (client) => {
-      await client.request('initialize', { protocolVersion: acp.PROTOCOL_VERSION })
-      await expect(
-        client.request('session/load', { sessionId: 'old-1', cwd: CWD, mcpServers: [] }),
-      ).rejects.toThrow()
-      await expect(prompt(client, 'old-1')).rejects.toThrow()
-    })
-    expect(h.host.sessions[0]?.dispose).toHaveBeenCalledTimes(1)
+    await failedLoad(
+      h,
+      (session) => {
+        vi.mocked(session.setApprovalMode).mockRejectedValue(new Error('refused'))
+      },
+      async (client) => {
+        await expect(prompt(client, 'old-1')).rejects.toThrow()
+      },
+    )
     expect(h.updates).toEqual([])
   })
 
-  it('runs a loaded session as it is shown: the mode, a model it lists, the effort (Codex on a209130)', async () => {
+  it('runs a loaded session on the model the backend reports, never the one its handle holds (Codex on 4eb0156c)', async () => {
     const h = harness()
-    const resume = h.host.resumeSession.getMockImplementation()!
-    // Stored on a contributor model, which this agent does not list.
-    h.host.resumeSession.mockImplementationOnce((sessionId, _modelId, mcp) =>
-      resume(sessionId, 'muse-spark-1.3-contributor', mcp),
+    // Muse Code's resumed handle holds the model the agent asked for; the
+    // CLI keeps the contributor model the session last ran on.
+    h.host.listModels.mockImplementation((sessionId) =>
+      Promise.resolve(
+        sessionId === undefined
+          ? h.host.models
+          : h.host.models.map((model) => ({
+              ...model,
+              isActive: model.modelId === 'muse-spark-1.3-contributor',
+            })),
+      ),
     )
     const loaded = await h.run(async (client) => {
       await client.request('initialize', { protocolVersion: acp.PROTOCOL_VERSION })
       return await client.request('session/load', { sessionId: 'old-1', cwd: CWD, mcpServers: [] })
     })
     const session = h.host.sessions[0]!
+    expect(session.modelId).toBe('muse-spark-1.3')
+    expect(h.host.listModels).toHaveBeenCalledWith('old-1')
     expect(loaded.modes?.currentModeId).toBe('manual')
     expect(session.setApprovalMode).toHaveBeenCalledWith('promptUnmatched')
     expect(session.setModel).toHaveBeenCalledWith('muse-spark-1.3')
@@ -893,6 +943,310 @@ describe('the ACP agent (M63)', () => {
       'muse-spark-1.3',
     )
     expect(session.setReasoningEffort).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps a listed model the backend reports active, and sets the default where it reports none', async () => {
+    const other: ModelSummary = {
+      modelId: 'muse-spark-1.2',
+      displayLabel: 'Muse Spark 1.2',
+      contextLimit: 1_000_000,
+      isDefault: false,
+      isActive: false,
+    }
+    const h = harness()
+    h.host.models = [...FAKE_MODELS.map((model) => ({ ...model, isActive: false })), other]
+    h.host.listModels.mockImplementation((sessionId) =>
+      Promise.resolve(
+        h.host.models.map((model) => ({
+          ...model,
+          isActive: sessionId === 'old-1' && model.modelId === other.modelId,
+        })),
+      ),
+    )
+    const [kept, unreported] = await h.run(async (client) => {
+      await client.request('initialize', { protocolVersion: acp.PROTOCOL_VERSION })
+      return [
+        await client.request('session/load', { sessionId: 'old-1', cwd: CWD, mcpServers: [] }),
+        await client.request('session/resume', { sessionId: 'old-2', cwd: CWD }),
+      ]
+    })
+    expect(h.host.sessions[0]?.setModel).not.toHaveBeenCalled()
+    expect(kept.configOptions?.find((option) => option.id === 'model')?.currentValue).toBe(
+      'muse-spark-1.2',
+    )
+    expect(h.host.sessions[1]?.setModel).toHaveBeenCalledWith('muse-spark-1.3')
+    expect(unreported.configOptions?.find((option) => option.id === 'model')?.currentValue).toBe(
+      'muse-spark-1.3',
+    )
+  })
+
+  it('lets a new session go when its effort is refused, and holds nothing (Codex on 4eb0156c)', async () => {
+    const h = harness()
+    const startNew = h.host.startSession.getMockImplementation()!
+    h.host.startSession.mockImplementationOnce(async (options) => {
+      const started = await startNew(options)
+      vi.mocked(started.setReasoningEffort).mockRejectedValue(new Error('refused'))
+      return started
+    })
+    await h.run(async (client) => {
+      await client.request('initialize', { protocolVersion: acp.PROTOCOL_VERSION })
+      await expect(client.request('session/new', { cwd: CWD, mcpServers: [] })).rejects.toThrow()
+      await expect(prompt(client, 'session-1')).rejects.toThrow()
+    })
+    expect(h.host.sessions[0]?.dispose).toHaveBeenCalledTimes(1)
+  })
+
+  it('lets the held session go before a reload runs on it, and holds nothing if the reload fails (Grok on 78a74430)', async () => {
+    const h = harness()
+    await h.run(async (client) => {
+      await client.request('initialize', { protocolVersion: acp.PROTOCOL_VERSION })
+      await client.request('session/load', { sessionId: 'old-1', cwd: CWD, mcpServers: [] })
+      retainOnResume(h, h.host.sessions[0]!)
+      h.host.listModels.mockImplementation((sessionId) =>
+        sessionId === undefined
+          ? Promise.resolve(h.host.models)
+          : Promise.reject(new Error('no model list')),
+      )
+      await expect(
+        client.request('session/load', { sessionId: 'old-1', cwd: CWD, mcpServers: [] }),
+      ).rejects.toThrow()
+      // Nothing is held for it, so nothing is shown that does not run.
+      await expect(
+        client.request('session/set_mode', { sessionId: 'old-1', modeId: 'plan' }),
+      ).rejects.toThrow()
+      h.host.listModels.mockImplementation(() => Promise.resolve(h.host.models))
+      await client.request('session/load', { sessionId: 'old-1', cwd: CWD, mcpServers: [] })
+      await client.request('session/set_mode', { sessionId: 'old-1', modeId: 'plan' })
+    })
+    const shared = h.host.sessions[0]!
+    // The first hold went with the reload, the failed reload's with it.
+    expect(shared.dispose).toHaveBeenCalledTimes(2)
+    expect(shared.setApprovalMode).toHaveBeenLastCalledWith(approvalModeFor('plan', true))
+  })
+
+  it('follows a session loaded again once, not once for each load (Grok on 78a74430)', async () => {
+    const h = harness()
+    const configUpdates = () =>
+      h.updates.filter((update) => update.sessionUpdate === 'config_option_update')
+    await h.run(async (client) => {
+      await client.request('initialize', { protocolVersion: acp.PROTOCOL_VERSION })
+      await client.request('session/load', { sessionId: 'old-1', cwd: CWD, mcpServers: [] })
+      const shared = h.host.sessions[0]!
+      retainOnResume(h, shared)
+      // Muse Code tells of the effort it was set to.
+      shared.setReasoningEffort.mockImplementation(() => {
+        shared.emit({ type: 'effortChanged', effort: 'medium' })
+        return Promise.resolve()
+      })
+      await client.request('session/load', { sessionId: 'old-1', cwd: CWD, mcpServers: [] })
+      await until(() => configUpdates().length > 0)
+      await settled()
+    })
+    expect(configUpdates()).toHaveLength(1)
+  })
+
+  it('ends a closed session’s prompt cancelled, stops its turn, and its late approval decides nothing (Grok on 78a74430, 5e2b85c3)', async () => {
+    const answer = Promise.withResolvers<acp.RequestPermissionResponse>()
+    const h = harness({ answer: () => answer.promise })
+    const stop = await h.run(async (client) => {
+      const { sessionId, session, response } = await running(h, client)
+      session.emit(approval())
+      await until(() => h.permissions.length === 1)
+      await client.request('session/close', { sessionId })
+      answer.resolve({ outcome: { outcome: 'selected', optionId: 'allow_once' } })
+      await settled()
+      return await response
+    })
+    expect(stop).toEqual({ stopReason: 'cancelled' })
+    expect(h.host.sessions[0]?.decideApproval).not.toHaveBeenCalled()
+    // The editor was told it stopped, so it stops on the backend too.
+    expect(h.host.sessions[0]?.cancel).toHaveBeenCalledTimes(1)
+    expect(h.host.sessions[0]?.dispose).toHaveBeenCalledTimes(1)
+  })
+
+  it.each([
+    ['stops the turn once it has started', true],
+    ['has nothing to stop when the turn fails to start', false],
+  ])(
+    'closed while its turn is being started, it %s (Grok on 5e2b85c3)',
+    async (_name, isStarted) => {
+      const h = harness()
+      const starting = Promise.withResolvers<{ turnId: string; disposition: 'started' }>()
+      const stop = await h.run(async (client) => {
+        const { sessionId } = await start(client)
+        const session = h.host.sessions[0]!
+        session.sendTurn.mockImplementation(() => starting.promise)
+        const response = prompt(client, sessionId)
+        await until(() => session.sendTurn.mock.calls.length === 1)
+        const closed = client.request('session/close', { sessionId })
+        await settled()
+        // Nothing is stopped before there is a turn to stop.
+        expect(session.cancel).not.toHaveBeenCalled()
+        if (isStarted) {
+          starting.resolve({ turnId: 'turn-1', disposition: 'started' })
+        } else {
+          starting.reject(new Error('not started'))
+        }
+        await closed
+        return await response
+      })
+      expect(stop).toEqual({ stopReason: 'cancelled' })
+      expect(h.host.sessions[0]?.cancel).toHaveBeenCalledTimes(isStarted ? 1 : 0)
+      expect(h.host.sessions[0]?.dispose).toHaveBeenCalledTimes(1)
+    },
+  )
+
+  it('stops the turn of a session loaded again while it runs (Grok on 5e2b85c3)', async () => {
+    const h = harness()
+    const stop = await h.run(async (client) => {
+      await client.request('initialize', { protocolVersion: acp.PROTOCOL_VERSION })
+      await client.request('session/load', { sessionId: 'old-1', cwd: CWD, mcpServers: [] })
+      const shared = h.host.sessions[0]!
+      const response = prompt(client, 'old-1')
+      await until(() => shared.sendTurn.mock.calls.length === 1)
+      retainOnResume(h, shared)
+      await client.request('session/load', { sessionId: 'old-1', cwd: CWD, mcpServers: [] })
+      return await response
+    })
+    expect(stop).toEqual({ stopReason: 'cancelled' })
+    expect(h.host.sessions[0]?.cancel).toHaveBeenCalledTimes(1)
+  })
+
+  it('lets a load still being set up go for a newer load of the same session (Grok on 5e2b85c3)', async () => {
+    const h = harness()
+    const firstMode = Promise.withResolvers<undefined>()
+    await h.run(async (client) => {
+      await client.request('initialize', { protocolVersion: acp.PROTOCOL_VERSION })
+      // The first load's session: its mode is set only when the test lets it.
+      onNextResume(h, (session) => {
+        vi.mocked(session.setApprovalMode).mockImplementationOnce(() => firstMode.promise)
+      })
+      const first = client.request('session/load', { sessionId: 'old-1', cwd: CWD, mcpServers: [] })
+      await until(() => h.host.sessions.length === 1)
+      const shared = h.host.sessions[0]!
+      await until(() => shared.setApprovalMode.mock.calls.length === 1)
+      retainOnResume(h, shared)
+      const second = client.request('session/load', {
+        sessionId: 'old-1',
+        cwd: CWD,
+        mcpServers: [],
+      })
+      await until(() => shared.setApprovalMode.mock.calls.length === 2)
+      firstMode.resolve(undefined)
+      await expect(first).rejects.toThrow()
+      await second
+      // Only the newer load follows the session and asks the editor.
+      shared.emit(approval())
+      await until(() => h.permissions.length === 1)
+      await settled()
+    })
+    expect(h.permissions).toHaveLength(1)
+    // The superseded load's hold on the shared session went, the newer one's stays.
+    expect(h.host.sessions[0]?.dispose).toHaveBeenCalledTimes(1)
+    // The superseded load changed nothing once let go: the effort is the newer load's.
+    expect(h.host.sessions[0]?.setReasoningEffort).toHaveBeenCalledTimes(1)
+  })
+
+  it.each([
+    // Its first step, and its last (after which nothing more checks).
+    ['mode', 'setApprovalMode'],
+    ['effort', 'setReasoningEffort'],
+  ] as const)(
+    'lets a resume go when the editor closes that session while its %s is being set',
+    async (_name, step) => {
+      const h = harness()
+      const held = Promise.withResolvers<undefined>()
+      await h.run(async (client) => {
+        await client.request('initialize', { protocolVersion: acp.PROTOCOL_VERSION })
+        onNextResume(h, (session) => {
+          vi.mocked(session[step]).mockImplementationOnce(() => held.promise)
+        })
+        // Resumed: no replay follows, so the last step is the effort.
+        const loading = client.request('session/resume', { sessionId: 'old-1', cwd: CWD })
+        await until(() => h.host.sessions[0]?.[step].mock.calls.length === 1)
+        await client.request('session/close', { sessionId: 'old-1' })
+        held.resolve(undefined)
+        await expect(loading).rejects.toThrow()
+        await expect(prompt(client, 'old-1')).rejects.toThrow()
+        // Closing what is not held is refused.
+        await expect(client.request('session/close', { sessionId: 'old-1' })).rejects.toThrow()
+      })
+      expect(h.host.sessions[0]?.dispose).toHaveBeenCalledTimes(1)
+      // Nothing more was set once it was let go.
+      expect(h.host.sessions[0]?.setReasoningEffort).toHaveBeenCalledTimes(
+        step === 'setApprovalMode' ? 0 : 1,
+      )
+    },
+  )
+
+  it('ends a prompt cancelled when its session is closed while the skills are announced', async () => {
+    const h = harness()
+    const skills = Promise.withResolvers<readonly never[]>()
+    const stop = await h.run(async (client) => {
+      const { sessionId } = await start(client)
+      const session = h.host.sessions[0]!
+      session.listSkills.mockImplementation(() => skills.promise)
+      const first = prompt(client, sessionId)
+      await until(() => session.listSkills.mock.calls.length === 1)
+      await client.request('session/close', { sessionId })
+      skills.resolve([])
+      return await first
+    })
+    expect(stop).toEqual({ stopReason: 'cancelled' })
+    expect(h.host.sessions[0]?.sendTurn).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    [
+      'answered',
+      (form: PromiseWithResolvers<acp.CreateElicitationResponse>) => {
+        form.resolve({ action: 'accept', content: { color: 'Blue' } })
+      },
+    ],
+    [
+      'failed',
+      (form: PromiseWithResolvers<acp.CreateElicitationResponse>) => {
+        form.reject(new Error('the form went away'))
+      },
+    ],
+  ])(
+    'neither answers nor declines a question whose form is %s after its session closed',
+    async (_name, settle) => {
+      const form = Promise.withResolvers<acp.CreateElicitationResponse>()
+      const h = harness({ elicitation: () => form.promise })
+      await h.run(async (client) => {
+        const { sessionId } = await start(client, { elicitation: { form: {} } })
+        const session = h.host.sessions[0]!
+        session.emit({
+          type: 'questionRequested',
+          userInputId: 'input-1',
+          itemId: 'q1',
+          questions: [
+            {
+              id: 'color',
+              header: 'Colour',
+              question: 'Which colour?',
+              selection: { mode: 'single' },
+              options: [{ label: 'Blue' }, { label: 'Red' }],
+            },
+          ],
+        })
+        await until(() => h.elicitations.length === 1)
+        await client.request('session/close', { sessionId })
+        settle(form)
+        await settled()
+      })
+      expect(h.host.sessions[0]?.answerQuestions).not.toHaveBeenCalled()
+      expect(h.host.sessions[0]?.cancelQuestions).not.toHaveBeenCalled()
+    },
+  )
+
+  it('lets a session go whose events cannot be followed', async () => {
+    await failedLoad(harness(), (session) => {
+      vi.spyOn(session, 'onEvent').mockImplementation(() => {
+        throw new Error('no events')
+      })
+    })
   })
 
   it('logs a backend failure by its kind, never its message (Codex on a209130)', async () => {
@@ -999,6 +1353,20 @@ async function answersInOneSession(
 }
 
 describe('paid features in the agent (M63c, M58)', () => {
+  it('denies a paid use answered after its session closed (Grok on 78a74430)', async () => {
+    const answer = Promise.withResolvers<acp.RequestPermissionResponse>()
+    const h = harness({ kind: 'modelApi', paid: ['webSearch'], answer: () => answer.promise })
+    const isAllowed = await h.run(async (client) => {
+      const { sessionId } = await start(client)
+      const asked = h.paid.allows(CWD, sessionId, WEB_SEARCH, false)
+      await until(() => h.permissions.length === 1)
+      await client.request('session/close', { sessionId })
+      answer.resolve({ outcome: { outcome: 'selected', optionId: 'paid-allow-once' } })
+      return await asked
+    })
+    expect(isAllowed).toBe(false)
+  })
+
   it('denies without asking a feature it has no flag for, and subagents always', async () => {
     const h = harness({ kind: 'modelApi', paid: ['webSearch'], answer: choose('paid-allow-once') })
     expect(await answersInOneSession(h, [IMAGE, SUBAGENT_TASK])).toEqual([false, false])
