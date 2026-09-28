@@ -47,11 +47,14 @@ happened, not what was planned; superseded entries are kept.
     model outside the markers only as short tokens; the HTML converter is bounded; names with
     trailing dots or empty labels are refused; a network's own NAT64 prefix
     is discovered (RFC 7050), and while it cannot be learned no IPv6 answer
-    is used (only a DNS answer proves there is none); hidden elements a page
-    leaves open, hidden images, self-closed hidden elements and unopened
-    dialogs stay out of the Markdown, as HTML's own parsing rules place
-    them (implied ends, misnested and self-closed tags, SVG and MathML,
-    comments and scripts); a hook's "allow" no longer replaces
+    is used (only a DNS answer proves there is none); pages are parsed by
+    HTML's own rules (implied ends, misnested and self-closed tags, SVG and
+    MathML, comments and scripts), and the Markdown is the page's text as
+    served, which can include text a browser would not show (no stylesheet
+    or hiding attribute is read, since hiding cannot be worked out
+    completely and visible small print hides nothing), all of it between
+    the untrusted markers, as the tool's description and the note now say;
+    a hook's "allow" no longer replaces
     the per-host card; trust
     and the mode are asked again after the card, before each request and
     before the page reaches the model; damaged compression and unknown charsets are
@@ -59,11 +62,10 @@ happened, not what was planned; superseded entries are kept.
     says it also hides web fetch from Muse Code. Fifteen more strings, one
     changed and one dropped, and two changed setting descriptions, in
     fifteen languages.
-- **Dependencies.** Web fetch parses HTML with `parse5` 8.0.1 (MIT),
-  sniffs its encoding with `html-encoding-sniffer` 6.0.0 (MIT) and reads
-  inline styles with `@csstools/css-tokenizer` 4.0.1 (MIT), all already in
-  the tree through the test tools. They load only in `dist/pageWorker.js`
-  (212 KiB, budget 300 KiB), on a worker thread started for each page (at
+- **Dependencies.** Web fetch parses HTML with `parse5` 8.0.1 (MIT)
+  and sniffs its encoding with `html-encoding-sniffer` 6.0.0 (MIT), both
+  already in the tree through the test tools. They load only in
+  `dist/pageWorker.js` (201 KiB, budget 300 KiB), on a worker thread started for each page (at
   most two at once) and stopped at 10 seconds or 512 MiB; `dist/extension.js` does not carry
   them. `entities` is no longer a direct dependency.
 

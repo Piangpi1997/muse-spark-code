@@ -84,7 +84,8 @@ security notes for contributors are in `PLAN.md` §9.
 - **Web fetch (both backends, M69).** When the model asks to read a web page
   (`web_fetch` on the Model API backend, `mcp__ide__webFetch` on Muse Code),
   the extension downloads it from your machine and sends its text to Meta
-  like any other tool output. The page's site receives the whole address the
+  like any other tool output: the text as served, which can include text
+  a browser would not show. The page's site receives the whole address the
   model wrote, from your IP address (or your proxy's), with a user agent
   naming this extension and no cookies or credentials; since the model
   writes that address, it can carry what the conversation holds, which is

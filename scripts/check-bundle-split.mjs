@@ -124,11 +124,9 @@ const PAGE_WORKER = { output: 'dist/pageWorker.js', metafile: 'dist/meta/pageWor
 const CONVERTER_ONLY = [
   'node_modules/parse5/',
   'node_modules/entities/',
-  'node_modules/@csstools/css-tokenizer/',
   'node_modules/html-encoding-sniffer/',
   'node_modules/@exodus/bytes/',
   'src/core/web/htmlToMarkdown.ts',
-  'src/core/web/inlineStyle.ts',
   'src/core/web/htmlCharset.ts',
   'src/host/web/pageWorker.ts',
 ]

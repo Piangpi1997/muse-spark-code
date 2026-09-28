@@ -126,13 +126,12 @@ Only the latest release on the Visual Studio Marketplace receives fixes.
   five); another host's is handed back to the model, which asks again.
   5 MiB after decompression, 30 seconds, text types only. HTML is parsed
   by parse5 on a worker thread per page (at most two at once) stopped at
-  10 seconds or 512 MiB, its output bounded; what HTML hides (`hidden`,
-  `inert`, `popover`, `aria-hidden`, a closed `<details>` but its summary,
-  a shadow host's unslotted children, an inline `display` or
-  `content-visibility` that hides, or a `visibility` that hides (inherited,
-  and undone by a descendant's `visibility: visible`) or depends on
-  `var()`, template content, `<noscript>`) is left out, XHTML is refused, while text a stylesheet hides still
-  reaches the model, marked untrusted. On the Model API backend each host asks in
+  10 seconds or 512 MiB, its output bounded; only what is never page text
+  by structure (scripts, styles, template content, `<noscript>`, embedded
+  media, form controls, SVG, MathML) is left out, and no rendering is
+  emulated, so the model gets the page's text as served, including text a
+  stylesheet, a hiding attribute or a script would keep off screen, all of
+  it marked untrusted; XHTML is refused. On the Model API backend each host asks in
   every mode but Bypass (Plan refuses), and a `PermissionRequest` hook's
   allow does not replace that card; on Muse Code the `ide` tool is listed
   only in a trusted workspace without `sandboxNetwork: restricted`, carries

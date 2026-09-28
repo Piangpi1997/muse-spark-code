@@ -17,7 +17,7 @@ const BUDGETS = [
   { path: 'dist/modelApi.js', budgetKiB: 400 },
   { path: 'dist/searchWorker.js', budgetKiB: 50 },
   // Web fetch's page converter (M69), on a worker started for each page:
-  // 212.3 KiB when split out (parse5 122.7 of it), plus room.
+  // 201.2 KiB when split out (parse5 122.7 of it), plus room.
   { path: 'dist/pageWorker.js', budgetKiB: 300 },
   { path: 'dist/webview/main.js', budgetKiB: 900 },
 ]

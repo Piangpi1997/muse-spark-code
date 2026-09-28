@@ -641,20 +641,16 @@ Meta's paid web search.
   page declares (one this computer has no decoder for refuses the page,
   never read as UTF-8), and comes back as Markdown, titled only from its
   `<head>`, with links resolved against
-  its `<base href>`. Left out: scripts, styles, forms' controls, media, SVG
-  and MathML, and what HTML itself hides: the `hidden`, `inert`, `popover`
-  and `aria-hidden="true"` attributes; of a closed `<details>`, all but its
-  summary; a declarative shadow root is read as it renders (the host's
-  children in their slots, the rest left out); an inline `style` of `display: none` or
-  `content-visibility: hidden` (with all it holds), or `visibility: hidden`
-  or `collapse` (which passes down, and a descendant undoes with
-  `visibility: visible`)
-  (read with a CSS tokenizer, so a comment or an escape does not slip past,
-  and a `var()` there counts as hiding);
-  a template's content, `<noscript>`, a dialog not opened and ruby's
-  fallback parentheses. Text a stylesheet hides, or places off screen, still
-  reaches the model, inside the markers that call
-  the page untrusted. Each page is converted on a worker thread of its own,
+  its `<base href>`. Left out is only what is never page text by its
+  structure: scripts, styles, a template's content (a declarative shadow
+  root's is kept, where it stands), `<noscript>`, embedded frames and media,
+  forms' controls, SVG and MathML. Nothing is judged by how it would render:
+  the model gets the page's text as served, which can include text a
+  browser would not show (hidden by a stylesheet, by an attribute such as
+  `hidden` or `aria-hidden`, or by a script), and all of it reaches the
+  model inside the markers that call the page untrusted. Hiding cannot be
+  worked out completely without running the page, and a page can put the
+  same words in visible small print, so the markers are the defence. Each page is converted on a worker thread of its own,
   at most two at once, stopped at 10 seconds or 512 MiB (for example, a
   page nested to be slow to parse), and then refused with the reason. Plain text, Markdown, JSON,
   XML, CSV, YAML, CSS and JavaScript come back as they are; XHTML

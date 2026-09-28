@@ -158,7 +158,6 @@ tested on chunk splits inside frames and inside multi-byte characters.
 | `axe-core`                                                              | 4.13.0                            | The accessibility gate (M37, D32): WCAG 2.0 to 2.2, levels A and AA, run inside the harness page. MPL-2.0; a dev dependency, never bundled.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | `parse5`                                                                | 8.0.1                             | M69 (D49): web fetch parses a page with the HTML standard's own parsing algorithm (the implementation jsdom uses), after four review rounds found a hand-written tokenizer short of it. MIT; one dependency, `entities` ^8 (BSD-2-Clause, 8.1.0 locked, formerly our direct dependency); no peers; published 2026-04-19; already in the lockfile through jsdom and @vscode/vsce; `npm audit` clean. Quadratic on hostile nesting (40,000 nested lists in 73 s), so it runs only in `dist/pageWorker.js`, a worker per page (at most two at once) stopped at 10 s or 512 MiB (D6). `entities` 8 says Node ≥ 20.19 for `require(esm)`; bundled, the worker ran on Node 20.18.3. |
 | `html-encoding-sniffer`                                                 | 6.0.0                             | M69: the HTML standard's encoding sniffing (byte order mark, the Content-Type charset, the 1,024-byte `<meta>` prescan) for web fetch's HTML, as jsdom uses it. MIT; one dependency, `@exodus/bytes` ^1.6 (MIT; 1.15.2 locked through jsdom, published 2026-09-21, inside the 7-day window: the lockfile pins it, as for `@muse-code/sdk`; its optional `@noble/hashes` peer is not used by the `encoding-lite` entry the sniffer imports); published 2025-12-26; `npm audit` clean. Says Node ≥ 20.19 (ESM); bundled into `dist/pageWorker.js` only and run on Node 20.18.3. Ships no types: `src/core/web/html-encoding-sniffer.d.ts`.                                      |
-| `@csstools/css-tokenizer`                                               | 4.0.1                             | M69: reads an inline `style` as CSS Syntax does (comments, escapes, case, `!important`) to tell whether it hides an element. MIT; no dependencies, no peers; published 2026-09-18; already in the lockfile through stylelint and jsdom; `npm audit` clean. Says Node ≥ 20.19 (ESM); bundled into `dist/pageWorker.js` only and run on Node 20.18.3.                                                                                                                                                                                                                                                                                                                           |
 
 Deprecated and avoided: `@vscode/webview-ui-toolkit` (archived; npm marks it
 deprecated). Webview controls are hand-built on VS Code CSS theme variables.
@@ -6817,6 +6816,25 @@ harness scenario, which is what the accessibility gate checks (D32).
     `inert`, `aria-hidden`, `popover`, a closed dialog or `<details>` hide
     all they hold, which no descendant can undo; `visibility` was the only
     inherited one.
+  - **PR #52 review of `83eedf26`** (Codex: a `<col>` styled
+    `visibility: collapse` hides a column whose cells are not its
+    descendants; the third round on the converter's hiding, so the owner's
+    rule applied: redesign, not patch): the converter no longer emulates
+    rendering. It cannot do so completely (a stylesheet, a class, a `<col>`,
+    a script, a font or a colour can hide text), and the attempt protects
+    nothing, since a page can put the same words in visible small print; the
+    defence is the untrusted markers around everything a page returns. Left
+    out now is only what is never page text by structure: the head (the
+    title is read from it), scripts, styles, template content (a declarative
+    shadow root's is written where it stands), `<noscript>`, embedded frames
+    and media, form controls, SVG and MathML. `hidden`, `inert`,
+    `aria-hidden`, `popover`, closed dialogs and `<details>`, `rp` and
+    inline styles are no longer read, for one consistent rule. The result is
+    the page's text as served, which can include text a browser would not
+    show, all of it marked untrusted, and the tool description and the
+    notice before the markers say so. `inlineStyle.ts` and
+    @csstools/css-tokenizer (D3) are removed; the worker bundle is
+    201.2 KiB. This supersedes the earlier bullets' hiding.
   - **Left**: a machine-scoped switch to turn web fetch off entirely,
     whether Muse Code's "Always allow this MCP tool" should also silence the
     extension's own modal, and whether Plan should allow fetches as reads,
@@ -7587,9 +7605,11 @@ Every lint or scanner suppression (`eslint-disable`, `@ts-expect-error`, `nosemg
   system resolver's path synthesizes nothing for `ipv4only.arpa` but does
   for other names; (7) VS Code cannot close a modal, so the extension's
   question for a Muse Code call that was stopped stays open until answered,
-  and its answer then fetches nothing; (8) text a stylesheet hides (a class,
-  an off-screen position) reaches the model, marked untrusted: only HTML's
-  own hiding and inline styles are read; (9) parse5 is quadratic on hostile
+  and its answer then fetches nothing; (8) the model reads a page's text as
+  served, which can include text a browser would not show (hidden by a
+  stylesheet, an attribute or a script), all of it marked untrusted: the
+  converter emulates no rendering and leaves out only what is never page
+  text by structure; (9) parse5 is quadratic on hostile
   nesting, so such a page costs up to 10 seconds of one worker thread before
   it is refused.
 - Contributor-tier models send content Meta may train on; guarded by opt-in

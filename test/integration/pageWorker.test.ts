@@ -32,7 +32,7 @@ suite("web fetch's page converter bundle (M69)", () => {
     )
     const html =
       '<meta charset="windows-1252"><title>Guide</title><base href="https://cdn.example.org/d/">' +
-      '<p style="display:/**/none">hidden</p><p>Caf\u{E9} <a href="x">link</a></p>'
+      '<script>not text</script><p hidden>Served</p><p>Caf\u{E9} <a href="x">link</a></p>'
     const outcome = await convert(
       {
         bytes: new Uint8Array(Buffer.from(html, 'latin1')),
@@ -46,7 +46,8 @@ suite("web fetch's page converter bundle (M69)", () => {
       ok: true,
       page: {
         title: 'Guide',
-        markdown: 'Café [link](https://cdn.example.org/d/x)',
+        // A script is never page text; a hidden paragraph is text as served.
+        markdown: 'Served\n\nCafé [link](https://cdn.example.org/d/x)',
         isTruncated: false,
       },
     })
