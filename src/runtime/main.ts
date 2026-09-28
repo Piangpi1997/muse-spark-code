@@ -157,7 +157,9 @@ async function main(): Promise<number> {
       return await login({
         resolveLaunch: () => museCode.resolveLaunch(),
         environment: () => museCode.childEnvironment(),
-        spawnInTerminal: (file, args, env) => spawn(file, [...args], { env, stdio: 'inherit' }),
+        spawnInTerminal: (file, args, env) =>
+          // nosemgrep: javascript.lang.security.detect-child-process.detect-child-process -- `muse login` as `muse serve` is started: the CLI resolved from its install layout, PATH or an absolute --muse-binary (D1a, D4), its launcher's fixed prefix and MUSE_LOGIN_ARGS, as an argument array with no shell (PLAN.md §8)
+          spawn(file, [...args], { env, stdio: 'inherit' }),
         printError: (line) => {
           writeLine(process.stderr, line)
         },
