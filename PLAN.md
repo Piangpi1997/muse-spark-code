@@ -175,7 +175,11 @@ deprecated). Webview controls are hand-built on VS Code CSS theme variables.
   string. The `muse` binary path is user-configurable; when configured it must
   be an absolute path that exists and is a file.
 - No telemetry. No network calls except to `api.meta.ai` (M7) and whatever the
-  user's own `muse` CLI performs.
+  user's own `muse` CLI performs. Amended 2026-09-27 (D49, D50): the pages
+  the model reads through web fetch, asked per host (M69); GitHub, through
+  VS Code's authentication (M71); the local dev server (M81); and
+  `api.typesafe.ai` (M85), experimental and off by default, and off while
+  `museSpark.confidentialWorkspace` is on.
 - Contributor-tier models are opt-in behind a dialog quoting Meta's training
   wording; off by default; blocked when the workspace setting
   `museSpark.confidentialWorkspace` is true.
@@ -1442,29 +1446,29 @@ of its documentation. What reaches the panel, what does not, and the
 milestone that closes each gap (the rows updated on 2026-09-27 to what
 0.9.0 ships):
 
-| Capability                        | Muse Code (subscription)                                                                                                                                                                                  | Model API (key)                                                                                                                                    | Milestone                    |
-| --------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------- |
-| Replay Meta accepts               | the CLI's own                                                                                                                                                                                             | fixed: commentary phase, reasoning summary, reasoning-only turns, stream retries                                                                   | M42 (merged)                 |
-| Tool rows for every tool          | a named row for every tool Muse Code runs: memory, goal, cron, workflow, web, work, input and reminder tools; tool-result images shown (M43)                                                              | the extension's own tools render                                                                                                                   | M43 (merged)                 |
-| Web search                        | Muse Code's own `web_search`, covered by the subscription (ran in `muse serve`, 2026-09-22); its results render as links (M43)                                                                            | paid, opt in (M33)                                                                                                                                 | M43 (rows, merged)           |
-| Images                            | Muse Code's `image_generation` is gated off (no switch found); the extension's `ide` server offers image and image-edit tools billed to a stored key, a dialog per image (M44, D37)                       | paid, opt in (M34); image edits (M44)                                                                                                              | M44 (merged)                 |
-| Web fetch (read a page)           | Muse Code's `web_fetch` is gated off                                                                                                                                                                      | none                                                                                                                                               | M44b (planned; not in 0.9.0) |
-| Goals                             | MSP `goal/*`, `session/goalChanged` and the resumed snapshot's goal: the goal strip and `/goal` (M45)                                                                                                     | Muse Code's four goal tools, stored, pinned; no loop turns of its own (M45, D38)                                                                   | M45 (merged)                 |
-| Background work, stop             | MSP `task/background`, `task/stop`, `task/stopAll` wired to rows, Agent map and Ctrl+B (M46)                                                                                                              | shell calls can move to the background and be stopped; output reaches the next request (M46)                                                       | M46 (merged)                 |
-| `!` user shell                    | MSP `session/userShell` with the `userShell` grant; `!` prompt and row (M46)                                                                                                                              | the shell runner, outside turns, with output in replay (M46)                                                                                       | M46 (merged)                 |
-| Workflows                         | captured run and agents render as a read-only card (M47, D40); owner controls wait for a live accepted-command capture                                                                                    | none (Muse Code's own engine)                                                                                                                      | M47 (merged)                 |
-| Subagents                         | map and controls (M14, M18); native `reopen` and `readResult` wait for live success captures                                                                                                              | opt-in paid child tasks with one-use consent and four-request cap (M48, D45)                                                                       | M48 (merged)                 |
-| Memory                            | Muse Code memory tools and the shared Memory view (M49, D41)                                                                                                                                              | memory tools and snapshot over the same notes; native writer-lock parity remains unproved                                                          | M49 (merged)                 |
-| MCP servers                       | loaded by Muse Code; read-only view (M31)                                                                                                                                                                 | extension MCP client and Windows job containment built; merged as PR #37 after local and hosted gates                                              | M50 (merged)                 |
-| Hooks                             | run by Muse Code; read-only view (M31)                                                                                                                                                                    | machine opt-in hooks from managed, user and project sources, only in a trusted workspace; 17 event names wired                                     | M51 (merged)                 |
-| Scheduled prompts (`/loop`, cron) | the agent's `cron_*` tools, shown as rows (M43); no list or cancel over MSP                                                                                                                               | `/loop` jobs kept per conversation and key; a due run only after the paid gate and a per-run confirmation (M52)                                    | M52 (merged)                 |
-| Rewind a conversation, side chat  | conversation rewind and Side chat through `session/fork` (refused by Muse Code 1.3.0 on Windows)                                                                                                          | conversation rewind and a Plan-mode Side chat (M53, D46)                                                                                           | M53 (merged)                 |
-| PDFs and files as input           | MSP takes text, images and skills only: picked UTF-8 text files travel as named text; a PDF names the Model API backend                                                                                   | PDFs and images attached or read by `read_file`; UTF-8 text files as named text (M54, D47)                                                         | M54 (merged)                 |
-| Questions: clarify                | `userInput/clarify` wired to Explain instead (M46)                                                                                                                                                        | `ask_user` accepts the explanation (M46)                                                                                                           | M46 (merged)                 |
-| Sign-in in the panel, install     | `account/*` device-code sign-in in the panel; **Install Muse Code** runs Meta's installer in a terminal (M55)                                                                                             | key pasted, or added from Account & usage while Muse Code is signed in                                                                             | M55 (M41; merged)            |
-| Network posture, enterprise       | `--sandbox-network` from `museSpark.sandboxNetwork`; VS Code's proxy handed to Muse Code; `muse config status` in Diagnostics (M56); `--no-session-log` not offered (D43)                                 | fetch and the voice socket through VS Code's proxy and certificates; network failures named; a stable prompt-cache key and retention setting (M56) | M56 (merged)                 |
-| Voice                             | the OS recogniser (free); Muse Code's own voice is TUI-only and not on Windows                                                                                                                            | the OS recogniser, or Muse Voice (paid, M35)                                                                                                       | —                            |
-| Everything else already at parity | sessions, history, fork, rename, compaction, export, steering, queue, approvals with stages and scopes, questions, todos, usage, model, effort, modes, skills, rules, worktrees, attachments, diagnostics | the same, through the extension's own harness                                                                                                      | —                            |
+| Capability                        | Muse Code (subscription)                                                                                                                                                                                  | Model API (key)                                                                                                                                    | Milestone           |
+| --------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------- |
+| Replay Meta accepts               | the CLI's own                                                                                                                                                                                             | fixed: commentary phase, reasoning summary, reasoning-only turns, stream retries                                                                   | M42 (merged)        |
+| Tool rows for every tool          | a named row for every tool Muse Code runs: memory, goal, cron, workflow, web, work, input and reminder tools; tool-result images shown (M43)                                                              | the extension's own tools render                                                                                                                   | M43 (merged)        |
+| Web search                        | Muse Code's own `web_search`, covered by the subscription (ran in `muse serve`, 2026-09-22); its results render as links (M43)                                                                            | paid, opt in (M33)                                                                                                                                 | M43 (rows, merged)  |
+| Images                            | Muse Code's `image_generation` is gated off (no switch found); the extension's `ide` server offers image and image-edit tools billed to a stored key, a dialog per image (M44, D37)                       | paid, opt in (M34); image edits (M44)                                                                                                              | M44 (merged)        |
+| Web fetch (read a page)           | Muse Code's `web_fetch` is gated off                                                                                                                                                                      | none                                                                                                                                               | M69 (D49; was M44b) |
+| Goals                             | MSP `goal/*`, `session/goalChanged` and the resumed snapshot's goal: the goal strip and `/goal` (M45)                                                                                                     | Muse Code's four goal tools, stored, pinned; no loop turns of its own (M45, D38)                                                                   | M45 (merged)        |
+| Background work, stop             | MSP `task/background`, `task/stop`, `task/stopAll` wired to rows, Agent map and Ctrl+B (M46)                                                                                                              | shell calls can move to the background and be stopped; output reaches the next request (M46)                                                       | M46 (merged)        |
+| `!` user shell                    | MSP `session/userShell` with the `userShell` grant; `!` prompt and row (M46)                                                                                                                              | the shell runner, outside turns, with output in replay (M46)                                                                                       | M46 (merged)        |
+| Workflows                         | captured run and agents render as a read-only card (M47, D40); owner controls wait for a live accepted-command capture                                                                                    | none (Muse Code's own engine)                                                                                                                      | M47 (merged)        |
+| Subagents                         | map and controls (M14, M18); native `reopen` and `readResult` wait for live success captures                                                                                                              | opt-in paid child tasks with one-use consent and four-request cap (M48, D45)                                                                       | M48 (merged)        |
+| Memory                            | Muse Code memory tools and the shared Memory view (M49, D41)                                                                                                                                              | memory tools and snapshot over the same notes; native writer-lock parity remains unproved                                                          | M49 (merged)        |
+| MCP servers                       | loaded by Muse Code; read-only view (M31)                                                                                                                                                                 | extension MCP client and Windows job containment built; merged as PR #37 after local and hosted gates                                              | M50 (merged)        |
+| Hooks                             | run by Muse Code; read-only view (M31)                                                                                                                                                                    | machine opt-in hooks from managed, user and project sources, only in a trusted workspace; 17 event names wired                                     | M51 (merged)        |
+| Scheduled prompts (`/loop`, cron) | the agent's `cron_*` tools, shown as rows (M43); no list or cancel over MSP                                                                                                                               | `/loop` jobs kept per conversation and key; a due run only after the paid gate and a per-run confirmation (M52)                                    | M52 (merged)        |
+| Rewind a conversation, side chat  | conversation rewind and Side chat through `session/fork` (refused by Muse Code 1.3.0 on Windows)                                                                                                          | conversation rewind and a Plan-mode Side chat (M53, D46)                                                                                           | M53 (merged)        |
+| PDFs and files as input           | MSP takes text, images and skills only: picked UTF-8 text files travel as named text; a PDF names the Model API backend                                                                                   | PDFs and images attached or read by `read_file`; UTF-8 text files as named text (M54, D47)                                                         | M54 (merged)        |
+| Questions: clarify                | `userInput/clarify` wired to Explain instead (M46)                                                                                                                                                        | `ask_user` accepts the explanation (M46)                                                                                                           | M46 (merged)        |
+| Sign-in in the panel, install     | `account/*` device-code sign-in in the panel; **Install Muse Code** runs Meta's installer in a terminal (M55)                                                                                             | key pasted, or added from Account & usage while Muse Code is signed in                                                                             | M55 (M41; merged)   |
+| Network posture, enterprise       | `--sandbox-network` from `museSpark.sandboxNetwork`; VS Code's proxy handed to Muse Code; `muse config status` in Diagnostics (M56); `--no-session-log` not offered (D43)                                 | fetch and the voice socket through VS Code's proxy and certificates; network failures named; a stable prompt-cache key and retention setting (M56) | M56 (merged)        |
+| Voice                             | the OS recogniser (free); Muse Code's own voice is TUI-only and not on Windows                                                                                                                            | the OS recogniser, or Muse Voice (paid, M35)                                                                                                       | —                   |
+| Everything else already at parity | sessions, history, fork, rename, compaction, export, steering, queue, approvals with stages and scopes, questions, todos, usage, model, effort, modes, skills, rules, worktrees, attachments, diagnostics | the same, through the extension's own harness                                                                                                      | —                   |
 
 Rulings carried: the subscription never pays for a Model API call, and the
 key is never handed to `muse serve` (D1); a paid call is opt in and loud
@@ -2464,6 +2468,259 @@ the price accepted once, then only the row, the badge and the tally).
 - **Not asked:** an ordinary Model API turn the user types. Choosing the
   Model API backend with a pay-as-you-go key is that consent (D1, D37); the
   popup covers what costs extra beyond it.
+
+### D49 — Coding quality first: what to build next (2026-09-27)
+
+The owner (2026-09-27):
+
+- "research the claude code harness and any upcoming features … and also
+  https://github.com/NVlabs/SoL-Pi and see if there are gaps between our
+  product and theirs that we can fill to make our product compete with the
+  claudes, and the codexes, and the open codes, and open claws, the t3
+  codes …"
+- "we are geared towards coding so thats where our focus should be the
+  strongest, but anything that could help productivity and connectivity
+  and compatibility thats fine, and maybe some of this helps on the cli
+  side as well"
+- Then: "put together the list of improvements you think will be the
+  best for this project for our users to get the highest quality and
+  value then add them to the plan".
+
+The research is in `docs/research/competitive-landscape-2026-09.md`: public
+sources, no sign-in, no spend. It found the extension at or near parity
+with Claude Code on:
+
+- subagents, hooks, MCP, skills, goals, scheduled prompts;
+- rewind, side chat, worktrees, memory, compaction;
+- permission modes and plan mode.
+
+It is ahead of most of the field on paid-use consent, languages,
+accessibility and machine-scoped settings. It is behind on the loop that
+makes an agent's code correct, and on the workflow around a change.
+
+**The ranking rule.** What most improves the code a user gets comes
+first: the model seeing the effects of its edits, understanding the code
+it changes, and reading the pages it needs. Next comes reviewing and
+shipping that code, then spending fewer tokens on long tasks, then
+running more agents safely, then connectivity. Within a wave, what serves
+both backends comes before what serves one.
+
+**The two backends.**
+
+- **Model API:** the extension owns the loop, so every item below can be
+  built in full.
+- **Muse Code:** MSP bounds what the backend can do. Two routes still
+  reach it:
+  - the extension's `ide` MCP server, which every Muse Code session
+    already loads (M5, M44), can offer the new tools (code intelligence,
+    web fetch, the browser check);
+  - everything that lives in the extension serves both backends: review,
+    git, checkpoints, the session board, notifications.
+- What neither route can reach is named in its milestone and, where it
+  matters, asked of Meta upstream: tool-output projection, fused edit and
+  verify, `web_fetch` enablement.
+
+**Rules carried.**
+
+- **Paid calls.** An item that makes model calls beyond the user's own
+  turn is billed to the key. Such items are opt in, priced, and ask before
+  each use (D30, D48). They are:
+  - the Auto reviewer;
+  - the second-opinion and reviewer agents, run on their own or as a
+    child (D45);
+  - the log reducer (M73);
+  - best-of-N attempts, on the Model API only.
+- **The user's own turn** is the model calls made while answering a message
+  or command the user sent, in that conversation: a compaction or a
+  follow-up the harness adds on the way is part of it, as is a
+  `/review`, commit message or PR body the user asks for. Calls started
+  without one (a schedule, a wake, an automatic review, a child or
+  reviewer run on its own) are beyond it, as M52 set for scheduled
+  prompts. Nothing generates text on its own.
+- **Restricted Mode** runs no git and no shell (D13, D24). A milestone that
+  needs them is unavailable there and says why.
+- **Measured first.** A harness change that trades tokens against
+  quality (M73, M74) ships only after M75's paired evaluation shows the
+  capability floors held on muse-spark. M75 is therefore built first in
+  wave 3, and M73 and M74 each land together with their own passing run:
+  until that run passes, the mechanism has no setting and no code path a
+  user can reach.
+- **Tools on the `ide` server.** It is one endpoint for the whole
+  window, with one token and no session identity, and it is attached even
+  in Restricted Mode, so it cannot see a Muse Code session's permission
+  mode. A tool served there that writes, runs a command or reaches the
+  network therefore:
+  - is not listed while the workspace is untrusted, and a network tool is
+    not listed while `museSpark.sandboxNetwork` denies the network;
+  - declares its MCP annotations (`readOnlyHint: false`, and
+    `openWorldHint: true` for the network); a read-only tool declares
+    `readOnlyHint: true`;
+  - confirms each call in the extension's own modal, as the image tools
+    do (M44).
+- **Untrusted content.** Fetched pages, PR and review comments, imported
+  files and tool output are data, never instructions. They are marked as
+  untrusted where the model receives them, and nothing in them can raise
+  a permission, pick a model or skip a question. A conversation built on
+  such content (an imported session, a PR someone else wrote) starts in a
+  mode that asks, whatever `museSpark.initialPermissionMode` says, and
+  only the user's own action relaxes it.
+- **Automatic actions follow the mode.** Anything the extension runs on
+  its own (checks after an edit, a memory flush, a review turn) takes the
+  same path as the call it stands for: a shell command asks wherever the
+  shell tool would, a memory write where a memory write would, and Plan
+  and Restricted Mode refuse what they refuse today.
+- **Captured wire.** Wire shapes come from live captures (AGENTS.md
+  rule 13).
+- **Ported code.** Code ported from SoL-Pi (MIT) keeps NVIDIA's notice in
+  `THIRD_PARTY_NOTICES.txt` and the file headers. That file is generated
+  from `node_modules` licences by `scripts/third-party-notices.mjs`, so
+  the first milestone that ports code (M68 or M73) adds a list of ported
+  sources to the generator, which its staleness check then covers (with a
+  drill).
+
+**The program**, in order. Size S is two days or less, M is three to five
+days, L is one to two weeks. The milestone numbers were given before the
+order was settled, so the table, not the numbers, is the order: M80 comes
+after wave 5's others because it waits for PR #32, and D50's M85 comes
+last, after M73, M75, M76 and M78 that it builds on, and after the
+owner's TypeSafe key for its capture.
+
+| Wave                       | Milestone | What                                                                                                                   | Backends                              | Who has it                              | Size |
+| -------------------------- | --------- | ---------------------------------------------------------------------------------------------------------------------- | ------------------------------------- | --------------------------------------- | ---- |
+| 1 Correct code             | M68       | Verify loop: diagnostics after edits, format on edit, check commands, edit-then-run                                    | API full; MC diagnostics and guidance | OpenCode, Aider, Crush, SoL-Pi          | M    |
+|                            | M67       | Code intelligence tools from VS Code's language services, and a repo map                                               | both (MC through `ide`)               | Aider, OpenCode, Zed, Claude Code (LSP) | M    |
+|                            | M69       | Web fetch (folds in M44b)                                                                                              | API native; MC through `ide`          | Claude Code, Codex, OpenCode            | S    |
+| 2 Review and ship          | M70       | Review: `/review` presets, a review pane with per-hunk accept/reject and line comments to the agent, a security preset | both                                  | Codex, Zed, Kilo, T3 Code, Claude Code  | L    |
+|                            | M71       | Git and PRs: commit message, commit, push, open a PR, PR status per conversation, a conversation in a worktree         | both                                  | T3 Code, OpenCode, Codex, Claude Code   | M    |
+|                            | M72       | Turn checkpoints with untracked files; restore files, conversation, or both; redo                                      | both                                  | T3 Code, Cline, Gemini CLI, OpenCode    | M    |
+| 3 Long tasks, fewer tokens | M75       | Paired efficiency evaluation with capability floors and held-out tasks, built first                                    | API                                   | SoL-Pi, Claude Code plugin evals        | M    |
+|                            | M73       | Observation packing with `recall_output`, and a savings ledger, once its M75 run passes                                | API                                   | SoL-Pi                                  | S    |
+|                            | M74       | Automatic compaction when a todo item completes, a memory flush before compaction, `/handoff` to a new conversation    | API                                   | SoL-Pi, OpenClaw, Amp                   | M    |
+| 4 More agents, safely      | M77       | Session board across conversations and worktrees; best-of-N with diff comparison                                       | both (best-of-N on API)               | Cursor, Kilo, T3 Code, Codex, Zed       | L    |
+|                            | M79       | Plans as files: save the approved plan, implement it in a fresh context                                                | both                                  | Codex, Factory, Cline                   | S    |
+|                            | M76       | Custom agents in Markdown; built-in Explore and Second-opinion agents, and M70's Reviewer in the same format           | API; MC reads its own                 | Claude Code, Codex, OpenCode, Amp       | M    |
+|                            | M78       | Auto made safe: command rules with tests, permission profiles, an Auto reviewer                                        | API                                   | Codex, OpenCode, Gemini CLI             | M    |
+| 5 Connect                  | M81       | Browser check: open the dev server, screenshot and console back to the model                                           | API; MC through `ide`                 | Cursor, Codex, Claude Code              | M    |
+|                            | M82       | Notifications, usage per reply, a session budget cap, cache savings                                                    | both (cost and cache on API)          | Claude Code, OpenClaw, T3 Code, Codex   | S    |
+|                            | M83       | Import from Claude Code, Codex and Cursor: MCP servers, hooks, agents, commands (extends M30)                          | both                                  | Codex `/import`, Junie                  | S    |
+|                            | M84       | Session export and import as JSON, and a local share file                                                              | both (import resumes on API)          | OpenCode, Codex, Amp                    | S    |
+|                            | M80       | Headless run and a GitHub Action for review and fix, through the ACP agent's package                                   | API; MC                               | Codex, Claude Code, OpenCode            | M    |
+| 6 Experimental (D50)       | M85       | TypeSafe assist: skill and agent suggestion, an advisory Auto risk score, relevance and grading once measured          | API                                   | TypeSafe cookbook                       | M    |
+
+**Not taken.**
+
+- A hosted relay, mobile apps, and chat-app control (T3 Connect, OpenClaw
+  channels). These are not coding-first, and Remote Control waits on Meta
+  (sdk #36).
+- Model routing across vendors (Crush, OpenCode). The extension is
+  Meta-only by design (D1). D50's TypeSafe assist is not a coding model
+  and never answers; it is the one non-Meta model call, experimental and
+  off by default.
+- GitLab and other forges. VS Code ships no built-in authentication for
+  them, so M71 is GitHub only.
+- A plugin marketplace of our own. M83 imports others' formats instead,
+  and Muse Code's own plugins keep working.
+
+### D50 — TypeSafe, experimental: an assist to the Muse model, never a replacement (2026-09-27)
+
+The owner asked for research on TypeSafe (docs.typesafe.ai), "to see if there
+is a way we can leverage this functionality somehow to improve stuff". Then:
+"To be clear I would only want this as a tool to assist the muse model not
+to replace", and "the typsafe stuff would be experimental opt in".
+
+**What TypeSafe is.** Jev is a "System One" model, read 2026-09-27. It
+takes text as `state` and typed questions, and returns calibrated answers
+with probabilities and a confidence:
+
+- a **Choice** among up to 255 options;
+- a **Score** on up to 10 ordered levels;
+- a **Noul**, the 0–1 probability that a statement is true.
+
+It does not generate text or code. Its own docs say it is no replacement
+for the model behind a coding agent, and name Muse Spark. The terms, from
+docs.typesafe.ai/models, /api and /legal:
+
+- `POST https://api.typesafe.ai/v1/systemone`, with a Bearer key;
+- `jev-1.13.0`, $0.042 per million input tokens, output free;
+- 64k tokens per request, 1,200 requests a minute, text only, English
+  best;
+- no training on customer data; zero retention on enterprise plans only;
+- rate limits "can change without notice".
+
+Its documented weak spots (docs.typesafe.ai/model-jaggedness/jev-1.13):
+
+- literal reading;
+- math, counting and dates;
+- indirection;
+- large irrelevant state;
+- adversarial content.
+
+**The ruling.** TypeSafe may only assist the Muse model. It never answers
+the user, writes code, or decides an action alone:
+
+- it only feeds hints, scores and relevance signals;
+- the Muse model, or the extension's deterministic rules, act on them;
+- where a signal is missing or unsure, behaviour is exactly what it is
+  without TypeSafe.
+
+**Constraints.**
+
+- **Experimental and opt in.** Labelled Experimental wherever it shows
+  (setting, palette, Account & usage). Off by default, with a
+  machine-scoped setting under `museSpark.experimental.*`. It may change
+  or be removed without notice, and nothing else depends on it.
+- **Its own key.** The user's own TypeSafe key, kept in SecretStorage.
+- **Disclosed.** PRIVACY names exactly what is sent and to whom.
+- **Paid, with one named exception to AGENTS.md rule 12.** A TypeSafe
+  call is billed to the user's own TypeSafe key, not the Model API key.
+  Rule 12 names this exception; everything else in it and in D48 applies:
+  - `typesafeAssist` joins the `PaidFeature` union and runs only while
+    `PaidFeatureGate.isOn` says so: the setting on, machine-scoped and off
+    by default, and its price accepted in the confirmation;
+  - it is named in the composer's badge, shown as a row marked paid, and
+    counted in `PaidUsage` for Account & usage;
+  - every use asks in the paid-use popup, whose "Allow always in this
+    workspace" makes per-turn assist bearable;
+  - neither the Muse subscription nor the Model API key pays for it, and
+    the TypeSafe key never reaches `muse serve` or any child process;
+  - it is offered only where the extension itself makes the call, and
+    only while a TypeSafe key is stored.
+- **Timeouts.** Short. A failed call gives no assist for that decision
+  and is logged; it never blocks the turn.
+
+**Model API first.** Muse Code runs its own skill choice and approvals, so
+only the extension-side uses reach it.
+
+**The uses, ranked** (M85):
+
+1. **Skill suggestion.** Before a turn, rank the skills against the user's
+   message, then verify the top candidates. At most one "relevant skill"
+   hint line goes into that turn's context; the model keeps its full index
+   and its own judgement. TypeSafe's cookbook measured wrong skill loads
+   falling from 16.8 % to 7.3 %, and loads when none fit from 9.8 % to
+   4.0 %. The same pattern suggests a custom agent (M76).
+2. **Auto risk score** (M78). A Score and Nouls on a command or write that
+   the deterministic rules did not settle. The score is **advisory only**:
+
+   - A risky score can add caution: ask where Auto would have allowed, or
+     flag the call to the Muse-model Auto reviewer.
+   - A "safe" score never skips a question and never becomes an allow on
+     its own. Adversarial content is its documented weak spot.
+   - It never overrides a rule's "forbid" or "ask".
+   - It is compared against the Muse-model Auto reviewer in M85's own
+     paired run, on M75's harness.
+
+3. **Context relevance** (M73, M74, M67). Nouls on whether an old tool
+   output or a file still matters to the current task, used to rank what
+   is packed or kept. Adopted only if M75 shows no loss.
+4. **Evaluation grading** (M75). Cheap semantic checks beside the
+   deterministic verifiers, never in place of them.
+
+**Not taken.**
+
+- Screening untrusted content as a guarantee. It is adversarial content,
+  a documented weak spot, so at most a warning signal.
+- Any use as the coding model.
 
 ## 3. Open questions (need the owner)
 
@@ -4448,7 +4705,8 @@ merged as PR #30 (`bdaede4`).
 
 ### M44b — Web fetch on the Model API backend (D36)
 
-**Status 2026-09-27: planned after 0.9.0; not in 0.9.0.** Muse Code's own
+**Status 2026-09-27: folded into M69 (D49), which also serves it to Muse
+Code through the `ide` server.** Muse Code's own
 `web_fetch` is gated off in 1.3.0, and the Model API backend has no fetch
 tool. The D36 inventory named the network-safety design this needs before
 the model may read a page:
@@ -6261,6 +6519,657 @@ joins, combined M56 gates and live enterprise proxy/private-root proof.
 - **Security.** Grants hold feature names only; untrusted workspaces never
   offer or honour "always"; settings stay machine-scoped.
 - **Status.** Built on `feature/m58-paid-consent` (2026-09-27).
+
+### M67–M85 — Coding quality first (D49, D50)
+
+The program D49 ranks, and D50's M85. Each milestone follows AGENTS.md:
+tests first, red drills, docs landing with the change, strings in all 14
+tables, and the full gate. A paid item follows D30/D48. New UI gets a
+harness scenario, which is what the accessibility gate checks (D32).
+
+### M67 — Code intelligence tools (D49)
+
+- **Goal.** The model finds definitions, references and symbols the way
+  an IDE does, instead of grepping.
+- **Scope.**
+  - Tools backed by VS Code's language services:
+    - `find_definition` and `find_references` (by symbol at a
+      path/line/column, or by name);
+    - `workspace_symbols`;
+    - `document_symbols`;
+    - `hover` (types and docs);
+    - `rename_symbol`, which is an edit that asks like one: its edit is
+      applied file by file through the extension's edit path, so
+      confinement, D24's protected-write cards, Edit Review and rewind all
+      apply. On Muse Code the `ide` tool does not write: it returns the
+      edits, and Muse Code's own edit tool applies them under its
+      approvals and rewind;
+    - `call_hierarchy` where the language supports it.
+  - A compact **repo map**: files ranked by how often their symbols are
+    referenced, within a token budget. It is offered as a tool and as an
+    opt-in section of the system prompt.
+- **Backends.**
+  - Model API: native tools.
+  - Muse Code: the same tools on the `ide` MCP server as `mcp__ide__*`.
+- **Acceptance.**
+  - Input paths are confined like the file tools' (D24). Results outside
+    the workspace (a library's `.d.ts`, another root) are left out and
+    counted.
+  - Results are workspace-relative, capped and deterministic.
+  - Restricted Mode still allows the read-only tools; `rename_symbol` is
+    an edit, so it follows the edit rules there (and on `ide` it only
+    returns edits).
+  - A language with no provider answers "no language service", not
+    nothing.
+- **Tests.** A fake language-service host in unit tests. An integration
+  test in VS Code over a TypeScript fixture.
+- **Size.** M.
+
+### M68 — Verify loop (D49)
+
+- **Goal.** Every edit is checked, and the model sees the result without
+  asking.
+- **Scope.**
+  - After a tool round that edited files, the next request carries the
+    new diagnostics of those files: errors and warnings, capped, with
+    changes against the previous round.
+  - An optional **format on edit** runs VS Code's formatter on edited
+    files.
+  - **Check commands**: `museSpark.checkCommands` (lint, test,
+    typecheck), machine-scoped, run as the shell tool runs commands (in a
+    job object on Windows, M27; there is no sandbox on the Model API).
+    - They run **automatically once after every tool round that edited
+      files**, before the next request, and their results go into it.
+    - The model can edit what a check runs (`package.json` scripts, a
+      config), so an automatic check takes the shell tool's permission
+      path: it asks in every mode that asks for a shell command, which is
+      every mode but Bypass today, and "always allow in this session" works
+      as it does for that command. Plan and Restricted Mode never run
+      them.
+    - Each can scope itself to the changed files: the paths go as separate
+      arguments after `--`, and a path starting with `-` is refused. A
+      time cap bounds the run.
+    - The model can also call `run_checks` itself.
+  - A `then_run` option on `write_file`/`edit_file` (SoL-Pi's Action
+    Fusion). The command goes through the shell permission path. Format
+    on edit runs first, then the hash is taken, and the guard skips the
+    command only if the file changed after that.
+  - A bounded fix loop: at most N rounds while checks fail, then it stops
+    and says so.
+- **Backends.**
+  - Model API: all of it.
+  - Muse Code: diagnostics through `mcp__ide__getDiagnostics`, which
+    already exists. The guidance to verify is sent as model text in the
+    turn (`MODEL_TEXT`); the template AGENTS.md stays `muse init`'s
+    (M12), and no skill is installed into Muse Code's folders (D13).
+  - Automatic checks after Muse Code's own edits would need an MSP event;
+    that is asked upstream.
+- **Acceptance.** Check commands and `then_run` never run in Plan or
+  Restricted Mode, and never run unapproved where a shell command would
+  ask. `then_run` shows in the row as one call with two results.
+- **Evidence.** OpenCode, Aider (`--lint-cmd`/`--test-cmd`), Crush,
+  SoL-Pi.
+- **Tests.** The fake Model API over a fixture with a failing check: the
+  diagnostics and check results reach the next request, the fix loop stops
+  at its limit, and a check asks where a shell command asks (a drill per
+  mode).
+- **Size.** M.
+
+### M69 — Web fetch (D49; folds in M44b)
+
+- **Goal.** The model reads a page it found or was given.
+- **Scope.**
+  - The `web_fetch` tool, with M44b's network-safety rules:
+    - HTTPS only;
+    - public addresses only: loopback, private, link-local, IPv6
+      unique-local, carrier-grade NAT (100.64.0.0/10), IPv4-mapped and
+      other reserved addresses are refused;
+    - the name is resolved and checked locally, and the connection goes to
+      that pinned address, also through a proxy (CONNECT to the address,
+      with the host name for TLS); where the proxy cannot take a pinned
+      address, the fetch stops with that reason;
+    - a small redirect limit, each hop checked and pinned like the first;
+    - a size cap, a time limit, a content-type allowlist, HTML converted
+      to Markdown, and the text marked as untrusted content.
+  - It asks per host in every mode but Bypass, since the URL itself can
+    carry data out. It is off in Restricted Mode.
+  - Through VS Code's proxy and certificates (M56).
+  - No billing: the fetch is the extension's own. It is not Meta's paid
+    search.
+- **Backends.**
+  - Model API: native.
+  - Muse Code: `mcp__ide__webFetch`, since Muse Code's own `web_fetch`
+    is switched off. It follows D49's rule for network tools on `ide`.
+- **Acceptance** (M44b's): tests and a red drill for each rule above,
+  including a name that resolves to a private address, a redirect into
+  one, and a proxy that cannot take a pinned address; a harness scenario
+  for its row; the gate green; a certification record.
+- **Size.** S.
+
+### M70 — Review (D49)
+
+- **Goal.** Review what the agent did before it lands.
+- **Scope.**
+  - `/review` with presets:
+    - the uncommitted changes, the branch against its base, one commit, or
+      custom instructions;
+    - a security preset: injection, secrets, authentication, unsafe APIs.
+  - The review runs as a reviewer.
+    - On the Model API, M70 builds the built-in **Reviewer** agent itself:
+      read-only tools, its own prompt, the security preset. A `/review`
+      the user asks for runs as a turn of the conversation itself, with
+      the Reviewer's prompt and tools, so it is part of their turn. Run as
+      a child (D45) or on its own, it is a paid use (D48).
+    - On Muse Code, the review prompt is sent as the turn's text
+      (`MODEL_TEXT`); no skill is installed. The diff under review is
+      untrusted content, so that turn runs in Plan mode and the previous
+      mode comes back after it. Muse Code's Plan mode applies its own allow
+      rules, so this review is not claimed strictly read-only (D46).
+    - M76 later lets users define agents of their own on the same base.
+  - In Restricted Mode, which runs no git, the presets that need git are
+    unavailable and say so.
+  - Findings become a list with file and line.
+  - A **review pane** over the conversation's changes:
+    - files and hunks, each hunk accepted or reverted;
+    - a comment on a line is sent to the agent as a steer or the next
+      message.
+- **Backends.** Both. The pane is the extension's own.
+- **Acceptance.** On the Model API the Reviewer has no write, shell or
+  network tool; a finding opens its file and line; a reverted hunk leaves
+  the file as it was; a line comment reaches the agent as a steer; the
+  Muse Code review turn runs in Plan mode and the mode comes back.
+- **Tests.** The fake Model API and the fake `muse serve`; the pane in the
+  harness and the accessibility gate.
+- **Size.** L.
+
+### M71 — Git and pull requests (D49)
+
+- **Goal.** From finished work to an open PR without leaving the panel.
+- **Scope.**
+  - A generated commit message for the conversation's changes.
+  - Commit and push go through VS Code's built-in git extension API, so
+    the user's credential helpers and sign-in prompts apply (the
+    extension's own git runs with no prompt and could not push).
+  - Open a PR through VS Code's GitHub authentication, with a generated
+    title and body, as a draft or ready. The confirmation shows the exact
+    remote, branch, title and body, editable, with credential-shaped
+    strings masked.
+  - The PR is linked to its conversation, with its status and checks
+    shown.
+  - **A conversation in a worktree.** Its backend host is confined to the
+    worktree (the Model API's workspace root; `muse serve` started in that
+    folder), and the worktree is added as a workspace folder or opened in
+    its own window as M32 does, so trust and language services apply to
+    it. M77 reuses it.
+  - "Open PR in a conversation" checks out the PR's branch in a
+    worktree. A PR the user did not author is adversarial content until
+    the user says otherwise:
+    - its worktree is created under the extension's own storage and opens
+      in its own window;
+    - VS Code may still trust that folder, through a trusted parent (the
+      home folder, say) or with workspace trust switched off, and the
+      extension cannot ask VS Code about a folder before it opens. So the
+      extension never relies on it: in that window it holds the
+      conversation in Plan mode, with project rules, skills, hooks and MCP
+      servers off (Muse Code starts without `--trust-workspace`), until the
+      user confirms trust for that worktree in the extension's own card,
+      whatever VS Code's trust says. Where VS Code opened it in Restricted
+      Mode, that applies as well;
+    - other extensions follow VS Code's own trust, which this extension
+      cannot lower, and the card says so.
+- **Rules.** Never force-push. Pushing and creating a PR always ask.
+  GitHub only (D49, not taken). Unavailable in Restricted Mode.
+- **Backends.** Both.
+- **Acceptance.** No path force-pushes; every push and PR creation asks
+  and shows what goes out; a PR by someone else opens held in Plan mode
+  with its project configuration off until the user confirms trust in the
+  extension's card, even when VS Code already trusts the folder; the
+  worktree conversation cannot touch the main checkout.
+- **Tests.** A fake git extension API and a fake GitHub endpoint, with a
+  drill for the force-push refusal and the project-configuration switch.
+- **Size.** M.
+
+### M72 — Turn checkpoints (D49)
+
+- **Goal.** Undo is cheap, and complete wherever the extension saw the
+  change coming; where it could not, it says exactly what it left.
+- **Scope.**
+  - A checkpoint at each turn boundary, kept in a shadow repository in
+    the extension's own storage, never in the workspace's git objects or
+    refs, where a push could carry an untracked or ignored secret
+    (`.env`). It runs with hooks and fsmonitor off and none of the
+    workspace's filters. It includes untracked files.
+  - Ignored files the turn itself created or changed are handled too:
+    - a file the agent's own edit and write tools change is copied before
+      the write, so a restore brings it back;
+    - a shell command's changes are found afterwards by a bounded scan of
+      size and modification time, when the old content is already gone
+      (and Muse Code cannot be paused before its commands). A restore
+      deletes the ignored files the turn created and lists the ones it
+      changed as not restorable. It never claims more than it did.
+  - Other ignored content is left out. Everything is subject to the size
+    limits, and the checkpoint names any file it skipped.
+  - Restricted Mode, where the extension runs no git, has no checkpoints,
+    and the panel says so.
+  - Restore files, conversation, or both. A restore goes through Edit
+    Review's checks (D27): a file the user changed after the turn, or one
+    with unsaved changes, is refused with the reason and listed, never
+    overwritten.
+  - Redo after a restore.
+  - Size limits, and cleanup with the conversation.
+- **Backends.** Both. It lives in the extension. Conversation restore
+  follows M53, and Muse Code on Windows still cannot fork (sdk #31), so
+  there it restores files only and says so.
+- **Relation to D46.** D46's rewind stays the conversation's own rewind of
+  the edits it recorded; a checkpoint restore also covers what shell
+  commands changed, and both use the same confirmation.
+- **Acceptance.** Nothing lands in the workspace's `.git`; a restore puts
+  back tracked, untracked and pre-copied ignored files, deletes ignored
+  files the turn created, and lists what it could not restore; redo
+  returns to the state before the restore.
+- **Tests.** A temporary repository per test, with drills for the
+  workspace `.git` guard and the not-restorable list.
+- **Size.** M.
+
+### M75 — Paired efficiency evaluation (D49)
+
+- **Goal.** A harness change is measured before it is trusted.
+- **Scope.**
+  - A task set: repository fixtures with verifiers, split into accept and
+    held-out tasks.
+  - Paired runs with and without a mechanism, on the contributor model,
+    on the Model API (Muse Code's harness is not ours to vary).
+    M75 is built first in wave 3: it lands with a baseline run, and M73
+    and M74 then use it for their own paired runs before they ship.
+  - Capability floors fixed in advance; tokens, cost and the pass rate
+    recorded.
+  - Attempts counted from the trace.
+  - A report in `docs/certification/`.
+- **Rules.** Runs follow the live-spend rules: an empty workspace, the
+  contributor model, counted and reported.
+- **Acceptance.** The baseline run is recorded with its attempts; a
+  mechanism below a floor fails its run.
+- **Tests.** The runner and its verifiers against the fake Model API; the
+  live runs are the evidence.
+- **Size.** M.
+
+### M73 — Observation packing (D49)
+
+- **Goal.** Long sessions stop resending large old tool outputs.
+- **Scope.**
+  - SoL-Pi's ObservationPack, ported: a tool result over a threshold is
+    sent whole for its first requests, then as a placeholder with an id,
+    size, and first and last lines.
+  - `recall_output(id, offset)` pages the original back. Originals are
+    kept with the session.
+  - The swap is sticky, so the cached prefix breaks once per output.
+  - A savings ledger shows the tokens avoided in Account & usage.
+  - SoL-Pi's Evidence-Preserving Reducer for long command logs: a
+    separate model call that shortens a log while keeping its error
+    evidence. It is a paid use (D48) and is under the same gate.
+- **Backends.** Model API. Muse Code has no hook for this.
+- **Gate.** Built after M75, and lands with its own M75 run. Until that
+  run shows the capability floors held, there is no setting and no path
+  that packs an observation; then the setting is added, still off by
+  default. A failed run reworks the mechanism; it does not ship.
+- **Acceptance.** `recall_output` returns the original bytes; the swap
+  happens once per output; the ledger matches the tokens left out.
+- **Tests.** The fake Model API with long outputs, and its M75 run.
+- **Size.** S.
+
+### M74 — Long tasks: automatic compaction and handoff (D49)
+
+- **Goal.** Hours-long tasks keep their thread without a manual
+  `/compact`.
+- **Scope.**
+  - Compaction is considered when a todo item completes. It uses
+    SoL-Pi's cache economics with Meta's cache-write to cache-read price
+    ratio, and always compacts near the window.
+  - A hidden follow-up asks the model to restate its todo list.
+  - A memory flush before compaction (OpenClaw). It is a memory write,
+    so it asks in Manual and is refused in Plan and Restricted Mode, and
+    notes drawn from untrusted content stay labelled as untrusted.
+    Compaction summaries keep that label too.
+  - `/handoff` starts a new conversation from a distilled brief (Amp).
+- **Backends.** Model API. Muse Code compacts itself.
+- **Gate.** Automatic compaction and the hidden follow-up are as for
+  M73: they land with a passing M75 run, and only then get their setting,
+  off by default. `/handoff` is the user's own command, so it ships
+  without that gate; M79 reuses its path.
+- **Acceptance.** Compaction never drops the todo list or an untrusted
+  label; `/handoff` shows the brief before the new conversation starts.
+- **Tests.** The fake Model API across a compaction, and its M75 run.
+- **Size.** M.
+
+### M76 — Custom agents (D49)
+
+- **Goal.** Specialised agents with their own prompt, tools, model or
+  effort, and permissions.
+- **Scope.**
+  - Agent definitions in Markdown with front matter, in the project and
+    the user folder. The folder follows Muse Code's own convention if its
+    binary or docs name one (D13: no invented file names); otherwise the
+    name chosen is recorded in D13 as the extension's own. Claude Code's
+    and Codex's formats are imported (M83).
+  - Built-in agents:
+    - **Explore**: read-only, context-saving;
+    - **Reviewer**: built in M70, and becomes the first definition in
+      this format;
+    - **Second opinion**: a high-effort consult on a hard question.
+  - A run that makes model calls beyond the user's own turn is a paid
+    subagent use (D45, D48).
+  - A repository's agent files load only in a trusted workspace, and can
+    only narrow the tools and permissions the session already has. A
+    model one names passes the same checks as the user's own choice
+    (`allowsModel`: contributor models, `museSpark.confidentialWorkspace`).
+- **Backends.** Model API. Muse Code has its own agents, which the
+  Agent map already shows.
+- **Acceptance.** An untrusted workspace loads no project agent; a
+  project agent that asks for more tools or permissions than the session
+  has gets the session's; a model it names passes the user's checks.
+- **Tests.** Front-matter parsing with zod, and drills for each narrowing
+  rule.
+- **Size.** M.
+
+### M77 — Session board and best-of-N (D49)
+
+- **Goal.** Run several agents at once and pick the best result.
+- **Scope.**
+  - A board of every conversation in the window and its worktrees: state,
+    branch, changes, awaiting approval.
+  - Best-of-N: the same prompt runs in N worktrees, with a side-by-side
+    diff comparison and "take this one".
+    - Each attempt is M71's conversation in a worktree, with its own
+      host confined to it.
+  - Best-of-N is on the Model API only: each attempt is billed to the
+    key, and the subscription never pays for a paid use (AGENTS.md rule
+    12). It asks once (D48) with the rates, N and a request ceiling per
+    attempt, since the total cannot be known in advance (D45).
+  - Worktrees need git, so best-of-N is unavailable in Restricted Mode.
+- **Backends.** The board: both. Best-of-N: the Model API.
+- **Acceptance.** Best-of-N asks once with the rates, N and the request
+  ceiling per attempt; "take this one" merges only that worktree's
+  changes; the board shows every conversation's state.
+- **Tests.** The fake Model API with N attempts, and the board in the
+  harness and the accessibility gate.
+- **Size.** L.
+
+### M78 — Auto, made safe (D49)
+
+- **Goal.** Auto on the Model API earns its name.
+- **Scope.**
+  - **Command rules**: prefix rules for allow, ask or forbid, with tests
+    kept beside the rules.
+    - An allow rule matches only a command the shell's own parser reduces
+      to simple commands (bash's, or PowerShell's AST), each judged
+      alone. Anything else asks: substitutions (`$()`, backticks),
+      redirections, background `&`, newlines, `iex`,
+      `-EncodedCommand` and the call operator.
+    - A forbid matches anywhere in the command.
+    - D24's session rules stay keyed on the exact command line. These
+      prefix rules are a new, user- or machine-level kind, and D24 is
+      amended to name them when M78 lands.
+  - **Permission profiles**: named sets of rules covering files (deny-read
+    globs) and extra roots. They bind the file and fetch tools. The shell
+    tool runs unsandboxed, so under a profile every shell command asks.
+  - Rules and profiles live in user or machine settings. A repository's
+    can only tighten them.
+  - An opt-in **Auto reviewer**: a separate read-only model call judges a
+    risky request. It has a circuit breaker, and it is a paid use (D48).
+    It can turn an ask into an allow only for a request no rule settled;
+    it can never allow a forbid, an ask rule, a protected write (D24) or a
+    paid call. A failed call or a tripped breaker falls back to asking.
+- **Backends.** Model API. Muse Code has its own policies.
+- **Evidence.** Codex's auto-review and rules, OpenCode, Gemini CLI's
+  policy engine.
+- **Acceptance.** Each rule ships with its tests; a chained, substituted
+  or redirected command asks; a repository's rules cannot loosen the
+  user's; the reviewer never allows a forbid, an ask rule, a protected
+  write or a paid call.
+- **Tests.** A table of commands per shell with the expected verdicts, and
+  drills for the parser fallback and the reviewer's limits.
+- **Size.** M.
+
+### M79 — Plans as files (D49)
+
+- **Goal.** A plan the user approved survives and can drive a clean run.
+- **Scope.**
+  - A Plan-mode reply that holds a plan gets **Save plan** and **Implement
+    in a fresh conversation**; pressing either is the approval.
+  - The plan is saved as Markdown in the workspace: in Muse Code's plans
+    folder if its binary or docs name one (D13), otherwise a folder
+    recorded in D13 as the extension's own. On Muse Code, what marks a
+    plan in a reply comes from a capture (AGENTS.md rule 13).
+  - "Implement in a fresh conversation" starts one with the plan as its
+    brief, through M74's `/handoff` path.
+  - On the Model API the plan's steps become the todo list. On Muse Code
+    the todo list is the agent's own, so the brief asks it to take the
+    plan's steps as its list.
+- **Backends.** Both.
+- **Acceptance.** The saved file is the plan the user approved, byte for
+  byte; the fresh conversation starts with it and nothing else from the
+  old one.
+- **Tests.** Both fakes.
+- **Size.** S.
+
+### M80 — Headless and CI (D49)
+
+- **Goal.** The agent runs where the editor does not.
+- **Scope.**
+  - An `exec` mode in the ACP agent's package:
+    - a prompt in, JSONL events or a final JSON out;
+    - a schema for the output;
+    - a budget, kept by reservation as in M82, and an attempt cap.
+  - M63 and D61 are defined in PR #32, which is not merged yet; M80 is
+    blocked until it is. PR #32 also amends AGENTS.md rule 8 to name the OS
+    credential store as the store outside VS Code (it is the one
+    SecretStorage itself uses).
+  - A GitHub Action for PR review and "fix this" comments, on the user's
+    own runners and key.
+    - It runs only for triggers from the repository's owners, members and
+      collaborators, on branches of the same repository. The key is never
+      present on a job that checks out a fork's code
+      (`pull_request_target` included), and the Action refuses a
+      self-hosted runner on a public repository.
+    - `exec` denies every approval question, has no shell or check tools
+      on PR content, and never uses `--trust-workspace`. A tool process
+      it starts gets no `DBUS_SESSION_BUS_ADDRESS` or other route to the
+      keyring session.
+    - The OS credential store does not protect the key from processes of
+      the same user, which is why nothing from the PR runs beside it.
+  - **The key follows D61 and AGENTS.md rule 8.**
+    - It lives in the operating system's credential store, the one the
+      ACP agent already uses (`@napi-rs/keyring`, filled by
+      `muse-spark-code-acp auth set` from standard input).
+    - Its one way in is `auth set`'s standard input: from the user's
+      terminal locally, from the Action's step shell in CI.
+    - Inside the agent it is never passed as an environment variable, an
+      argument or a file, and never to a process the agent starts (a
+      tool, a check, `exec`'s commands).
+    - A local headless run reads that entry, like the ACP agent.
+    - In CI the Action sets, runs and clears inside one shell: on Linux,
+      one `dbus-run-session` that starts and unlocks a throwaway keyring,
+      pipes the repository secret into `auth set` through standard
+      input, runs `exec`, and clears the entry on exit; on macOS and
+      Windows, the runner's own store, cleared in an always-run step. The
+      entry's account name is unique to the run, so concurrent jobs and a
+      developer's own key on a self-hosted runner never collide.
+    - GitHub hands a secret to a step only through the step's
+      environment or its script, so in CI the Action's own step shell is
+      the one environment the key is ever in. That shell writes it to
+      `auth set`'s standard input and unsets it before `exec` starts; the
+      shell and `auth set` are the only processes that hold it outside
+      the store. PR #32's amendment to AGENTS.md rule 8 names this
+      bootstrap as the exception, and nothing else.
+    - `exec` cannot show D48's popup or M71's push confirmation, so it
+      refuses paid features and never pushes. A "fix this" result leaves
+      as a patch, or a commit pushed by a separate step the repository's
+      owner wrote.
+    - If no store is available, the run stops with that reason; there is
+      no fallback.
+- **Backends.** The Model API with the key from the store. Muse Code only
+  where the CLI is already signed in on that machine; a device sign-in
+  needs a person, so it is not offered in CI.
+- **Acceptance.** A fork's PR or an outside commenter starts nothing;
+  outside the Action's step shell, the key is in no environment, and it is
+  in no argument, file or log; no process `exec` starts gets it or a route
+  to the keyring; `exec` answers every approval question with a denial.
+- **Tests.** `exec` against the fake Model API; the Action's steps in a
+  workflow test on the owner's repository, with a drill for the trigger
+  check.
+- **Size.** M.
+
+### M81 — Browser check (D49)
+
+- **Goal.** The model sees its web change working.
+- **Scope.**
+  - A tool that opens a local URL in a headless browser: the system
+    Chrome or Edge over CDP, with no bundled browser.
+    - CDP over `--remote-debugging-pipe`, never an open port, and a
+      temporary profile, never the user's.
+    - Requests to anything but loopback are blocked, so a page cannot
+      reach the intranet or a metadata address and hand back what it
+      found.
+  - It returns a screenshot (image input), the console errors and failed
+    requests.
+  - It can click or type through a small action list.
+  - Local URLs only, unless the user widens that in a machine-scoped
+    setting or a card; the model cannot.
+- **Backends.** The Model API; Muse Code through `ide`, under D49's rule
+  for tools there, once a capture shows that an MCP tool's image content
+  reaches the Muse Code model (AGENTS.md rule 13). Until then Muse Code
+  gets the console and failed requests as text.
+- **Acceptance.** No debugging port is opened; a request beyond loopback
+  is blocked unless the user widened it; the user's profile is never used.
+- **Tests.** A local fixture page with a console error and a failed
+  request; drills for the loopback block and the pipe.
+- **Size.** M.
+
+### M82 — Awareness and budgets (D49)
+
+- **Goal.** The user knows what happened and what it cost.
+- **Scope.**
+  - An OS notification when a long turn ends or waits for approval while
+    the window is unfocused.
+  - Tokens and cost per reply (optional).
+  - A session budget cap, machine-scoped, on the Model API, kept by
+    reservation, since a request's cost is incurred once it is sent:
+    - before each request, its input is estimated high (the previous
+      request's reported input plus what was added since, counted
+      conservatively), and `max_output_tokens` is set so that input plus
+      output at list price fits what is left;
+    - a request that cannot fit is not sent, and the turn stops and says
+      so;
+    - the only overrun possible is the error in that input estimate; the
+      setting's description says so, and the turn's cost after the fact
+      is shown against the cap.
+  - Cache savings shown in Account & usage, on the Model API only (D26:
+    Muse Code reports no honest cache totals).
+- **Backends.** Both. Cost is for the Model API.
+- **Acceptance.** A request that would not fit the budget left is never
+  sent, and the turn says why; no notification shows while the window is
+  focused.
+- **Tests.** The fake Model API with priced usage, including a request
+  whose reservation does not fit.
+- **Size.** S.
+
+### M83 — Import from other agents (D49)
+
+- **Goal.** Switching to Muse Spark Code takes minutes.
+- **Scope.**
+  - Import from Claude Code, Codex and Cursor, beyond M30's skills and
+    sessions:
+    - MCP servers;
+    - hooks, where their events map;
+    - custom agents (M76);
+    - custom slash commands, which become project skills
+      (`.agents/skills/<id>/SKILL.md`);
+    - rules files, which become sections of `AGENTS.md`, shown in the
+      preview.
+  - Preview first, nothing overwritten. The preview shows each hook's and
+    server's full command, with secret values masked.
+  - MCP servers and hooks live in Muse Code's `settings.json` and
+    `.muse/hooks.json`, which the extension never writes (D17, D30). Their
+    converted entries are shown, masked, for the user to copy into the
+    file the preview opens.
+  - Entries found in a repository's `.claude`, `.cursor` or `.codex`
+    folder are offered only for that project's files, and only in a
+    trusted workspace. Only the user's own folders are offered for user
+    files.
+- **Backends.** Both.
+- **Acceptance.** Nothing is written before the preview is accepted; the
+  CLI's settings and hooks files are never written; a project's entries are
+  never offered for user files.
+- **Tests.** Fixture folders for each tool, and a drill for the scope
+  rule.
+- **Size.** S.
+
+### M84 — Session export, import and share (D49)
+
+- **Goal.** A conversation can move between machines and people.
+- **Scope.**
+  - Export a conversation as JSON. Credentials and the key digest are
+    always left out; account ids and paths are redacted by default. A
+    preview shows the file first.
+  - Import resumes on the Model API. It drops the permission mode, session
+    rules, goals, schedules and patches, and marks the imported turns as
+    untrusted. It starts in Manual, or in Plan when
+    `museSpark.initialPermissionMode` is Plan, whatever else that setting
+    says; only the user's own mode change relaxes it.
+  - A local share file, rendered read-only in the panel.
+  - No hosted sharing.
+- **Backends.** The Model API resumes; Muse Code exports its own log (M30).
+- **Acceptance.** An export never holds a credential or the key digest;
+  an import starts in Manual (or Plan) even when the initial mode is Auto,
+  Edit automatically or Bypass, with no session rules, goals, schedules
+  or patches.
+- **Tests.** Round trips with zod on both ends, and drills for each
+  dropped field.
+- **Size.** S.
+
+### M85 — TypeSafe assist, experimental and opt in (D50)
+
+- **Goal.** Cheaper, better-calibrated small decisions around the Muse
+  model: which skill fits, how risky a command is, what context still
+  matters. The Muse model stays the one that answers and acts.
+- **Scope.**
+  - A thin client over TypeSafe's HTTP API, zod-validated like the Model
+    API client (D2).
+  - The key is kept in SecretStorage; a machine-scoped
+    `museSpark.experimental.typesafeAssist` setting is off by default and
+    labelled Experimental.
+  - It is disclosed in PRIVACY: the user's message and skill or agent
+    descriptions for suggestion; the command or path for a risk score;
+    for context relevance and grading, the tool output or file text
+    judged. TypeSafe keeps
+    data except on enterprise plans, so credential-shaped strings are
+    redacted before a call, and the assist is off while
+    `museSpark.confidentialWorkspace` is on.
+  - It is a paid feature under AGENTS.md rule 12 with D50's one
+    exception, the TypeSafe key: `typesafeAssist` in the `PaidFeature`
+    union, `PaidFeatureGate` with its price, the badge, a paid row,
+    `PaidUsage`, and D48's paid-use popup.
+  - Timeouts are short; on failure there is no assist, and the failure is
+    logged.
+  - Uses:
+    - skill suggestion first, and the same for a custom agent (M76);
+    - then the Auto risk score, as M78's optional advisory layer: it can
+      only add caution, never allow;
+    - context relevance and evaluation grading, gated like M73: no path
+      reaches them until their own M75 run passes, whatever the setting.
+- **Backends.** Model API. Muse Code only where the extension decides.
+- **Acceptance.**
+  - With the setting off, nothing changes and nothing is sent.
+  - With it on, every call is visible in the log (question ids and timing,
+    never the content) and tallied in Account & usage.
+  - No path lets a TypeSafe answer skip a question, allow an action, skip a
+    deterministic rule, or answer the user. A test proves that a "safe"
+    score leaves the verdict unchanged.
+- **Tests.** A fake TypeSafe endpoint with Choice, Score and Noul shapes
+  taken from the live API (AGENTS.md rule 13), plus the paired runs in M75.
+  The capture needs a TypeSafe key only the owner can create, so M85 waits
+  for it.
+- **Size.** M.
 
 ### M41 — Install Muse Code from the panel (folded into M55)
 
