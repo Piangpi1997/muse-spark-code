@@ -1759,9 +1759,12 @@ owner, with every change held to the same gates as a human pull request.
   test must fail, and the file is restored byte for byte. The milestone's
   record in `docs/certification/` lists the drills, and anything it did
   not drill.
-- **Evidence.** Anything parsed from Muse Code or the Model API comes from a
-  live capture (AGENTS.md rule 13), and live checks run on the contributor
-  model in an empty workspace, with their model calls counted.
+- **Evidence.** Under AGENTS.md rule 13, a shape parsed from Muse Code or
+  the Model API is written from a live capture; each certification record
+  names its capture, or says where a shape came from Meta's documentation
+  or a fake server without a live check (as early milestones such as M7
+  and M44 did). Live checks run on the contributor model in throwaway
+  workspaces, with their model calls counted.
 
 ## Support this project
 
