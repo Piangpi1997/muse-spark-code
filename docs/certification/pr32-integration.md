@@ -450,7 +450,6 @@ Left as they are, with their reasons:
 | Drill | Break                                                  | Result                                                                                                            |
 | ----- | ------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------- |
 | C1    | the shell tool given the agent's environment as it is  | exit 1: "runs a shell command with no credential variable in its environment" (a real run)                        |
-| C2    | Muse Code given no credential variables back           | exit 1: "hands them back to Muse Code only, where META_API_KEY counts as its credential (D1)"                     |
 | C3    | credentials copied but left in the agent's environment | exit 1: "takes every credential variable out of the agent's own environment, and leaves the rest"                 |
 | C4    | `main.ts` hands the runtime none                       | the stdio suite, exit 1: "hands META_API_KEY in its own environment to Muse Code only, …"                         |
 | L1    | a backend failure logged as its message                | exit 1: "logs a backend failure by its kind, never its message"                                                   |
@@ -533,6 +532,34 @@ card rule.
   - `session/close` of an id neither held nor being set up is refused,
     as before.
 
+- **Grok's third look (`ca263c53`, pushed first as the gate had
+  passed): 1 P1 and 6 P2s; the P1 and 3 P2s held, and the test double
+  was taken up.**
+
+  - The P1: a reload built its replacement, which follows the session at
+    once, before the held one's release had sent `turn/cancel`, so Muse
+    Code's open prompts reached the replacement for the turn being
+    stopped. `adopt` now waits until nothing holds or sets up that id,
+    each turn stopped, before the replacement follows the session. It
+    looks again after each wait, as another load may have started.
+  - A start that failed may still become a turn: past its 60 s deadline,
+    Muse Code's `turn/start` is still running. `release` now cancels
+    after any start is answered, failed or not.
+  - A released wrapper delivers nothing more to the editor (`deliver`),
+    so neither a queued history nor a late tool update goes out.
+  - The backend stopping lets go of loads being set up too, and those
+    loads fail.
+  - The fake session now hands a new listener the prompts still open,
+    as `MuseSession.onEvent` does (`openPrompts`). The reload test holds
+    the old turn's start, shows the replacement does not follow meanwhile,
+    and checks `turn/cancel` goes out before it subscribes.
+  - Not changed, with reasons. A failed `turn/cancel` is logged and the
+    session still let go: MSP gives the agent no stronger stop through
+    `AgentSession`, and a wrapper kept only to listen shows the editor
+    nothing. `cancelQuestions` after a released check: no await comes
+    between the check (or the event's arrival) and the call, so no
+    release can fall in between.
+
 | Drill | Break                                                             | Result                                                                                                      |
 | ----- | ----------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
 | N1    | the handle's model trusted again                                  | exit 1: 3 tests, "runs a loaded session on the model the backend reports, never the one its handle …"       |
@@ -554,3 +581,7 @@ card rule.
 | C2    | the turn cancelled before it started, or when it never did        | exit 1: both "closed while its turn is being started, it …"                                                 |
 | C3    | a prompt whose turn fails to start after a close answers an error | exit 1: "… it has nothing to stop when the turn fails to start"                                             |
 | X1    | a close of a session not held answered as done                    | exit 1: both "lets a resume go when the editor closes that session while its … is being set"                |
+| G1    | the replacement follows before the held turn is stopped           | exit 1: "follows a session loaded again only once its running turn is stopped"                              |
+| G2    | a turn whose start failed not stopped                             | exit 1: "closed while its turn is being started, … failed to start"                                         |
+| G3    | updates still delivered after a session is let go                 | exit 1: "denies a paid use answered after its session closed"                                               |
+| G4    | the backend stopping leaves a load being set up held              | exit 1: "lets a load being set up go when its backend stops, and the load fails"                            |

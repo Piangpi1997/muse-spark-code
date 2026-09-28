@@ -160,16 +160,6 @@ function startingModel(models: readonly ModelSummary[]): string {
   return model.modelId
 }
 
-/** Whether a turn being started (none: already started) did start. */
-async function hasStarted(starting: Promise<unknown> | undefined): Promise<boolean> {
-  try {
-    await starting
-    return true
-  } catch {
-    return false
-  }
-}
-
 /** The default effort where the model serves it, else the nearest tier it has. */
 function servedEffort(modelId: string, wanted: EffortLevel): EffortLevel {
   const levels = effortLevelsFor(modelId)
@@ -223,6 +213,11 @@ class AcpSession {
 
   private async deliver(previous: Promise<void>, update: SessionUpdate): Promise<void> {
     await previous
+    if (this.isDisposed) {
+      // Let go: nothing more reaches the editor for it, not even history
+      // a load queued before a close or a newer load.
+      return
+    }
     try {
       await this.client.notify('session/update', { sessionId: this.sessionId, update })
     } catch (error: unknown) {
@@ -744,8 +739,14 @@ class AcpSession {
     this.pending?.resolve('cancelled')
     this.pending = undefined
     this.unsubscribe()
-    // A turn that failed to start has nothing to stop.
-    if (wasRunning && (await hasStarted(this.starting))) {
+    if (wasRunning) {
+      // Stopped once its start is answered, even a start that failed: one
+      // past its deadline (Muse Code's `turn/start`) may still start.
+      try {
+        await this.starting
+      } catch {
+        // The prompt that started it has already ended cancelled.
+      }
       await this.cancelTurn()
     }
     this.session.dispose()
@@ -820,9 +821,14 @@ class AgentState {
     // following it and answering at once (`release`); if this load then
     // fails, nothing is held for that id and the editor loads it again.
     const { sessionId } = session
-    const superseded = this.releaseAll(sessionId)
     let acp: AcpSession | undefined
     try {
+      // Until each has stopped its turn and let go: only then does this one
+      // follow the session, whose open prompts Muse Code hands a new
+      // listener. Another load may start meanwhile, so it looks again.
+      while (this.sessions.has(sessionId) || this.adopting.has(sessionId)) {
+        await this.releaseAll(sessionId)
+      }
       acp = new AcpSession(
         session,
         host,
@@ -835,7 +841,6 @@ class AgentState {
         session.modelId,
       )
       this.adopting.set(sessionId, acp)
-      await superseded
       await prepare(acp)
       if (acp.isReleased) {
         // A newer load of this session, or a close, let it go meanwhile.
@@ -885,6 +890,15 @@ class AgentState {
         }
         acp.hostExited(exit.description)
         this.sessions.delete(sessionId)
+      }
+      // One being set up is let go, so its load fails rather than hold a
+      // session on a backend that has gone; it runs no prompt to stop.
+      for (const [sessionId, acp] of this.adopting) {
+        if (acp.host !== host) {
+          continue
+        }
+        this.adopting.delete(sessionId)
+        void acp.release()
       }
     })
   }

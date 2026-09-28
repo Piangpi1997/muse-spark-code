@@ -2980,9 +2980,13 @@ modelApi` (the key of D61). There is no "auto", so the bill is never a
   whose setup fails is let go. A session loaded again lets the one held
   go first, and one still being set up by an earlier load, as both hosts
   hand the same session back; a close lets both go. A session let go
-  changes nothing more on the backend, decides nothing on the editor's
-  late answers (a paid use is denied), and its running prompt ends
-  cancelled with its turn stopped on the backend, once started. The client's answers to the
+  changes nothing more on the backend, sends the editor nothing more,
+  decides nothing on the editor's late answers (a paid use is denied),
+  and its running prompt ends cancelled with its turn stopped on the
+  backend once its start is answered (even a failed start, which past
+  its deadline may still begin). A reload follows the session only once
+  the held one's turn is stopped; the backend stopping lets go of loads
+  being set up too. The client's answers to the
   agent's own requests (permission, elicitation) are parsed with zod, and
   a form answer must be one the form allowed (its options, how many), or
   the question is declined. The agent's log names a backend failure by

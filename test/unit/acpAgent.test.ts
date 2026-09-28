@@ -222,6 +222,13 @@ async function askInForm(h: Harness, question: Question): Promise<void> {
   })
 }
 
+/** Loads `old-1` on a fresh connection; its backend session. */
+async function loadOld(h: Harness, client: acp.ClientContext): Promise<FakeAgentSession> {
+  await client.request('initialize', { protocolVersion: acp.PROTOCOL_VERSION })
+  await client.request('session/load', { sessionId: 'old-1', cwd: CWD, mcpServers: [] })
+  return h.host.sessions.at(-1)!
+}
+
 /** The next session resumed, as `change` leaves it before the agent has it. */
 function onNextResume(h: Harness, change: (session: AgentSession) => void): void {
   const resume = h.host.resumeSession.getMockImplementation()!
@@ -1029,9 +1036,7 @@ describe('the ACP agent (M63)', () => {
     const configUpdates = () =>
       h.updates.filter((update) => update.sessionUpdate === 'config_option_update')
     await h.run(async (client) => {
-      await client.request('initialize', { protocolVersion: acp.PROTOCOL_VERSION })
-      await client.request('session/load', { sessionId: 'old-1', cwd: CWD, mcpServers: [] })
-      const shared = h.host.sessions[0]!
+      const shared = await loadOld(h, client)
       retainOnResume(h, shared)
       // Muse Code tells of the effort it was set to.
       shared.setReasoningEffort.mockImplementation(() => {
@@ -1065,10 +1070,11 @@ describe('the ACP agent (M63)', () => {
   })
 
   it.each([
-    ['stops the turn once it has started', true],
-    ['has nothing to stop when the turn fails to start', false],
+    ['has started', true],
+    // Past its deadline a start fails, yet may still start (Grok on ca263c53).
+    ['failed to start', false],
   ])(
-    'closed while its turn is being started, it %s (Grok on 5e2b85c3)',
+    'closed while its turn is being started, it stops the turn once the start is answered: %s (Grok on 5e2b85c3)',
     async (_name, isStarted) => {
       const h = harness()
       const starting = Promise.withResolvers<{ turnId: string; disposition: 'started' }>()
@@ -1091,10 +1097,58 @@ describe('the ACP agent (M63)', () => {
         return await response
       })
       expect(stop).toEqual({ stopReason: 'cancelled' })
-      expect(h.host.sessions[0]?.cancel).toHaveBeenCalledTimes(isStarted ? 1 : 0)
+      expect(h.host.sessions[0]?.cancel).toHaveBeenCalledTimes(1)
       expect(h.host.sessions[0]?.dispose).toHaveBeenCalledTimes(1)
     },
   )
+
+  it('follows a session loaded again only once its running turn is stopped (Grok on ca263c53)', async () => {
+    const h = harness()
+    const starting = Promise.withResolvers<{ turnId: string; disposition: 'started' }>()
+    await h.run(async (client) => {
+      const shared = await loadOld(h, client)
+      shared.sendTurn.mockImplementation(() => starting.promise)
+      const response = prompt(client, 'old-1')
+      await until(() => shared.sendTurn.mock.calls.length === 1)
+      // An approval open on that turn, which Muse Code hands a new listener.
+      shared.openPrompts = [approval()]
+      const subscribe = vi.spyOn(shared, 'onEvent')
+      retainOnResume(h, shared)
+      const reload = client.request('session/load', {
+        sessionId: 'old-1',
+        cwd: CWD,
+        mcpServers: [],
+      })
+      await settled()
+      // The reload waits for the turn to be stopped before it follows.
+      expect(subscribe).not.toHaveBeenCalled()
+      expect(h.permissions).toEqual([])
+      starting.resolve({ turnId: 'turn-1', disposition: 'started' })
+      await reload
+      await response
+      expect(shared.cancel.mock.invocationCallOrder[0]).toBeLessThan(
+        subscribe.mock.invocationCallOrder[0]!,
+      )
+    })
+  })
+
+  it('lets a load being set up go when its backend stops, and the load fails (Grok on ca263c53)', async () => {
+    const h = harness()
+    const mode = Promise.withResolvers<undefined>()
+    await h.run(async (client) => {
+      await client.request('initialize', { protocolVersion: acp.PROTOCOL_VERSION })
+      onNextResume(h, (session) => {
+        vi.mocked(session.setApprovalMode).mockImplementationOnce(() => mode.promise)
+      })
+      const loading = client.request('session/resume', { sessionId: 'old-1', cwd: CWD })
+      await until(() => h.host.sessions[0]?.setApprovalMode.mock.calls.length === 1)
+      h.host.exit('the backend stopped')
+      mode.resolve(undefined)
+      await expect(loading).rejects.toThrow()
+      await expect(prompt(client, 'old-1')).rejects.toThrow()
+    })
+    expect(h.host.sessions[0]?.dispose).toHaveBeenCalledTimes(1)
+  })
 
   it('stops the turn of a session loaded again while it runs (Grok on 5e2b85c3)', async () => {
     const h = harness()
@@ -1365,6 +1419,8 @@ describe('paid features in the agent (M63c, M58)', () => {
       return await asked
     })
     expect(isAllowed).toBe(false)
+    // Nothing more reaches the editor for a session it closed (Grok on ca263c53).
+    expect(h.updates.filter((update) => update.sessionUpdate === 'tool_call_update')).toEqual([])
   })
 
   it('denies without asking a feature it has no flag for, and subagents always', async () => {

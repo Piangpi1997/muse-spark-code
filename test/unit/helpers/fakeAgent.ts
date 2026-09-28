@@ -44,6 +44,8 @@ export class FakeAgentSession implements AgentSession {
   private readonly listeners = new Set<SessionEventListener>()
   private turns = 0
   public skills: readonly SkillSummary[] = []
+  /** Approvals and questions still open, handed to each new listener. */
+  public openPrompts: readonly AgentEvent[] = []
   public readonly sendTurn = vi.fn<AgentSession['sendTurn']>(() => {
     this.turns += 1
     return Promise.resolve({ turnId: `turn-${String(this.turns)}`, disposition: 'started' })
@@ -79,6 +81,10 @@ export class FakeAgentSession implements AgentSession {
 
   public onEvent(listener: SessionEventListener): () => void {
     this.listeners.add(listener)
+    // As Muse Code hands a later listener the prompts still open.
+    for (const event of this.openPrompts) {
+      listener(event)
+    }
     return () => {
       this.listeners.delete(listener)
     }
