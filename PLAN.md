@@ -6541,22 +6541,27 @@ harness scenario, which is what the accessibility gate checks (D32).
   - "Open PR in a conversation" checks out the PR's branch in a
     worktree. A PR the user did not author is adversarial content until
     the user says otherwise:
-    - its worktree is created under the extension's own storage, outside
-      every folder the user trusted, and opens in its own window, so VS
-      Code starts it in Restricted Mode and asks for trust itself;
-    - where workspace trust is switched off (everything is trusted), the
-      conversation there starts in Plan mode with project rules, skills,
-      hooks and MCP servers off, and the panel refuses a more permissive
-      mode until the user confirms trust for that worktree in a card;
-    - either way, the user's explicit action is what lifts it.
+    - its worktree is created under the extension's own storage and opens
+      in its own window;
+    - VS Code may still trust that folder, through a trusted parent (the
+      home folder, say) or with workspace trust switched off, and the
+      extension cannot ask VS Code about a folder before it opens. So the
+      extension never relies on it: in that window it holds the
+      conversation in Plan mode, with project rules, skills, hooks and MCP
+      servers off (Muse Code starts without `--trust-workspace`), until the
+      user confirms trust for that worktree in the extension's own card,
+      whatever VS Code's trust says. Where VS Code opened it in Restricted
+      Mode, that applies as well;
+    - other extensions follow VS Code's own trust, which this extension
+      cannot lower, and the card says so.
 - **Rules.** Never force-push. Pushing and creating a PR always ask.
   GitHub only (D49, not taken). Unavailable in Restricted Mode.
 - **Backends.** Both.
 - **Acceptance.** No path force-pushes; every push and PR creation asks
-  and shows what goes out; a PR by someone else opens untrusted (Restricted
-  Mode, or Plan mode with its project configuration off where trust is
-  switched off) until the user lifts it; the worktree conversation cannot
-  touch the main checkout.
+  and shows what goes out; a PR by someone else opens held in Plan mode
+  with its project configuration off until the user confirms trust in the
+  extension's card, even when VS Code already trusts the folder; the
+  worktree conversation cannot touch the main checkout.
 - **Tests.** A fake git extension API and a fake GitHub endpoint, with a
   drill for the force-push refusal and the project-configuration switch.
 - **Size.** M.
@@ -6813,8 +6818,11 @@ harness scenario, which is what the accessibility gate checks (D32).
     - It lives in the operating system's credential store, the one the
       ACP agent already uses (`@napi-rs/keyring`, filled by
       `muse-spark-code-acp auth set` from standard input).
-    - It is never passed as an environment variable, an argument or a
-      file, and never to a child process.
+    - Its one way in is `auth set`'s standard input: from the user's
+      terminal locally, from the Action's step shell in CI.
+    - Inside the agent it is never passed as an environment variable, an
+      argument or a file, and never to a process the agent starts (a
+      tool, a check, `exec`'s commands).
     - A local headless run reads that entry, like the ACP agent.
     - In CI the Action sets, runs and clears inside one shell: on Linux,
       one `dbus-run-session` that starts and unlocks a throwaway keyring,
@@ -6824,9 +6832,12 @@ harness scenario, which is what the accessibility gate checks (D32).
       entry's account name is unique to the run, so concurrent jobs and a
       developer's own key on a self-hosted runner never collide.
     - GitHub hands a secret to a step only through the step's
-      environment or its script. The shell reads it into `auth set`'s
-      standard input and unsets it before `exec` starts, so no process
-      the run starts inherits it.
+      environment or its script, so in CI the Action's own step shell is
+      the one environment the key is ever in. That shell writes it to
+      `auth set`'s standard input and unsets it before `exec` starts; the
+      shell and `auth set` are the only processes that hold it outside
+      the store. PR #32's amendment to AGENTS.md rule 8 names this
+      bootstrap as the exception, and nothing else.
     - `exec` cannot show D48's popup or M71's push confirmation, so it
       refuses paid features and never pushes. A "fix this" result leaves
       as a patch, or a commit pushed by a separate step the repository's
@@ -6837,8 +6848,9 @@ harness scenario, which is what the accessibility gate checks (D32).
   where the CLI is already signed in on that machine; a device sign-in
   needs a person, so it is not offered in CI.
 - **Acceptance.** A fork's PR or an outside commenter starts nothing;
-  the key never appears in an environment, an argument, a file or a log;
-  `exec` answers every approval question with a denial.
+  outside the Action's step shell, the key is in no environment, and it is
+  in no argument, file or log; no process `exec` starts gets it or a route
+  to the keyring; `exec` answers every approval question with a denial.
 - **Tests.** `exec` against the fake Model API; the Action's steps in a
   workflow test on the owner's repository, with a drill for the trigger
   check.
