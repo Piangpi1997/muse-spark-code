@@ -82,7 +82,7 @@ function staleThenLoggedOut() {
   const stale = Promise.withResolvers<AccountState | undefined>()
   const answers = [stale.promise, Promise.resolve(LOGGED_OUT)]
   const probe = vi.fn(() => answers.shift() ?? Promise.resolve(undefined))
-  return { stale, probe, checker: linuxChecker(home.file, probe) }
+  return { home, stale, probe, checker: linuxChecker(home.file, probe) }
 }
 
 /** An ambiguous file on Linux whose CLI question waits until the test answers it. */
@@ -302,6 +302,20 @@ describe('CliAccount', () => {
     await expect(checker.signIn(true)).resolves.toBe('signedOut')
     stale.resolve(SIGNED_IN)
     await expect(Promise.all([started, joined])).resolves.toEqual(['signedOut', 'signedOut'])
+    expect(probe).toHaveBeenCalledTimes(2)
+  })
+
+  // A probe about an older version of the file answers after one about the
+  // newer version was remembered: the older answer replaces nothing, and its
+  // caller gets the newer one (the review of PR #49).
+  it('keeps the newer file version’s answer when an older probe answers late', async () => {
+    const { home, stale, probe, checker } = staleThenLoggedOut()
+    const first = checker.signIn(true)
+    home.write(`${MALFORMED} `)
+    await expect(checker.signIn(true)).resolves.toBe('signedOut')
+    stale.resolve(SIGNED_IN)
+    await expect(first).resolves.toBe('signedOut')
+    await expect(checker.signIn(false)).resolves.toBe('signedOut')
     expect(probe).toHaveBeenCalledTimes(2)
   })
 

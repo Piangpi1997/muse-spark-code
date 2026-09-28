@@ -226,6 +226,10 @@ export class AuthService {
    * conversation still runs there.
    */
   private liveBackend: BackendKind | undefined
+  /** Moves each time `liveBackend` is recorded: a restart clears only what it ended. */
+  private liveVersion = 0
+  /** Counts logout-hold writes: only the latest one's outcome is kept. */
+  private holdWrites = 0
 
   public constructor(private readonly deps: AuthServiceDeps) {
     this.isLogoutHeld = deps.logoutHold.get()
@@ -233,12 +237,21 @@ export class AuthService {
 
   private async setLogoutHold(isHeld: boolean): Promise<boolean> {
     this.isLogoutHeld = isHeld
+    // Only the latest write says whether the hold is saved: an older one
+    // that settles late speaks for a value that no longer holds (the review
+    // of PR #49).
+    this.holdWrites += 1
+    const write = this.holdWrites
     try {
       await this.deps.logoutHold.set(isHeld)
-      this.isLogoutPersistenceFailed = false
+      if (write === this.holdWrites) {
+        this.isLogoutPersistenceFailed = false
+      }
       return true
     } catch {
-      this.isLogoutPersistenceFailed = true
+      if (write === this.holdWrites) {
+        this.isLogoutPersistenceFailed = true
+      }
       this.deps.log.warn('Muse Code sign-out state could not be saved')
       return false
     }
@@ -262,8 +275,13 @@ export class AuthService {
    * does.
    */
   private async restartHosts(isConversationEnding: boolean): Promise<void> {
+    // Cleared after the restart, so a failed one leaves the record of the
+    // conversations still running; and only if no signed-in state was
+    // published meanwhile, whose conversations did not end (the review of
+    // PR #49).
+    const live = this.liveVersion
     await this.deps.backend.restartBackend(isConversationEnding)
-    if (isConversationEnding) {
+    if (isConversationEnding && live === this.liveVersion) {
       this.liveBackend = undefined
     }
   }
@@ -357,6 +375,7 @@ export class AuthService {
     this.publishedTicket = ticket
     if (snapshot.status === 'signedIn') {
       this.liveBackend = snapshot.backend
+      this.liveVersion += 1
     }
     if (previous.status !== snapshot.status || previous.backend !== snapshot.backend) {
       const isUnsupportedFile =

@@ -137,6 +137,12 @@ export class CliAccount {
       const signIn = await joined.signIn
       return joined.isAbandoned ? OBSOLETE : signIn
     }
+    // A probe about an older version of the file is left behind: its late
+    // answer must not replace this one's, remembered meanwhile, and its
+    // callers look again anyway (the review of PR #49).
+    if (this.asking !== undefined) {
+      this.asking.isAbandoned = true
+    }
     const asking: Probe = { key, signIn: this.ask(), isAbandoned: false }
     this.asking = asking
     try {

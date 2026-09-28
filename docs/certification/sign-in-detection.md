@@ -549,6 +549,78 @@ They ran the same way on this Windows machine, from
 | DA    | The per-OS table drifts: macOS expected to read the file as holding the credential   | `credentialFile.test.ts`, `cliAccount.test.ts`, e2e | exit 1, 3 failed; first "signs in on the captured granted sequence"                                                                                |
 | DB    | The macOS branch regresses: a version-1 file holding the credential settled on macOS | `credentialFile.test.ts`, `cliAccount.test.ts`, e2e | exit 1, 5 failed; first "signs in on the captured granted sequence"                                                                                |
 
+Drills DC to DE cover Codex's review of `19e74b07` (below), from
+`scratchpad/cred-capture/drills7.mjs` (`drills7-result.json`,
+`drills7.log`); each target matched its pre-drill SHA-256 afterwards.
+
+| Drill | What was broken                                                                               | Suites                | Result                                                                                        |
+| ----- | --------------------------------------------------------------------------------------------- | --------------------- | --------------------------------------------------------------------------------------------- |
+| DC    | A restart that ends conversations clears the running backend whatever was published meanwhile | `authService.test.ts` | exit 1, 1 failed: "keeps the backend a newer refresh signed in on when an older restart ends" |
+| DD    | An older logout-hold write that fails late marks the hold unsaved                             | `authService.test.ts` | exit 1, 1 failed: "keeps the latest logout-hold write’s outcome when an older one fails late" |
+| DE    | A probe about an older file version stays current when a newer one starts                     | `cliAccount.test.ts`  | exit 1, 1 failed: "keeps the newer file version’s answer when an older probe answers late"    |
+
+## Codex on `19e74b07`: shared state written after an await
+
+**P2.** `restartHosts(true)` cleared `liveBackend` after awaiting the
+restart. A newer refresh could publish a signed-in state during that await
+and record its backend; the late clear erased it, so a later switch
+bypassed `isBackendSwitch` and left that backend's conversations running.
+
+- **Fixed with a guard.** Clearing before the await would leave
+  `liveBackend` empty after a failed restart, while conversations still
+  run. Instead, `set()` moves `liveVersion` each time it records a
+  backend; `restartHosts` captures it before the await and clears only if
+  it is unchanged (DC).
+- **Siblings: every field in `AuthService`, `CliAccount` and
+  `runDeviceSignIn` written after an await.**
+  - `isLogoutPersistenceFailed`, set when a logout-hold write settles. An
+    older write that failed late marked the hold unsaved after newer
+    writes were saved, which shut admission. Only the latest write's
+    outcome is kept now (`holdWrites`; DD).
+  - `CliAccount.answered`. A probe about an older version of the file was
+    not abandoned when a probe for the newer version started (round 5's
+    abandon flag replaced the identity check), so its late answer could
+    overwrite the newer one. Starting a probe now abandons the one it
+    replaces (DE).
+- **Checked, left as they were.** These are single-writer by construction:
+  - `deviceSignIn`, `installPromise` and `checkingAgain` are cleared after
+    their await, but every other caller joins the running promise, so none
+    writes meanwhile;
+  - `deviceAbort` and `isDeviceFlowWaiting` belong to the one device flow
+    `joinDeviceSignIn` allows;
+  - `isSigningOut` and the epoch's move at the end belong to the one
+    sign-out `signOut` joins;
+  - `signOutPromise` and `CliAccount.asking` are cleared only if still
+    theirs.
+
+  `admissionGenerationValue` and `signOutEpoch` only increase, so no write
+  is lost. `snapshot` goes through the tickets and epochs, and
+  `runDeviceSignIn`'s `refutedWrite` is written by its one polling loop.
+
+- **The gate did not pass locally.** `npm run quality` ran four times on
+  the working tree (Windows 11, 2026-09-28, after drills DC to DE), and
+  each run **exited 1**. No failure was in a suite this pass touched. The
+  machine was loaded by other worktrees' gates (m67, m68 and m69, running
+  since about 03:00 with accessibility runs that looked hung, and m79's):
+  about 90 Chrome and 38 Node processes. Nobody could stop them.
+  - Run 1: `test:a11y`, two pages (`dark/tools`, `dark/approval`) without
+    a result after Chrome's network service crashed; 0 rules violated.
+    The unit tests passed (2,717).
+  - Run 2: `toolIo.test.ts` "kills a hook that exceeds its per-stream
+    output limit" (`isTimedOut` true). Run alone, it also failed once in
+    four.
+  - Run 3: that test again, and `mcpProcess.test.ts` "receives a real
+    server’s final response before its immediate exit closes stdio".
+  - Run 4 (after waiting 40 minutes for the other gates): 12 tests in
+    `processTree`, `mcpPool`, `mcpProcess`, `toolIo`, `shellQuote` and
+    `worktreeCommands`; 2,705 passed.
+
+  What passed: the touched suites (`authService`, `cliAccount` and the
+  `cliAccount` e2e, 139 tests), `npm run typecheck`, `npm run lint`,
+  `npm run check:l10n` (0 problems), `npm run duplication` (0 clones) and
+  `npm run format:check`. The full gate for this commit is CI's three-OS
+  run on the pushed commit.
+
 ## macOS CI on `1ae3604f`: expectations per OS
 
 CI failed on `macos-latest` only. Two e2e tests read a real credential file

@@ -908,6 +908,49 @@ describe('AuthService: a switch of backends ends the running one’s conversatio
     expect(h.restartBackend.mock.calls).toEqual([[true]])
   })
 
+  // A newer refresh signs in while an older switch's restart is still under
+  // way: that restart's late end leaves the newer record, so the next switch
+  // still ends its conversations (Codex on 19e74b07).
+  it('keeps the backend a newer refresh signed in on when an older restart ends', async () => {
+    const h = await signedInModelApi()
+    const stopping = Promise.withResolvers<undefined>()
+    h.restartBackend.mockImplementationOnce(() => stopping.promise)
+    h.facts.cli = 'signedIn'
+    const switching = h.service.checkAgain()
+    await vi.waitFor(() => {
+      expect(h.restartBackend).toHaveBeenCalledOnce()
+    })
+    await expect(h.service.refresh()).resolves.toMatchObject({ backend: 'museCode' })
+    stopping.resolve(undefined)
+    await switching
+    h.facts.cli = 'signedOut'
+    await expect(h.service.refresh()).resolves.toMatchObject({ backend: 'modelApi' })
+    expect(h.restartBackend.mock.calls).toEqual([[true], [true], [true]])
+  })
+
+  // An older logout-hold write fails after newer ones were saved: the hold
+  // is saved as it stands, so admission is not held shut (Codex on
+  // 19e74b07).
+  it('keeps the latest logout-hold write’s outcome when an older one fails late', async () => {
+    const older = Promise.withResolvers<undefined>()
+    let writes = 0
+    const h = harness({
+      logoutHold: {
+        get: () => true,
+        set: () => (++writes === 1 ? older.promise : Promise.resolve()),
+      },
+    })
+    const releasing = h.service.refresh()
+    await vi.waitFor(() => {
+      expect(writes).toBe(1)
+    })
+    await h.service.signOut()
+    older.reject(new Error('state storage unavailable'))
+    await releasing
+    await expect(h.service.signIn('apiKey')).resolves.toMatchObject({ backend: 'modelApi' })
+    expect(h.service.backend).toBe('modelApi')
+  })
+
   // A sign-out already ended every conversation: the next sign-in on the
   // other backend has none to end.
   it('ends conversations once: a sign-out leaves none for the next sign-in to end', async () => {
