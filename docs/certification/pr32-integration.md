@@ -200,3 +200,47 @@ and Mac mini (a keychain of the run's own): both `ok`, nothing left behind.
 Over SSH with a key, Windows refuses Credential Manager
 (`ERROR_NO_SUCH_LOGON_SESSION`) and the agent stores nothing; now in
 `docs/acp.md`. Details in `m63.md`, "The key store on the owner's rigs".
+
+## The gate
+
+`npm run quality` on this branch at `87383c7` (Windows 11, Node 24.20.0):
+exit 0. The first full run, on `e231349`, failed at its last step: SAST
+found `detect-child-process` on the spawn behind the agent's `login`, PR
+#32's own code, which had never been through semgrep (its container could
+not fetch the rules, `m63.md`). The spawn is the same fixed launch as
+`muse serve`; it is annotated with its reason and registered in PLAN.md §8
+(`87383c7`), and the rerun passed. That first run is the suppression's
+drill: without the comment, one blocking finding.
+
+| Step                                  | Result                                                                                                                                       |
+| ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `format:check`, `lint`, `typecheck`   | exit 0 (PSScriptAnalyzer findings: 0; five projects)                                                                                         |
+| `check:l10n`                          | 14 tables, 93 manifest strings, 251 source files; 0 problems                                                                                 |
+| `check:host-api`                      | 200 VS Code APIs, 13 files importing `vscode`, 17 Node built-ins, 57 theme variables; 0 problems                                             |
+| `deadcode`, `cycles`, `duplication`   | exit 0; no circular dependency; 0 clones                                                                                                     |
+| `test:unit`                           | 183 files passed, 2 skipped; 2,652 tests passed, 23 skipped; coverage 94.47 % statements, 89.76 % branches, 96.08 % functions, 94.43 % lines |
+| `build`                               | every bundle under budget (above); the bundle split holds for `extension.js` and `acp.js`; no `navigator`; notices: 75 packages              |
+| `security:audit`                      | 0 advisories, 0 exceptions                                                                                                                   |
+| `test:a11y`                           | 336 pages (84 scenarios × 4 themes), 0 violations, 0 undecided                                                                               |
+| `security:secrets`                    | 286 commits scanned, no leaks                                                                                                                |
+| `security:sast`                       | 287 rules on 444 files: 0 findings                                                                                                           |
+| `test:integration` (run on the merge) | 10 passing on VS Code 1.139.1 and 10 on 1.99.0                                                                                               |
+
+The tail:
+
+```text
+> muse-spark-code@0.9.1 security:secrets
+> gitleaks git --redact --no-banner .
+
+INF 286 commits scanned.
+INF no leaks found
+
+> muse-spark-code@0.9.1 security:sast
+> node scripts/sast.mjs
+
+Ran 287 rules on 444 files: 0 findings.
+QUALITY EXIT 0
+```
+
+Not run here: hosts.yml and forks.yml (CI only; they run on the pull
+request), and no live model call was needed.
