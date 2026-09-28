@@ -30,11 +30,15 @@ Only the latest release on the Visual Studio Marketplace receives fixes.
 - **Credentials.** A pasted Model API key lives only in VS Code's
   SecretStorage, is sent only to `api.meta.ai`, and is never passed to a
   child process, written to settings or logs, or shown in the panel. The
-  Muse Code CLI's own credential file is never read: the extension checks
-  only that it exists and when it last changed. In-panel sign-in runs Muse
-  Code's device-code flow in a temporary `muse serve` that owns no
-  conversation and is closed on success, cancel, timeout or error; the only
-  page it opens must be on `https://auth.meta.com`. The log channel redacts
+  extension reads only the structure of the Muse Code CLI's own credential
+  file, never a token in it: the schema version, whether it names a
+  provider, and whether it points to the macOS Keychain. When that is not
+  enough, it asks the CLI (`account/read`) and discards the account label
+  the answer carries. It never reads the Keychain's secret. In-panel
+  sign-in, that question and sign-out (`account/logout`) run in a temporary
+  `muse serve` that owns no conversation and is closed on success, cancel,
+  timeout or error. The only page sign-in opens must be on
+  `https://auth.meta.com`. The log channel redacts
   key-shaped strings, in Meta's current `LLM_…` form and the older
   `LLM|<id>|<secret>` one.
 - **Workspace trust.** In VS Code's Restricted Mode the agent loads no

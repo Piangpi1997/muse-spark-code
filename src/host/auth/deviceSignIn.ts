@@ -1,48 +1,66 @@
 // Muse Code's captured experimental account/device-code flow (M55). This
 // process owns no chat session and is always closed after success, cancel,
 // timeout or error. The extension never sends its Model API key to this host.
+//
+// A sign-in has succeeded (PLAN.md D26, 2026-09-27) when the host says so and
+// `account/read` agrees, or when polling `account/read` on the same host sees
+// the account sign in, or when the credential file is written and
+// `account/read` does not contradict it; a CLI without `account/read` falls
+// back to the host's word or the file alone. `account/loginCompleted` ends a
+// denied, expired or failed flow at once. `account/changed` is not relied on:
+// it did not fire for a change made outside the host.
 
-import { spawnMspConnection, type Connection } from '@muse-code/sdk'
 import * as z from 'zod/mini'
+import { clipForLog } from '../../core/logging'
 import { withDeadline } from '../../core/timeouts'
 import {
   CREDENTIAL_POLL_INTERVAL_MS,
   CREDENTIAL_POLL_TIMEOUT_MS,
-  MSP_CLIENT_NAME,
   MSP_HANDSHAKE_TIMEOUT_MS,
   MUSE_ACCOUNT_DEVICE_CODE_TYPE,
   MUSE_ACCOUNT_LOGIN_CANCEL,
   MUSE_ACCOUNT_LOGIN_COMPLETED,
   MUSE_ACCOUNT_LOGIN_START,
+  MUSE_ACCOUNT_STATES,
   MUSE_DEVICE_SIGN_IN_URL_ORIGIN,
+  MUSE_LOGIN_OUTCOMES,
 } from '../../shared/constants'
-import type { MuseCodeBackendManager } from '../backend/museCodeBackendManager'
 import type { Logger } from '../logger'
+import { type AccountSession, type AccountState, readAccountState } from './accountHost'
 
 const loginStartSchema = z.object({
   verificationUrl: z.url(),
   userCode: z.string().check(z.minLength(1)),
 })
-const loginCompletedSchema = z.object({ outcome: z.string() })
+// `message` is display text for denied, expired and failed (the schema's
+// `AccountLoginCompletedParams`); it goes to the log, clipped, never the panel.
+const loginCompletedSchema = z.object({
+  outcome: z.string(),
+  message: z.optional(z.string()),
+})
 const loginCancelSchema = z.object({ cancelled: z.boolean() })
 
-export interface DeviceSession {
-  readonly connection: Pick<Connection, 'request' | 'onNotification'>
-  readonly close: () => Promise<unknown>
-}
-
 export interface DeviceSignInDeps {
-  readonly connect: (signal: AbortSignal) => Promise<DeviceSession>
+  readonly connect: (signal: AbortSignal) => Promise<AccountSession>
   readonly credentialFileModifiedAt: () => number | undefined
   readonly sleep: (ms: number) => Promise<void>
   readonly now: () => number
   readonly signal: AbortSignal
   readonly onCode: (url: string, code: string) => void
+  readonly log: Logger
 }
 
-export type DeviceSignInOutcome = 'signedIn' | 'cancelled' | 'timedOut'
+/** How the flow ended the host's way: refused in the browser, too late, or not saved. */
+export type DeviceSignInRefusal = 'denied' | 'expired' | 'failed'
+export type DeviceSignInOutcome = 'signedIn' | 'cancelled' | 'timedOut' | DeviceSignInRefusal
 const CANCELLED_START = Symbol('cancelled device sign-in start')
-const CANCELLED_CONNECT = Symbol('cancelled device sign-in connection')
+
+const ENDING_OUTCOMES: ReadonlyMap<string, DeviceSignInRefusal | 'cancelled'> = new Map([
+  [MUSE_LOGIN_OUTCOMES.cancelled, 'cancelled'],
+  [MUSE_LOGIN_OUTCOMES.denied, 'denied'],
+  [MUSE_LOGIN_OUTCOMES.expired, 'expired'],
+  [MUSE_LOGIN_OUTCOMES.failed, 'failed'],
+])
 
 /** The returned URL is data from a CLI process: do not open arbitrary origins. */
 export function parseDeviceCode(raw: unknown): { readonly url: string; readonly code: string } {
@@ -54,13 +72,44 @@ export function parseDeviceCode(raw: unknown): { readonly url: string; readonly 
   return { url: url.href, code: parsed.userCode }
 }
 
+/** What the host said when the flow ended; the first ending counts. */
+interface HostEnding {
+  outcome: string | undefined
+}
+
+/** The signals that a new sign-in landed, as one poll sees them. */
+interface SignInSignals {
+  readonly initial: AccountState | undefined
+  readonly current: AccountState | undefined
+  readonly isGranted: boolean
+  readonly isFileWritten: boolean
+}
+
+function isSignedIn(signals: SignInSignals): boolean {
+  const { initial, current, isGranted, isFileWritten } = signals
+  if (current === undefined) {
+    // A CLI without `account/read`: the host's word, or a new file.
+    return isGranted || isFileWritten
+  }
+  // A file written by a sign-out, or a "granted" the store does not show yet.
+  if (current.state === MUSE_ACCOUNT_STATES.loggedOut && current.credentialRequired) {
+    return false
+  }
+  // `envKey` or a stored key may mask the new login, so the host's word and
+  // a new file count while the account is anything but signed out.
+  const hasSignedIn =
+    current.state === MUSE_ACCOUNT_STATES.accountLogin &&
+    initial?.state !== MUSE_ACCOUNT_STATES.accountLogin
+  return isGranted || isFileWritten || hasSignedIn
+}
+
 export async function runDeviceSignIn(deps: DeviceSignInDeps): Promise<DeviceSignInOutcome> {
   const isAborted = () => deps.signal.aborted
   if (isAborted()) {
     return 'cancelled'
   }
   const before = deps.credentialFileModifiedAt()
-  let session: DeviceSession
+  let session: AccountSession
   try {
     session = await deps.connect(deps.signal)
   } catch (error: unknown) {
@@ -69,16 +118,20 @@ export async function runDeviceSignIn(deps: DeviceSignInDeps): Promise<DeviceSig
     }
     throw error
   }
-  const state: { isCancelledByHost: boolean } = { isCancelledByHost: false }
+  const ending: HostEnding = { outcome: undefined }
   try {
     session.connection.onNotification((notification) => {
-      if (notification.method !== MUSE_ACCOUNT_LOGIN_COMPLETED) {
+      if (notification.method !== MUSE_ACCOUNT_LOGIN_COMPLETED || ending.outcome !== undefined) {
         return
       }
       const result = loginCompletedSchema.safeParse(notification.params)
-      if (result.success && result.data.outcome === 'cancelled') {
-        state.isCancelledByHost = true
+      if (!result.success) {
+        return
       }
+      ending.outcome = result.data.outcome
+      const message =
+        result.data.message === undefined ? '' : `: ${clipForLog(result.data.message)}`
+      deps.log.info(`Muse Code sign-in ended: ${result.data.outcome}${message}`)
     })
     if (isAborted()) {
       return 'cancelled'
@@ -88,8 +141,18 @@ export async function runDeviceSignIn(deps: DeviceSignInDeps): Promise<DeviceSig
       cancelledStart.resolve(CANCELLED_START)
     }
     deps.signal.addEventListener('abort', onAbort, { once: true })
+    let initial: AccountState | undefined
     let start: unknown
     try {
+      // The account before the flow, so a sign-in shows as a change.
+      const read = await Promise.race([
+        readAccountState(session.connection),
+        cancelledStart.promise,
+      ])
+      if (read === CANCELLED_START) {
+        return 'cancelled'
+      }
+      initial = read
       start = await Promise.race([
         withDeadline(
           session.connection.request(MUSE_ACCOUNT_LOGIN_START, {
@@ -118,13 +181,24 @@ export async function runDeviceSignIn(deps: DeviceSignInDeps): Promise<DeviceSig
         ),
       )
     }
+    const hasLanded = async () => {
+      const modified = deps.credentialFileModifiedAt()
+      return isSignedIn({
+        initial,
+        current: await readAccountState(session.connection),
+        isGranted: ending.outcome === MUSE_LOGIN_OUTCOMES.granted,
+        isFileWritten: modified !== undefined && modified !== before,
+      })
+    }
+    const hostEnding = () =>
+      ending.outcome === undefined ? undefined : ENDING_OUTCOMES.get(ending.outcome)
     while (deps.now() < deadline) {
-      const current = deps.credentialFileModifiedAt()
-      if (current !== undefined && current !== before) {
+      if (await hasLanded()) {
         return 'signedIn'
       }
-      if (state.isCancelledByHost) {
-        return 'cancelled'
+      const ended = hostEnding()
+      if (ended !== undefined) {
+        return ended
       }
       if (isAborted()) {
         await cancelLogin()
@@ -132,83 +206,16 @@ export async function runDeviceSignIn(deps: DeviceSignInDeps): Promise<DeviceSig
       }
       await deps.sleep(CREDENTIAL_POLL_INTERVAL_MS)
     }
-    const current = deps.credentialFileModifiedAt()
-    if (current !== undefined && current !== before) {
+    if (await hasLanded()) {
       return 'signedIn'
     }
-    if (state.isCancelledByHost) {
-      return 'cancelled'
+    const ended = hostEnding()
+    if (ended !== undefined) {
+      return ended
     }
     await cancelLogin()
     return isAborted() ? 'cancelled' : 'timedOut'
   } finally {
     await session.close()
-  }
-}
-
-/** Start a dedicated experimental MSP process. Keep it separate from chat. */
-export async function connectDeviceSession(
-  backend: MuseCodeBackendManager,
-  extensionVersion: string,
-  log: Logger,
-  workspaceRoot: string | undefined,
-  signal: AbortSignal,
-): Promise<DeviceSession> {
-  const isAborted = () => signal.aborted
-  if (isAborted()) {
-    throw new Error('Muse Code sign-in was cancelled')
-  }
-  backend.invalidateLaunch()
-  const resolution = backend.resolveLaunch()
-  if (!resolution.ok) {
-    throw new Error(resolution.reason)
-  }
-  let isStderrReported = false
-  const handshake = spawnMspConnection({
-    command: resolution.launch.command,
-    args: resolution.launch.args,
-    ...(workspaceRoot !== undefined && { cwd: workspaceRoot }),
-    env: backend.childEnvironment(),
-    onStderr: () => {
-      if (isStderrReported) {
-        return
-      }
-
-      log.warn('Muse Code sign-in host wrote to stderr')
-      isStderrReported = true
-    },
-  })
-  const cancelledConnect = Promise.withResolvers<typeof CANCELLED_CONNECT>()
-  const onAbort = () => {
-    cancelledConnect.resolve(CANCELLED_CONNECT)
-  }
-  signal.addEventListener('abort', onAbort, { once: true })
-  if (isAborted()) {
-    onAbort()
-  }
-  try {
-    const spawned = await Promise.race([
-      withDeadline(
-        handshake.initialize({
-          clientInfo: { name: MSP_CLIENT_NAME, version: extensionVersion },
-          capabilities: { experimentalApi: true, userInputDialogs: false },
-        }),
-        MSP_HANDSHAKE_TIMEOUT_MS,
-        'Muse Code did not start sign-in host in time',
-      ),
-      cancelledConnect.promise,
-    ])
-    if (spawned === CANCELLED_CONNECT || isAborted()) {
-      throw new Error('Muse Code sign-in was cancelled')
-    }
-    if (!spawned.initializeResult.experimentalApi) {
-      throw new Error('This Muse Code version does not offer in-panel sign-in')
-    }
-    return { connection: spawned.connection, close: () => spawned.close() }
-  } catch (error: unknown) {
-    await handshake.close()
-    throw error
-  } finally {
-    signal.removeEventListener('abort', onAbort)
   }
 }

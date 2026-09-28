@@ -28,8 +28,11 @@ import {
   resolveAgainstRoot,
   rootRelativePath,
 } from './core/workspaceRoot'
+import { keychainItemPresence } from './core/backends/musecode/credentialFile'
+import { connectAccountSession, logOutAccount, probeAccount } from './host/auth/accountHost'
 import { AuthService } from './host/auth/authService'
-import { connectDeviceSession, runDeviceSignIn } from './host/auth/deviceSignIn'
+import { CliAccount, isCliSignedIn } from './host/auth/cliAccount'
+import { runDeviceSignIn } from './host/auth/deviceSignIn'
 import { CredentialStore, isValidModelApiKey } from './host/auth/credentialStore'
 import { ModelApiBackendManager } from './host/backend/modelApiBackendManager'
 import { createFileScheduleStore } from './host/backend/fileScheduleStore'
@@ -127,6 +130,9 @@ import {
   PERSONAL_SKILLS_GLOB,
   PROJECT_SKILLS_GLOB,
   GLOBAL_STATE_KEYS,
+  MACOS_KEYCHAIN_LOOKUP_ARGS,
+  MACOS_KEYCHAIN_LOOKUP_TIMEOUT_MS,
+  MACOS_SECURITY_TOOL,
   MENTION_INDEX_LIMIT,
   MENTION_INDEX_TTL_MS,
   MUSE_CONFIG_STATUS_ARGS,
@@ -651,6 +657,19 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     },
     log,
   })
+  // Muse Code's account methods run on a short-lived host of their own (M55,
+  // D26): the device sign-in, `account/read` and `account/logout`.
+  const connectAccountHost = (signal: AbortSignal) =>
+    connectAccountSession(backend, version, log, workspaceRoot, signal)
+  const cliAccount = new CliAccount({
+    platform: process.platform,
+    credentialFilePath: () => backend.credentialFilePath(),
+    probe: () => probeAccount(() => connectAccountHost(new AbortController().signal), log),
+    log,
+  })
+  /** The CLI's own credential without a question to the CLI on macOS: META_API_KEY or its sign-in. */
+  const hasCliSession = async () =>
+    backend.hasEnvironmentKey() || isCliSignedIn(await cliAccount.signIn(false))
   const auth = new AuthService({
     backend: {
       resolveCli: () => {
@@ -664,12 +683,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
               reason: `${resolution.reason} ${fill(UI_TEXT.cliSearched, { paths: resolution.searched.join(', ') })}`,
             }
       },
-      credentialFileExists: () => backend.credentialFileExists(),
-      credentialFileModifiedAt: () => modifiedAt(backend.credentialFilePath()),
+      cliSignIn: (isUserAction) => cliAccount.signIn(isUserAction),
+      credentialFilePath: () => backend.credentialFilePath(),
       hasEnvironmentKey: () => backend.hasEnvironmentKey(),
       getBackendMode: () => currentSettings().backend,
       restartBackend: (isConversationEnding) =>
         restartBackend('authentication changed', isConversationEnding),
+      logOutCli: async () =>
+        (await logOutAccount(() => connectAccountHost(new AbortController().signal), log)) ===
+        'confirmed',
     },
     credentials,
     logoutHold: {
@@ -698,13 +720,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     },
     runDeviceSignIn: (signal, onCode) =>
       runDeviceSignIn({
-        connect: (connectSignal) =>
-          connectDeviceSession(backend, version, log, workspaceRoot, connectSignal),
+        connect: connectAccountHost,
         credentialFileModifiedAt: () => modifiedAt(backend.credentialFilePath()),
         sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
         now: Date.now,
         signal,
         onCode,
+        log,
       }),
     promptForApiKey,
     broadcast: (message) => {
@@ -1027,7 +1049,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         selectBackend({
           setting: currentSettings().backend,
           hasCli: backend.resolveLaunch().ok,
-          hasCliSession: backend.credentialFileExists() || backend.hasEnvironmentKey(),
+          hasCliSession: await hasCliSession(),
           hasStoredKey: (await credentials.getApiKey()) !== undefined,
         }),
       async (kind): Promise<AgentHost> =>
@@ -1300,9 +1322,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         // The usage modal's Account section and insights (M14).
         accountFacts: async (kind) => {
           const resolution = backend.resolveLaunch()
-          const hasCliSession = backend.credentialFileExists() || backend.hasEnvironmentKey()
+          const isCliSession = await hasCliSession()
           const hasKey = (await credentials.getApiKey()) !== undefined
-          const signInMethod = signInMethodFor(kind, hasCliSession, hasKey)
+          const signInMethod = signInMethodFor(kind, isCliSession, hasKey)
           const cliVersion = resolution.ok
             ? backend.installedVersion(resolution.launch.installDir)
             : undefined
@@ -1623,6 +1645,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
               )
           : undefined,
       )
+      // Where a macOS sign-in's token lives, looked up by attribute only (no
+      // `-g`/`-w`: no secret, no prompt); never the sign-in signal (D26).
+      const keychainLookup =
+        process.platform === 'darwin'
+          ? await runProcess(
+              { command: MACOS_SECURITY_TOOL, args: MACOS_KEYCHAIN_LOOKUP_ARGS },
+              MACOS_KEYCHAIN_LOOKUP_TIMEOUT_MS,
+            )
+          : undefined
       log.info(
         renderSupportReport({
           extensionVersion: version,
@@ -1647,7 +1678,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
                 version: backend.installedVersion(resolution.launch.installDir),
               }
             : { ok: false, reason: resolution.reason },
-          hasCliCredentialFile: backend.credentialFileExists(),
+          cliCredentialFile: backend.credentialFileVerdict(),
+          cliSignIn: await cliAccount.signIn(true),
+          keychainItem:
+            keychainLookup === undefined
+              ? undefined
+              : keychainItemPresence(keychainLookup.exitCode),
           delegationMode: delegationMode(),
           workflowTriggerMode: workflowTriggerMode(),
           hasStoredApiKey: (await credentials.getApiKey()) !== undefined,

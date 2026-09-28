@@ -15,6 +15,7 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import path from 'node:path'
 import { spawnMspConnection } from '@muse-code/sdk'
+import type { CredentialFileVerdict } from '../../core/backends/musecode/credentialFile'
 import { MuseCodeHost, type MspHost } from '../../core/backends/musecode/MuseCodeHost'
 import {
   buildChildEnvironment,
@@ -48,6 +49,7 @@ import {
   type SandboxNetworkMode,
   type ShellSandboxMode,
 } from '../../shared/constants'
+import { readCredentialFile } from '../auth/cliAccount'
 import type { Logger } from '../logger'
 
 /** VS Code's proxy settings (`http.proxy`, `http.noProxy`), handed to the CLI when its environment has none. */
@@ -168,7 +170,7 @@ export class MuseCodeBackendManager {
     // The CLI's own credential pays (its login or its own key); the key the
     // panel stores is for the Model API backend and is never passed here.
     this.deps.log.info(
-      `muse serve credentials: the CLI's own (credential file ${this.credentialFileExists() ? 'present' : 'absent'}, META_API_KEY in the environment ${this.hasEnvironmentKey() ? 'present' : 'absent'}); the extension's stored key is not passed`,
+      `muse serve credentials: the CLI's own (credential file ${this.credentialFileVerdict()}, META_API_KEY in the environment ${this.hasEnvironmentKey() ? 'present' : 'absent'}); the extension's stored key is not passed`,
     )
     this.deps.log.info(`Spawning ${launch.command} ${launch.args.join(' ')}`)
     // Spawn to handshake, for the log (M39).
@@ -364,8 +366,9 @@ export class MuseCodeBackendManager {
     })
   }
 
-  public credentialFileExists(): boolean {
-    return existsSync(this.credentialFilePath())
+  /** What the credential file's structure says, never a value in it (D26): the log and Diagnostics. */
+  public credentialFileVerdict(): CredentialFileVerdict | 'absent' {
+    return readCredentialFile(this.credentialFilePath(), process.platform)?.verdict ?? 'absent'
   }
 
   /** A META_API_KEY in the CLI's environment (the user's own, or one the settings add). */

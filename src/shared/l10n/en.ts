@@ -78,6 +78,13 @@ export const EN = {
     'A Model API key starts with LLM_ (older keys look like LLM|<numeric id>|<secret>).',
   signInWaiting: 'Waiting for the browser sign-in to finish…',
   signInTimedOut: 'The sign-in did not complete in time. Try again.',
+  // How Muse Code ended a browser sign-in (`account/loginCompleted`, D26).
+  signInDenied: 'The sign-in was declined in the browser. Sign in again to get a new code.',
+  signInExpired: 'The code expired before it was approved. Sign in again to get a new code.',
+  signInNotSaved: 'Muse Code could not finish the sign-in. Try again; the Muse Spark log says why.',
+  // A macOS Keychain pointer on Windows or Linux stops `muse serve` (D26).
+  cliKeychainElsewhere:
+    'Muse Code cannot start: its sign-in file {path} points to the macOS Keychain, which Muse Code cannot use on this system. Move or rename that file, then sign in again.',
   hostExited: 'Muse Code stopped unexpectedly',
   hostStarting: 'Starting Muse Code…',
   // PLAN.md D25: restarts, crashes and closed sessions continue the conversation.

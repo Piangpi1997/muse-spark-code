@@ -193,15 +193,37 @@ fields, never raw configuration or failed-command output.
   operating system's credential vault), never in settings files, logs or the
   workspace. It is sent only to `api.meta.ai` as a bearer token, and never
   passed to the Muse Code CLI or any other process.
-- The Muse Code CLI's own sign-in lives in the CLI's credential file
-  (`~/.config/muse/auth.json`). The extension checks only whether the file
-  exists and when it last changed, never its contents, to decide which
-  sign-in path to offer and to confirm that a new sign-in wrote it.
+- The Muse Code CLI keeps its own sign-in. On Windows and Linux it is in
+  the CLI's credential file (`~/.config/muse/auth.json`). On macOS the token
+  is in your login Keychain (item `ai.meta.dev.credentials`, account
+  `meta`), and `auth.json` only points to it.
+- To tell whether the CLI is signed in, the extension reads only the
+  structure of `auth.json`: its schema version, whether it names a
+  provider, and whether it points to the Keychain.
+  - Every other value in the file, the token included, is dropped while the
+    file is parsed. Nothing from it is stored, logged or passed on.
+  - When that structure cannot say, the extension asks the CLI itself
+    (`account/read` on a short-lived `muse serve` that owns no
+    conversation). It keeps the answer until the file changes.
+  - The CLI's answer carries your account's e-mail address as a label. The
+    extension discards it without logging or showing it.
+  - On macOS it asks only after you click something in the panel, since
+    the CLI may read the Keychain to answer.
+  - It also uses the file's size and modification time, to notice a new
+    sign-in.
+- **Muse Spark: Diagnostics** on macOS looks up the Keychain item by its
+  attributes only, with `security find-generic-password` and no `-g` or
+  `-w`. That reads no secret and shows no prompt. The report says whether
+  the item is there.
 - **Sign out** in the panel (the same action as `/logout` and **Muse Spark:
-  Sign Out**) deletes the pasted key from secret storage, runs `muse logout`
-  in a terminal when the CLI is signed in, and records in VS Code's
-  extension state (no credential) that you signed out, so an old CLI
-  credential cannot sign the window back in until you sign in again.
+  Sign Out**) does three things:
+  - It deletes the pasted key from secret storage.
+  - It signs the CLI out when the CLI is signed in, through the CLI's own
+    `account/logout` on a short-lived `muse serve`. If that cannot run, it
+    runs `muse logout` in a terminal instead.
+  - It records in VS Code's extension state (no credential) that you signed
+    out, so an old CLI credential cannot sign the window back in until you
+    sign in again.
 
 ## What stays on your machine
 

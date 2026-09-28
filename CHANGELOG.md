@@ -7,7 +7,39 @@ happened, not what was planned; superseded entries are kept.
 
 ## [Unreleased]
 
-Nothing yet.
+### Fixed
+
+- **Signing out of Muse Code finishes, and a signed-out CLI no longer reads
+  as signed in** (PLAN.md D26).
+  - **The cause.** `muse logout` rewrites the CLI's `auth.json` with no
+    sign-in in it; it never deletes the file. Muse Code 1.3.0 and 1.4.0 do
+    this on every OS.
+  - **What went wrong.** The extension took the file being there for a
+    sign-in. After any sign-out it went on choosing Muse Code, and the panel
+    stayed on "Sign-out is in progress or credentials remain" until a new
+    browser sign-in.
+  - **Reading the file.** The extension now reads only its structure: the
+    schema version, whether it names a provider, and whether it points to
+    the macOS Keychain. Every other value, the token included, is dropped
+    as the file is parsed.
+  - **Asking Muse Code.** When the structure cannot say, the extension asks
+    Muse Code itself (`account/read` on a short-lived host). It keeps the
+    answer until the file changes. On macOS it asks only after a click in
+    the panel.
+  - **Signing out.** Sign-out uses Muse Code's own `account/logout` and
+    confirms it with `account/read`. `muse logout` in a terminal remains
+    the fallback.
+- **Browser sign-in ends at once when it is declined, the code expires, or
+  Muse Code cannot save it.** The panel says which of the three happened.
+  Before, it waited out the full five minutes. Success is taken from Muse
+  Code's own `granted` outcome confirmed by `account/read`, from polling
+  `account/read`, or from a new credential file.
+- **A macOS `auth.json` copied to Windows or Linux is named** as the reason
+  Muse Code cannot start, instead of a host that exits at every message.
+- **Muse Spark: Diagnostics** describes the CLI's credential file by its
+  structure and gives the CLI's sign-in state. On macOS it also says whether
+  the login Keychain holds Muse Code's item, looked up by attribute only:
+  no secret and no prompt.
 
 ## [0.9.0] - 2026-09-27
 

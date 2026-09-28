@@ -1377,6 +1377,52 @@ export const MUSE_ACCOUNT_LOGIN_START = 'account/loginStart'
 export const MUSE_ACCOUNT_LOGIN_CANCEL = 'account/loginCancel'
 export const MUSE_ACCOUNT_LOGIN_COMPLETED = 'account/loginCompleted'
 export const MUSE_ACCOUNT_DEVICE_CODE_TYPE = 'deviceCode'
+// The CLI's own answer about its sign-in, and its own sign-out (experimental
+// MSP; captured on 1.3.0 and 1.4.0-R4302.1 in isolated homes, 2026-09-27).
+export const MUSE_ACCOUNT_READ = 'account/read'
+export const MUSE_ACCOUNT_LOGOUT = 'account/logout'
+// `AccountStateKind`: which credential lane wins (`envKey` beats `apiKey`
+// beats `accountLogin`), or none. The schema calls the vocabulary open.
+export const MUSE_ACCOUNT_STATES = {
+  loggedOut: 'loggedOut',
+  envKey: 'envKey',
+  apiKey: 'apiKey',
+  accountLogin: 'accountLogin',
+} as const
+// `AccountLoginOutcome` (`account/loginCompleted`): how a device sign-in
+// ended. Only `cancelled` was captured live; the rest are the schema's words,
+// and the schema calls the vocabulary open.
+export const MUSE_LOGIN_OUTCOMES = {
+  granted: 'granted',
+  denied: 'denied',
+  expired: 'expired',
+  failed: 'failed',
+  cancelled: 'cancelled',
+} as const
+// The CLI's credential file (`auth.json`), read for its structure only: its
+// schema version and whether a provider's `storage` points to the macOS
+// Keychain. Version 1 holds the credential itself (Windows, Linux, and macOS
+// with TBH_CREDENTIAL_BACKEND=file); version 2 is macOS's token-free pointer.
+export const MUSE_CREDENTIAL_INLINE_SCHEMA = 1
+export const MUSE_CREDENTIAL_POINTER_SCHEMA = 2
+export const MUSE_CREDENTIAL_KEYCHAIN_STORAGE = 'keychain'
+/** A larger file is not read (the CLI's own is under 1 KiB). */
+export const MUSE_CREDENTIAL_FILE_MAX_BYTES = 64 * 1024
+// The macOS login Keychain item the CLI keeps a sign-in in. Diagnostics looks
+// it up by attribute only (no `-g`/`-w`, so no secret and no prompt): exit 0
+// found, 44 not found.
+export const MACOS_SECURITY_TOOL = '/usr/bin/security'
+export const MUSE_KEYCHAIN_SERVICE = 'ai.meta.dev.credentials'
+export const MUSE_KEYCHAIN_ACCOUNT = 'meta'
+export const MACOS_KEYCHAIN_LOOKUP_ARGS = [
+  'find-generic-password',
+  '-s',
+  MUSE_KEYCHAIN_SERVICE,
+  '-a',
+  MUSE_KEYCHAIN_ACCOUNT,
+] as const
+export const MACOS_KEYCHAIN_ITEM_NOT_FOUND_EXIT = 44
+export const MACOS_KEYCHAIN_LOOKUP_TIMEOUT_MS = 10 * 1000
 export const MUSE_DOCS_URL = 'https://dev.meta.ai/products/muse-code/'
 // Muse Code's own page on MCP servers and hooks (M31).
 export const MUSE_EXTENDING_DOCS_URL = 'https://dev.meta.ai/docs/muse-code/extending'
@@ -1507,8 +1553,9 @@ export const EXPORT_FILE_EXTENSIONS: Readonly<Record<ExportFormat, string>> = {
 }
 // An unnamed conversation's export takes its title from the first prompt, cut here.
 export const EXPORT_TITLE_MAX_CHARS = 60
-// How long the browser sign-in may take before the extension stops watching
-// for the credential file, and how often it looks.
+// How long the browser sign-in may take before the extension stops waiting,
+// and how often it asks the sign-in host (`account/read`) and looks at the
+// credential file.
 export const CREDENTIAL_POLL_INTERVAL_MS = 2000
 export const CREDENTIAL_POLL_TIMEOUT_MS = 5 * 60 * 1000
 // Model API key shapes. Meta's current keys are `LLM_` and at least 16

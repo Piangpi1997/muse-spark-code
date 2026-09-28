@@ -24,13 +24,25 @@
 // the handshake, the spawn-failure drill) or =silent (read the handshake and
 // never answer it, the wedged-CLI drill of PLAN.md D25). Node built-ins
 // only: the file is copied beside the executable the resolver spawns.
+//
+// Account methods (PLAN.md D26, shapes captured on 1.3.0 and 1.4.0,
+// 2026-09-27), for a client that asked for `experimentalApi` only:
+// `account/read` answers from the credential file under XDG_CONFIG_HOME
+// (a named provider is a login, anything else signed out), and
+// `account/logout` rewrites that file as the empty one the CLI leaves.
 
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import path from 'node:path'
 import { argv, env, exit, stderr, stdin, stdout } from 'node:process'
 import { createInterface } from 'node:readline'
 import { setImmediate } from 'node:timers'
 
 const METHOD_NOT_FOUND = -32_601
 const COMMAND_REJECTED = -32_000
+// What `muse logout` and `account/logout` leave behind (44 bytes).
+const LOGOUT_SHELL = '{\n  "schema_version": 1,\n  "providers": {}\n}'
+// The account's display label: an e-mail address the extension never logs.
+const ACCOUNT_LABEL = 'person@example.com'
 const CRASH_EXIT_CODE = 3
 const DIE_EXIT_CODE = 1
 const ECHO_PREFIX = 'echo: '
@@ -61,6 +73,8 @@ const fingerprint = env['MUSE_FAKE_FINGERPRINT'] ?? 'sha256:fake'
 const sessions = new Map()
 const state = {
   clientName: 'unknown',
+  /** The client asked for the experimental methods (account/*). */
+  isExperimental: false,
   usage: undefined,
   nextId: 0,
   /** The turn in flight, if any: { sessionId, turnId, onCancel } */
@@ -347,6 +361,39 @@ function rejected(reason) {
   return Object.assign(new Error(`rejected: ${reason}`), { reason })
 }
 
+/** An account method without `experimentalApi`, as 1.4.0 refuses it. */
+function requireExperimental(method) {
+  if (!state.isExperimental) {
+    throw Object.assign(new Error(`${method} requires experimentalApi capability`), {
+      code: METHOD_NOT_FOUND,
+      kind: 'experimentalRequired',
+    })
+  }
+}
+
+function credentialFile() {
+  const configHome = env['XDG_CONFIG_HOME']
+  return configHome === undefined ? undefined : path.join(configHome, 'muse', 'auth.json')
+}
+
+function hasStoredSignIn() {
+  const file = credentialFile()
+  if (file === undefined || !existsSync(file)) {
+    return false
+  }
+  try {
+    return Object.keys(JSON.parse(readFileSync(file, 'utf8')).providers ?? {}).length > 0
+  } catch {
+    return false
+  }
+}
+
+function accountState() {
+  return hasStoredSignIn()
+    ? { state: 'accountLogin', label: ACCOUNT_LABEL, credentialRequired: true }
+    : { state: 'loggedOut', credentialRequired: true }
+}
+
 /** A background task stopped: cancelled, as the capture of 2026-09-25 shows. */
 function stopTask(taskId) {
   const task = state.tasks.get(taskId)
@@ -447,10 +494,11 @@ function envelope(session) {
 const handlers = {
   initialize: (params) => {
     state.clientName = String(params.clientInfo?.name ?? 'unknown')
+    state.isExperimental = params.capabilities?.experimentalApi === true
     return {
       serverInfo: { name: 'muse', version: `0.0.0-fake ${serveArgs}` },
       museHome: `/fake/home/${state.clientName}`,
-      experimentalApi: false,
+      experimentalApi: state.isExperimental,
       grantedCapabilities: [...(params.capabilities?.requestedCapabilities ?? [])],
       platformFamily: 'fake',
       platformOs: 'fake',
@@ -636,6 +684,20 @@ const handlers = {
   }),
   'skill/list': () => ({ skills: [] }),
   'usage/read': () => (state.usage === undefined ? {} : { usage: state.usage }),
+  'account/read': () => {
+    requireExperimental('account/read')
+    return accountState()
+  },
+  'account/logout': () => {
+    requireExperimental('account/logout')
+    const file = credentialFile()
+    if (file !== undefined && existsSync(file)) {
+      writeFileSync(file, LOGOUT_SHELL)
+    }
+    const after = accountState()
+    notify('account/changed', after)
+    return after
+  },
   'item/readOutput': (params) => {
     const content = `output of ${String(params.itemId)}`
     return {
@@ -674,12 +736,16 @@ function handle(frame) {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     const reason = error instanceof Error && 'reason' in error ? error.reason : undefined
+    // Only a refusal built here names its own JSON-RPC code and kind.
+    const isOwn = error instanceof Error && 'kind' in error && typeof error.code === 'number'
+    const code = isOwn ? error.code : COMMAND_REJECTED
+    const kind = isOwn ? error.kind : 'commandRejected'
     send({
       id: frame.id,
       error: {
-        code: COMMAND_REJECTED,
+        code,
         message,
-        data: { kind: 'commandRejected', ...(reason !== undefined && { reason }) },
+        data: { kind, ...(reason !== undefined && { reason }) },
       },
     })
   }

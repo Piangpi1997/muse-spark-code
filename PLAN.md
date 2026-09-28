@@ -88,7 +88,7 @@ Therefore:
 | --------------------- | --------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
 | Windows               | `%LOCALAPPDATA%\Programs\muse` (added to the user PATH)                     | `muse.cmd` → `powershell.exe -NoProfile -ExecutionPolicy Bypass -File .muse-launcher.ps1 <args>` | `muse-bin-<version>.exe` (~415 MB), `.muse-version`, `.muse-release-info.json`, `.muse-channel` | `%USERPROFILE%\.config\muse\auth.json`                                                       |
 | Linux (Kubuntu 26.04) | `~/.local/bin` (`MUSE_INSTALL_DIR` overrides; PATH added to shell rc files) | `muse` bash launcher (33 KB; needs bash, not sh)                                                 | `muse-bin-<version>` (~314 MB), `.muse-version`, `.muse-release-info.json`                      | `$XDG_CONFIG_HOME/muse/auth.json` or `~/.config/muse/auth.json` (`MUSE_AUTH_PATH` overrides) |
-| macOS 15.7 (Mac mini) | `~/.local/bin` (PATH added to `~/.zshrc`)                                   | same bash launcher                                                                               | same                                                                                            | same as Linux                                                                                |
+| macOS 15.7 (Mac mini) | `~/.local/bin` (PATH added to `~/.zshrc`)                                   | same bash launcher                                                                               | same                                                                                            | as Linux, a token-free pointer; the token in the login Keychain (D26)                        |
 
 Constraints and decisions:
 
@@ -165,8 +165,9 @@ deprecated). Webview controls are hand-built on VS Code CSS theme variables.
 - API keys live only in `vscode.SecretStorage`; never in settings, logs, or
   telemetry. (The rest of this row is superseded by the D1 amendment, §9:
   since M7 the stored key is never passed to `muse serve` or any other child
-  process; the CLI signs in on its own and the extension only checks that its
-  credential file exists.)
+  process; the CLI signs in on its own and the extension reads only the
+  structure of its credential file, asking the CLI when that cannot say,
+  D26 amendment.)
 - Webview: strict CSP with per-load nonce, `localResourceRoots` limited to the
   bundled `dist/webview`, no remote scripts, no `eval`. Every inbound message is
   parsed with a zod schema; unknown shapes are logged and dropped.
@@ -772,6 +773,60 @@ automatically" was M21's (D24) and the exit codes M22's (D25).
 | The Model API session store grows for ever                   | Every session was read whole into memory at start; a crash left `.tmp` files; Windows refuses a rename while a scanner holds the file (Codex #29812, Claude Code #89075).                                                                                                                                  | The window keeps headers and reads a session whole when it is opened (after the saves queued before it). Sessions idle past `museSpark.cleanupPeriodDays` (Claude Code's `cleanupPeriodDays`, default 30, 0 keeps them) are deleted when the list is read. A `.tmp` older than a minute is removed; `EPERM` / `EACCES` / `EBUSY` renames are tried five times, the wait doubling from 25 ms.                                                                                                                                                                                                                 |
 | Stop and refusals (Model API)                                | Queued messages vanished on Stop; a refusal part rendered as an empty reply.                                                                                                                                                                                                                               | Each queued message ends with the reason above; a refusal's own words are the reply.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | A late acceptance makes a finished turn "running"            | `send()` set the active turn from the ack, which can land after its own `turn/completed` (the D28 companion), and from a queued turn.                                                                                                                                                                      | The controller remembers finished turns; neither a finished nor a queued turn becomes the running one, and a `turnCompleted` for another turn leaves the running one alone.                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+
+**Amendment 2026-09-27: the CLI's sign-in is read, not assumed**
+(`fix/cli-sign-in-detection`; evidence in `docs/certification/sign-in-detection.md`).
+
+- **The finding.** `muse logout` rewrites `auth.json` as
+  `{"schema_version": 1, "providers": {}}` and never deletes it. This was
+  seen on 1.3.0 Linux and on 1.4.0 Windows and Linux, in isolated homes.
+- **What it broke.** "Signed in" had been "the file exists". So after any
+  sign-out the auto backend stayed on Muse Code, and M55's logout hold
+  waited for a deletion that never came.
+- **macOS.** A sign-in is a login Keychain item (`ai.meta.dev.credentials`,
+  account `meta`), and the file is a token-free pointer
+  (`schema_version: 2`, `storage: "keychain"`).
+- **The structural read (`src/core/backends/musecode/credentialFile.ts`).**
+  Only three facts are kept: the schema version, whether any provider is
+  named, and whether a provider's `storage` is the Keychain. The schema
+  parse drops every other field. It decides:
+  - no file → signed out, with no process;
+  - an empty file → signed out;
+  - a file holding the credential → signed in;
+  - a Keychain pointer off macOS → a named error (`muse serve` exits 3
+    there with it).
+- **Asking the CLI.** A Keychain pointer on macOS, or a file the read cannot
+  place, is asked of the CLI: `account/read` on a short-lived
+  `experimentalApi` host.
+  - The answer is kept until the file's size or modification time changes.
+  - On macOS the CLI is asked only on a user action (Check again, sign-in,
+    sign-out, Diagnostics), so a Keychain prompt follows a click.
+  - `unknown` counts as signed in, as before; a turn's `authRequired`
+    still corrects it.
+- **Sign-out.** It uses MSP `account/logout` on a short-lived host (the
+  chat host has no `experimentalApi`, and sign-out stops it first). The
+  result is confirmed by `account/read`. The terminal `muse logout` is the
+  fallback, confirmed later by the file or the CLI.
+- **M55's device flow ends on:**
+  - `account/loginCompleted` `granted`, confirmed by `account/read`;
+  - `account/read` turning `accountLogin` on the open host;
+  - or a new file that `account/read` does not contradict.
+
+  `denied`, `expired` and `failed` end it at once with their own messages.
+  `account/changed` is not relied on: a terminal `muse logout` did not fire
+  it. This supersedes M55's "accept only after a new credential-file
+  modification".
+
+- **Where it is only as good as the schema.** `account/*` stays
+  experimental, and `granted`, `denied`, `expired` and `failed` are the
+  schema's words: only `cancelled` was captured.
+- **Owner steps.** A real sign-in on each OS remains an owner step:
+  - the macOS pointer after a 1.4.0 login;
+  - the success sequence;
+  - logout of an OAuth slot.
+- **Not taken.** `TBH_CREDENTIAL_BACKEND=file` is not set. R4302.1 fixed
+  #38/#53 and the launcher updates itself; the README names the switch
+  only for someone stuck on R4161.1.
 
 ### D27 — The audit: editing correctness (2026-09-23)
 
@@ -5584,6 +5639,9 @@ never send the old prompt under the new key.
 Recovery from a held old CLI credential file may start an explicit browser
 device flow only when `META_API_KEY` is absent and the extension key was
 cleared; accept it only after a new credential-file modification is observed.
+(Amended 2026-09-27, D26: accept it only once the CLI confirms the new
+sign-in; `muse logout` never removes the file, so "remains" means the CLI
+still reports a sign-in.)
 Sign-out must publish a gated state and start ending attached sessions before
 awaiting global state or SecretStorage. Other panels must not send a paid
 child follow-up or similar session action during that wait. A rejected
@@ -5773,7 +5831,9 @@ showed `account/read` logged out, `loginStart {type:"deviceCode"}` returning
 `loginCompleted` cancellation notification. It did not capture a successful
 sign-in; success must be proved by a credential file change and the backend's
 refresh, not a guessed notification shape. The Model API key continues through
-SecretStorage and is never given to `muse serve`.
+SecretStorage and is never given to `muse serve`. (Amended 2026-09-27, D26:
+the schema's `granted` counts only when `account/read`, whose shapes were
+captured on 2026-09-27, agrees; the file change stays as a third signal.)
 
 **Acceptance:** no installer or login starts without its button; installer
 command is fixed, shown before confirmation, and runs in a visible terminal;

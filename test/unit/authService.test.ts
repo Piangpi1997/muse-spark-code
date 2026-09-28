@@ -1,11 +1,18 @@
-import { describe, expect, it, vi } from 'vitest'
+import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import type { CliSignIn } from '../../src/core/backends/musecode/credentialFile'
 import { AuthService, type AuthServiceDeps } from '../../src/host/auth/authService'
+import { CliAccount } from '../../src/host/auth/cliAccount'
 import { CredentialStore } from '../../src/host/auth/credentialStore'
+import type { DeviceSignInOutcome } from '../../src/host/auth/deviceSignIn'
 import { MUSE_INSTALL_TIMEOUT_MS, type BackendMode } from '../../src/shared/constants'
+import { EN } from '../../src/shared/l10n/en'
 import type { HostToWebviewMessage } from '../../src/shared/protocol'
 import { FakeLogOutputChannel, memorySecrets, unexpectedWarning } from './helpers/fakes'
 
-const CREDENTIAL_MTIME = 5000
+const CREDENTIAL_PATH = '/home/u/.config/muse/auth.json'
 
 interface Harness {
   readonly service: AuthService
@@ -13,11 +20,14 @@ interface Harness {
   readonly broadcasts: HostToWebviewMessage[]
   readonly facts: {
     cliPresent: boolean
-    credentialFile: boolean
-    credentialMtime: number
+    /** What the CLI's credential file (or `account/read`) says. */
+    cli: CliSignIn
     envKey: boolean
     backendMode: BackendMode
   }
+  readonly cliSignIn: ReturnType<typeof vi.fn<(isUserAction: boolean) => Promise<CliSignIn>>>
+  /** `account/logout`: by default it works and leaves the CLI signed out. */
+  readonly logOutCli: ReturnType<typeof vi.fn<() => Promise<boolean>>>
   readonly restartBackend: ReturnType<
     typeof vi.fn<(isConversationEnding: boolean) => Promise<void>>
   >
@@ -29,7 +39,7 @@ interface Harness {
       (
         signal: AbortSignal,
         onCode: (url: string, code: string) => void,
-      ) => Promise<'signedIn' | 'cancelled' | 'timedOut'>
+      ) => Promise<DeviceSignInOutcome>
     >
   >
   readonly runInstallerInTerminal: ReturnType<typeof vi.fn<() => void>>
@@ -40,11 +50,17 @@ function harness(overrides: Partial<AuthServiceDeps> = {}): Harness {
   const broadcasts: HostToWebviewMessage[] = []
   const facts = {
     cliPresent: true,
-    credentialFile: false,
-    credentialMtime: CREDENTIAL_MTIME,
+    cli: 'signedOut' as CliSignIn,
     envKey: false,
     backendMode: 'auto' as BackendMode,
   }
+  const cliSignIn = vi.fn<(isUserAction: boolean) => Promise<CliSignIn>>(() =>
+    Promise.resolve(facts.cli),
+  )
+  const logOutCli = vi.fn<() => Promise<boolean>>(() => {
+    facts.cli = 'signedOut'
+    return Promise.resolve(true)
+  })
   const restartBackend = vi.fn<(isConversationEnding: boolean) => Promise<void>>(() =>
     Promise.resolve(),
   )
@@ -53,7 +69,7 @@ function harness(overrides: Partial<AuthServiceDeps> = {}): Harness {
     (
       signal: AbortSignal,
       onCode: (url: string, code: string) => void,
-    ) => Promise<'signedIn' | 'cancelled' | 'timedOut'>
+    ) => Promise<DeviceSignInOutcome>
   >(() => Promise.resolve('timedOut'))
   const runInstallerInTerminal = vi.fn<() => void>()
   const logoutHoldState = { isHeld: false }
@@ -62,12 +78,12 @@ function harness(overrides: Partial<AuthServiceDeps> = {}): Harness {
     backend: {
       resolveCli: () =>
         facts.cliPresent ? { ok: true, cliPath: '/bin/muse' } : { ok: false, reason: 'missing' },
-      credentialFileExists: () => facts.credentialFile,
-      // A written file has a new stamp; the harness writes it once.
-      credentialFileModifiedAt: () => (facts.credentialFile ? facts.credentialMtime : undefined),
+      cliSignIn,
+      credentialFilePath: () => CREDENTIAL_PATH,
       hasEnvironmentKey: () => facts.envKey,
       getBackendMode: () => facts.backendMode,
       restartBackend,
+      logOutCli,
     },
     credentials: new CredentialStore(memorySecrets(), unexpectedWarning),
     runInTerminal,
@@ -98,12 +114,20 @@ function harness(overrides: Partial<AuthServiceDeps> = {}): Harness {
     deps,
     broadcasts,
     facts,
+    cliSignIn,
+    logOutCli,
     restartBackend,
     runInTerminal,
     runDeviceSignIn,
     runInstallerInTerminal,
     logoutHoldState,
   }
+}
+
+/** A CLI sign-in the account host could not end: `muse logout` runs in a terminal instead. */
+function withLogoutFallback(h: Harness): Harness {
+  h.logOutCli.mockResolvedValue(false)
+  return h
 }
 
 async function signedInModelApi(overrides: Partial<AuthServiceDeps> = {}): Promise<Harness> {
@@ -152,7 +176,7 @@ describe('AuthService.refresh', () => {
       backend: 'museCode',
       methods: ['browser', 'apiKey'],
     })
-    h.facts.credentialFile = true
+    h.facts.cli = 'signedIn'
     await expect(h.service.refresh()).resolves.toMatchObject({ status: 'signedIn' })
     expect(h.broadcasts.at(-1)).toEqual({
       type: 'authState',
@@ -176,7 +200,7 @@ describe('AuthService.refresh', () => {
     })
     // A CLI session takes precedence in auto: the subscription pays for CLI work.
     h.facts.cliPresent = true
-    h.facts.credentialFile = true
+    h.facts.cli = 'signedIn'
     await expect(h.service.refresh()).resolves.toMatchObject({
       status: 'signedIn',
       backend: 'museCode',
@@ -189,7 +213,7 @@ describe('AuthService.refresh', () => {
       methods: ['apiKey'],
     })
     h.facts.backendMode = 'museCode'
-    h.facts.credentialFile = false
+    h.facts.cli = 'signedOut'
     await expect(h.service.refresh()).resolves.toMatchObject({
       status: 'signedOut',
       backend: 'museCode',
@@ -264,7 +288,7 @@ describe('AuthService.signIn', () => {
     const h = harness()
     h.runDeviceSignIn.mockImplementation((_signal, onCode) => {
       onCode('https://auth.meta.com/oauth/device/', 'ABCD-EFGH')
-      h.facts.credentialFile = true
+      h.facts.cli = 'signedIn'
       return Promise.resolve('signedIn')
     })
     await expect(h.service.signIn('browser')).resolves.toMatchObject({ status: 'signedIn' })
@@ -419,7 +443,7 @@ describe('AuthService.signIn', () => {
   it('starts one device flow however often the button is pressed (D25)', async () => {
     const h = harness()
     h.runDeviceSignIn.mockImplementation(() => {
-      h.facts.credentialFile = true
+      h.facts.cli = 'signedIn'
       return Promise.resolve('signedIn')
     })
     const first = h.service.signIn('browser')
@@ -598,7 +622,7 @@ describe('AuthService.installMuseCode', () => {
 
   it('stores a secondary key without restarting a signed-in Muse Code session', async () => {
     const h = harness()
-    h.facts.credentialFile = true
+    h.facts.cli = 'signedIn'
     await h.service.refresh()
     await h.service.signIn('apiKey')
     expect(h.service.current).toMatchObject({ status: 'signedIn', backend: 'museCode' })
@@ -611,7 +635,7 @@ describe('AuthService.installMuseCode', () => {
     h.facts.cliPresent = false
     h.runInstallerInTerminal.mockImplementation(() => {
       h.facts.cliPresent = true
-      h.facts.credentialFile = true
+      h.facts.cli = 'signedIn'
     })
     const selected = await h.service.installMuseCode()
     expect(selected).toMatchObject({ status: 'signedIn', backend: 'museCode' })
@@ -621,7 +645,7 @@ describe('AuthService.installMuseCode', () => {
   it('retires the active Model API session when the CLI appeared before Install was pressed', async () => {
     const h = await signedInModelApi()
     h.facts.cliPresent = true
-    h.facts.credentialFile = true
+    h.facts.cli = 'signedIn'
     const selected = await h.service.installMuseCode()
     expect(selected).toMatchObject({ status: 'signedIn', backend: 'museCode' })
     expect(h.restartBackend).toHaveBeenCalledWith(true)
@@ -633,7 +657,7 @@ describe('AuthService.installMuseCode', () => {
     h.facts.cliPresent = false
     h.runInstallerInTerminal.mockImplementation(() => {
       h.facts.cliPresent = true
-      h.facts.credentialFile = true
+      h.facts.cli = 'signedIn'
     })
     h.restartBackend.mockRejectedValue(new Error('cannot stop'))
     const selected = await h.service.installMuseCode()
@@ -643,7 +667,7 @@ describe('AuthService.installMuseCode', () => {
 
   it('replaces the secondary key without ending the signed-in Muse Code session', async () => {
     const h = harness({ promptForApiKey: () => Promise.resolve('LLM|1|replacement') })
-    h.facts.credentialFile = true
+    h.facts.cli = 'signedIn'
     await h.deps.credentials.setApiKey('LLM|1|secret')
     await h.service.refresh()
     await h.service.signIn('apiKey')
@@ -720,8 +744,8 @@ describe('AuthService.signOut and host reports', () => {
       },
       unexpectedWarning,
     )
-    const h = harness({ credentials })
-    h.facts.credentialFile = true
+    const h = withLogoutFallback(harness({ credentials }))
+    h.facts.cli = 'signedIn'
     await h.service.refresh()
     await h.service.signOut()
 
@@ -735,15 +759,13 @@ describe('AuthService.signOut and host reports', () => {
     expect(h.logoutHoldState.isHeld).toBe(true)
   })
 
-  it('recovers a held old CLI file through an explicit fresh device approval', async () => {
-    const h = harness()
-    h.facts.credentialFile = true
+  it('recovers a held old CLI sign-in through an explicit fresh device approval', async () => {
+    const h = withLogoutFallback(harness())
+    h.facts.cli = 'signedIn'
     await h.service.refresh()
     await h.service.signOut()
-    h.runDeviceSignIn.mockImplementation(() => {
-      h.facts.credentialMtime += 1
-      return Promise.resolve('signedIn')
-    })
+    expect(h.logoutHoldState.isHeld).toBe(true)
+    h.runDeviceSignIn.mockResolvedValue('signedIn')
     await expect(h.service.signIn('browser')).resolves.toMatchObject({
       status: 'signedIn',
       backend: 'museCode',
@@ -752,12 +774,16 @@ describe('AuthService.signOut and host reports', () => {
     expect(h.logoutHoldState.isHeld).toBe(false)
   })
 
-  it('keeps the hold when a device runner reports success without a new credential write', async () => {
-    const h = harness()
-    h.facts.credentialFile = true
+  it('keeps the hold when the CLI does not confirm a device runner’s success', async () => {
+    const h = withLogoutFallback(harness())
+    h.facts.cli = 'signedIn'
     await h.service.refresh()
     await h.service.signOut()
-    h.runDeviceSignIn.mockResolvedValue('signedIn')
+    h.runDeviceSignIn.mockImplementation(() => {
+      // The file changed, but `account/read` could not say whose sign-in it holds.
+      h.facts.cli = 'unknown'
+      return Promise.resolve('signedIn')
+    })
     await expect(h.service.signIn('browser')).resolves.toMatchObject({ status: 'error' })
     expect(h.runDeviceSignIn).toHaveBeenCalledOnce()
     expect(h.logoutHoldState.isHeld).toBe(true)
@@ -772,7 +798,7 @@ describe('AuthService.signOut and host reports', () => {
         set: (isHeld) => (isHeld ? saving.promise : Promise.resolve()),
       },
     })
-    h.facts.credentialFile = true
+    h.facts.cli = 'signedIn'
     await h.service.refresh()
     const ending = h.service.signOut()
     expect(h.service.current.status).toBe('error')
@@ -793,7 +819,7 @@ describe('AuthService.signOut and host reports', () => {
       unexpectedWarning,
     )
     const h = harness({ credentials })
-    h.facts.credentialFile = true
+    h.facts.cli = 'signedIn'
     await credentials.setApiKey('LLM|1|secret')
     await h.service.refresh()
     await expect(h.service.signOut()).resolves.toMatchObject({
@@ -805,8 +831,8 @@ describe('AuthService.signOut and host reports', () => {
   })
 
   it('ends the host and clears the key when the CLI logout terminal cannot open', async () => {
-    const h = harness()
-    h.facts.credentialFile = true
+    const h = withLogoutFallback(harness())
+    h.facts.cli = 'signedIn'
     await h.deps.credentials.setApiKey('LLM|1|secret')
     await h.service.refresh()
     h.runInTerminal.mockImplementation(() => {
@@ -830,6 +856,7 @@ describe('AuthService.signOut and host reports', () => {
       detail: expect.stringContaining('META_API_KEY'),
     })
     expect(h.runInTerminal).not.toHaveBeenCalled()
+    expect(h.logOutCli).not.toHaveBeenCalled()
     await expect(h.service.refresh()).resolves.toMatchObject({
       status: 'error',
       detail: expect.stringContaining('META_API_KEY'),
@@ -842,14 +869,26 @@ describe('AuthService.signOut and host reports', () => {
     })
   })
 
-  it('does not reassert CLI sign-in while terminal logout still has the credential file', async () => {
-    const h = harness()
-    h.facts.credentialFile = true
+  // `muse logout` rewrites auth.json as {"schema_version": 1, "providers": {}}
+  // and never deletes it (1.3.0 and 1.4.0, every OS): the hold ends when the
+  // CLI reports no sign-in, although the file is still there.
+  it('does not reassert CLI sign-in until terminal logout has emptied the credential file', async () => {
+    const h = withLogoutFallback(harness())
+    h.facts.cli = 'signedIn'
     await h.service.refresh()
     await h.service.signOut()
-    await expect(h.service.refresh()).resolves.toMatchObject({ status: 'error' })
-    h.facts.credentialFile = false
-    await expect(h.service.refresh()).resolves.toMatchObject({ status: 'signedOut' })
+    expect(h.runInTerminal).toHaveBeenCalledWith('/bin/muse', ['logout'])
+    await expect(h.service.refresh()).resolves.toMatchObject({
+      status: 'error',
+      detail: EN.signOutPending,
+    })
+    h.facts.cli = 'signedOut'
+    await expect(h.service.refresh()).resolves.toMatchObject({
+      status: 'signedOut',
+      detail: undefined,
+    })
+    expect(h.logoutHoldState.isHeld).toBe(false)
+    expect(h.service.backend).toBeUndefined()
   })
 
   it('does not publish a stale signed-in choice when the held CLI key disappears during refresh', async () => {
@@ -912,7 +951,7 @@ describe('AuthService.signOut and host reports', () => {
     await h.service.refresh()
     await h.service.signOut()
     h.runDeviceSignIn.mockImplementation(() => {
-      h.facts.credentialFile = true
+      h.facts.cli = 'signedIn'
       return Promise.resolve('signedIn')
     })
     await expect(h.service.signIn('browser')).resolves.toMatchObject({
@@ -923,27 +962,62 @@ describe('AuthService.signOut and host reports', () => {
     expect(h.logoutHoldState.isHeld).toBe(true)
   })
 
-  it('clears the key, logs the CLI out when it holds a session, and restarts', async () => {
+  it('clears the key, signs the CLI out through account/logout, and restarts', async () => {
     const h = harness()
     await h.service.signIn('apiKey')
-    h.facts.credentialFile = true
-    await expect(h.service.signOut()).resolves.toMatchObject({ status: 'signedOut' })
+    h.facts.cli = 'signedIn'
+    await expect(h.service.signOut()).resolves.toMatchObject({
+      status: 'signedOut',
+      detail: undefined,
+      hasCliSession: false,
+    })
     await expect(h.deps.credentials.getApiKey()).resolves.toBeUndefined()
-    expect(h.runInTerminal).toHaveBeenLastCalledWith('/bin/muse', ['logout'])
+    expect(h.logOutCli).toHaveBeenCalledOnce()
+    expect(h.runInTerminal).not.toHaveBeenCalled()
+    // The CLI confirmed it: no hold is left to wait out.
+    expect(h.logoutHoldState.isHeld).toBe(false)
     expect(h.restartBackend).toHaveBeenCalledTimes(2)
     // A sign-in keeps the conversations; a sign-out ends them (D25).
     expect(h.restartBackend.mock.calls).toEqual([[false], [true]])
+    // Sign-out is a click: macOS may ask the CLI about a Keychain sign-in.
+    expect(h.cliSignIn.mock.calls.at(-1)).toEqual([true])
   })
 
-  it('does not run muse logout when there is no CLI session to end', async () => {
+  it('falls back to muse logout in a terminal when account/logout does not confirm', async () => {
+    const h = withLogoutFallback(harness())
+    h.facts.cli = 'signedIn'
+    await h.service.refresh()
+    await expect(h.service.signOut()).resolves.toMatchObject({
+      status: 'signedOut',
+      detail: EN.signOutPending,
+    })
+    expect(h.logOutCli).toHaveBeenCalledOnce()
+    expect(h.runInTerminal).toHaveBeenLastCalledWith('/bin/muse', ['logout'])
+    expect(h.logoutHoldState.isHeld).toBe(true)
+  })
+
+  it('does not sign the CLI out when it holds no sign-in', async () => {
     const h = harness()
     await h.service.signOut()
+    expect(h.logOutCli).not.toHaveBeenCalled()
     expect(h.runInTerminal).not.toHaveBeenCalled()
+  })
+
+  it('signs out a sign-in only the CLI could confirm, and counts it until then', async () => {
+    const h = harness()
+    h.facts.cli = 'unknown'
+    await expect(h.service.refresh()).resolves.toMatchObject({
+      status: 'signedIn',
+      backend: 'museCode',
+    })
+    await expect(h.service.signOut()).resolves.toMatchObject({ status: 'signedOut' })
+    expect(h.logOutCli).toHaveBeenCalledOnce()
+    expect(h.logoutHoldState.isHeld).toBe(false)
   })
 
   it('accepts the host verdict over its own estimate', async () => {
     const h = harness()
-    h.facts.credentialFile = true
+    h.facts.cli = 'signedIn'
     await h.service.refresh()
     expect(h.service.markAuthRequired('not logged in')).toMatchObject({
       status: 'signedOut',
@@ -964,5 +1038,158 @@ describe('AuthService.signOut and host reports', () => {
       hasCli: true,
       hasCliSession: true,
     })
+  })
+})
+
+describe('AuthService: how Muse Code ends a browser sign-in (D26)', () => {
+  it.each([
+    ['denied', EN.signInDenied],
+    ['expired', EN.signInExpired],
+    ['failed', EN.signInNotSaved],
+  ] as const)('ends a %s sign-in at once, signed out with its reason', async (outcome, text) => {
+    const h = harness()
+    h.runDeviceSignIn.mockResolvedValue(outcome)
+    await expect(h.service.signIn('browser')).resolves.toMatchObject({
+      status: 'signedOut',
+      detail: text,
+    })
+    expect(h.restartBackend).not.toHaveBeenCalled()
+  })
+
+  it('keeps a live Model API session after a denied CLI sign-in, with a notice', async () => {
+    const h = await signedInModelApi()
+    h.runDeviceSignIn.mockResolvedValue('denied')
+    await expect(h.service.signIn('browser')).resolves.toMatchObject({
+      status: 'signedIn',
+      backend: 'modelApi',
+    })
+    expect(h.broadcasts).toContainEqual({ type: 'notice', level: 'warning', text: EN.signInDenied })
+  })
+})
+
+describe('AuthService: a credential file Muse Code cannot start with (D26)', () => {
+  it('names a macOS Keychain pointer on Windows or Linux instead of offering a dead sign-in', async () => {
+    const h = harness()
+    h.facts.cli = 'keychainElsewhere'
+    const refreshed = await h.service.refresh()
+    expect(refreshed).toMatchObject({ status: 'error', backend: 'museCode', hasCliSession: false })
+    expect(refreshed.detail).toContain(CREDENTIAL_PATH)
+    expect(refreshed.detail).toContain('macOS Keychain')
+    expect(h.service.backend).toBeUndefined()
+    await expect(h.service.signIn('browser')).resolves.toMatchObject({ status: 'error' })
+    expect(h.runDeviceSignIn).not.toHaveBeenCalled()
+  })
+
+  it('does not block the Model API key a user already stored', async () => {
+    const h = await signedInModelApi()
+    h.facts.cli = 'keychainElsewhere'
+    await expect(h.service.refresh()).resolves.toMatchObject({
+      status: 'signedIn',
+      backend: 'modelApi',
+      detail: undefined,
+    })
+  })
+
+  it('leaves the file to the CLI while META_API_KEY signs it in', async () => {
+    const h = harness()
+    h.facts.envKey = true
+    h.facts.cli = 'keychainElsewhere'
+    await expect(h.service.refresh()).resolves.toMatchObject({ status: 'signedIn' })
+    expect(h.cliSignIn).not.toHaveBeenCalled()
+  })
+})
+
+describe('AuthService: when the CLI may be asked (macOS Keychain prompts follow a click)', () => {
+  it('does not let a passive refresh ask, and lets Check again and sign-in ask', async () => {
+    const h = harness()
+    await h.service.refresh()
+    expect(h.cliSignIn.mock.calls.every(([isUserAction]) => !isUserAction)).toBe(true)
+    h.cliSignIn.mockClear()
+    await h.service.refresh(true)
+    expect(h.cliSignIn.mock.calls.length).toBeGreaterThan(0)
+    expect(h.cliSignIn.mock.calls.every(([isUserAction]) => isUserAction)).toBe(true)
+  })
+})
+
+// The same service over the CLI's real credential file in a temporary
+// config home: the file shapes Muse Code 1.3.0 and 1.4.0 write (isolated
+// homes, 2026-09-27), no token in any of them.
+const LOGOUT_SHELL = '{\n  "schema_version": 1,\n  "providers": {}\n}'
+const STORED_SIGN_IN = JSON.stringify({
+  schema_version: 1,
+  providers: { meta: { mechanism: 'oauth', obtained_via: 'device_code' } },
+})
+
+describe('AuthService over the CLI’s real credential file', () => {
+  const homes: string[] = []
+  afterEach(() => {
+    for (const home of homes.splice(0)) {
+      rmSync(home, { recursive: true, force: true })
+    }
+  })
+
+  function withFile(contents: string | undefined) {
+    const home = mkdtempSync(path.join(tmpdir(), 'muse-auth-'))
+    homes.push(home)
+    const file = path.join(home, 'muse', 'auth.json')
+    mkdirSync(path.dirname(file), { recursive: true })
+    if (contents !== undefined) {
+      writeFileSync(file, contents)
+    }
+    const probe = vi.fn(() => Promise.resolve(undefined))
+    const account = new CliAccount({
+      platform: 'linux',
+      credentialFilePath: () => file,
+      probe,
+      log: new FakeLogOutputChannel(),
+    })
+    const h = harness()
+    const facts = h.deps.backend
+    const service = new AuthService({
+      ...h.deps,
+      backend: { ...facts, cliSignIn: (isUserAction) => account.signIn(isUserAction) },
+    })
+    return { h, file, service, probe }
+  }
+
+  it('reads the empty file a sign-out leaves as signed out, without starting the CLI', async () => {
+    const t = withFile(LOGOUT_SHELL)
+    await expect(t.service.refresh()).resolves.toMatchObject({
+      status: 'signedOut',
+      hasCliSession: false,
+    })
+    expect(t.probe).not.toHaveBeenCalled()
+  })
+
+  it('signs out through account/logout: the file stays, empty, and the hold is released', async () => {
+    const t = withFile(STORED_SIGN_IN)
+    t.h.logOutCli.mockImplementation(() => {
+      writeFileSync(t.file, LOGOUT_SHELL)
+      return Promise.resolve(true)
+    })
+    await expect(t.service.refresh()).resolves.toMatchObject({ status: 'signedIn' })
+    await expect(t.service.signOut()).resolves.toMatchObject({
+      status: 'signedOut',
+      detail: undefined,
+    })
+    expect(statSync(t.file).isFile()).toBe(true)
+    expect(t.h.logoutHoldState.isHeld).toBe(false)
+    await expect(t.service.refresh()).resolves.toMatchObject({ status: 'signedOut' })
+    expect(t.probe).not.toHaveBeenCalled()
+  })
+
+  it('finishes a terminal sign-out once muse logout has rewritten the file', async () => {
+    const t = withFile(STORED_SIGN_IN)
+    t.h.logOutCli.mockResolvedValue(false)
+    await t.service.refresh()
+    await expect(t.service.signOut()).resolves.toMatchObject({ detail: EN.signOutPending })
+    await expect(t.service.refresh(true)).resolves.toMatchObject({ status: 'error' })
+    // What `muse logout` does in the terminal: the same file, emptied.
+    writeFileSync(t.file, LOGOUT_SHELL)
+    await expect(t.service.refresh(true)).resolves.toMatchObject({
+      status: 'signedOut',
+      detail: undefined,
+    })
+    expect(t.h.logoutHoldState.isHeld).toBe(false)
   })
 })

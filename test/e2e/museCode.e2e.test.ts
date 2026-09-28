@@ -7,7 +7,7 @@
 // history and usage, plus the drills: a host that dies mid-turn, a
 // malformed frame, a binary that will not start, and no binary at all.
 
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { EXPECTED_SCHEMA_FINGERPRINT } from '@muse-code/sdk'
@@ -18,7 +18,7 @@ import type { MuseCodeHost } from '../../src/core/backends/musecode/MuseCodeHost
 import { MuseCodeBackendManager } from '../../src/host/backend/museCodeBackendManager'
 import { DEFAULT_MODEL_ID, MSP_CLIENT_NAME, UI_TEXT } from '../../src/shared/constants'
 import { FakeLogOutputChannel } from '../unit/helpers/fakes'
-import { installFakeCredential, installFakeMuse } from './fakeMuse'
+import { installFakeCredential, installFakeMuse, removeTestFolders } from './fakeMuse'
 
 const TURN_TIMEOUT_MS = 10_000
 const TEST_TIMEOUT_MS = 30_000
@@ -141,36 +141,19 @@ afterEach(async () => {
   await Promise.all(managers.splice(0).map((created) => created.dispose()))
 })
 
-// On Windows the fake CLI's executable can still be held for a moment after
-// its process has exited (seen in CI and under a full local run, every test
-// green), and removing its folder then fails with EPERM. Node retries the
-// removal; if the folder still cannot go, the suite says so and leaves it
-// to the OS temp cleanup rather than fail on housekeeping.
-const RM_RETRIES = 5
-const RM_RETRY_DELAY_MS = 200
-
 afterAll(() => {
   delete process.env['XDG_CONFIG_HOME']
-  for (const dir of [fake.installDir, workspaceRoot, configHome]) {
-    try {
-      rmSync(dir, {
-        recursive: true,
-        force: true,
-        maxRetries: RM_RETRIES,
-        retryDelay: RM_RETRY_DELAY_MS,
-      })
-    } catch (error: unknown) {
-      process.stderr.write(`e2e teardown left ${dir} behind: ${String(error)}\n`)
-    }
-  }
+  removeTestFolders([fake.installDir, workspaceRoot, configHome])
 })
 
 // Each case spawns a process; CI runners are slower than a workstation.
 describe('Muse Code backend against a real child process', { timeout: TEST_TIMEOUT_MS }, () => {
   it('spawns the configured binary with the serve flags, shakes hands as the extension, and sees the credential file', async () => {
     const { manager: backend, log } = manager()
-    expect(backend.credentialFileExists()).toBe(true)
+    expect(backend.credentialFileVerdict()).toBe('inline')
     const host = await backend.ensureHost()
+    // Described by its structure, never by a value in it (D26).
+    expect(log.info).toHaveBeenCalledWith(expect.stringContaining('(credential file inline,'))
     expect(host.info.serverName).toBe('muse')
     expect(host.info.serverVersion).toBe('0.0.0-fake serve --disable-sandbox --trust-workspace')
     expect(host.info.museHome).toBe(`/fake/home/${MSP_CLIENT_NAME}`)
