@@ -202,29 +202,31 @@ Over SSH with a key, Windows refuses Credential Manager
 
 ## The gate
 
-`npm run quality` on this branch at `83a4530`, the final tree with Q66
-(Windows 11, Node 24.20.0): exit 0. It passed at `87383c7` too, before Q66.
-The first full run, on `e231349`, failed at its last step: SAST
-found `detect-child-process` on the spawn behind the agent's `login`, PR
-#32's own code, which had never been through semgrep (its container could
-not fetch the rules, `m63.md`). The spawn is the same fixed launch as
-`muse serve`; it is annotated with its reason and registered in PLAN.md §8
-(`87383c7`), and the rerun passed. That first run is the suppression's
-drill: without the comment, one blocking finding.
+`npm run quality` on this branch at `13ee7d4` (Windows 11, Node 24.20.0),
+the tree with main's plan (PR #50), PR #49 at its merged head `5184f26`,
+rule 8 and the review's fixes: exit 0. Main's `c42c4d5` (PR #49's merge)
+has the same tree as `5184f26`, so merging it changed no file. Earlier
+runs passed at `83a4530` (Q66) and `87383c7`. The first full run, on
+`e231349`, failed at SAST on the spawn behind the agent's `login`, PR #32's
+own code, never through semgrep before (its container could not fetch the
+rules, `m63.md`); annotated with its reason and registered in PLAN.md §8
+(`87383c7`), and that run is the suppression's drill. A run on `f8063b8`
+failed at `check:host-api` (PR #49's code added one API); the record was
+regenerated.
 
-| Step                                  | Result                                                                                                                                      |
-| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| `format:check`, `lint`, `typecheck`   | exit 0 (PSScriptAnalyzer findings: 0; five projects)                                                                                        |
-| `check:l10n`                          | 14 tables, 93 manifest strings, 252 source files; 0 problems                                                                                |
-| `check:host-api`                      | 200 VS Code APIs, 13 files importing `vscode`, 17 Node built-ins, 57 theme variables; 0 problems                                            |
-| `deadcode`, `cycles`, `duplication`   | exit 0; no circular dependency; 0 clones                                                                                                    |
-| `test:unit`                           | 184 files passed, 2 skipped; 2,674 tests passed, 23 skipped; coverage 94.5 % statements, 89.79 % branches, 96.17 % functions, 94.46 % lines |
-| `build`                               | every bundle under budget: `extension.js` 433.6, `modelApi.js` 300.5, `acp.js` 715.7 KiB; the split holds for both loaders; notices: 75     |
-| `security:audit`                      | 0 advisories, 0 exceptions                                                                                                                  |
-| `test:a11y`                           | 336 pages (84 scenarios × 4 themes), 0 violations, 0 undecided                                                                              |
-| `security:secrets`                    | 289 commits scanned, no leaks                                                                                                               |
-| `security:sast`                       | 287 rules on 445 files: 0 findings                                                                                                          |
-| `test:integration` (run on the merge) | 10 passing on VS Code 1.139.1 and 10 on 1.99.0                                                                                              |
+| Step                                | Result                                                                                                                                       |
+| ----------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `format:check`, `lint`, `typecheck` | exit 0 (PSScriptAnalyzer findings: 0; five projects, the host at ES2023)                                                                     |
+| `check:l10n`                        | 14 tables, 93 manifest strings, 255 source files; 0 problems                                                                                 |
+| `check:host-api`                    | 201 VS Code APIs, 13 files importing `vscode`, 17 Node built-ins, 57 theme variables; 0 problems                                             |
+| `deadcode`, `cycles`, `duplication` | exit 0; no circular dependency; 0 clones                                                                                                     |
+| `test:unit`                         | 188 files passed, 2 skipped; 2,873 tests passed, 23 skipped; coverage 94.75 % statements, 90.07 % branches, 96.38 % functions, 94.72 % lines |
+| `build`                             | `extension.js` 448.6 of 600, `modelApi.js` 301.2 of 400, `acp.js` 724.8 of 850 KiB; the split holds for both loaders; notices: 75 packages   |
+| `security:audit`                    | 0 advisories, 0 exceptions                                                                                                                   |
+| `test:a11y`                         | 336 pages (84 scenarios × 4 themes), 0 violations, 0 undecided                                                                               |
+| `security:secrets`                  | 337 commits scanned, no leaks                                                                                                                |
+| `security:sast`                     | 287 rules on 450 files: 0 findings                                                                                                           |
+| `test:integration`                  | 10 passing on VS Code 1.139.1 and 10 on 1.99.0                                                                                               |
 
 The tail:
 
@@ -232,14 +234,14 @@ The tail:
 > muse-spark-code@0.9.1 security:secrets
 > gitleaks git --redact --no-banner .
 
-INF 289 commits scanned.
+INF 337 commits scanned.
 INF no leaks found
 
 > muse-spark-code@0.9.1 security:sast
 > node scripts/sast.mjs
 
-Ran 287 rules on 445 files: 0 findings.
-QUALITY EXIT 0
+Ran 287 rules on 450 files: 0 findings.
+exit=0
 ```
 
 Not run here: hosts.yml and forks.yml (CI only; they run on the pull
