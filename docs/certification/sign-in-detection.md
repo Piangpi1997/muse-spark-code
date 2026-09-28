@@ -30,6 +30,12 @@ under `scratchpad/m140cred/`:
   file, and fires `account/changed`. A terminal logout fired nothing
   within 6 s;
 - `probe-account-{win,mac,linux}.json`: the `account/read` shapes;
+- the `account/read` states the code relies on, all captured with
+  `credentialRequired: true`: `accountLogin` and `loggedOut`
+  (`probe-account-*.json`, `probe-logout-iso*.json`), `apiKey` after
+  `muse auth set` (`probe-authset-*.json`), and `envKey` with `META_API_KEY`
+  set (`envkey-account-read.txt`). `credentialRequired: false` was never
+  seen, so no code gives it a meaning;
 - `ptr-stderr.txt` and `ptr1-stderr.txt`: `muse serve` exits 3 on Windows
   with a schema-2 pointer, and with a version-1 provider whose storage is
   the Keychain.
