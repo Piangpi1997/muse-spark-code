@@ -1709,6 +1709,10 @@ describe('AuthService: when the CLI may be asked (macOS Keychain prompts follow 
 const MALFORMED = '{"schema_version": 1, "providers": '
 const SIGNED_IN_ANSWER: AccountState = { state: 'accountLogin', credentialRequired: true }
 const LOGGED_OUT_ANSWER: AccountState = { state: 'loggedOut', credentialRequired: true }
+// Not captured here: macOS's pointer as a third party observed it (aonia
+// §2.3); on macOS it is asked of the CLI, on a user action only.
+const MAC_POINTER =
+  '{"schema_version":2,"providers":{"meta":{"mechanism":"oauth","storage":"keychain"}}}'
 
 describe('AuthService over the CLI’s real credential file', () => {
   const homes: string[] = []
@@ -1718,7 +1722,7 @@ describe('AuthService over the CLI’s real credential file', () => {
     }
   })
 
-  function withFile(contents: string | undefined) {
+  function withFile(contents: string | undefined, platform: NodeJS.Platform = 'linux') {
     const home = mkdtempSync(path.join(tmpdir(), 'muse-auth-'))
     homes.push(home)
     const file = path.join(home, 'muse', 'auth.json')
@@ -1728,7 +1732,7 @@ describe('AuthService over the CLI’s real credential file', () => {
     }
     const probe = vi.fn<() => Promise<AccountState | undefined>>(() => Promise.resolve(undefined))
     const account = new CliAccount({
-      platform: 'linux',
+      platform,
       credentialFilePath: () => file,
       probe,
       log: new FakeLogOutputChannel(),
@@ -1751,6 +1755,70 @@ describe('AuthService over the CLI’s real credential file', () => {
     })
     return { h, file, service, probe }
   }
+
+  /**
+   * A browser sign-in on macOS whose code is shown, then Cancel; `onShown`
+   * runs as the code shows (the browser approving, a file rewritten).
+   */
+  async function cancelAfterCodeOnMacOs(
+    t: ReturnType<typeof withFile>,
+    onShown: () => void = () => undefined,
+  ): Promise<AuthSnapshot> {
+    t.h.runDeviceSignIn.mockImplementation(async (signal, onCode) => {
+      onCode('https://auth.meta.com/oauth/device/', 'ABCD-EFGH')
+      onShown()
+      await aborted(signal)
+      return 'cancelled'
+    })
+    const pending = t.service.signIn('browser')
+    await vi.waitFor(() => {
+      expect(t.service.current.userCode).toBe('ABCD-EFGH')
+    })
+    t.service.cancelSignIn()
+    return await pending
+  }
+
+  // On macOS an approval may land in the Keychain alone, the pointer file
+  // as it was: a Cancel after the code was shown asks the CLI afresh, past
+  // the answer it gave before the flow (Codex on 55b9e24c).
+  it('asks the CLI afresh on a Cancel after the code, when the Keychain alone changed', async () => {
+    const t = withFile(MAC_POINTER, 'darwin')
+    t.probe.mockResolvedValueOnce(LOGGED_OUT_ANSWER).mockResolvedValue(SIGNED_IN_ANSWER)
+    await expect(t.service.refresh(true)).resolves.toMatchObject({ status: 'signedOut' })
+    await expect(cancelAfterCodeOnMacOs(t)).resolves.toMatchObject({
+      status: 'signedIn',
+      backend: 'museCode',
+    })
+    expect(t.probe).toHaveBeenCalledTimes(2)
+  })
+
+  it('reports the Cancel when the CLI, asked afresh, is still signed out', async () => {
+    const t = withFile(MAC_POINTER, 'darwin')
+    t.probe.mockResolvedValue(LOGGED_OUT_ANSWER)
+    await t.service.refresh(true)
+    await expect(cancelAfterCodeOnMacOs(t)).resolves.toMatchObject({ status: 'signedOut' })
+    expect(t.probe).toHaveBeenCalledTimes(2)
+    expect(t.h.broadcasts).toContainEqual({
+      type: 'notice',
+      level: 'info',
+      text: EN.signInCancelled,
+    })
+  })
+
+  // The file changed as Cancel was pressed: Cancel is a click, so on macOS
+  // the CLI is asked about the new file rather than estimated (Codex on
+  // 55b9e24c).
+  it('asks the CLI about a file rewritten as Cancel was pressed, on macOS too', async () => {
+    const t = withFile(MAC_POINTER, 'darwin')
+    t.probe.mockResolvedValue(SIGNED_IN_ANSWER)
+    const rewrite = () => {
+      writeFileSync(t.file, `${MAC_POINTER} `)
+    }
+    await expect(cancelAfterCodeOnMacOs(t, rewrite)).resolves.toMatchObject({
+      status: 'signedIn',
+    })
+    expect(t.probe).toHaveBeenCalledOnce()
+  })
 
   it('reads the empty file a sign-out leaves as signed out, without starting the CLI', async () => {
     const t = withFile(LOGOUT_SHELL)

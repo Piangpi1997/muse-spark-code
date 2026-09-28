@@ -101,7 +101,8 @@ happened, not what was planned; superseded entries are kept.
   - **Cancel.** It works at once, even when Muse Code stops answering, and
     the code leaves the panel at once. If the browser approved just
     before, the panel follows what Muse Code saved instead of saying the
-    sign-in was cancelled.
+    sign-in was cancelled. On macOS, where an approval may reach only the
+    Keychain, a Cancel after the code was shown asks Muse Code afresh.
   - **Success.** It is taken from Muse Code's `account/read` turning
     signed in, or from a new credential file it does not contradict. When
     Muse Code could not say who was signed in before the flow, its own

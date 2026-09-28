@@ -570,6 +570,49 @@ pre-drill SHA-256 afterwards.
 | DG    | A finished sign-in whose restart fails late publishes its failure over a newer state | exit 1, 1 failed: "lets a newer refresh stand when a finished sign-in’s restart fails late"                         |
 | DH    | A failed install publishes what it asked over a newer state                          | exit 1, 1 failed: "lets a newer state stand when a failed install’s question answers late"                          |
 
+Drills DI to DK cover Codex's review of `55b9e24c` (below), from
+`scratchpad/cred-capture/drills9.mjs` (`drills9-result.json`,
+`drills9.log`), all in `authService.test.ts`; `authService.ts` matched its
+pre-drill SHA-256 afterwards.
+
+| Drill | What was broken                                                                               | Result                                                                                                                                                                    |
+| ----- | --------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| DI    | A Cancel after the code, the file unchanged, is taken as nothing having happened (no refresh) | exit 1, 2 failed: "asks the CLI afresh on a Cancel after the code, when the Keychain alone changed", "reports the Cancel when the CLI, asked afresh, is still signed out" |
+| DJ    | A Cancel after the code refreshes on the CLI’s answer from before the flow                    | exit 1, 2 failed: the same two                                                                                                                                            |
+| DK    | A Cancel as the file changed reads it passively (estimated on macOS, not asked)               | exit 1, 1 failed: "asks the CLI about a file rewritten as Cancel was pressed, on macOS too"                                                                               |
+
+## Codex on `55b9e24c`: a Cancel after a Keychain-only approval
+
+**P2.** On macOS an approval may update only the Keychain, the pointer
+file's mtime unchanged. If Cancel won before the device host's next
+`account/read`, `finishCancelledCliSignIn` reported `signedOut` and kept
+the CLI's answer from before the flow, although the login had landed.
+
+- **Fixed.** A Cancel after the code was shown (`flow.isCodeShown`, set as
+  the code is published), with the file unchanged, forgets the CLI's
+  answers. `finishFailedCliSignIn` then shows the cancellation at once and
+  refreshes as a user action. On macOS that asks `account/read` afresh, a
+  question bounded by the account host's deadline and by the sign-out
+  signal. The refresh publishes through `publishSelection`'s guards, with
+  "Sign-in cancelled." as a notice (DI, DJ). A Cancel before any code
+  still ends as it did, with no question.
+- **Sibling.** When the file had changed as Cancel was pressed, the
+  refresh was passive, so on macOS the new file was estimated (`unknown`),
+  not asked. A Cancel is a click, so it asks now (DK).
+- **Swept, left as they were.** Other places where an unchanged file may
+  hide a Keychain change:
+  - the device flow's polls ask `account/read` on the same host (with no
+    first answer, `granted` counts);
+  - a sign-out, a completed sign-in and Check again forget the CLI's
+    answers;
+  - a passive refresh keeps the cached answer by design: on macOS the CLI
+    is asked only on a user action.
+- **Checks run, and not the full gate** (the machine was still loaded):
+  `authService`, `cliAccount`, `conversationController` and the
+  `cliAccount` e2e (389 tests), typecheck, lint, l10n (0 problems), jscpd
+  (0 clones) and format all passed. The full gate is CI's three-OS run on
+  the pushed commit.
+
 ## Codex on `86d63652`: error paths after an await
 
 **P2.** When `publishSelection`'s restart rejected late, its catch branch

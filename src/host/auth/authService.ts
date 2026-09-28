@@ -182,6 +182,8 @@ interface CliSignInFlow {
   readonly signOut: AbortSignal
   /** The credential file's modification time when the flow began. */
   readonly fileBefore: number | undefined
+  /** The device code was shown: the browser may have approved it. */
+  isCodeShown: boolean
 }
 
 export class AuthService {
@@ -488,6 +490,7 @@ export class AuthService {
             if (abort.signal.aborted) {
               return
             }
+            flow.isCodeShown = true
             this.set({ ...this.snapshot, verificationUrl: url, userCode: code })
           })
     } finally {
@@ -503,6 +506,7 @@ export class AuthService {
       abort: new AbortController(),
       signOut: this.signOutStarts.signal,
       fileBefore: this.deps.backend.credentialFileModifiedAt(),
+      isCodeShown: false,
     }
     const { abort } = flow
     const cli = this.deps.backend.resolveCli()
@@ -618,26 +622,47 @@ export class AuthService {
   }
 
   /**
-   * Cancel decides the flow, but not against the file (the review of PR
-   * #49): when the credential file changed since the flow began (the browser
-   * approved as Cancel was pressed), its structure says whether the CLI is
-   * signed in.
+   * Cancel decides the flow, but not against what the CLI saved (the review
+   * of PR #49). When the credential file changed since the flow began (the
+   * browser approved as Cancel was pressed), the CLI's sign-in is read
+   * afresh, a Cancel being a click that may ask it. When the code was shown
+   * and the file did not change, the CLI is asked afresh too: on macOS an
+   * approval may land in the Keychain alone, the pointer file as it was
+   * (Codex on 55b9e24c).
    */
   private async finishCancelledCliSignIn(flow: CliSignInFlow): Promise<AuthSnapshot> {
     if (this.isSigningOut) {
       return this.snapshot
     }
     const isFileChanged = this.deps.backend.credentialFileModifiedAt() !== flow.fileBefore
-    return isFileChanged
-      ? ((await unlessAborted(this.refresh(), flow.signOut)) ?? this.snapshot)
-      : await this.finishFailedCliSignIn(flow, 'signedOut', UI_TEXT.signInCancelled, 'info')
+    if (isFileChanged) {
+      return (await unlessAborted(this.refresh(true), flow.signOut)) ?? this.snapshot
+    }
+    if (flow.isCodeShown) {
+      this.deps.backend.forgetCliAnswers()
+    }
+    return await this.finishFailedCliSignIn(
+      flow,
+      'signedOut',
+      UI_TEXT.signInCancelled,
+      'info',
+      flow.isCodeShown,
+    )
   }
 
+  /**
+   * A flow that did not sign in: its state is published at once, then, with
+   * the hold on, a Model API session, or `isAskingAfresh` (a Cancel after
+   * the code was shown), a refresh reads the CLI's sign-in and publishes
+   * what it finds through `publishSelection`'s guards, with the ending as a
+   * notice.
+   */
   private async finishFailedCliSignIn(
     flow: CliSignInFlow,
     status: 'noCli' | 'signedOut' | 'error',
     detail: string,
     noticeLevel: 'info' | 'warning',
+    isAskingAfresh = false,
   ): Promise<AuthSnapshot> {
     // A sign-out that cancelled this sign-in publishes its own state.
     if (this.isSigningOut) {
@@ -653,7 +678,11 @@ export class AuthService {
       verificationUrl: undefined,
       userCode: undefined,
     })
-    if (this.isLogoutHeld || (initial.status === 'signedIn' && initial.backend === 'modelApi')) {
+    if (
+      isAskingAfresh ||
+      this.isLogoutHeld ||
+      (initial.status === 'signedIn' && initial.backend === 'modelApi')
+    ) {
       // A sign-out that starts meanwhile publishes its own state, and does
       // not wait on the question this refresh may ask (the review of PR #49).
       const refreshed = await unlessAborted(this.refresh(true), flow.signOut)
