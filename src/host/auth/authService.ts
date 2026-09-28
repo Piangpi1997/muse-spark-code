@@ -718,7 +718,13 @@ export class AuthService {
   public async refresh(isUserAction = false): Promise<AuthSnapshot> {
     const epoch = this.signOutEpoch
     const selected = await this.selectedSnapshot(isUserAction)
-    if (this.isSigningOut || this.signOutEpoch !== epoch) {
+    // A refresh begun before a sign-out (its probe may answer long after)
+    // never overwrites what the sign-out, or a later sign-in, published (the
+    // review of PR #49).
+    if (this.signOutEpoch !== epoch) {
+      return this.snapshot
+    }
+    if (this.isSigningOut) {
       return this.set({ ...selected, status: 'error', detail: this.logoutDetail() })
     }
     if (!this.isLogoutHeld) {
@@ -727,7 +733,7 @@ export class AuthService {
     const hasCliCredential = await this.hasCliCredential(isUserAction)
     const hasStoredKey = (await this.deps.credentials.getApiKey()) !== undefined
     if (this.signOutEpoch !== epoch) {
-      return this.set({ ...selected, status: 'error', detail: this.logoutDetail() })
+      return this.snapshot
     }
     if (hasCliCredential || hasStoredKey) {
       return this.set({ ...selected, status: 'error', detail: this.logoutDetail() })
@@ -740,7 +746,12 @@ export class AuthService {
     const hasCurrentCredential =
       (await this.hasCliCredential(isUserAction)) ||
       (await this.deps.credentials.getApiKey()) !== undefined
-    if (hasCurrentCredential || this.signOutEpoch !== epoch || current.status === 'signedIn') {
+    if (this.signOutEpoch !== epoch) {
+      // A sign-out raced this release: its hold stands, its state is its own.
+      await this.setLogoutHold(true)
+      return this.snapshot
+    }
+    if (hasCurrentCredential || current.status === 'signedIn') {
       await this.setLogoutHold(true)
       return this.set({ ...current, status: 'error', detail: this.logoutDetail() })
     }

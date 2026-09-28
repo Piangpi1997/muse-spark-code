@@ -218,6 +218,7 @@ captured frames.
 | AF    | The device flow's signed-out guard gated on `credentialRequired` again (the review of PR #49)            | `deviceSignIn.test.ts`   | exit 1, 1 failed: a rewritten file counted as a sign-in under the uncaptured value                                                       |
 | AG    | An empty version-2 file read as a Keychain pointer off macOS (the review of PR #49)                      | `credentialFile.test.ts` | exit 1, 2 failed: a signed-out macOS file copied to Windows or Linux blocked browser sign-in                                             |
 | AH    | `account/logout` confirmed on any answer but a stored sign-in (the review of PR #49)                     | `accountHost.test.ts`    | exit 1, 2 failed: `envKey` and the uncaptured `credentialRequired: false` confirmed a logout                                             |
+| AI    | A refresh begun before sign-out publishes its late answer (the review of PR #49)                         | `authService.test.ts`    | exit 1, 1 failed: the signed-out state was overwritten with "Sign-out is in progress"                                                    |
 
 ## Not proved here
 

@@ -321,6 +321,22 @@ describe('AuthService.signIn', () => {
     expect(h.abandonCliProbe).toHaveBeenCalled()
   })
 
+  it('keeps the state a sign-out published when an older refresh answers late (the review of PR #49)', async () => {
+    const h = harness()
+    const late = Promise.withResolvers<CliSignIn>()
+    h.cliSignIn.mockImplementationOnce(() => late.promise)
+    const stale = h.service.refresh()
+    await vi.waitFor(() => {
+      expect(h.cliSignIn).toHaveBeenCalled()
+    })
+    await expect(h.service.signOut()).resolves.toMatchObject({ status: 'signedOut' })
+    const published = h.broadcasts.length
+    late.resolve('signedIn')
+    await expect(stale).resolves.toMatchObject({ status: 'signedOut' })
+    expect(h.service.current.status).toBe('signedOut')
+    expect(h.broadcasts).toHaveLength(published)
+  })
+
   it('shows the device code, waits for the credential, and restarts the backend', async () => {
     const h = harness()
     h.runDeviceSignIn.mockImplementation((_signal, onCode) => {
