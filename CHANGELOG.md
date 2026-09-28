@@ -59,9 +59,13 @@ happened, not what was planned; superseded entries are kept.
     says it also hides web fetch from Muse Code. Ten more strings, one
     changed and one dropped, and two changed setting descriptions, in
     fifteen languages.
-- **Dependency.** `entities` 8.1.0 (BSD-2-Clause, already in the tree
-  through the test tools) decodes HTML's character references for web
-  fetch's converter; it adds about 23 KiB to `dist/extension.js` only.
+- **Dependencies.** Web fetch parses HTML with `parse5` 8.0.1 (MIT),
+  sniffs its encoding with `html-encoding-sniffer` 6.0.0 (MIT) and reads
+  inline styles with `@csstools/css-tokenizer` 4.0.1 (MIT), all already in
+  the tree through the test tools. They load only in `dist/pageWorker.js`
+  (212 KiB, budget 300 KiB), on a worker thread started at the first page
+  and stopped at 10 seconds or 512 MiB; `dist/extension.js` does not carry
+  them. `entities` is no longer a direct dependency.
 
 ### Changed
 

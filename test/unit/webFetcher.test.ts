@@ -1,10 +1,16 @@
 import { describe, expect, it } from 'vitest'
+import type { HtmlConversion } from '../../src/core/web/htmlConversion'
 import { createWebFetcher, discoverNat64, type Nat64Lookups } from '../../src/host/web/webFetcher'
 import { FakeLogOutputChannel } from './helpers/fakes'
 import { logLines } from './helpers/logText'
 
 const NSP_ANSWER = '2a01:4f8:c0c:1234:c0:0:aa00:0'
 const NSP_PREFIX = { prefix: 0x2a_01_04_f8_0c_0c_12_34n, length: 64 }
+
+/** A converter these tests never reach: their pages are refused before any is read. */
+function unused(): Promise<HtmlConversion> {
+  return Promise.resolve({ ok: false, kind: 'failed', detail: 'not reached' })
+}
 
 /** A lookup that answers the list, or fails with the error code. */
 function settle(outcome: readonly string[] | string): () => Promise<readonly string[]> {
@@ -23,7 +29,7 @@ function lookups(
 describe("the window's web fetch (M69)", () => {
   it('logs the host and the outcome, never the path or the query', async () => {
     const log = new FakeLogOutputChannel()
-    const fetchPage = createWebFetcher(log, lookups('ENOTFOUND', 'ENODATA'))
+    const fetchPage = createWebFetcher(log, unused, lookups('ENOTFOUND', 'ENODATA'))
     const result = await fetchPage(
       'https://localhost:8443/private/path?token=abc',
       new AbortController().signal,

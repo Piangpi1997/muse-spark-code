@@ -202,21 +202,39 @@ describe('htmlToMarkdown (M69)', () => {
     )
   })
 
-  it('stays linear on hostile nesting, misnesting and formatting', () => {
-    const pages = [
-      '<div>'.repeat(200_000),
-      '<ul><li>'.repeat(100_000),
-      '<b><i>'.repeat(40_000) + '</b>x'.repeat(40_000),
-      '<a href="/x">'.repeat(40_000) + '<div>'.repeat(40_000) + '</a>'.repeat(40_000),
-      '<table><tr><td>'.repeat(40_000),
-      '<p><b hidden>x</p>'.repeat(40_000),
-      '<svg>' + '<g>'.repeat(100_000) + '</p>',
-    ]
-    for (const page of pages) {
-      const started = performance.now()
-      markdown(page)
-      expect(performance.now() - started, page.slice(0, 40)).toBeLessThan(3000)
-    }
+  it('resolves links against the first <base href>, as the document base URL', () => {
+    expect(
+      markdown(
+        '<a href="page">before</a><base href="https://cdn.example.org/docs/"><a href="img/x">after</a>',
+      ),
+    ).toBe('[before](https://cdn.example.org/docs/page)[after](https://cdn.example.org/docs/img/x)')
+    // Only the first `<base>` with an href counts; a relative one resolves against the page.
+    expect(markdown('<base><base href="../api/"><base href="/no"><a href="x">x</a>')).toBe(
+      '[x](https://docs.example.com/api/x)',
+    )
+    // A `javascript:` or `data:` base, or one that does not parse, leaves the page's URL.
+    expect(markdown('<base href="javascript:alert(1)//"><a href="x">x</a>')).toBe(
+      '[x](https://docs.example.com/guide/x)',
+    )
+    expect(markdown('<base href="https://[bad"><a href="x">x</a>')).toBe(
+      '[x](https://docs.example.com/guide/x)',
+    )
+  })
+
+  it('leaves out what HTML hides: inert, aria-hidden, template, noscript, a dialog not opened', () => {
+    expect(markdown('<div inert>behind</div><p>front')).toBe('front')
+    expect(markdown('<div aria-hidden=" TRUE ">x</div><div aria-hidden="false">y</div>')).toBe('y')
+    expect(markdown('<template><p>inert</p></template><noscript>no js</noscript><p>shown')).toBe(
+      'shown',
+    )
+    expect(markdown('<div style="display:/**/none">x</div><p>y')).toBe('y')
+  })
+
+  it('walks a deep tree without recursion', () => {
+    // parse5 builds it; the walk over it must not overflow the stack. (How long a
+    // page nested to be hostile takes is bounded by the worker: pageConverter.)
+    expect(markdown(`${'<div>'.repeat(5000)}deep`)).toBe('deep')
+    expect(markdown(`<p>a</p>${'<ul><li>'.repeat(2000)}x`)).toContain('- x')
   })
 
   it('reads text the way a browser does: entities, white space, stray brackets', () => {
@@ -231,7 +249,10 @@ describe('htmlToMarkdown (M69)', () => {
   })
 
   it('survives broken markup without losing the text', () => {
-    expect(markdown('<p>open <b>bold <i>both</p><p>next')).toBe('open **bold *both***\n\nnext')
+    // A browser reopens the formatting left open in the next paragraph.
+    expect(markdown('<p>open <b>bold <i>both</p><p>next')).toBe(
+      'open **bold *both***\n\n***next***',
+    )
     expect(markdown('<div><a href="/x">never closed')).toBe(
       '[never closed](https://docs.example.com/x)',
     )

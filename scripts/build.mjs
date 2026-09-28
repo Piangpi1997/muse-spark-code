@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // Bundles the extension host entry, the Model API backend, the search worker,
-// the webview, and (in dev mode) the integration tests with esbuild.
+// web fetch's page converter worker (M69: parse5 and the HTML converter,
+// loaded on a worker thread at the first page, never at activation), the
+// webview, and (in dev mode) the integration tests with esbuild.
 //
 //   node scripts/build.mjs               dev build + integration test bundles
 //   node scripts/build.mjs --watch       rebuild on change (extension + webview)
@@ -34,6 +36,8 @@ const MODEL_API_ENTRY = 'src/host/backend/modelApiEntry.ts'
 const MODEL_API_OUTFILE = 'dist/modelApi.js'
 const SEARCH_WORKER_ENTRY = 'src/host/backend/searchWorker.ts'
 const SEARCH_WORKER_OUTFILE = 'dist/searchWorker.js'
+const PAGE_WORKER_ENTRY = 'src/host/web/pageWorker.ts'
+const PAGE_WORKER_OUTFILE = 'dist/pageWorker.js'
 const WEBVIEW_ENTRY = 'src/webview/main.tsx'
 const WEBVIEW_OUTDIR = 'dist/webview'
 const INTEGRATION_TEST_DIR = 'test/integration'
@@ -85,6 +89,16 @@ const searchWorkerOptions = {
 }
 
 /** @type {import('esbuild').BuildOptions} */
+const pageWorkerOptions = {
+  ...common,
+  entryPoints: [PAGE_WORKER_ENTRY],
+  outfile: PAGE_WORKER_OUTFILE,
+  platform: 'node',
+  format: 'cjs',
+  target: NODE_TARGET,
+}
+
+/** @type {import('esbuild').BuildOptions} */
 const webviewOptions = {
   ...common,
   entryPoints: [WEBVIEW_ENTRY],
@@ -123,6 +137,7 @@ if (isWatch) {
     esbuild.context(hostOptions),
     esbuild.context(modelApiOptions),
     esbuild.context(searchWorkerOptions),
+    esbuild.context(pageWorkerOptions),
     esbuild.context(webviewOptions),
   ])
   await Promise.all(contexts.map((ctx) => ctx.watch()))
@@ -132,6 +147,7 @@ if (isWatch) {
     extension: esbuild.build(hostOptions),
     modelApi: esbuild.build(modelApiOptions),
     searchWorker: esbuild.build(searchWorkerOptions),
+    pageWorker: esbuild.build(pageWorkerOptions),
     webview: esbuild.build(webviewOptions),
   }
   const builds = Object.values(shipped)
@@ -150,6 +166,7 @@ if (isWatch) {
   reportSize(HOST_OUTFILE)
   reportSize(MODEL_API_OUTFILE)
   reportSize(SEARCH_WORKER_OUTFILE)
+  reportSize(PAGE_WORKER_OUTFILE)
   reportSize(path.join(WEBVIEW_OUTDIR, 'main.js'))
   reportSize(path.join(WEBVIEW_OUTDIR, 'main.css'))
 }

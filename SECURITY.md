@@ -124,8 +124,12 @@ Only the latest release on the Visual Studio Marketplace receives fixes.
   the tunnel is asked for that address, and only an answer that arrived over
   TLS is read. Same-host redirects are checked and pinned again (at most
   five); another host's is handed back to the model, which asks again.
-  5 MiB after decompression, 30 seconds, text types only, and the HTML
-  converter's output is bounded. On the Model API backend each host asks in
+  5 MiB after decompression, 30 seconds, text types only. HTML is parsed
+  by parse5 on a worker thread stopped at 10 seconds or 512 MiB, its output
+  bounded; what HTML hides (`hidden`, `inert`, `aria-hidden`, an inline
+  `display`, `visibility` or `content-visibility` that hides, template
+  content, `<noscript>`) is left out, while text a stylesheet hides still
+  reaches the model, marked untrusted. On the Model API backend each host asks in
   every mode but Bypass (Plan refuses), and a `PermissionRequest` hook's
   allow does not replace that card; on Muse Code the `ide` tool is listed
   only in a trusted workspace without `sandboxNetwork: restricted`, carries

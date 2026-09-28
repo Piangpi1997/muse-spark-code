@@ -7,6 +7,7 @@
 import { randomBytes } from 'node:crypto'
 import { ADDRCONFIG } from 'node:dns'
 import { lookup, Resolver } from 'node:dns/promises'
+import type { HtmlConverter } from '../../core/web/htmlConversion'
 import { nat64PrefixesOf } from '../../core/web/publicAddress'
 import {
   fetchWebPage,
@@ -131,8 +132,13 @@ function outcomeOf(result: WebFetchResult): string {
   }
 }
 
+/**
+ * The window's fetch: `convertHtml` turns an HTML page into Markdown apart
+ * from the extension host (pageConverter.ts).
+ */
 export function createWebFetcher(
   log: Logger,
+  convertHtml: HtmlConverter,
   nat64Lookups: Nat64Lookups = NAT64_LOOKUPS,
 ): WebFetcher {
   return async (url, signal, isStillAllowed) => {
@@ -142,6 +148,7 @@ export function createWebFetcher(
         resolve: resolveAll,
         nat64: async () => await discoverNat64(nat64Lookups, log),
         request: pinnedHttpsRequest,
+        convertHtml,
         newMarker: () => randomBytes(WEB_FETCH_MARKER_BYTES).toString('hex'),
       },
       signal,

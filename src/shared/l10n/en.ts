@@ -440,6 +440,12 @@ export const EN = {
   webFetchEncoding: 'The page’s compression ({encoding}) could not be read.',
   webFetchEncodingUnnamed: 'The page’s compression could not be read.',
   webFetchTimeout: 'The page did not arrive within {duration}.',
+  webFetchConversionTimeout:
+    'The page’s HTML took longer than {duration} to convert, so none of it was read.',
+  webFetchConversionMemory:
+    'The page’s HTML needed more than {max} to convert, so none of it was read.',
+  webFetchConversionFailed:
+    'The page’s HTML could not be converted ({detail}), so none of it was read.',
   // Why no connection gave an answer: the page's host, and the checked
   // address(es) the request went to.
   webFetchCertificate:

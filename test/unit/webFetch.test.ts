@@ -1,6 +1,8 @@
 import { Buffer } from 'node:buffer'
 import { brotliCompressSync, gzipSync } from 'node:zlib'
 import { describe, expect, it } from 'vitest'
+import type { HtmlConversion, HtmlJob } from '../../src/core/web/htmlConversion'
+import { convertHtmlJob } from '../../src/core/web/htmlToMarkdown'
 import { nat64PrefixesOf } from '../../src/core/web/publicAddress'
 import {
   fetchWebPage,
@@ -90,6 +92,8 @@ function world(options: {
   /** What NAT64 discovery learns: the network's prefixes, or that it could not tell. */
   nat64?: Nat64Discovery
   timeoutMs?: number
+  /** What the converter answers, instead of converting in-process. */
+  conversion?: HtmlConversion
 }) {
   const lookups: string[] = []
   const requests: PinnedTarget[] = []
@@ -148,6 +152,9 @@ function world(options: {
         },
       })
     },
+    // The converter in-process: the worker that runs it is pageConverter's test.
+    convertHtml: (job: HtmlJob): Promise<HtmlConversion> =>
+      Promise.resolve(options.conversion ?? { ok: true, page: convertHtmlJob(job) }),
     newMarker: () => MARKER,
     ...(options.timeoutMs !== undefined && { timeoutMs: options.timeoutMs }),
   }
@@ -507,6 +514,32 @@ describe('fetchWebPage (M69)', () => {
     const posed = failure(await posing.fetch(DOCS))
     expect(posed.kind).toBe('network')
     expect(posed.reason).toBe(fill(MODEL_TEXT.webFetchNetwork, { detail: 'ECONNRESET' }))
+  })
+
+  it('refuses a page its converter could not convert, naming why, and reads nothing of it', async () => {
+    const cases: readonly [HtmlConversion, string][] = [
+      [{ ok: false, kind: 'timeout', detail: '10000' }, 'conversionTimeout'],
+      [{ ok: false, kind: 'memory', detail: 'ERR_WORKER_OUT_OF_MEMORY' }, 'conversionMemory'],
+      [{ ok: false, kind: 'failed', detail: 'ENOENT' }, 'conversionFailed'],
+    ]
+    for (const [conversion, kind] of cases) {
+      const w = world({
+        answers: { 'docs.example.com': [[PUBLIC]] },
+        replies: { [DOCS]: { headers: { 'content-type': 'text/html' }, body: '<p>secret' } },
+        conversion,
+      })
+      const failed = failure(await w.fetch(DOCS))
+      expect(failed.kind).toBe(kind)
+      expect(failed.reason).not.toContain('secret')
+    }
+    const slow = world({
+      answers: { 'docs.example.com': [[PUBLIC]] },
+      replies: { [DOCS]: { headers: { 'content-type': 'text/html' }, body: '<p>x' } },
+      conversion: { ok: false, kind: 'timeout', detail: '10000' },
+    })
+    expect(failure(await slow.fetch(DOCS)).reason).toBe(
+      fill(MODEL_TEXT.webFetchConversionTimeout, { seconds: '10' }),
+    )
   })
 
   it('follows a redirect on the same host, resolving and pinning the new hop again', async () => {

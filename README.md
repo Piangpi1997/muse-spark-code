@@ -636,16 +636,20 @@ Code (whose own `web_fetch` is off). The extension fetches the page itself,
 from your machine, and hands the model its text. It costs nothing: it is not
 Meta's paid web search.
 
-- **What it reads.** `https://` pages only. HTML comes back as Markdown:
-  scripts, styles, forms' controls and media are left out, and so is what
-  the page's own markup hides (`hidden`, `aria-hidden`, an inline
-  `display: none` or `visibility: hidden`, up to where a browser ends the
-  element, even one the page left open), a hidden image's text, and what
-  browsers never show (a dialog not opened, ruby's fallback parentheses),
-  as HTML's own parsing rules decide where each element ends (implied
-  ends, misnested and self-closed tags, SVG and MathML, comments and
-  scripts). Text a stylesheet hides or
-  places off screen still reaches the model. Plain text, Markdown, JSON,
+- **What it reads.** `https://` pages only. HTML is parsed as a browser
+  parses it (parse5, the HTML standard's algorithm), in the encoding the
+  page declares, and comes back as Markdown with links resolved against
+  its `<base href>`. Left out: scripts, styles, forms' controls, media, SVG
+  and MathML, and what HTML itself hides: the `hidden`, `inert` and
+  `aria-hidden="true"` attributes; an inline `style` of `display: none`,
+  `visibility: hidden` or `collapse`, or `content-visibility: hidden`
+  (read with a CSS tokenizer, so a comment or an escape does not slip past);
+  a template's content, `<noscript>`, a dialog not opened and ruby's
+  fallback parentheses. Text a stylesheet hides, or places off screen, still
+  reaches the model, inside the markers that call
+  the page untrusted. The page is converted on a worker thread stopped at
+  10 seconds or 512 MiB (a page nested to be slow to parse), and refused
+  with the reason. Plain text, Markdown, JSON,
   XML, CSV, YAML, CSS and JavaScript come back as they are; anything else is
   refused with the reason. At most 5 MiB (after decompression) within 30
   seconds; the model reads the first 50,000 characters, and is told when

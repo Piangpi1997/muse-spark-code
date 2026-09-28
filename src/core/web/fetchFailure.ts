@@ -9,6 +9,9 @@
 import {
   MODEL_TEXT,
   UI_TEXT,
+  BYTES_PER_MIB,
+  WEB_FETCH_CONVERT_MAX_HEAP_MIB,
+  WEB_FETCH_CONVERT_TIMEOUT_MS,
   WEB_FETCH_MAX_BYTES,
   WEB_FETCH_MAX_REDIRECTS,
   WEB_FETCH_TIMEOUT_MS,
@@ -17,6 +20,7 @@ import {
 import { fill, formatBytes, formatNumber, formatUnit } from '../../shared/l10n/text'
 
 const MS_PER_SECOND = 1000
+const CONVERT_SECONDS = WEB_FETCH_CONVERT_TIMEOUT_MS / MS_PER_SECOND
 
 export type WebFetchFailureKind =
   | 'invalidUrl'
@@ -35,6 +39,9 @@ export type WebFetchFailureKind =
   | 'noContentType'
   | 'contentType'
   | 'encoding'
+  | 'conversionTimeout'
+  | 'conversionMemory'
+  | 'conversionFailed'
   | 'timeout'
   | 'certificate'
   | 'proxyCredentials'
@@ -148,6 +155,28 @@ function responseSentences(kind: WebFetchFailureKind, facts: FailureFacts): Sent
             fill(MODEL_TEXT.webFetchEncoding, { encoding }),
             fill(UI_TEXT.webFetchEncoding, { encoding }),
           ]
+    }
+    case 'conversionTimeout': {
+      return [
+        fill(MODEL_TEXT.webFetchConversionTimeout, { seconds: String(CONVERT_SECONDS) }),
+        fill(UI_TEXT.webFetchConversionTimeout, {
+          duration: formatUnit(CONVERT_SECONDS, 'second'),
+        }),
+      ]
+    }
+    case 'conversionMemory': {
+      const max = WEB_FETCH_CONVERT_MAX_HEAP_MIB * BYTES_PER_MIB
+      return [
+        fill(MODEL_TEXT.webFetchConversionMemory, { max: String(WEB_FETCH_CONVERT_MAX_HEAP_MIB) }),
+        fill(UI_TEXT.webFetchConversionMemory, { max: formatBytes(max) }),
+      ]
+    }
+    case 'conversionFailed': {
+      const detail = facts.detail ?? ''
+      return [
+        fill(MODEL_TEXT.webFetchConversionFailed, { detail }),
+        fill(UI_TEXT.webFetchConversionFailed, { detail }),
+      ]
     }
     default: {
       return connectionSentences(kind, facts)

@@ -44,7 +44,6 @@ import {
   MODEL_TEXT,
   UI_TEXT,
   WEB_FETCH_ATTEMPT_DELAY_MS,
-  WEB_FETCH_CHARSET_SNIFF_BYTES,
   WEB_FETCH_CONVERT_MAX_CHARS,
   WEB_FETCH_DETAIL_MAX_CHARS,
   WEB_FETCH_HTML_TYPES,
@@ -65,7 +64,7 @@ import {
   type WebFetchFailureKind,
   webFetchFailure,
 } from './fetchFailure'
-import { htmlToMarkdown } from './htmlToMarkdown'
+import type { HtmlConversionFailure, HtmlConverter } from './htmlConversion'
 import { approvalHost, type CheckedPageUrl, checkPageUrl } from './pageUrl'
 import { addressFamily, isPublicAddress, type Nat64Prefix } from './publicAddress'
 
@@ -114,6 +113,8 @@ export interface WebFetchDeps {
     signal: AbortSignal,
     onConnected: () => void,
   ) => Promise<PinnedResponse>
+  /** An HTML page as Markdown, converted apart from the fetch (htmlConversion.ts). */
+  readonly convertHtml: HtmlConverter
   /** Fresh random hexadecimal for the markers around the page's content. */
   readonly newMarker: () => string
   /** The whole fetch's deadline; WEB_FETCH_TIMEOUT_MS unless a test shortens it. */
@@ -160,12 +161,9 @@ const MEDIA_TYPE_SEPARATOR = ';'
 const CHARSET_PARAMETER = 'charset='
 const DEFAULT_CHARSET = 'utf8'
 const IDENTITY = 'identity'
-const LATIN1 = 'latin1'
 const OPENING_QUOTE = /^["']/
-// Where a charset's value ends, in a header or a `<meta>` tag.
+// Where a charset's value ends in a Content-Type header.
 const CHARSET_END = /[\s"';/>]/
-const META_OPEN = '<meta'
-const TAG_CLOSE = '>'
 const ADDRESS_LIST_SEPARATOR = ', '
 // A media type (`type/subtype`) or a coding: RFC 9110 token characters.
 const TOKEN = /^[\w!#$%&'*+.^`|~-]+(?:\/[\w!#$%&'*+.^`|~-]+)?$/
@@ -471,25 +469,6 @@ function charsetIn(text: string): string | undefined {
   return value === '' ? undefined : value
 }
 
-/**
- * The charset an HTML page declares in a `<meta>` tag near its start
- * (`<meta charset>` or `<meta http-equiv content="…; charset=…">`), never a
- * `charset=` elsewhere in its text.
- */
-function metaCharset(head: string): string | undefined {
-  const lower = head.toLowerCase()
-  let at = lower.indexOf(META_OPEN)
-  while (at !== -1) {
-    const end = lower.indexOf(TAG_CLOSE, at)
-    const charset = charsetIn(head.slice(at, end === -1 ? head.length : end))
-    if (charset !== undefined) {
-      return charset
-    }
-    at = lower.indexOf(META_OPEN, at + META_OPEN.length)
-  }
-  return undefined
-}
-
 /** A decoder for the label, or undefined for one this runtime does not know. */
 function decoderFor(label: string | undefined): TextDecoder | undefined {
   if (label === undefined) {
@@ -504,17 +483,12 @@ function decoderFor(label: string | undefined): TextDecoder | undefined {
 }
 
 /**
- * The body as text: the header's charset, else an HTML page's `<meta>`,
- * else UTF-8; a label nobody knows counts as none.
+ * A text body as text: the header's charset, else UTF-8 (a byte order mark
+ * wins over both); a label nobody knows counts as none. An HTML page is
+ * decoded by its converter, as HTML decodes it (htmlCharset.ts).
  */
-function decodeText(bytes: Uint8Array, contentType: string, isHtml: boolean): string {
-  const head = isHtml
-    ? Buffer.from(bytes.subarray(0, WEB_FETCH_CHARSET_SNIFF_BYTES)).toString(LATIN1)
-    : ''
-  const decoder =
-    decoderFor(charsetIn(contentType)) ??
-    decoderFor(isHtml ? metaCharset(head) : undefined) ??
-    new TextDecoder(DEFAULT_CHARSET)
+function decodeText(bytes: Uint8Array, contentType: string): string {
+  const decoder = decoderFor(charsetIn(contentType)) ?? new TextDecoder(DEFAULT_CHARSET)
   return decoder.decode(bytes)
 }
 
@@ -633,28 +607,54 @@ function pageText(
   ].join('\n')
 }
 
-/** The page's text, HTML as Markdown: the final URL and the title go inside the markers. */
-function contentOf(
-  text: string,
-  isHtml: boolean,
-  requested: URL,
-  finalUrl: URL,
-): { readonly content: string; readonly hasMore: boolean } {
+/** Why a page's HTML was not converted, as web fetch names it. */
+const CONVERSION_FAILURES: Readonly<Record<HtmlConversionFailure, WebFetchFailureKind>> = {
+  timeout: 'conversionTimeout',
+  memory: 'conversionMemory',
+  failed: 'conversionFailed',
+}
+
+/**
+ * The page's text, HTML as Markdown by the converter (on its worker): the
+ * final URL and the title go inside the markers. A page the converter could
+ * not convert in time or memory is refused with that reason.
+ */
+async function contentOf(
+  body: { readonly bytes: Uint8Array; readonly contentType: string; readonly isHtml: boolean },
+  urls: { readonly requested: URL; readonly final: URL },
+  convertHtml: HtmlConverter,
+  signal: AbortSignal,
+): Promise<{ readonly content: string; readonly hasMore: boolean }> {
   const redirected =
-    finalUrl.href === requested.href
+    urls.final.href === urls.requested.href
       ? []
-      : [fill(MODEL_TEXT.webFetchRedirected, { url: finalUrl.href })]
-  if (!isHtml) {
-    return { content: [...redirected, text].join('\n\n'), hasMore: false }
+      : [fill(MODEL_TEXT.webFetchRedirected, { url: urls.final.href })]
+  if (!body.isHtml) {
+    return {
+      content: [...redirected, decodeText(body.bytes, body.contentType)].join('\n\n'),
+      hasMore: false,
+    }
   }
-  const converted = htmlToMarkdown(text, finalUrl, WEB_FETCH_CONVERT_MAX_CHARS)
+  const converted = await convertHtml(
+    {
+      bytes: body.bytes,
+      charset: charsetIn(body.contentType),
+      url: urls.final.href,
+      maxChars: WEB_FETCH_CONVERT_MAX_CHARS,
+    },
+    signal,
+  )
+  if (!converted.ok) {
+    // Stopped by the turn or the fetch's deadline: those name the failure.
+    signal.throwIfAborted()
+    return refuse(CONVERSION_FAILURES[converted.kind], { detail: converted.detail })
+  }
+  const { page } = converted
   const title =
-    converted.title === undefined
-      ? []
-      : [fill(MODEL_TEXT.webFetchTitle, { title: converted.title })]
+    page.title === undefined ? [] : [fill(MODEL_TEXT.webFetchTitle, { title: page.title })]
   return {
-    content: [...redirected, ...title, converted.markdown].join('\n\n'),
-    hasMore: converted.isTruncated,
+    content: [...redirected, ...title, page.markdown].join('\n\n'),
+    hasMore: page.isTruncated,
   }
 }
 
@@ -680,8 +680,12 @@ async function readPage(
     refuse('contentType', { type: shownToken(type) })
   }
   const bytes = await readCapped(response, headers, signal)
-  const text = decodeText(bytes, contentType, isHtml)
-  const { content, hasMore } = contentOf(text, isHtml, urls.requested, urls.final)
+  const { content, hasMore } = await contentOf(
+    { bytes, contentType, isHtml },
+    urls,
+    deps.convertHtml,
+    signal,
+  )
   const page: WebPage = {
     url: urls.requested.href,
     finalUrl: urls.final.href,

@@ -804,6 +804,14 @@ export const WEB_FETCH_MAX_CONTENT_CHARS = 50_000
 // The HTML converter stops past this much Markdown (room for the text it
 // trims), so a page built to expand costs no more than this.
 export const WEB_FETCH_CONVERT_MAX_CHARS = WEB_FETCH_MAX_CONTENT_CHARS * 2
+// The HTML converter runs on a worker thread (src/host/web/pageWorker.ts),
+// stopped past these: a 5 MiB page of ordinary markup parses in under a
+// second with under 250 MiB of heap, while one nested to be hostile grows
+// faster than its size (measured on parse5 8.0.1, docs/certification/m69.md).
+export const WEB_FETCH_CONVERT_TIMEOUT_MS = 10_000
+export const WEB_FETCH_CONVERT_MAX_HEAP_MIB = 512
+// The converter's bundle, beside dist/extension.js.
+export const PAGE_WORKER_FILE = 'pageWorker.js'
 // RFC 8305's connection attempt delay: the next checked address is tried
 // when the one before has not connected in this long.
 export const WEB_FETCH_ATTEMPT_DELAY_MS = 250
@@ -818,8 +826,6 @@ export const WEB_FETCH_NOT_TLS_CODE = 'ERR_WEB_FETCH_NOT_TLS'
 // A longer address is refused: it is sent to the host, so it bounds what a
 // URL can carry out of the conversation.
 export const WEB_FETCH_URL_MAX_CHARS = 2048
-// HTML's own rule: a `<meta charset>` counts in the first 1,024 bytes.
-export const WEB_FETCH_CHARSET_SNIFF_BYTES = 1024
 // Random bytes (as hex) in the markers around a page's content, so the page
 // cannot close the untrusted block itself.
 export const WEB_FETCH_MARKER_BYTES = 8
@@ -2034,6 +2040,12 @@ export const MODEL_TEXT = {
   webFetchEncodingUnnamed:
     "the response's compression could not be decoded: it is unsupported or damaged",
   webFetchTimeout: 'no complete response within {seconds} seconds',
+  webFetchConversionTimeout:
+    "the page's HTML took longer than {seconds} seconds to convert (a page nested to be slow to parse), so none of it was read",
+  webFetchConversionMemory:
+    "the page's HTML needed more than {max} MiB to convert, so none of it was read",
+  webFetchConversionFailed:
+    "the page's HTML could not be converted ({detail}), so none of it was read",
   webFetchCertificate:
     'the TLS certificate {host} presented at {address} is not trusted on this computer; nothing was read ({detail})',
   webFetchProxyCredentials:
