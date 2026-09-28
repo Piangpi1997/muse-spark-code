@@ -57,6 +57,25 @@ function account(platform: NodeJS.Platform, file: string, answers: (AccountState
   return { checker, probe, log }
 }
 
+/** A Linux checker over the file, asking the given probe. */
+function linuxChecker(file: string, probe: () => Promise<AccountState | undefined>) {
+  return new CliAccount({
+    platform: 'linux',
+    credentialFilePath: () => file,
+    probe,
+    log: new FakeLogOutputChannel(),
+  })
+}
+
+/** An ambiguous file on Linux whose CLI question waits until the test answers it. */
+function heldQuestion() {
+  const home = configHome()
+  home.write(MALFORMED)
+  const answer = Promise.withResolvers<AccountState | undefined>()
+  const probe = vi.fn(() => answer.promise)
+  return { home, answer, probe, checker: linuxChecker(home.file, probe) }
+}
+
 describe('readCredentialFile', () => {
   it('is nothing when there is no file', () => {
     const home = configHome()
@@ -191,16 +210,7 @@ describe('CliAccount', () => {
   })
 
   it('shares one question among callers asking at once', async () => {
-    const home = configHome()
-    home.write(MALFORMED)
-    const answer = Promise.withResolvers<AccountState | undefined>()
-    const probe = vi.fn(() => answer.promise)
-    const checker = new CliAccount({
-      platform: 'linux',
-      credentialFilePath: () => home.file,
-      probe,
-      log: new FakeLogOutputChannel(),
-    })
+    const { answer, probe, checker } = heldQuestion()
     const first = checker.signIn(false)
     const second = checker.signIn(true)
     answer.resolve(SIGNED_IN)
@@ -209,16 +219,7 @@ describe('CliAccount', () => {
   })
 
   it('looks again when the file is rewritten while the CLI answers (the review of PR #49)', async () => {
-    const home = configHome()
-    home.write(MALFORMED)
-    const answer = Promise.withResolvers<AccountState | undefined>()
-    const probe = vi.fn(() => answer.promise)
-    const checker = new CliAccount({
-      platform: 'linux',
-      credentialFilePath: () => home.file,
-      probe,
-      log: new FakeLogOutputChannel(),
-    })
+    const { home, answer, checker } = heldQuestion()
     const pending = checker.signIn(true)
     // A sign-out rewrites the file while the old question is out.
     home.write(LOGOUT_SHELL)
@@ -232,12 +233,7 @@ describe('CliAccount', () => {
     const stale = Promise.withResolvers<AccountState | undefined>()
     const answers = [stale.promise, Promise.resolve(LOGGED_OUT)]
     const probe = vi.fn(() => answers.shift() ?? Promise.resolve(undefined))
-    const checker = new CliAccount({
-      platform: 'linux',
-      credentialFilePath: () => home.file,
-      probe,
-      log: new FakeLogOutputChannel(),
-    })
+    const checker = linuxChecker(home.file, probe)
     const abandoned = checker.signIn(true)
     checker.abandonAsking()
     await expect(checker.signIn(true)).resolves.toBe('signedOut')
