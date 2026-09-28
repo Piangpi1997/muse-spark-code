@@ -119,8 +119,9 @@ function isSignedIn(signals: SignInSignals): boolean {
   if (current === undefined) {
     return isFileWritten
   }
-  // A file written by a sign-out.
-  if (current.state === MUSE_ACCOUNT_STATES.loggedOut && current.credentialRequired) {
+  // A file written by a sign-out. Signed out is signed out, whatever the
+  // uncaptured `credentialRequired: false` might mean (the review of PR #49).
+  if (current.state === MUSE_ACCOUNT_STATES.loggedOut) {
     return false
   }
   // `envKey` or a stored key may mask the new login, so a new file counts

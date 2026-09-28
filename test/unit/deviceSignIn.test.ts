@@ -364,8 +364,15 @@ describe('Muse Code device sign-in: how it ends', () => {
     expect(t.request).toHaveBeenCalledWith('account/loginCancel', {})
   })
 
-  it('does not take a file a sign-out rewrote for a sign-in', async () => {
-    const t = session(() => CAPTURED_LOGGED_OUT)
+  // The second answer was never captured: signed out stays signed out (the review of PR #49).
+  it.each([
+    ['the captured signed-out answer', CAPTURED_LOGGED_OUT],
+    [
+      'an uncaptured credentialRequired false',
+      { state: 'loggedOut', credentialRequired: false } as const,
+    ],
+  ])('does not take a file a sign-out rewrote for a sign-in under %s', async (_name, answer) => {
+    const t = session(() => answer)
     let modified = 1
     const sleep = () => {
       modified += 1

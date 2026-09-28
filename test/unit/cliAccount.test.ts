@@ -91,8 +91,8 @@ describe('cliSignInFromAccount', () => {
     expect(cliSignInFromAccount(SIGNED_IN)).toBe('signedIn')
     expect(cliSignInFromAccount({ state: 'apiKey', credentialRequired: true })).toBe('signedIn')
     expect(cliSignInFromAccount(LOGGED_OUT)).toBe('signedOut')
-    // A keyless gateway needs no sign-in at all.
-    expect(cliSignInFromAccount({ state: 'loggedOut', credentialRequired: false })).toBe('signedIn')
+    // Never captured: its meaning is not guessed at (the review of PR #49).
+    expect(cliSignInFromAccount({ state: 'loggedOut', credentialRequired: false })).toBe('unknown')
     // META_API_KEY hides the stored lane; a future state is not guessed at.
     expect(cliSignInFromAccount({ state: 'envKey', credentialRequired: true })).toBe('unknown')
     expect(cliSignInFromAccount({ state: 'somethingNew', credentialRequired: true })).toBe(

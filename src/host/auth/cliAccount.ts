@@ -69,12 +69,16 @@ export function cliSignInFromAccount(account: AccountState | undefined): CliSign
   if (account === undefined) {
     return 'unknown'
   }
-  // A keyless gateway needs no credential (the schema's `credentialRequired`).
-  if (!account.credentialRequired || isStoredSignIn(account)) {
+  if (isStoredSignIn(account)) {
     return 'signedIn'
   }
-  // `envKey` masks the stored lane, and a future state is not guessed at.
-  return account.state === MUSE_ACCOUNT_STATES.loggedOut ? 'signedOut' : 'unknown'
+  // Only `credentialRequired: true` was captured (every `account/read` in
+  // docs/certification/sign-in-detection.md): another value, `envKey` masking
+  // the stored lane, or a future state is not guessed at (AGENTS.md rule 13,
+  // the review of PR #49).
+  return account.state === MUSE_ACCOUNT_STATES.loggedOut && account.credentialRequired
+    ? 'signedOut'
+    : 'unknown'
 }
 
 /** What the structure settles alone; a Keychain pointer on macOS and anything unrecognized go to the CLI. */
