@@ -22,7 +22,7 @@ import { fill } from '../../shared/l10n/text'
 import type { AuthStatus, HostToWebviewMessage, SignInMethod } from '../../shared/protocol'
 import type { Logger } from '../logger'
 import { isCliSignedIn } from './cliAccount'
-import type { DeviceSignInOutcome, DeviceSignInRefusal } from './deviceSignIn'
+import type { DeviceSignInEnded, DeviceSignInOutcome } from './deviceSignIn'
 import type { CredentialStore } from './credentialStore'
 
 export interface AuthBackendFacts {
@@ -119,19 +119,15 @@ function signInLine(snapshot: AuthSnapshot): string {
   return `Sign-in state: ${snapshot.status}${backend}${why}`
 }
 
-/** Why a device sign-in the host ended did not sign in (read when shown, D33). */
-function refusedSignInText(refusal: DeviceSignInRefusal): string {
-  switch (refusal) {
-    case 'denied': {
-      return UI_TEXT.signInDenied
-    }
-    case 'expired': {
-      return UI_TEXT.signInExpired
-    }
-    case 'failed': {
-      return UI_TEXT.signInNotSaved
-    }
-  }
+/**
+ * Why a device sign-in the host ended did not sign in (read when shown, D33):
+ * the captured `expired` in its own words, any other ending as Muse Code
+ * named it (AGENTS.md rule 13).
+ */
+function endedSignInText(ending: 'expired' | DeviceSignInEnded): string {
+  return ending === 'expired'
+    ? UI_TEXT.signInExpired
+    : fill(UI_TEXT.signInEnded, { outcome: ending.endedAs })
 }
 
 export class AuthService {
@@ -303,7 +299,7 @@ export class AuthService {
         return await this.finishFailedCliSignIn(
           initial,
           'signedOut',
-          refusedSignInText(outcome),
+          endedSignInText(outcome),
           'warning',
         )
       }

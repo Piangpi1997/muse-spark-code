@@ -59,11 +59,17 @@ happened, not what was planned; superseded entries are kept.
   - **Signing out.** Sign-out uses Muse Code's own `account/logout` and
     confirms it with `account/read`. `muse logout` in a terminal remains
     the fallback.
-- **Browser sign-in ends at once when it is declined, the code expires, or
-  Muse Code cannot save it.** The panel says which of the three happened.
-  Before, it waited out the full five minutes. Success is taken from Muse
-  Code's own `granted` outcome confirmed by `account/read`, from polling
-  `account/read`, or from a new credential file.
+- **Browser sign-in waits as long as the code lives, and ends at once when
+  Muse Code ends it.**
+  - **The code's lifetime.** A code lasts ten minutes (captured on
+    1.4.0-R4302.1). The panel now waits that long and says when the code
+    expired. Before, it gave up after five minutes and cancelled a code
+    that could still be approved.
+  - **Other endings.** Any other way Muse Code ends the sign-in is shown in
+    Muse Code's own word.
+  - **Cancel.** It works at once, even when Muse Code stops answering.
+  - **Success.** It is taken from Muse Code's `account/read` turning
+    signed in, or from a new credential file it does not contradict.
 - **A macOS `auth.json` copied to Windows or Linux is named** as the reason
   Muse Code cannot start, instead of a host that exits at every message.
 - **Muse Spark: Diagnostics** describes the CLI's credential file by its

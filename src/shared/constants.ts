@@ -1403,15 +1403,21 @@ export const MUSE_ACCOUNT_STATES = {
   accountLogin: 'accountLogin',
 } as const
 // `AccountLoginOutcome` (`account/loginCompleted`): how a device sign-in
-// ended. Only `cancelled` was captured live; the rest are the schema's words,
-// and the schema calls the vocabulary open.
+// ended. `cancelled` and `expired` were captured live (1.4.0-R4302.1,
+// 2026-09-27; `cancelled` also on 1.3.0). `granted` is the schema's word for
+// success, not captured: it is not taken for a sign-in, and it is the one
+// word that does not end the flow. The schema calls the vocabulary open, so
+// any other word ends the flow as the CLI named it (AGENTS.md rule 13).
 export const MUSE_LOGIN_OUTCOMES = {
   granted: 'granted',
-  denied: 'denied',
   expired: 'expired',
-  failed: 'failed',
   cancelled: 'cancelled',
 } as const
+// An outcome word the panel shows as it came is cut at this length.
+export const MUSE_LOGIN_OUTCOME_SHOWN_MAX_CHARS = 40
+// How long `account/loginCancel` may take before the sign-in host is closed
+// anyway (captured: answered within 4 ms, after the `cancelled` ending).
+export const MUSE_LOGIN_CANCEL_TIMEOUT_MS = 2000
 // The CLI's credential file (`auth.json`), read for its structure only: its
 // schema version and whether a provider's `storage` points to the macOS
 // Keychain. Version 1 holds the credential itself (Windows, Linux, and macOS
@@ -1566,11 +1572,14 @@ export const EXPORT_FILE_EXTENSIONS: Readonly<Record<ExportFormat, string>> = {
 }
 // An unnamed conversation's export takes its title from the first prompt, cut here.
 export const EXPORT_TITLE_MAX_CHARS = 60
-// How long the browser sign-in may take before the extension stops waiting,
-// and how often it asks the sign-in host (`account/read`) and looks at the
-// credential file.
+// How often the browser sign-in asks the sign-in host (`account/read`) and
+// looks at the credential file, and how long it may take before the
+// extension stops waiting. Muse Code ends the flow itself when the code
+// expires (captured on 1.4.0-R4302.1: `expired` 600 s after
+// `account/loginStart`), so the extension's own limit is only a backstop set
+// past that: a shorter one cancelled codes that were still live.
 export const CREDENTIAL_POLL_INTERVAL_MS = 2000
-export const CREDENTIAL_POLL_TIMEOUT_MS = 5 * 60 * 1000
+export const CREDENTIAL_POLL_TIMEOUT_MS = 11 * 60 * 1000
 // Model API key shapes. Meta's current keys are `LLM_` and at least 16
 // letters, digits, `_` or `-` (a key issued 2026-09-27 had 44 after the
 // prefix, no `|`); older keys were `LLM|<numeric id>|<secret>`. The log

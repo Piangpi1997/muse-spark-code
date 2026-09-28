@@ -30,12 +30,22 @@
 // `account/read` answers from the credential file under XDG_CONFIG_HOME
 // (a named provider is a login, anything else signed out), and
 // `account/logout` rewrites that file as the empty one the CLI leaves.
+//
+// The device sign-in replays the frames captured live on 1.4.0-R4302.1
+// (test/fixtures/msp/account-login-*.json, 2026-09-27), read from the folder
+// MUSE_FAKE_CAPTURES names. `account/loginStart` answers as captured; with
+// MUSE_FAKE_LOGIN_ENDING=<capture> that capture's `account/loginCompleted`
+// frame follows after MUSE_FAKE_LOGIN_ENDING_MS. `account/loginCancel` sends
+// the captured `cancelled` ending, then answers `{cancelled: true}`, in the
+// captured order; with no flow pending it answers as captured after an
+// ending. MUSE_FAKE_ACCOUNT_READ=silentAfterStart leaves every
+// `account/read` after `account/loginStart` unanswered (a wedged CLI).
 
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { argv, env, exit, stderr, stdin, stdout } from 'node:process'
 import { createInterface } from 'node:readline'
-import { setImmediate } from 'node:timers'
+import { clearTimeout, setImmediate, setTimeout } from 'node:timers'
 
 const METHOD_NOT_FOUND = -32_601
 const COMMAND_REJECTED = -32_000
@@ -83,6 +93,10 @@ const state = {
   pendingApproval: undefined,
   /** Long tool calls by item (M46): { sessionId, call, isBackground, onBackground } */
   tasks: new Map(),
+  /** The device sign-in in flight, if any: { timer } */
+  login: undefined,
+  /** `account/loginStart` was asked at least once. */
+  isLoginStarted: false,
 }
 
 function id(prefix) {
@@ -394,6 +408,59 @@ function accountState() {
     : { state: 'loggedOut', credentialRequired: true }
 }
 
+/** A live capture's frames, in the order they crossed the wire. */
+function captureFrames(name) {
+  const folder = env['MUSE_FAKE_CAPTURES']
+  if (folder === undefined) {
+    throw new Error('MUSE_FAKE_CAPTURES is not set')
+  }
+  return JSON.parse(readFileSync(path.join(folder, `account-login-${name}.json`), 'utf8')).frames
+}
+
+/** What the captured host answered the first time it was asked `method`. */
+function capturedAnswer(name, method) {
+  const frames = captureFrames(name)
+  const asked = frames.find((entry) => entry.dir === 'out' && entry.frame.method === method)
+  return frames.find((entry) => entry.dir === 'in' && entry.frame.id === asked?.frame.id)?.frame
+    .result
+}
+
+/** The captured `account/loginCompleted` frame, as it arrived. */
+function capturedEnding(name) {
+  return captureFrames(name).find(
+    (entry) => entry.dir === 'in' && entry.frame.method === 'account/loginCompleted',
+  )?.frame
+}
+
+function startLogin() {
+  state.isLoginStarted = true
+  const ending = env['MUSE_FAKE_LOGIN_ENDING']
+  const timer =
+    ending === undefined
+      ? undefined
+      : setTimeout(
+          () => {
+            state.login = undefined
+            send(capturedEnding(ending))
+          },
+          Number(env['MUSE_FAKE_LOGIN_ENDING_MS'] ?? '0'),
+        )
+  state.login = { timer }
+  return capturedAnswer('cancelled', 'account/loginStart')
+}
+
+function cancelLogin() {
+  if (state.login === undefined) {
+    // As captured after the code expired: nothing left to cancel.
+    return capturedAnswer('expired', 'account/loginCancel')
+  }
+  clearTimeout(state.login.timer)
+  state.login = undefined
+  // As captured: the ending, then the answer.
+  send(capturedEnding('cancelled'))
+  return capturedAnswer('cancelled', 'account/loginCancel')
+}
+
 /** A background task stopped: cancelled, as the capture of 2026-09-25 shows. */
 function stopTask(taskId) {
   const task = state.tasks.get(taskId)
@@ -698,6 +765,17 @@ const handlers = {
     notify('account/changed', after)
     return after
   },
+  'account/loginStart': (params) => {
+    requireExperimental('account/loginStart')
+    if (params.type !== 'deviceCode') {
+      throw new Error('this fake runs the device-code flow only')
+    }
+    return startLogin()
+  },
+  'account/loginCancel': () => {
+    requireExperimental('account/loginCancel')
+    return cancelLogin()
+  },
   'item/readOutput': (params) => {
     const content = `output of ${String(params.itemId)}`
     return {
@@ -712,11 +790,15 @@ const handlers = {
 }
 
 const isSilent = env['MUSE_FAKE_START'] === 'silent'
+const isAccountReadSilentAfterStart = env['MUSE_FAKE_ACCOUNT_READ'] === 'silentAfterStart'
 
 function handle(frame) {
   if (isSilent || frame.id === undefined) {
     // `initialized` and any other client notification need no answer; a
     // silent host answers nothing at all.
+    return
+  }
+  if (isAccountReadSilentAfterStart && state.isLoginStarted && frame.method === 'account/read') {
     return
   }
   const handler = handlers[frame.method]

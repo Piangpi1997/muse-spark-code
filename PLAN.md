@@ -872,22 +872,38 @@ action that fails is worse than hiding one that would work.
   chat host has no `experimentalApi`, and sign-out stops it first). The
   result is confirmed by `account/read`. The terminal `muse logout` is the
   fallback, confirmed later by the file or the CLI.
-- **M55's device flow ends on:**
-  - `account/loginCompleted` `granted`, confirmed by `account/read`;
+- **M55's device flow signs in on:**
   - `account/read` turning `accountLogin` on the open host;
   - or a new file that `account/read` does not contradict.
 
-  `denied`, `expired` and `failed` end it at once with their own messages.
-  `account/changed` is not relied on: a terminal `muse logout` did not fire
-  it. This supersedes M55's "accept only after a new credential-file
-  modification".
+  This supersedes M55's "accept only after a new credential-file
+  modification". `account/changed` is not relied on: neither a terminal
+  `muse logout` nor an expired code fired it.
 
+- **How it ends otherwise (PR #49 review, live capture).** The endings
+  were captured on 1.4.0-R4302.1 in throwaway homes: `expired`, 600 s
+  after `loginStart`, with a message, and `cancelled`
+  (`test/fixtures/msp/`).
+  - **`granted`, `denied`, `failed`: not captured.** The owner's Chrome has
+    the Chrome Control extension disabled, so no code could be approved or
+    declined.
+  - **`granted`.** It neither ends the flow nor counts as a sign-in;
+    `account/read` decides.
+  - **Every other word.** It ends the flow at once. The captured `expired`
+    has its own message; any other word is shown as Muse Code sent it
+    (AGENTS.md rule 13).
+- **The backstop.** The extension waits 11 minutes, past the code's
+  lifetime, so Muse Code's `expired` ends an unapproved code. The old
+  5 minutes cancelled codes that were still live.
+- **A CLI that stops answering.** Cancel and the host's ending are noticed
+  at once even while `account/read` is unanswered. `loginCancel` is
+  bounded at 2 s before the host is closed anyway.
 - **Where it is only as good as the schema.** `account/*` stays
-  experimental, and `granted`, `denied`, `expired` and `failed` are the
-  schema's words: only `cancelled` was captured.
+  experimental.
 - **Owner steps.** A real sign-in on each OS remains an owner step:
   - the macOS pointer after a 1.4.0 login;
-  - the success sequence;
+  - the success sequence and a declined code, once Chrome Control is back
+    on (`scratchpad/cred-capture/capture.mjs`);
   - logout of an OAuth slot.
 - **Not taken.** `TBH_CREDENTIAL_BACKEND=file` is not set. R4302.1 fixed
   #38/#53 and the launcher updates itself; the README names the switch
@@ -5944,8 +5960,10 @@ showed `account/read` logged out, `loginStart {type:"deviceCode"}` returning
 sign-in; success must be proved by a credential file change and the backend's
 refresh, not a guessed notification shape. The Model API key continues through
 SecretStorage and is never given to `muse serve`. (Amended 2026-09-27, D26:
-the schema's `granted` counts only when `account/read`, whose shapes were
-captured on 2026-09-27, agrees; the file change stays as a third signal.)
+`account/read`, whose shapes were captured on 2026-09-27, decides a
+sign-in, with the file change as the second signal; the uncaptured
+`granted` is not one. The PR #49 capture added `expired`, 600 s after
+`loginStart`, to the captured endings.)
 
 **Acceptance:** no installer or login starts without its button; installer
 command is fixed, shown before confirmation, and runs in a visible terminal;

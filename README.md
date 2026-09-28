@@ -191,9 +191,10 @@ harness:shots`) against a scripted session, so they match the build.
    directly and keeps the manual instructions available.
    Sign in, one of two ways:
    - **Sign in with your Meta account** shows an approval code in the panel.
-     Open its sign-in page in your browser and approve the code. **Cancel
-     sign-in** stops the temporary CLI sign-in process. Work is billed to your
-     Muse subscription.
+     Open its sign-in page in your browser and approve the code within ten
+     minutes, before it expires. **Cancel sign-in** stops the temporary CLI
+     sign-in process. If Muse Code ends the sign-in another way, the panel
+     shows Muse Code's word for it. Work is billed to your Muse subscription.
    - **Use a Model API key** takes a key from dev.meta.ai (Meta's current
      keys start with `LLM_`; older ones look like `LLM|<id>|<secret>`),
      stores it in VS Code's secret storage and runs the Model API backend

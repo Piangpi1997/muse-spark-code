@@ -9,6 +9,7 @@ import { CredentialStore } from '../../src/host/auth/credentialStore'
 import type { DeviceSignInOutcome } from '../../src/host/auth/deviceSignIn'
 import { MUSE_INSTALL_TIMEOUT_MS, type BackendMode } from '../../src/shared/constants'
 import { EN } from '../../src/shared/l10n/en'
+import { fill } from '../../src/shared/l10n/text'
 import type { HostToWebviewMessage } from '../../src/shared/protocol'
 import { FakeLogOutputChannel, memorySecrets, unexpectedWarning } from './helpers/fakes'
 
@@ -1041,29 +1042,36 @@ describe('AuthService.signOut and host reports', () => {
   })
 })
 
+// `expired` as captured live (2026-09-27); any other ending as Muse Code named it.
 describe('AuthService: how Muse Code ends a browser sign-in (D26)', () => {
-  it.each([
-    ['denied', EN.signInDenied],
-    ['expired', EN.signInExpired],
-    ['failed', EN.signInNotSaved],
-  ] as const)('ends a %s sign-in at once, signed out with its reason', async (outcome, text) => {
-    const h = harness()
-    h.runDeviceSignIn.mockResolvedValue(outcome)
-    await expect(h.service.signIn('browser')).resolves.toMatchObject({
-      status: 'signedOut',
-      detail: text,
-    })
-    expect(h.restartBackend).not.toHaveBeenCalled()
-  })
+  const DENIED_TEXT =
+    'Sign-in ended: denied. Sign in again to get a new code; the Muse Spark log says why.'
 
-  it('keeps a live Model API session after a denied CLI sign-in, with a notice', async () => {
+  it.each([
+    ['the captured expired', 'expired', EN.signInExpired],
+    ['an uncaptured denied', { endedAs: 'denied' }, DENIED_TEXT],
+    ['an unknown', { endedAs: 'somethingNew' }, fill(EN.signInEnded, { outcome: 'somethingNew' })],
+  ] as const)(
+    'ends %s sign-in at once, signed out with its reason',
+    async (_name, outcome, text) => {
+      const h = harness()
+      h.runDeviceSignIn.mockResolvedValue(outcome)
+      await expect(h.service.signIn('browser')).resolves.toMatchObject({
+        status: 'signedOut',
+        detail: text,
+      })
+      expect(h.restartBackend).not.toHaveBeenCalled()
+    },
+  )
+
+  it('keeps a live Model API session after a CLI sign-in ends unsigned, with a notice', async () => {
     const h = await signedInModelApi()
-    h.runDeviceSignIn.mockResolvedValue('denied')
+    h.runDeviceSignIn.mockResolvedValue({ endedAs: 'denied' })
     await expect(h.service.signIn('browser')).resolves.toMatchObject({
       status: 'signedIn',
       backend: 'modelApi',
     })
-    expect(h.broadcasts).toContainEqual({ type: 'notice', level: 'warning', text: EN.signInDenied })
+    expect(h.broadcasts).toContainEqual({ type: 'notice', level: 'warning', text: DENIED_TEXT })
   })
 })
 
