@@ -1728,6 +1728,36 @@ published.
 - **Webview is blank after a change** — run `npm run build:dev` (F5 does this
   via the pre-launch task) and reload the window.
 
+### How this extension is built
+
+The extension is developed by a small team of AI agents under one human
+owner, with every change held to the same gates as a human pull request.
+
+- **The owner** sets the plan (`PLAN.md`), makes the product decisions, and
+  approves anything that spends money, signs in or publishes.
+- **Claude Code** is the lead engineer: it turns the plan into briefs,
+  builds the harder milestones itself (security-sensitive and stateful
+  work), verifies every review finding in the code, and merges.
+- **Muse Code, the product's own backend, builds too.** Up to four
+  headless `muse exec` instances build well-scoped milestones in their own
+  git worktrees, on the Muse Spark contributor model. Their work goes
+  through exactly the same review and gates.
+- **Reviewers.** Each change is reviewed before it is pushed, one defect
+  class at a time (concurrency and lifecycle; wire evidence, validation and
+  security; failure paths, honesty and docs). **Grok Build** runs that
+  review on a test machine, read-only and in plan mode. On the pull
+  request, **Codex** reviews again. A finding is fixed with every sibling
+  of its class in one commit, and a change that reaches a third review
+  round is redesigned instead of patched.
+- **Gates.** `npm run quality` runs on dedicated test machines (Linux and
+  macOS) so builds never compete with the owner's workstation, then CI runs
+  it again on Ubuntu, Windows and macOS. Every guard added gets a red
+  drill: it is broken on purpose, its test must fail, and the file is
+  restored byte for byte (recorded in `docs/certification/`).
+- **Evidence.** Anything parsed from Muse Code or the Model API comes from a
+  live capture (AGENTS.md rule 13), and live checks run on the contributor
+  model in an empty workspace, with their model calls counted.
+
 ## Support this project
 
 If Muse Spark Code saves you time, you can
