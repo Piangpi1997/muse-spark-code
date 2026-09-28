@@ -8,7 +8,7 @@
 import { Buffer } from 'node:buffer'
 import { IMAGE_EXTENSIONS, type ImageMediaType, MAX_IMAGE_BYTES } from '../shared/constants'
 import { pathModule } from './workspaceRoot'
-import { confineWorkspacePath } from './backends/modelapi/tools'
+import { confineWorkspacePath } from './workspacePath'
 
 export type ToolImageResult =
   { readonly ok: true; readonly dataUri: string } | { readonly ok: false; readonly reason: string }

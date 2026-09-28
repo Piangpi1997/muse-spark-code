@@ -925,6 +925,7 @@
   "editRevertedPath": "Se revirtió {path}.",
   "editCreatedRemovedPath": "{path}: se movió a la papelera (lo creó Muse).",
   "modelApiNeedsFolder": "Abra primero una carpeta; el back-end de Model API trabaja dentro de un área de trabajo.",
+  "modelApiBundleUnavailable": "No se pudo cargar el back-end de Model API; reinstale la extensión y vuelva a cargar la ventana. El registro tiene los detalles.",
   "cliNotFound": "Muse Code no está instalado en ninguna ubicación conocida.",
   "cliPathNotAbsolute": "museSpark.museBinaryPath debe ser una ruta de acceso absoluta.",
   "cliSearched": "Ubicaciones buscadas: {paths}",

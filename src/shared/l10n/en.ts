@@ -1096,6 +1096,8 @@ export const EN = {
   editRevertedPath: 'Reverted {path}.',
   editCreatedRemovedPath: '{path}: Moved to the trash (Muse created it).',
   modelApiNeedsFolder: 'Open a folder first; the Model API backend works inside a workspace.',
+  modelApiBundleUnavailable:
+    'The Model API backend could not be loaded; reinstall the extension and reload the window. The log has the details.',
   // Why the Muse Code CLI was not found, on the sign-in page and in warnings.
   cliNotFound: 'Muse Code is not installed in any known location.',
   cliPathNotAbsolute: 'museSpark.museBinaryPath must be an absolute path.',

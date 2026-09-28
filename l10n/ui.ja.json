@@ -881,6 +881,7 @@
   "editRevertedPath": "{path} を元に戻しました。",
   "editCreatedRemovedPath": "{path}: ごみ箱に移動しました (Muse が作成したファイル)。",
   "modelApiNeedsFolder": "まずフォルダーを開いてください。Model API バックエンドはワークスペース内で動作します。",
+  "modelApiBundleUnavailable": "Model API バックエンドを読み込めませんでした。拡張機能を再インストールし、ウィンドウを再読み込みしてください。詳細はログにあります。",
   "cliNotFound": "Muse Code は既知のどの場所にもインストールされていません。",
   "cliPathNotAbsolute": "museSpark.museBinaryPath は絶対パスである必要があります。",
   "cliSearched": "検索した場所: {paths}",

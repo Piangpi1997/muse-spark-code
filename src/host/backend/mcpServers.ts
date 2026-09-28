@@ -2,9 +2,10 @@
 // D42): Muse Code's settings file read by M31's reader each time they start,
 // stdio servers started by the real spawner (mcpProcess.ts), remote ones
 // reached with the extension host's `fetch`, and `${VAR}` read from the
-// extension host's environment.
+// extension host's environment. The pool itself is the Model API bundle's
+// (M57, PLAN.md D6); this module gives it this window's parts.
 
-import { McpServerPool, type McpToolSource } from '../../core/backends/modelapi/mcp/pool'
+import type { McpPoolDeps } from '../../core/backends/modelapi/mcp/pool'
 import { environmentValue } from '../../core/backends/musecode/launch'
 import { readMcpServerEntries } from '../../core/backends/musecode/museConfigView'
 import { readTextIfPresent } from '../cliFeatures'
@@ -26,8 +27,8 @@ export interface ModelApiMcpDeps {
   readonly log: Logger
 }
 
-export function createModelApiMcpServers(deps: ModelApiMcpDeps): McpToolSource {
-  return new McpServerPool({
+export function modelApiMcpPoolDeps(deps: ModelApiMcpDeps): McpPoolDeps {
+  return {
     readSettings: () => readMcpServerEntries(readTextIfPresent(deps.settingsPath())),
     lookupEnv: (name) => environmentValue(deps.env(), deps.platform, name),
     isWorkspaceTrusted: deps.isWorkspaceTrusted,
@@ -47,5 +48,5 @@ export function createModelApiMcpServers(deps: ModelApiMcpDeps): McpToolSource {
     fetch: deps.fetch,
     clientVersion: deps.clientVersion,
     log: deps.log,
-  })
+  }
 }

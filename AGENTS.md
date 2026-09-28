@@ -87,8 +87,10 @@ them, the milestone plan, and the certification checklist.
 
 ```
 src/extension.ts      activation: the view, the panel, the commands, the openers
-src/host/**           VS Code adapters (views, conversation, backend managers and
-                      the search worker, commands, auth, settings, mentions,
+src/host/**           VS Code adapters (views, conversation, backend managers,
+                      the Model API bundle's entry (dist/modelApi.js, loaded
+                      when that backend first starts) and the search worker,
+                      commands, auth, settings, mentions,
                       editor tracking, usage trace logs, voice, the diagnostics
                       MCP server, the MCP servers' spawner, the network posture)
 src/core/**           backend-agnostic logic; must not import `vscode`
@@ -117,9 +119,9 @@ test/e2e/**           the fake Muse Code CLI driven through the real backend;
 test/integration/**   @vscode/test-cli, runs inside VS Code
 test/harness/         the webview behind a fake host, for screenshots and the
                       accessibility gate; themes/ holds VS Code's four themes
-scripts/**            esbuild build; bundle-size, host-globals, notices, audit,
-                      PSScriptAnalyzer, semgrep, accessibility and
-                      localization gates; theme capture, the pseudo-locale,
+scripts/**            esbuild build; bundle-size, bundle-split, host-globals,
+                      notices, audit, PSScriptAnalyzer, semgrep, accessibility
+                      and localization gates; theme capture, the pseudo-locale,
                       harness screenshots, image rendering, changelog notes,
                       VS Code versions for CI
 docs/certification/   per-milestone gate-fire records and screenshots

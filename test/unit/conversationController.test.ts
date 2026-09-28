@@ -4,7 +4,7 @@ import { mkdtempSync } from 'node:fs'
 import { mkdir, rename, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { afterAll, describe, expect, it, vi } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import type { AgentHost, SessionMcpHttpServer } from '../../src/core/agent/agentBackend'
 import { ModelApiHost, type ModelApiHostDeps } from '../../src/core/backends/modelapi/ModelApiHost'
 import { MuseCodeHost } from '../../src/core/backends/musecode/MuseCodeHost'
@@ -38,8 +38,11 @@ import { heldShellToolIo, memoryToolIo, type MemoryToolIo, noopToolIo } from './
 import { createFileScheduleStore } from '../../src/host/backend/fileScheduleStore'
 import { readPickedFile } from '../../src/host/backend/toolIo'
 import { canonicalPath } from '../../src/host/canonicalPath'
-import { confineWorkspacePath } from '../../src/core/backends/modelapi/tools'
+import { confineWorkspacePath } from '../../src/core/workspacePath'
 import { removeFolder } from './helpers/temporaryFolders'
+import { buildModelApiBundle } from './helpers/modelApiBundle'
+import { fakeManagerDeps } from './helpers/modelApiManager'
+import { ModelApiBackendManager } from '../../src/host/backend/modelApiBackendManager'
 import { memorySessionStore } from './helpers/fakeSessionStore'
 import { pdfFixture } from './helpers/pdfFixture'
 import {
@@ -6810,5 +6813,49 @@ describe('ConversationController: scheduled prompts (M52)', () => {
     expect(latestSchedules()).toMatchObject({ event: { jobs: [] } })
     controller.dispose()
     await modelHost.close()
+  })
+})
+
+describe('ConversationController: the Model API bundle (M57, PLAN.md D6)', () => {
+  const bundle = { folder: '' }
+  beforeAll(() => {
+    bundle.folder = mkdtempSync(path.join(tmpdir(), 'muse-controller-bundle-'))
+  })
+  afterAll(() => removeFolder(bundle.folder))
+
+  it("says a goal refused by the bundle's host in words, not as a failure", async () => {
+    const t = setup()
+    const api = fakeModelApi()
+    let ids = 0
+    // The host comes from the built dist/modelApi.js, as in the extension:
+    // its GoalRefusedError is the bundle's copy of the class, not this file's.
+    const manager = new ModelApiBackendManager(
+      fakeManagerDeps(api, t.log, {
+        workspaceRoot: '/ws',
+        newId: () => {
+          ids += 1
+          return `bundle-${String(ids)}`
+        },
+        bundlePath: buildModelApiBundle(bundle.folder),
+      }),
+    )
+    const controller = new ConversationController({
+      ...t.deps,
+      ensureHost: () => manager.ensureHost(),
+    })
+    api.script({ text: 'Hello' })
+    await controller.handle({ type: 'sendMessage', localId: 'l1', text: 'hi', attachmentIds: [] })
+    await vi.waitFor(() => {
+      expect(agentEvents(t).some((event) => event.type === 'turnCompleted')).toBe(true)
+    })
+    t.surface.posted.length = 0
+    await controller.handle(goal('pause'))
+    expect(notices(t).map((notice) => [notice.level, notice.text])).toEqual([
+      ['warning', UI_TEXT.goalNone],
+    ])
+    expect(t.surface.posted.filter((message) => message.type === 'goalCommandResult')).toEqual([
+      { type: 'goalCommandResult', requestId: 'g1', accepted: false },
+    ])
+    await manager.dispose()
   })
 })

@@ -881,6 +881,7 @@
   "editRevertedPath": "已还原 {path}。",
   "editCreatedRemovedPath": "{path}：已移至回收站（该文件由 Muse 创建）。",
   "modelApiNeedsFolder": "请先打开文件夹；Model API 后端在工作区中工作。",
+  "modelApiBundleUnavailable": "无法加载 Model API 后端；请重新安装扩展并重新加载窗口。详细信息见日志。",
   "cliNotFound": "任何已知位置均未安装 Muse Code。",
   "cliPathNotAbsolute": "museSpark.museBinaryPath 必须是绝对路径。",
   "cliSearched": "已搜索：{paths}",
