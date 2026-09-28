@@ -990,7 +990,13 @@ action that fails is worse than hiding one that would work.
     a new one, so `accountLogin` alone does not count: a file written
     since the flow began does, and so does the host's `granted` borne out
     by `account/read` saying `accountLogin` (a Keychain sign-in may leave
-    the file as it was; review round 4).
+    the file as it was; review round 4). That captured success counts
+    whatever came before, so a same-account re-sign-in on macOS, which may
+    change only the Keychain while the logout hold keeps the old sign-in,
+    is seen too (Codex on `328efb52`).
+  - **Forced Model API.** With `museSpark.backend` set to `modelApi`, the
+    choice asks the CLI nothing (`isCliSignInConsulted`), in the gate and
+    in host admission.
   - **Cancel after approval.** When the file changed since the flow began,
     its structure decides, not the click. With the hold on or a Model API
     session, the code leaves the panel at once, before the refresh.

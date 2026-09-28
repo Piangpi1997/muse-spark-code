@@ -424,6 +424,20 @@ describe('Muse Code device sign-in: how it ends', () => {
     expect(t.request).not.toHaveBeenCalledWith('account/loginCancel', {})
   })
 
+  // The logout hold kept the old sign-in, and a macOS re-sign-in to the same
+  // account replaced only the Keychain item: no change of state or file can
+  // show it, so the captured `granted`, borne out by `accountLogin`, does
+  // (Codex on 328efb52).
+  it('signs in on granted and accountLogin when the account was already signed in', async () => {
+    const t = session(() => SIGNED_IN)
+    const sleep = () => {
+      t.complete(CAPTURED_GRANTED_ENDING)
+      return Promise.resolve()
+    }
+    await expect(run(t, { sleep, modified: () => 1, step: ONE_POLL })).resolves.toBe('signedIn')
+    expect(t.request).not.toHaveBeenCalledWith('account/loginCancel', {})
+  })
+
   // `granted` alone never signs in, with no first answer and the file as it
   // was: not when `account/read` cannot say, nor when it names another lane
   // (META_API_KEY's `envKey`).

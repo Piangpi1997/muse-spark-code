@@ -8,7 +8,7 @@
 // `markAuthRequired`. All VS Code interactions (terminals, input boxes) are
 // injected so the flow is unit-tested end to end.
 
-import { selectBackend } from '../../core/backendSelection'
+import { isCliSignInConsulted, selectBackend } from '../../core/backendSelection'
 import type { BackendKind } from '../../core/agent/agentBackend'
 import type { CliSignIn } from '../../core/backends/musecode/credentialFile'
 import { wireWordForLog } from '../../core/logging'
@@ -423,16 +423,22 @@ export class AuthService {
     return hasCliSession
   }
 
-  /** The backend selection from the current facts. */
+  /**
+   * The backend selection from the current facts. With the backend forced
+   * to the Model API the CLI is not asked at all (Codex on 328efb52).
+   */
   private async choose(isUserAction: boolean) {
     const cli = this.deps.backend.resolveCli()
-    const { hasCliSession, isUnsupportedFile } = await this.cliCredential(isUserAction)
+    const setting = this.deps.backend.getBackendMode()
+    const { hasCliSession, isUnsupportedFile } = isCliSignInConsulted(setting)
+      ? await this.cliCredential(isUserAction)
+      : { hasCliSession: false, isUnsupportedFile: false }
     return {
       cli,
       hasCliSession,
       isUnsupportedFile,
       choice: selectBackend({
-        setting: this.deps.backend.getBackendMode(),
+        setting,
         hasCli: cli.ok,
         hasCliSession,
         hasStoredKey: (await this.deps.credentials.getApiKey()) !== undefined,

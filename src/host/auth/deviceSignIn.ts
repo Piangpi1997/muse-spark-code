@@ -12,11 +12,11 @@
 // capture"): `cancelled`, `expired`, `denied` and `failed` each have a
 // meaning of their own, and any other word is shown as the CLI named it
 // (AGENTS.md rule 13). `granted` came 205 ms after the file was written and
-// `account/read` said `accountLogin`, so those decide. It is remembered for
-// one case only: with no first `account/read` there is no account to
-// compare, and `granted` with `account/read` saying `accountLogin` is then
-// the sign-in (a Keychain sign-in may leave the file as it was). `granted`
-// alone never signs in. `account/changed` is not relied on: it fired neither
+// `account/read` said `accountLogin`, so those usually decide first. It is
+// remembered for when they cannot: `granted` with `account/read` saying
+// `accountLogin` is the sign-in, with no first `account/read` to compare,
+// or when the account was already `accountLogin` (a same-account re-sign-in
+// on macOS may change only the Keychain). `granted` alone never signs in. `account/changed` is not relied on: it fired neither
 // for a change made outside the host nor for an expired, denied or failed
 // code.
 //
@@ -203,12 +203,16 @@ function isSignedIn(signals: SignInSignals): boolean {
     return true
   }
   const isAccountLogin = current.state === MUSE_ACCOUNT_STATES.accountLogin
-  // With no first answer, a sign-in from before would pass for a new one:
-  // only the host's own `granted`, borne out by `account/read`, counts then
-  // (the review of PR #49). `granted` alone never does.
-  return initial === undefined
-    ? isGranted && isAccountLogin
-    : initial.state !== MUSE_ACCOUNT_STATES.accountLogin && isAccountLogin
+  // The host's own `granted`, borne out by `account/read` saying
+  // `accountLogin` (the captured success), is a sign-in whatever came
+  // before. That matters where no change of state or file can show it: with
+  // no first answer, and for a same-account re-sign-in on macOS that
+  // replaces only the Keychain item while the logout hold keeps the old
+  // sign-in (Codex on 328efb52). Otherwise a sign-in shows as a change from
+  // an account read before the flow. `granted` alone never counts.
+  const hasChangedToLogin =
+    initial !== undefined && initial.state !== MUSE_ACCOUNT_STATES.accountLogin
+  return isAccountLogin && (isGranted || hasChangedToLogin)
 }
 
 export async function runDeviceSignIn(deps: DeviceSignInDeps): Promise<DeviceSignInOutcome> {

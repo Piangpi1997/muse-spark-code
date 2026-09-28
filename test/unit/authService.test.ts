@@ -253,6 +253,23 @@ describe('AuthService.refresh', () => {
   })
 })
 
+// A CLI slow to answer about an ambiguous file must not hold up a stored
+// key when the backend is forced to the Model API (Codex on 328efb52).
+describe('AuthService with the backend forced to the Model API', () => {
+  it('selects from the stored key without asking the CLI', async () => {
+    const h = harness()
+    h.facts.backendMode = 'modelApi'
+    h.cliSignIn.mockImplementation(unanswered)
+    await h.deps.credentials.setApiKey('LLM|1|secret')
+    await expect(h.service.refresh(true)).resolves.toMatchObject({
+      status: 'signedIn',
+      backend: 'modelApi',
+      hasCliSession: false,
+    })
+    expect(h.cliSignIn).not.toHaveBeenCalled()
+  })
+})
+
 describe('AuthService.signIn', () => {
   it.each(['cancelled', 'timedOut'] as const)(
     'keeps a valid Model API session after CLI device sign-in is %s',

@@ -10,7 +10,7 @@ import * as z from 'zod/mini'
 import type { AgentHost, BackendKind } from './core/agent/agentBackend'
 import { environmentValue, terminalEnvironment } from './core/backends/musecode/launch'
 import { confineWorkspacePath } from './core/workspacePath'
-import { selectBackend } from './core/backendSelection'
+import { readBackendChoice } from './core/backendSelection'
 import { personalSkillsRoot } from './core/context/skills'
 import { memoryDataRoot } from './core/memory/memoryLocation'
 import { MemoryStore } from './core/memory/memoryStore'
@@ -1087,12 +1087,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const ensureSelectedHost = async () => {
     const host = await chooseAuthorizedHost(
       () => auth.backend,
+      // Forced Model API asks the CLI nothing (Codex on 328efb52).
       async () =>
-        selectBackend({
+        await readBackendChoice({
           setting: currentSettings().backend,
           hasCli: backend.resolveLaunch().ok,
-          hasCliSession: await hasCliSession(),
-          hasStoredKey: (await credentials.getApiKey()) !== undefined,
+          hasCliSession,
+          hasStoredKey: async () => (await credentials.getApiKey()) !== undefined,
         }),
       async (kind): Promise<AgentHost> =>
         kind === 'modelApi' ? await modelApi.ensureHost() : await backend.ensureHost(),

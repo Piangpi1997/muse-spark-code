@@ -329,7 +329,10 @@ main: three conflicts (the certification index, `report.ts`'s imports,
   macOS file but the empty one, an unrecognized one). The agent's user
   action is `authenticate`: on macOS a session or a list takes the panel's
   passive estimate rather than start `muse serve` each time (after PR #49's
-  `328efb5`, which asks again on every macOS user action).
+  `328efb5`, which asks again on every macOS user action). PR #49's
+  `5184f26` (a forced Model API backend asks the CLI nothing; a
+  same-account Keychain re-sign-in counts) merged without a conflict and
+  changes nothing the agent uses.
   `unsupportedHere` (a macOS file on Windows or Linux) is "cannot run" with
   the panel's `cliCredentialUnsupported` sentence. `authenticate`, after a
   sign-in in the terminal, forgets what the CLI said before (the panel's
