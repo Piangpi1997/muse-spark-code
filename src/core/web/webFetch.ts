@@ -52,6 +52,7 @@ import {
   WEB_FETCH_NOT_TLS_CODE,
   WEB_FETCH_TEXT_TYPES,
   WEB_FETCH_TIMEOUT_MS,
+  WEB_FETCH_XHTML_TYPE,
   WEB_FETCH_TOKEN_MAX_CHARS,
 } from '../../shared/constants'
 import { fill } from '../../shared/l10n/text'
@@ -163,8 +164,6 @@ const CHARSET = 'charset'
 const IDENTITY = 'identity'
 // A text page's encoding when nothing declares one.
 const UTF_8 = 'utf8'
-// XHTML is sniffed as XML: no `<meta>` prescan.
-const XHTML = 'application/xhtml+xml'
 const ADDRESS_LIST_SEPARATOR = ', '
 // A media type (`type/subtype`) or a coding: RFC 9110 token characters.
 const TOKEN = /^[\w!#$%&'*+.^`|~-]+(?:\/[\w!#$%&'*+.^`|~-]+)?$/
@@ -625,7 +624,6 @@ async function contentOf(
     {
       bytes: body.bytes,
       charset: mimeParameter(body.contentType, CHARSET),
-      isXml: mediaTypeOf(body.contentType) === XHTML,
       url: urls.final.href,
       maxChars: WEB_FETCH_CONVERT_MAX_CHARS,
     },
@@ -667,6 +665,9 @@ async function readPage(
     refuse('noContentType')
   }
   const type = mediaTypeOf(contentType)
+  if (type === WEB_FETCH_XHTML_TYPE) {
+    refuse('xhtml')
+  }
   const isHtml = WEB_FETCH_HTML_TYPES.has(type)
   if (!isHtml && !WEB_FETCH_TEXT_TYPES.has(type)) {
     refuse('contentType', { type: shownToken(type) })

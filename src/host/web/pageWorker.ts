@@ -15,7 +15,6 @@ import { UndecodableText } from '../../core/web/textDecoding'
 const JOB = z.object({
   bytes: z.instanceof(Uint8Array),
   charset: z.optional(z.string()),
-  isXml: z.boolean(),
   url: z.string(),
   maxChars: z.number(),
 })

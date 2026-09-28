@@ -3,7 +3,7 @@
 // implementation jsdom uses): a byte order mark, then the Content-Type
 // header's charset, then the prescan of the first 1,024 bytes for a
 // `<meta>` that declares one (comments and other attributes skipped as the
-// standard says), else UTF-8. An XHTML page is sniffed as XML (no prescan).
+// standard says), else UTF-8.
 // Only a byte order mark or the header makes the encoding certain: one from
 // the prescan or the fallback is tentative, and a `<meta>` the parser meets
 // later may still change it (changedEncoding, the standard's "change the
@@ -45,11 +45,10 @@ function certainEncoding(bytes: Uint8Array, headerCharset: string | undefined): 
 function sniff(
   bytes: Uint8Array,
   headerCharset: string | undefined,
-  isXml: boolean,
 ): { readonly encoding: string; readonly isTentative: boolean } {
   const certain = certainEncoding(bytes, headerCharset)
-  if (certain !== undefined || isXml) {
-    return { encoding: certain ?? FALLBACK_ENCODING, isTentative: false }
+  if (certain !== undefined) {
+    return { encoding: certain, isTentative: false }
   }
   let prescanned: string
   try {
@@ -66,12 +65,8 @@ function sniff(
 }
 
 /** The page's text, decoded in the encoding its bytes, header and markup declare. */
-export function decodeHtml(
-  bytes: Uint8Array,
-  headerCharset: string | undefined,
-  isXml = false,
-): DecodedHtml {
-  const sniffed = sniff(bytes, headerCharset, isXml)
+export function decodeHtml(bytes: Uint8Array, headerCharset: string | undefined): DecodedHtml {
+  const sniffed = sniff(bytes, headerCharset)
   // The sniffer names only the standard's encodings; one this runtime lacks is refused.
   const encoding = encodingOf(sniffed.encoding)
   if (encoding === undefined) {

@@ -37,7 +37,6 @@ suite("web fetch's page converter bundle (M69)", () => {
       {
         bytes: new Uint8Array(Buffer.from(html, 'latin1')),
         charset: undefined,
-        isXml: false,
         url: 'https://docs.example.com/',
         maxChars: 100_000,
       },

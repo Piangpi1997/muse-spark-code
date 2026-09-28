@@ -43,6 +43,7 @@ export type WebFetchFailureKind =
   | 'conversionMemory'
   | 'conversionFailed'
   | 'undecodable'
+  | 'xhtml'
   | 'timeout'
   | 'certificate'
   | 'proxyCredentials'
@@ -171,6 +172,9 @@ function responseSentences(kind: WebFetchFailureKind, facts: FailureFacts): Sent
         fill(MODEL_TEXT.webFetchConversionMemory, { max: String(WEB_FETCH_CONVERT_MAX_HEAP_MIB) }),
         fill(UI_TEXT.webFetchConversionMemory, { max: formatBytes(max) }),
       ]
+    }
+    case 'xhtml': {
+      return [MODEL_TEXT.webFetchXhtml, UI_TEXT.webFetchXhtml]
     }
     case 'undecodable': {
       const encoding = facts.encoding ?? ''

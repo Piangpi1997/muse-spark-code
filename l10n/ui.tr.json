@@ -371,6 +371,7 @@
   "webFetchTimeout": "Sayfa {duration} içinde gelmedi.",
   "webFetchConversionTimeout": "Sayfa geldi, ancak HTML’si izin verilen sürede (en fazla {duration}) dönüştürülemedi, bu yüzden hiçbir kısmı okunmadı.",
   "webFetchConversionMemory": "Sayfanın HTML’sinin dönüştürülmesi {max} değerinden fazla bellek gerektirdi, bu yüzden hiçbir kısmı okunmadı.",
+  "webFetchXhtml": "Sayfa XHTML (application/xhtml+xml) biçiminde ve sayfa getirme bunu okumaz: HTML olarak okunursa XML sözdizimi yanlış okunur. Hiçbir şey okunmadı.",
   "webFetchUndecodable": "Sayfa, bu bilgisayarın çözemediği {encoding} kodlamasında, bu yüzden hiçbir kısmı okunmadı.",
   "webFetchConversionFailed": "Sayfanın HTML’si dönüştürülemedi ({detail}), bu yüzden hiçbir kısmı okunmadı.",
   "webFetchCertificate": "{host} için {address} adresindeki sertifikaya bu bilgisayarda güvenilmiyor. Hiçbir şey okunmadı. ({detail})",

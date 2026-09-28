@@ -383,6 +383,7 @@
   "webFetchTimeout": "Stránka nedorazila do {duration}.",
   "webFetchConversionTimeout": "Stránka dorazila, ale její HTML se nepodařilo převést v povoleném čase (nejvýše {duration}), takže z ní nebylo nic přečteno.",
   "webFetchConversionMemory": "Převod HTML stránky potřeboval víc než {max}, takže z ní nebylo nic přečteno.",
+  "webFetchXhtml": "Stránka je XHTML (application/xhtml+xml), které načítání stránek nečte: při čtení jako HTML by se její syntaxe XML četla chybně. Nic nebylo přečteno.",
   "webFetchUndecodable": "Stránka je v kódování {encoding}, které tento počítač neumí dekódovat, takže z ní nebylo nic přečteno.",
   "webFetchConversionFailed": "HTML stránky se nepodařilo převést ({detail}), takže z ní nebylo nic přečteno.",
   "webFetchCertificate": "Certifikát {host} na adrese {address} není na tomto počítači důvěryhodný. Nic nebylo přečteno. ({detail})",

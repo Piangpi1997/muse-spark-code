@@ -1,7 +1,26 @@
 import { describe, expect, it } from 'vitest'
-import { isHiddenByStyle } from '../../src/core/web/inlineStyle'
+import { inlineVisibility } from '../../src/core/web/inlineStyle'
+
+/** Whether the style alone hides the element: left out, or its visibility hidden. */
+function isHiddenByStyle(style: string): boolean {
+  const own = inlineVisibility(style)
+  return own.isDiscarded || own.visibility === 'hidden'
+}
 
 describe('inline styles that hide an element (M69)', () => {
+  it('tells what leaves an element out from visibility, which passes down', () => {
+    expect(inlineVisibility('display: none')).toEqual({ isDiscarded: true, visibility: undefined })
+    expect(inlineVisibility('content-visibility: hidden').isDiscarded).toBe(true)
+    expect(inlineVisibility('visibility: hidden')).toEqual({
+      isDiscarded: false,
+      visibility: 'hidden',
+    })
+    expect(inlineVisibility('visibility: visible').visibility).toBe('visible')
+    expect(inlineVisibility('visibility: initial').visibility).toBe('visible')
+    expect(inlineVisibility('visibility: inherit').visibility).toBeUndefined()
+    expect(inlineVisibility('color: red')).toEqual({ isDiscarded: false, visibility: undefined })
+  })
+
   it('reads display, visibility and content-visibility as a browser does', () => {
     expect(isHiddenByStyle('display: none')).toBe(true)
     expect(isHiddenByStyle('visibility:hidden')).toBe(true)

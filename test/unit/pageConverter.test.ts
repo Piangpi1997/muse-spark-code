@@ -46,7 +46,6 @@ function job(html: string): HtmlJob {
   return {
     bytes: new Uint8Array(Buffer.from(html, 'utf8')),
     charset: undefined,
-    isXml: false,
     url: 'https://docs.example.com/guide/',
     maxChars: 100_000,
   }

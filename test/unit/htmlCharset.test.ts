@@ -16,8 +16,8 @@ function page(head: string, body: readonly number[]): Uint8Array {
   return new Uint8Array([...Buffer.from(head, 'latin1'), ...body])
 }
 
-function text(bytes: Uint8Array, header?: string, isXml = false): string {
-  return decodeHtml(bytes, header, isXml).text
+function text(bytes: Uint8Array, header?: string): string {
+  return decodeHtml(bytes, header).text
 }
 
 describe("an HTML page's encoding, sniffed as HTML does (M69)", () => {
@@ -44,16 +44,16 @@ describe("an HTML page's encoding, sniffed as HTML does (M69)", () => {
 
   it('lets a byte order mark, then the header, win over the markup, and makes those certain', () => {
     const declared = page('<meta charset="iso-8859-2">', [B1])
-    expect(decodeHtml(declared, 'windows-1252', false)).toMatchObject({
+    expect(decodeHtml(declared, 'windows-1252')).toMatchObject({
       encoding: 'windows-1252',
       isTentative: false,
     })
-    expect(decodeHtml(declared, undefined, false)).toMatchObject({
+    expect(decodeHtml(declared, undefined)).toMatchObject({
       encoding: 'iso-8859-2',
       isTentative: true,
     })
     const withBom = new Uint8Array([0xef, 0xbb, 0xbf, ...Buffer.from('<p>é</p>', 'utf8')])
-    expect(decodeHtml(withBom, 'windows-1252', false)).toMatchObject({
+    expect(decodeHtml(withBom, 'windows-1252')).toMatchObject({
       text: '<p>é</p>',
       isTentative: false,
     })
@@ -61,7 +61,7 @@ describe("an HTML page's encoding, sniffed as HTML does (M69)", () => {
 
   it('reads a page that declares nothing, or an unknown label, as UTF-8', () => {
     const plain = new Uint8Array(Buffer.from('<p>é</p>', 'utf8'))
-    expect(decodeHtml(plain, undefined, false)).toEqual({
+    expect(decodeHtml(plain, undefined)).toEqual({
       text: '<p>é</p>',
       encoding: UTF_8,
       isTentative: true,
@@ -73,7 +73,7 @@ describe("an HTML page's encoding, sniffed as HTML does (M69)", () => {
     // html-encoding-sniffer 6.0.0 throws on these.
     for (const content of ['text/html; charset=', 'charset']) {
       const malformed = page(`<meta http-equiv="Content-Type" content="${content}"><p>é`, [])
-      expect(decodeHtml(malformed, undefined, false)).toMatchObject({
+      expect(decodeHtml(malformed, undefined)).toMatchObject({
         encoding: UTF_8,
         isTentative: true,
       })
@@ -85,22 +85,12 @@ describe("an HTML page's encoding, sniffed as HTML does (M69)", () => {
     expect(text(page('<meta charset="hz-gb-2312"><p>secret', []))).toBe('\u{FFFD}')
   })
 
-  it('sniffs XHTML as XML: no <meta> prescan, UTF-8 unless the header or a BOM says', () => {
-    const xhtml = page('<meta charset="windows-1252">', [0xc3, 0xa9])
-    expect(decodeHtml(xhtml, undefined, true)).toMatchObject({
-      encoding: UTF_8,
-      isTentative: false,
-    })
-    expect(decodeHtml(xhtml, undefined, true).text.endsWith('é')).toBe(true)
-  })
-
   it('changes a tentative encoding when a later <meta> declares another, as HTML reparses', () => {
     // A <meta charset> past the 1,024 bytes the prescan reads.
     const late = page(`<p>${'x'.repeat(1100)}</p><meta charset="windows-1252"><p>`, [EURO_1252])
     const converted = convertHtmlJob({
       bytes: late,
       charset: undefined,
-      isXml: false,
       url: 'https://docs.example.com/',
       maxChars: 100_000,
     })
@@ -109,7 +99,6 @@ describe("an HTML page's encoding, sniffed as HTML does (M69)", () => {
     const certain = convertHtmlJob({
       bytes: late,
       charset: UTF_8,
-      isXml: false,
       url: 'https://docs.example.com/',
       maxChars: 100_000,
     })

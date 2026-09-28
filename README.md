@@ -645,8 +645,10 @@ Meta's paid web search.
   and MathML, and what HTML itself hides: the `hidden`, `inert`, `popover`
   and `aria-hidden="true"` attributes; of a closed `<details>`, all but its
   summary; a declarative shadow root is read as it renders (the host's
-  children in their slots, the rest left out); an inline `style` of `display: none`,
-  `visibility: hidden` or `collapse`, or `content-visibility: hidden`
+  children in their slots, the rest left out); an inline `style` of `display: none` or
+  `content-visibility: hidden` (with all it holds), or `visibility: hidden`
+  or `collapse` (which passes down, and a descendant undoes with
+  `visibility: visible`)
   (read with a CSS tokenizer, so a comment or an escape does not slip past,
   and a `var()` there counts as hiding);
   a template's content, `<noscript>`, a dialog not opened and ruby's
@@ -655,8 +657,9 @@ Meta's paid web search.
   the page untrusted. Each page is converted on a worker thread of its own,
   at most two at once, stopped at 10 seconds or 512 MiB (for example, a
   page nested to be slow to parse), and then refused with the reason. Plain text, Markdown, JSON,
-  XML, CSV, YAML, CSS and JavaScript come back as they are; anything else is
-  refused with the reason. At most 5 MiB (after decompression) within 30
+  XML, CSV, YAML, CSS and JavaScript come back as they are; XHTML
+  (`application/xhtml+xml`) is refused, since read as HTML its XML syntax
+  would be misread; anything else is refused with the reason. At most 5 MiB (after decompression) within 30
   seconds; the model reads the first 50,000 characters, and is told when
   there was more. A page built to expand stops converting at 100,000.
 - **Where it may go.** Public internet addresses only. A URL that names a

@@ -6806,6 +6806,17 @@ harness scenario, which is what the accessibility gate checks (D32).
     `x-user-defined` and `replacement` decoded by the Encoding standard's own
     definitions (Node 20.18 has no decoder for the first, no Node for the
     second).
+  - **PR #52 review of `19f843f3`** (Codex): XHTML is refused
+    (`application/xhtml+xml` read by an HTML parser misreads its XML syntax,
+    `<script src="x"/>` swallowing what follows, and no XML parser is
+    bundled; it is no longer in the Accept header either); `visibility` is
+    inherited, so the walk carries it down instead of dropping the subtree:
+    a descendant with `visibility: visible` shows, an invisible element keeps
+    its tags (a shown item stays in its list) but writes no text or void
+    element. Swept: `display: none`, `content-visibility: hidden`, `hidden`,
+    `inert`, `aria-hidden`, `popover`, a closed dialog or `<details>` hide
+    all they hold, which no descendant can undo; `visibility` was the only
+    inherited one.
   - **Left**: a machine-scoped switch to turn web fetch off entirely,
     whether Muse Code's "Always allow this MCP tool" should also silence the
     extension's own modal, and whether Plan should allow fetches as reads,

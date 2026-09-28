@@ -524,6 +524,22 @@ describe('fetchWebPage (M69)', () => {
     expect(posed.reason).toBe(fill(MODEL_TEXT.webFetchNetwork, { detail: 'ECONNRESET' }))
   })
 
+  it('refuses XHTML, which an HTML parser would misread, before converting anything', async () => {
+    const w = world({
+      answers: { 'docs.example.com': [[PUBLIC]] },
+      replies: {
+        [DOCS]: {
+          headers: { 'content-type': 'application/xhtml+xml; charset=utf-8' },
+          body: '<html xmlns="http://www.w3.org/1999/xhtml"><script src="x"/>Visible</html>',
+        },
+      },
+      conversion: { ok: false, kind: 'failed', detail: 'NOT_REACHED' },
+    })
+    const refused = failure(await w.fetch(DOCS))
+    expect(refused.kind).toBe('xhtml')
+    expect(refused.reason).toBe(MODEL_TEXT.webFetchXhtml)
+  })
+
   it('refuses a page in an encoding with no decoder, and reads a text page as its encoding says', async () => {
     const undecodable = world({
       answers: { 'docs.example.com': [[PUBLIC]] },

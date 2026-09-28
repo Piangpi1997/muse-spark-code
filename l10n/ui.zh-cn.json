@@ -365,6 +365,7 @@
   "webFetchTimeout": "网页未在 {duration} 内到达。",
   "webFetchConversionTimeout": "页面已送达，但无法在允许的时间内（最多 {duration}）转换其 HTML，因此未读取其中任何内容。",
   "webFetchConversionMemory": "转换页面的 HTML 需要超过 {max} 的内存，因此未读取其中任何内容。",
+  "webFetchXhtml": "页面是 XHTML (application/xhtml+xml)，网页获取不读取这种格式：按 HTML 读取会误读其 XML 语法。未读取任何内容。",
   "webFetchUndecodable": "页面使用此计算机无法解码的 {encoding} 编码，因此未读取其中任何内容。",
   "webFetchConversionFailed": "无法转换页面的 HTML，因此未读取其中任何内容。（{detail}）",
   "webFetchCertificate": "{host} 在 {address} 提供的证书在这台计算机上不受信任。未读取任何内容。（{detail}）",

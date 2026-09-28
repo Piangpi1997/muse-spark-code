@@ -365,6 +365,7 @@
   "webFetchTimeout": "{duration} 以内にページが届きませんでした。",
   "webFetchConversionTimeout": "ページは届きましたが、その HTML を許容時間 (最大 {duration}) 内に変換できなかったため、何も読み取っていません。",
   "webFetchConversionMemory": "ページの HTML の変換に {max} を超えるメモリが必要だったため、何も読み取っていません。",
+  "webFetchXhtml": "ページは XHTML (application/xhtml+xml) で、ページの取得では読み取りません。HTML として読むと XML の構文を誤って読むためです。何も読み取っていません。",
   "webFetchUndecodable": "ページはこのコンピューターでデコードできない {encoding} エンコードのため、何も読み取っていません。",
   "webFetchConversionFailed": "ページの HTML を変換できなかったため、何も読み取っていません。({detail})",
   "webFetchCertificate": "{address} の {host} の証明書は、このコンピューターで信頼されていません。何も読み取っていません。({detail})",

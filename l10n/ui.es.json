@@ -377,6 +377,7 @@
   "webFetchTimeout": "La página no llegó en {duration}.",
   "webFetchConversionTimeout": "La página llegó, pero su HTML no se pudo convertir en el tiempo permitido (como máximo {duration}), así que no se leyó nada de ella.",
   "webFetchConversionMemory": "Convertir el HTML de la página necesitó más de {max}, así que no se leyó nada de ella.",
+  "webFetchXhtml": "La página es XHTML (application/xhtml+xml), que la obtención de páginas no lee: leída como HTML, su sintaxis XML se leería mal. No se leyó nada.",
   "webFetchUndecodable": "La página está en la codificación {encoding}, que este equipo no puede decodificar, así que no se leyó nada de ella.",
   "webFetchConversionFailed": "No se pudo convertir el HTML de la página ({detail}), así que no se leyó nada de ella.",
   "webFetchCertificate": "El certificado de {host} en {address} no es de confianza en este equipo. No se leyó nada. ({detail})",

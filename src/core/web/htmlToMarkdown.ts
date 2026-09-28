@@ -22,7 +22,7 @@
 import { type DefaultTreeAdapterTypes, defaultTreeAdapter, html as spec, parse } from 'parse5'
 import { changedEncoding, charsetInMetaContent, decodeHtml } from './htmlCharset'
 import type { HtmlJob, MarkdownPage } from './htmlConversion'
-import { isHiddenByStyle } from './inlineStyle'
+import { inlineVisibility } from './inlineStyle'
 import { decodeIn, encodingOf } from './textDecoding'
 
 type Element = DefaultTreeAdapterTypes.Element
@@ -804,23 +804,18 @@ function attributesOf(element: Element): ReadonlyMap<string, string> {
 }
 
 /**
- * Whether HTML hides the element: its `hidden`, `inert`, `popover` (until
- * shown) or `aria-hidden="true"` attribute, an inline style that hides it, a dialog
- * not opened, or ruby's fallback parentheses (`rp`).
+ * Whether HTML hides the element and all it holds: its `hidden`, `inert`,
+ * `popover` (until shown) or `aria-hidden="true"` attribute, a dialog not
+ * opened, or ruby's fallback parentheses (`rp`). Its inline style is read in
+ * the walk, where `visibility` passes down to what it holds.
  */
 function isHiddenElement(element: Element): boolean {
   const attributes = attributesOf(element)
-  if (
+  return (
     attributes.has('hidden') ||
     attributes.has('inert') ||
     attributes.has('popover') ||
-    attributes.get('aria-hidden')?.trim().toLowerCase() === ARIA_HIDDEN
-  ) {
-    return true
-  }
-  const style = attributes.get('style')
-  return (
-    (style !== undefined && isHiddenByStyle(style)) ||
+    attributes.get('aria-hidden')?.trim().toLowerCase() === ARIA_HIDDEN ||
     (element.tagName === 'dialog' && !attributes.has('open')) ||
     element.tagName === 'rp'
   )
@@ -910,9 +905,13 @@ interface ShadowScope {
 }
 
 /** One step of the walk: a node to enter in its tree, or an element whose content is done. */
-type Step =
-  | { readonly enter: ChildNode; readonly scope: ShadowScope | undefined }
-  | { readonly leave: string }
+/** Where a node is: the shadow tree it is in, and whether what it inherits shows (`visibility`). */
+interface Place {
+  readonly scope: ShadowScope | undefined
+  readonly isVisible: boolean
+}
+
+type Step = { readonly enter: ChildNode; readonly place: Place } | { readonly leave: string }
 
 /** The template that gives the host a declarative shadow root: its first child `<template shadowrootmode>`. */
 function shadowTemplateOf(host: Element): DefaultTreeAdapterTypes.Template | undefined {
@@ -944,11 +943,11 @@ function slotsOf(host: Element, template: Element): ReadonlyMap<string, readonly
 }
 
 /** Pushes nodes to enter, first on top. */
-function pushAll(steps: Step[], nodes: readonly ChildNode[], scope: ShadowScope | undefined): void {
+function pushAll(steps: Step[], nodes: readonly ChildNode[], place: Place): void {
   for (let index = nodes.length - 1; index >= 0; index -= 1) {
     const node = nodes[index]
     if (node !== undefined) {
-      steps.push({ enter: node, scope })
+      steps.push({ enter: node, place })
     }
   }
 }
@@ -958,58 +957,88 @@ function pushAll(steps: Step[], nodes: readonly ChildNode[], scope: ShadowScope 
  * children, a filled slot's assigned nodes (else its own, as fallback), and
  * of a closed `<details>` only its summary.
  */
-function pushContent(steps: Step[], element: Element, scope: ShadowScope | undefined): void {
+function pushContent(steps: Step[], element: Element, place: Place): void {
   const template = shadowTemplateOf(element)
   if (template !== undefined) {
     const shadow: ShadowScope = {
       slots: slotsOf(element, template),
       filled: new Set(),
-      outer: scope,
+      outer: place.scope,
     }
-    pushAll(steps, defaultTreeAdapter.getTemplateContent(template).childNodes, shadow)
+    pushAll(steps, defaultTreeAdapter.getTemplateContent(template).childNodes, {
+      scope: shadow,
+      isVisible: place.isVisible,
+    })
     return
   }
   if (element.tagName === 'details' && attributeOf(element, 'open') === undefined) {
     const summary = element.childNodes.find((child) => isHtml(child, 'summary'))
-    pushAll(steps, summary === undefined ? [] : [summary], scope)
+    pushAll(steps, summary === undefined ? [] : [summary], place)
     return
   }
-  pushAll(steps, element.childNodes, scope)
+  pushAll(steps, element.childNodes, place)
 }
 
-/** A `<slot>` in a shadow tree: the nodes assigned to it, or its own as fallback. */
-function pushSlot(steps: Step[], slot: Element, scope: ShadowScope): void {
+/**
+ * A `<slot>` in a shadow tree: the nodes assigned to it, or its own as
+ * fallback; they inherit where the slot is, as the flattened tree does.
+ */
+function pushSlot(
+  steps: Step[],
+  slot: Element,
+  place: Place & { readonly scope: ShadowScope },
+): void {
+  const { scope } = place
   const name = attributeOf(slot, 'name') ?? ''
   const assigned = scope.filled.has(name) ? undefined : scope.slots.get(name)
   scope.filled.add(name)
   if (assigned !== undefined && assigned.length > 0) {
-    pushAll(steps, assigned, scope.outer)
+    pushAll(steps, assigned, { scope: scope.outer, isVisible: place.isVisible })
     return
   }
-  pushAll(steps, slot.childNodes, scope)
+  pushAll(steps, slot.childNodes, place)
 }
 
-/** Writes what is shown of the tree, in document order, until the writer is full. */
+/**
+ * Writes what is shown of the tree, in document order, until the writer is
+ * full. An element its inline style leaves out (`display: none`,
+ * `content-visibility: hidden`) takes all it holds with it; one whose
+ * `visibility` hides it writes no text of its own, but a descendant that
+ * sets `visibility: visible` still shows, in its place.
+ */
 function writeShown(document: ParentNode, writer: MarkdownWriter): void {
   const steps: Step[] = []
-  pushAll(steps, document.childNodes, undefined)
+  pushAll(steps, document.childNodes, { scope: undefined, isVisible: true })
   for (let step = steps.pop(); step !== undefined && !writer.isFull; step = steps.pop()) {
     if ('leave' in step) {
       writer.endTag(step.leave)
       continue
     }
-    const { enter: node, scope } = step
+    const { enter: node, place } = step
     if (!isElement(node)) {
-      if (defaultTreeAdapter.isTextNode(node)) {
+      if (place.isVisible && defaultTreeAdapter.isTextNode(node)) {
         writer.text(node.value)
       }
       continue
     }
-    if (isLeftOut(node)) {
+    const style = attributeOf(node, 'style')
+    const inline = style === undefined ? undefined : inlineVisibility(style)
+    if (isLeftOut(node) || inline?.isDiscarded === true) {
       continue
     }
-    if (scope !== undefined && isHtml(node, 'slot')) {
-      pushSlot(steps, node, scope)
+    const own: Place = {
+      scope: place.scope,
+      isVisible:
+        inline?.visibility === undefined ? place.isVisible : inline.visibility === 'visible',
+    }
+    if (own.scope !== undefined && isHtml(node, 'slot')) {
+      pushSlot(steps, node, { scope: own.scope, isVisible: own.isVisible })
+      continue
+    }
+    // Hidden by visibility: its tags stay, so a descendant shown again keeps
+    // its list or table, but its text and its void elements (an image's
+    // alternative) are not written; an empty element writes nothing.
+    if (!own.isVisible && VOID.has(node.tagName)) {
       continue
     }
     writer.startTag(node.tagName, attributesOf(node))
@@ -1017,7 +1046,7 @@ function writeShown(document: ParentNode, writer: MarkdownWriter): void {
       continue
     }
     steps.push({ leave: node.tagName })
-    pushContent(steps, node, scope)
+    pushContent(steps, node, own)
   }
 }
 
@@ -1068,7 +1097,7 @@ function declaredEncodingOf(document: ParentNode): string | undefined {
  * reparses it.
  */
 export function convertHtmlJob(job: HtmlJob): MarkdownPage {
-  const decoded = decodeHtml(job.bytes, job.charset, job.isXml)
+  const decoded = decodeHtml(job.bytes, job.charset)
   let document = parse(decoded.text)
   if (decoded.isTentative) {
     const declared = declaredEncodingOf(document)

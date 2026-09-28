@@ -1,6 +1,7 @@
 // Whether an element's own `style` attribute hides it (M69, PLAN.md D49):
-// `display: none`, `visibility: hidden` or `collapse`, `content-visibility:
-// hidden`. The declarations are read with a CSS Syntax tokenizer
+// `display: none` and `content-visibility: hidden` leave it and all it holds
+// out; `visibility: hidden` or `collapse` is inherited, and a descendant may
+// show again with `visibility: visible`. The declarations are read with a CSS Syntax tokenizer
 // (@csstools/css-tokenizer), so comments, escapes, case and `!important` are
 // read as a browser reads them; blocks nest as CSS nests them, so a stray
 // closing bracket closes nothing. A later declaration overrides an earlier
@@ -200,8 +201,33 @@ function isHiding(declaration: Declaration): boolean {
   )
 }
 
-/** Whether the element's `style` attribute hides it. */
-export function isHiddenByStyle(style: string): boolean {
+/**
+ * What an element's inline style says of whether it shows. `display: none`
+ * and `content-visibility: hidden` leave the element and all it holds out;
+ * `visibility` is inherited, and a descendant may show again with
+ * `visibility: visible`.
+ */
+export interface InlineVisibility {
+  readonly isDiscarded: boolean
+  /** `visibility` set here: hidden (or collapse), visible, or undefined to inherit. */
+  readonly visibility: 'hidden' | 'visible' | undefined
+}
+
+/** The winning `visibility` as the walk carries it: a value resolved later counts as hidden. */
+function visibilityOf(declaration: Declaration): InlineVisibility['visibility'] {
+  if (declaration.isDeferred) {
+    return 'hidden'
+  }
+  const [keyword] = declaration.keywords ?? []
+  if (keyword === 'hidden' || keyword === 'collapse') {
+    return 'hidden'
+  }
+  // `initial` is visible; inherit, unset, revert and revert-layer take the parent's.
+  return keyword === 'visible' || keyword === 'initial' ? 'visible' : undefined
+}
+
+/** What the element's `style` attribute says of whether it shows. */
+export function inlineVisibility(style: string): InlineVisibility {
   const winning = new Map<string, Declaration>()
   const parts = partsOf(tokenize({ css: style }))
   for (const part of parts) {
@@ -215,11 +241,13 @@ export function isHiddenByStyle(style: string): boolean {
     }
     winning.set(declaration.name, declaration)
   }
-  // A plain loop: Node 20 has no iterator helpers.
-  for (const declaration of winning.values()) {
-    if (isHiding(declaration)) {
-      return true
-    }
+  const display = winning.get('display')
+  const contentVisibility = winning.get('content-visibility')
+  const visibility = winning.get('visibility')
+  return {
+    isDiscarded:
+      (display !== undefined && isHiding(display)) ||
+      (contentVisibility !== undefined && isHiding(contentVisibility)),
+    visibility: visibility === undefined ? undefined : visibilityOf(visibility),
   }
-  return false
 }

@@ -836,14 +836,14 @@ export const WEB_FETCH_DEFAULT_PORT = 443
 export const WEB_FETCH_USER_AGENT =
   'Mozilla/5.0 (compatible; MuseSparkCode-WebFetch/1; +https://github.com/RandyNorthrup/muse-spark-code)'
 export const WEB_FETCH_ACCEPT =
-  'text/html, application/xhtml+xml, text/markdown, text/plain;q=0.9, application/json;q=0.8, */*;q=0.1'
+  'text/html, text/markdown, text/plain;q=0.9, application/json;q=0.8, */*;q=0.1'
 // The body's encodings the fetch decodes; anything else is refused.
 export const WEB_FETCH_ACCEPT_ENCODING = 'gzip, deflate, br'
 // Content types read as HTML (converted to Markdown) and as text (as is).
-export const WEB_FETCH_HTML_TYPES: ReadonlySet<string> = new Set([
-  'text/html',
-  'application/xhtml+xml',
-])
+// XHTML is refused: its XML syntax read by an HTML parser would be misread
+// (`<script/>` swallows what follows), and no XML parser is bundled.
+export const WEB_FETCH_HTML_TYPES: ReadonlySet<string> = new Set(['text/html'])
+export const WEB_FETCH_XHTML_TYPE = 'application/xhtml+xml'
 export const WEB_FETCH_TEXT_TYPES: ReadonlySet<string> = new Set([
   'text/plain',
   'text/markdown',
@@ -2047,6 +2047,8 @@ export const MODEL_TEXT = {
     'the page arrived, but its HTML could not be converted in the time allowed (at most {seconds} seconds; for example, a page nested to be slow to parse), so none of it was read',
   webFetchConversionMemory:
     "the page's HTML needed more than {max} MiB to convert, so none of it was read",
+  webFetchXhtml:
+    'the page is XHTML (application/xhtml+xml), which this tool does not read: read as HTML, its XML syntax would be misread; nothing was read',
   webFetchUndecodable:
     'the page is in the {encoding} encoding, which this computer has no decoder for, so none of it was read',
   webFetchConversionFailed:

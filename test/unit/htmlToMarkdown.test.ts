@@ -201,6 +201,34 @@ describe('htmlToMarkdown (M69)', () => {
     )
   })
 
+  it('lets visibility pass down, and a descendant show again with visibility: visible', () => {
+    expect(
+      markdown('<div style="visibility:hidden">a<p style="visibility:visible">b</p>c</div>'),
+    ).toBe('b')
+    expect(markdown('<div style="visibility:collapse"><p>x</p></div><p>y')).toBe('y')
+    expect(
+      markdown('<div style="visibility:hidden"><div style="visibility:inherit">x</div></div><p>y'),
+    ).toBe('y')
+    expect(
+      markdown(
+        '<ul style="visibility:hidden"><li>a</li><li style="visibility:visible">b</li></ul>',
+      ),
+    ).toBe('- b')
+    // A hidden image says nothing; a hidden link's text is gone, a shown child's is not.
+    expect(markdown('<p style="visibility:hidden"><img alt="secret" src="x.png">shown?</p>')).toBe(
+      '',
+    )
+    // display:none and content-visibility:hidden take everything with them.
+    expect(
+      markdown('<div style="display:none"><p style="visibility:visible">x</p></div><p>y'),
+    ).toBe('y')
+    expect(
+      markdown(
+        '<div style="content-visibility:hidden"><p style="visibility:visible">x</p></div><p>y',
+      ),
+    ).toBe('y')
+  })
+
   it('takes the title only from <head>, never from a <title> the parser put in a hidden element', () => {
     for (const hiding of ['hidden', 'inert', 'aria-hidden="true"', 'style="display: none"']) {
       const page = htmlToMarkdown(

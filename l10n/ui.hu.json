@@ -371,6 +371,7 @@
   "webFetchTimeout": "Az oldal nem érkezett meg {duration} alatt.",
   "webFetchConversionTimeout": "Az oldal megérkezett, de a HTML-jét nem sikerült a megengedett időn belül (legfeljebb {duration}) átalakítani, ezért semmit sem olvastunk be belőle.",
   "webFetchConversionMemory": "Az oldal HTML-jének átalakításához több mint {max} kellett, ezért semmit sem olvastunk be belőle.",
+  "webFetchXhtml": "Az oldal XHTML (application/xhtml+xml), amelyet az oldalak lekérése nem olvas: HTML-ként olvasva az XML-szintaxisa hibásan olvasódna. Semmit sem olvastunk be.",
   "webFetchUndecodable": "Az oldal {encoding} kódolású, amelyet ez a számítógép nem tud dekódolni, ezért semmit sem olvastunk be belőle.",
   "webFetchConversionFailed": "Az oldal HTML-jét nem sikerült átalakítani ({detail}), ezért semmit sem olvastunk be belőle.",
   "webFetchCertificate": "{host} tanúsítványa a(z) {address} címen nem megbízható ezen a számítógépen. Semmi sem lett beolvasva. ({detail})",

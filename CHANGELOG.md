@@ -56,7 +56,7 @@ happened, not what was planned; superseded entries are kept.
     and the mode are asked again after the card, before each request and
     before the page reaches the model; damaged compression and unknown charsets are
     handled as a browser would; `museSpark.sandboxNetwork`'s description now
-    says it also hides web fetch from Muse Code. Fourteen more strings, one
+    says it also hides web fetch from Muse Code. Fifteen more strings, one
     changed and one dropped, and two changed setting descriptions, in
     fifteen languages.
 - **Dependencies.** Web fetch parses HTML with `parse5` 8.0.1 (MIT),

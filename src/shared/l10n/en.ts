@@ -444,6 +444,8 @@ export const EN = {
     'The page arrived, but its HTML could not be converted in the time allowed (at most {duration}), so none of it was read.',
   webFetchConversionMemory:
     'The page’s HTML needed more than {max} to convert, so none of it was read.',
+  webFetchXhtml:
+    'The page is XHTML (application/xhtml+xml), which web fetch does not read: read as HTML, its XML syntax would be misread. Nothing was read.',
   webFetchUndecodable:
     'The page is in the {encoding} encoding, which this computer cannot decode, so none of it was read.',
   webFetchConversionFailed:

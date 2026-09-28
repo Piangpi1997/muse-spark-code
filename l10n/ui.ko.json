@@ -365,6 +365,7 @@
   "webFetchTimeout": "{duration} 안에 페이지가 도착하지 않았습니다.",
   "webFetchConversionTimeout": "페이지는 도착했지만 허용된 시간(최대 {duration}) 안에 HTML을 변환할 수 없어서 아무것도 읽지 않았습니다.",
   "webFetchConversionMemory": "페이지 HTML 변환에 {max}보다 많은 메모리가 필요해서 아무것도 읽지 않았습니다.",
+  "webFetchXhtml": "페이지가 XHTML(application/xhtml+xml)이라서 페이지 가져오기로 읽지 않습니다. HTML로 읽으면 XML 구문을 잘못 읽게 됩니다. 아무것도 읽지 않았습니다.",
   "webFetchUndecodable": "페이지가 이 컴퓨터에서 디코딩할 수 없는 {encoding} 인코딩이라서 아무것도 읽지 않았습니다.",
   "webFetchConversionFailed": "페이지 HTML을 변환할 수 없어서 아무것도 읽지 않았습니다. ({detail})",
   "webFetchCertificate": "{address}에 있는 {host}의 인증서를 이 컴퓨터에서 신뢰하지 않습니다. 아무것도 읽지 않았습니다. ({detail})",
