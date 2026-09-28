@@ -239,6 +239,55 @@ price, and the agent log counts each billed use. Subagents, scheduled
 prompts and Muse Voice are not offered: the agent has no flag for them
 (Muse Voice needs the VS Code panel's microphone).
 
+## Networks and proxies
+
+The agent runs outside VS Code, so VS Code's `http.proxy`,
+`http.noProxy`, proxy authentication, `http.systemCertificates` and PAC
+files do not reach it, and neither does anything the extension's
+`museSpark.environmentVariables` sets. Both backends see only the
+environment the editor starts the agent with: the editor's own, plus any
+`env` in the agent's configuration (Zed's `agent_servers` entry, for
+example). Keep proxy credentials out of settings files you share.
+
+**The Model API backend** (the agent's own requests: the conversation, web
+search, images) uses Node's built-in `fetch`, which by default **ignores
+proxy variables**: with only `HTTPS_PROXY` set it connects to Meta
+directly. To send it through a proxy, set `NODE_USE_ENV_PROXY=1` beside the
+proxy variables (Node 22.21 or later on Node 22, any Node 24; checked
+against a local proxy with Node 22.0.0, 22.20.0, 22.21.0, 22.23.3, 24.0.0,
+24.5.0 and 24.20.0). Node then reads:
+
+- `HTTPS_PROXY` (or `https_proxy`) for Meta's HTTPS address, falling back
+  to `HTTP_PROXY`; a `user:password@` in the proxy's address is sent to
+  the proxy as its credentials (`Proxy-Authorization`);
+- `NO_PROXY` for hosts to reach directly;
+- not `ALL_PROXY`, and no system proxy settings or PAC file.
+
+`NODE_OPTIONS=--use-env-proxy` does the same from Node 22.21 and 24.5.
+Without the switch, or on an older Node, there is no way to route the
+agent's own requests through a proxy.
+
+Certificates: Node trusts its own bundled roots. A network that inspects
+HTTPS needs its root named in `NODE_EXTRA_CA_CERTS` (a PEM file, read when
+the agent starts; checked with Node 22.0.0 to 24.20.0), or
+`NODE_OPTIONS=--use-system-ca` to trust the operating system's store
+(accepted from Node 22.15; not exercised here, since that needs a root
+installed in the store).
+
+**Muse Code** (`muse serve`, started by the agent) inherits the same
+environment and reads the proxy variables itself, as it does under VS Code
+([the extension's README](../README.md#proxies-and-certificates)):
+`HTTPS_PROXY`, `HTTP_PROXY`, `ALL_PROXY` and `NO_PROXY`, with loopback
+added to `NO_PROXY` whenever a proxy is set. It trusts the operating
+system's certificate store, which `SSL_CERT_FILE` or `SSL_CERT_DIR`
+replace entirely, and has its own `endpoint_transport.proxy` setting. It
+needs no `NODE_USE_ENV_PROXY`.
+
+A Model API request that never reaches Meta is reported with Node's own
+detail, but the advice beside it names VS Code's settings
+(`http.proxy`, `http.systemCertificates`), which do not apply here; use
+the variables above instead.
+
 ## Not yet
 
 - The Model API backend reads and writes files itself, so it does not see

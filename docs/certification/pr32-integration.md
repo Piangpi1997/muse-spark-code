@@ -138,3 +138,56 @@ the ACP SDK imports, 185.0 its core and classic API, 2.5 the panel's
 Drill: the agent's budget set to 700 KiB, `check-bundle-size.mjs` exit 1,
 "OVER dist/acp.js: 713.2 KiB (budget 700 KiB)"; restored, "ok … (budget 850
 KiB)".
+
+## Networks and proxies (`docs/acp.md`, PLAN.md Q66)
+
+What reaches the agent's two network paths, read from the code and then
+measured on this machine (Windows 11) with a throwaway script:
+
+- **The code.** The agent hands the Model API backend
+  `globalThis.fetch` (`src/runtime/main.ts`), Node's own `fetch`, with no
+  dispatcher of its own. Muse Code's manager gets no editor proxy
+  (`NO_EDITOR_PROXY` in `src/runtime/backends.ts`) and no extra variables,
+  so `muse serve` inherits the agent's environment, with loopback added to
+  `NO_PROXY` whenever a proxy is set (`withLoopbackBypass`, M56).
+- **The agent's `fetch`, measured.** A local proxy on 127.0.0.1 logged each
+  request line and answered `CONNECT` with 502, so nothing left the
+  machine; the target, `https://muse-probe.invalid/`, cannot resolve, so a
+  direct attempt fails with `ENOTFOUND`. Each case ran in a fresh Node
+  process with only its own variables:
+
+  | Environment                                      | 22.0.0  | 22.20.0 | 22.21.0 | 22.23.3            | 24.0.0  | 24.5.0 | 24.20.0            |
+  | ------------------------------------------------ | ------- | ------- | ------- | ------------------ | ------- | ------ | ------------------ |
+  | `HTTPS_PROXY` only                               | direct  |         |         | direct             |         |        | direct             |
+  | `https_proxy` only                               | direct  |         |         | direct             |         |        | direct             |
+  | `HTTPS_PROXY` + `NODE_USE_ENV_PROXY=1`           | direct  | direct  | proxy   | proxy              | proxy   | proxy  | proxy              |
+  | `https_proxy` + `NODE_USE_ENV_PROXY=1`           | direct  |         |         | proxy              |         |        | proxy              |
+  | `HTTP_PROXY` + `NODE_USE_ENV_PROXY=1`            | direct  |         |         | proxy              |         |        | proxy              |
+  | `HTTPS_PROXY` + `NO_PROXY=.invalid` + the switch | direct  |         |         | direct             |         |        | direct             |
+  | `ALL_PROXY` + the switch                         | direct  |         |         | direct             |         |        | direct             |
+  | `HTTPS_PROXY=http://user:pass@…` + the switch    | direct  |         |         | proxy, credentials |         |        | proxy, credentials |
+  | `HTTPS_PROXY` + `NODE_OPTIONS=--use-env-proxy`   | refused | refused | proxy   | proxy              | refused | proxy  | proxy              |
+
+  "proxy": the proxy logged `CONNECT muse-probe.invalid:443` and `fetch`
+  failed with "Proxy response (502) !== 200 when HTTP Tunneling";
+  "credentials": a `Proxy-Authorization` header came with it; "direct":
+  the proxy saw nothing and `fetch` failed with `ENOTFOUND`; "refused":
+  Node would not start ("--use-env-proxy is not allowed in NODE_OPTIONS");
+  an empty cell was not run.
+
+- **Certificates, measured.** A local HTTPS server with a throwaway
+  self-signed certificate: without a variable every Node refuses it
+  (`DEPTH_ZERO_SELF_SIGNED_CERT`); with `NODE_EXTRA_CA_CERTS` naming it,
+  `fetch` answers 200 on 22.0.0, 22.14.0, 22.15.0, 22.23.3 and 24.20.0.
+  `NODE_OPTIONS=--use-system-ca` is refused by 22.0.0 and 22.14.0 and
+  accepted from 22.15.0; whether it then trusts a root in the operating
+  system's store was not exercised (that needs a root installed there).
+- **Muse Code** reads `HTTPS_PROXY`, `HTTP_PROXY`, `ALL_PROXY` and
+  `NO_PROXY`, trusts the operating system's store, and takes
+  `SSL_CERT_FILE` or `SSL_CERT_DIR` in its place, as recorded for the
+  extension in M56 (`docs/certification/m56.md`); the agent changes
+  nothing of that, and hands it no VS Code setting.
+
+The agent does not turn Node's switch on by itself, and the network-failure
+advice (M56) names VS Code's settings: both are open for the owner as
+PLAN.md Q66, and `docs/acp.md` gives the variables that work today.
