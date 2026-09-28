@@ -6581,6 +6581,13 @@ harness scenario, which is what the accessibility gate checks (D32).
     `isStillAllowed`, ending the fetch as `withdrawn`), and once the page is
     in, before the model gets it; on Muse Code the offer (trust,
     `sandboxNetwork`) is that check.
+  - **PR #52 third review** (Codex): NAT64 absence is proven only by a DNS
+    query's own NXDOMAIN or NODATA (c-ares), while the system resolver's
+    answers still reveal a prefix; the converter hides an element a page
+    left open (`<p hidden>`, `<li aria-hidden>`, cells, rows) up to where a
+    browser ends it, tracking what is open inside and around it, and, from
+    the sweep, a hidden image's alt text, a self-closed hidden element, an
+    unopened dialog, ruby's `rp` and `datalist`.
   - **Left**: a machine-scoped switch to turn web fetch off entirely,
     whether Muse Code's "Always allow this MCP tool" should also silence the
     extension's own modal, and whether Plan should allow fetches as reads,
@@ -7343,11 +7350,13 @@ Every lint or scanner suppression (`eslint-disable`, `@ts-expect-error`, `nosemg
   the proxy can resolve names, the local check refuses every fetch, which
   fails closed; (5) the proxy decision (`http.noProxy`, a PAC file) sees the
   pinned address, not the host name, so a rule written for a name does not
-  apply; (6) NAT64 discovery asks the resolver the page's name used, and
-  only its definite "no AAAA" (getaddrinfo's ENOTFOUND, which folds NXDOMAIN
-  and NODATA together) means no DNS64; any other failure uses no IPv6
-  answer, so what remains is a resolver that lies about `ipv4only.arpa`
-  while synthesizing answers under its own prefix; (7) VS Code cannot close a modal, so the extension's
+  apply; (6) NAT64 discovery takes the prefix from answers either the
+  system resolver (as the page's name was looked up) or a DNS query of its
+  own (c-ares) returns, and only the DNS query's NXDOMAIN or NODATA means no
+  DNS64 (getaddrinfo's ENOTFOUND proves nothing); any other outcome uses no
+  IPv6 answer, so what remains is a DNS server that answers NODATA while the
+  system resolver's path synthesizes nothing for `ipv4only.arpa` but does
+  for other names; (7) VS Code cannot close a modal, so the extension's
   question for a Muse Code call that was stopped stays open until answered,
   and its answer then fetches nothing.
 - Contributor-tier models send content Meta may train on; guarded by opt-in

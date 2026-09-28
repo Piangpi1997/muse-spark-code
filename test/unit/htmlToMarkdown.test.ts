@@ -87,6 +87,47 @@ describe('htmlToMarkdown (M69)', () => {
     ).toBe('shown\n\nstyled away')
   })
 
+  it('hides an element a page may leave open until it ends, with or without its end tag', () => {
+    // Closed by the next paragraph, item, cell or row, as a browser closes them.
+    expect(markdown('<p hidden>secret<p>shown')).toBe('shown')
+    expect(markdown('<p hidden>secret<span>more</span><div>shown</div>')).toBe('shown')
+    expect(markdown('<ul><li aria-hidden="true">secret<li>shown</ul>')).toBe('- shown')
+    expect(markdown('<dl><dt hidden>term<dd>meaning</dl>')).toBe('meaning')
+    expect(markdown('<table><tr><td hidden>secret<td>shown</table>')).toBe('| shown |\n| --- |')
+    expect(markdown('<table><tr hidden><td>secret<tr><td>shown</table>')).toBe('| shown |\n| --- |')
+    // Closed by the end of the element around it.
+    expect(markdown('<div><p hidden>secret</div>after')).toBe('after')
+    expect(markdown('<ul><li>kept<p style="display:none">secret</li><li>next</ul>')).toBe(
+      '- kept\n- next',
+    )
+    // What is open inside keeps it open: a nested list's item, a nested table's cell.
+    expect(markdown('<ul><li hidden>a<ul><li>nested secret</ul>still secret<li>shown</ul>')).toBe(
+      '- shown',
+    )
+    expect(markdown('<table><tr><td hidden><table><tr><td>in</table>out<td>shown</table>')).toBe(
+      '| shown |\n| --- |',
+    )
+    // A stray end tag closes nothing, and the whole page hides behind a hidden body.
+    expect(markdown('<p hidden>secret</span>still secret</p><p>shown')).toBe('shown')
+    expect(markdown('<html><body hidden><p>all of it</p></body></html>')).toBe('')
+  })
+
+  it('hides a hidden image, a self-closed hidden element, and what browsers never show', () => {
+    expect(markdown('<p>a<img hidden alt="secret" src="x.png">b</p>')).toBe('ab')
+    // The slash means nothing on an HTML element: it hides up to its end.
+    expect(markdown('<div><span hidden/>secret</div><p>shown')).toBe('shown')
+    expect(markdown('<dialog>closed</dialog><dialog open>opened</dialog>')).toBe('opened')
+    expect(markdown('<ruby>漢<rp>(</rp><rt>kan</rt><rp>)</rp></ruby>')).toBe('漢kan')
+    expect(markdown('<datalist><option>listed</option></datalist><p>shown')).toBe('shown')
+  })
+
+  it('stays linear on hidden elements left open', () => {
+    const page = '<p hidden>x<span>'.repeat(20_000) + '<ul>' + '<li hidden>y'.repeat(20_000)
+    const started = performance.now()
+    expect(markdown(page)).toBe('')
+    expect(performance.now() - started).toBeLessThan(2000)
+  })
+
   it('reads text the way a browser does: entities, white space, stray brackets', () => {
     // `&not` is one of HTML's legacy references, read even without its `;`.
     expect(

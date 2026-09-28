@@ -921,11 +921,15 @@ export const IPV6_SIX_TO_FOUR: readonly [string, number] = ['2002::', 16]
 export const NAT64_DISCOVERY_NAME = 'ipv4only.arpa'
 export const NAT64_DISCOVERY_ADDRESSES: readonly string[] = ['192.0.0.170', '192.0.0.171']
 export const NAT64_PREFIX_LENGTHS: readonly number[] = [96, 64, 56, 48, 40, 32]
-// The lookup errors that answer "no AAAA record for ipv4only.arpa", which
-// means no DNS64: Node's getaddrinfo reports NXDOMAIN and NODATA as
-// ENOTFOUND, a DNS resolver as ENODATA or ENOTFOUND. Any other failure (a
-// timeout, SERVFAIL) leaves NAT64 unknown, and IPv6 answers go unused.
+// A DNS query's answers that establish "no AAAA record for ipv4only.arpa",
+// which means no DNS64: NXDOMAIN (ENOTFOUND) and NODATA (ENODATA), as
+// c-ares reports them. Nothing from getaddrinfo counts (its ENOTFOUND may
+// stand for other failures), nor a timeout, SERVFAIL or a refusal: NAT64
+// then stays unknown, and IPv6 answers go unused.
 export const NAT64_ABSENT_CODES: ReadonlySet<string> = new Set(['ENOTFOUND', 'ENODATA'])
+// The DNS query's own bounds: per try, and tries (the fetch's deadline bounds the whole).
+export const NAT64_DISCOVERY_TIMEOUT_MS = 2000
+export const NAT64_DISCOVERY_TRIES = 2
 // The image tools the extension's `ide` session server offers Muse Code
 // while paid image generation is on and a Model API key is stored (M44):
 // billed to the key, never to the subscription (D1, D30).

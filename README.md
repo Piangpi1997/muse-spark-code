@@ -635,7 +635,9 @@ Meta's paid web search.
 - **What it reads.** `https://` pages only. HTML comes back as Markdown:
   scripts, styles, forms' controls and media are left out, and so is what
   the page's own markup hides (`hidden`, `aria-hidden`, an inline
-  `display: none` or `visibility: hidden`). Text a stylesheet hides or
+  `display: none` or `visibility: hidden`, up to where a browser ends the
+  element, even one the page left open), a hidden image's text, and what
+  browsers never show (a dialog not opened, ruby's fallback parentheses). Text a stylesheet hides or
   places off screen still reaches the model. Plain text, Markdown, JSON,
   XML, CSV, YAML, CSS and JavaScript come back as they are; anything else is
   refused with the reason. At most 5 MiB (after decompression) within 30

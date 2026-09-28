@@ -47,7 +47,10 @@ happened, not what was planned; superseded entries are kept.
     model outside the markers only as short tokens; the HTML converter is bounded; names with
     trailing dots or empty labels are refused; a network's own NAT64 prefix
     is discovered (RFC 7050), and while it cannot be learned no IPv6 answer
-    is used; a hook's "allow" no longer replaces the per-host card; trust
+    is used (only a DNS answer proves there is none); hidden elements a page
+    leaves open, hidden images, self-closed hidden elements and unopened
+    dialogs stay out of the Markdown; a hook's "allow" no longer replaces
+    the per-host card; trust
     and the mode are asked again after the card, before each request and
     before the page reaches the model; damaged compression and unknown charsets are
     handled as a browser would; `museSpark.sandboxNetwork`'s description now

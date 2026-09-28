@@ -94,8 +94,9 @@ security notes for contributors are in `PLAN.md` §9.
   internet addresses are fetched; the address the extension checked is the
   one it connects to, and nothing is fetched in Restricted Mode. The page's
   name is looked up in DNS only after the fetch is allowed; when an answer
-  is IPv6, your resolver is also asked for `ipv4only.arpa`, the standard
-  name that reveals a NAT64 prefix, which carries nothing of yours. Web fetch
+  is IPv6, your resolver, and your configured DNS servers directly, are
+  also asked for `ipv4only.arpa`, the standard name that reveals a NAT64
+  prefix, which carries nothing of yours. Web fetch
   is free: it is not Meta's paid web search. The log names the host and the
   outcome, never the path, the query or the page.
 - **Hooks on the Model API backend (off by default).** With

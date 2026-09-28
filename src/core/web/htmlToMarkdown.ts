@@ -45,6 +45,7 @@ const SKIPPED = new Set([
   'select',
   'button',
   'map',
+  'datalist',
 ])
 const VOID = new Set([
   'area',
@@ -62,29 +63,178 @@ const VOID = new Set([
   'track',
   'wbr',
 ])
-// Elements a page may leave open (`<p>`, `<li>`, `<td>`): never the root of a
-// hidden subtree, whose end could otherwise never be found.
-const IMPLIED_END = new Set([
-  'p',
-  'li',
-  'dt',
-  'dd',
-  'option',
-  'optgroup',
-  'tr',
+// HTML's scopes (the parsing algorithm's "has an element in scope"): open
+// inside an element a page may leave open, these keep it open.
+const BUTTON_SCOPE: ReadonlySet<string> = new Set([
+  'applet',
+  'button',
+  'caption',
+  'html',
+  'marquee',
+  'object',
+  'table',
   'td',
+  'template',
+  'th',
+])
+const TABLE_SCOPE: ReadonlySet<string> = new Set(['html', 'table', 'template'])
+// HTML's special elements but address, div and p: a new list item's search
+// for the open one stops at them (nested lists, sections, tables).
+const LIST_SCOPE: ReadonlySet<string> = new Set([
+  'applet',
+  'article',
+  'aside',
+  'blockquote',
+  'body',
+  'button',
+  'caption',
+  'center',
+  'colgroup',
+  'dd',
+  'details',
+  'dir',
+  'dl',
+  'dt',
+  'fieldset',
+  'figcaption',
+  'figure',
+  'footer',
+  'form',
+  'h1',
+  'h2',
+  'h3',
+  'h4',
+  'h5',
+  'h6',
+  'head',
+  'header',
+  'hgroup',
+  'html',
+  'li',
+  'listing',
+  'main',
+  'marquee',
+  'menu',
+  'nav',
+  'object',
+  'ol',
+  'plaintext',
+  'pre',
+  'search',
+  'section',
+  'select',
+  'summary',
+  'table',
+  'tbody',
+  'td',
+  'template',
+  'tfoot',
   'th',
   'thead',
-  'tbody',
-  'tfoot',
-  'caption',
-  'colgroup',
-  'rb',
-  'rt',
-  'rp',
-  'head',
-  'body',
-  'html',
+  'tr',
+  'ul',
+])
+// The start tags that close an open `<p>`. A table does only outside quirks
+// mode, so it is left out: a hidden paragraph then hides it too.
+const PARAGRAPH_CLOSERS: ReadonlySet<string> = new Set([
+  'address',
+  'article',
+  'aside',
+  'blockquote',
+  'center',
+  'dd',
+  'details',
+  'dialog',
+  'dir',
+  'div',
+  'dl',
+  'dt',
+  'fieldset',
+  'figcaption',
+  'figure',
+  'footer',
+  'form',
+  'h1',
+  'h2',
+  'h3',
+  'h4',
+  'h5',
+  'h6',
+  'header',
+  'hgroup',
+  'hr',
+  'li',
+  'listing',
+  'main',
+  'menu',
+  'nav',
+  'ol',
+  'p',
+  'plaintext',
+  'pre',
+  'search',
+  'section',
+  'summary',
+  'ul',
+])
+const TABLE_SECTIONS = ['thead', 'tbody', 'tfoot']
+const NOTHING: ReadonlySet<string> = new Set()
+
+/**
+ * An element a page may leave open (`<p>`, `<li>`, `<td>`): the start tags
+ * that close it without its end tag, and what, open inside it, keeps it open.
+ */
+interface ImpliedEnd {
+  readonly closedBy: ReadonlySet<string>
+  readonly barriers: ReadonlySet<string>
+}
+
+const ITEM_END: ImpliedEnd = { closedBy: new Set(['li']), barriers: LIST_SCOPE }
+const TERM_END: ImpliedEnd = { closedBy: new Set(['dt', 'dd']), barriers: LIST_SCOPE }
+const CELL_END: ImpliedEnd = {
+  closedBy: new Set(['td', 'th', 'tr', ...TABLE_SECTIONS]),
+  barriers: TABLE_SCOPE,
+}
+const SECTION_END: ImpliedEnd = { closedBy: new Set(TABLE_SECTIONS), barriers: TABLE_SCOPE }
+const RUBY_END: ImpliedEnd = {
+  closedBy: new Set(['rb', 'rt', 'rp', 'rtc']),
+  barriers: BUTTON_SCOPE,
+}
+// Only an end tag, or the end of the page, closes these.
+const EXPLICIT_END: ImpliedEnd = { closedBy: NOTHING, barriers: NOTHING }
+const IMPLIED_ENDS: ReadonlyMap<string, ImpliedEnd> = new Map([
+  ['p', { closedBy: PARAGRAPH_CLOSERS, barriers: BUTTON_SCOPE }],
+  ['li', ITEM_END],
+  ['dt', TERM_END],
+  ['dd', TERM_END],
+  ['option', { closedBy: new Set(['option', 'optgroup', 'hr']), barriers: BUTTON_SCOPE }],
+  ['optgroup', { closedBy: new Set(['optgroup', 'hr']), barriers: BUTTON_SCOPE }],
+  ['tr', { closedBy: new Set(['tr', ...TABLE_SECTIONS]), barriers: TABLE_SCOPE }],
+  ['td', CELL_END],
+  ['th', CELL_END],
+  ['thead', SECTION_END],
+  ['tbody', SECTION_END],
+  ['tfoot', SECTION_END],
+  [
+    'caption',
+    {
+      closedBy: new Set(['caption', 'col', 'colgroup', 'tr', 'td', 'th', ...TABLE_SECTIONS]),
+      barriers: TABLE_SCOPE,
+    },
+  ],
+  [
+    'colgroup',
+    {
+      closedBy: new Set(['caption', 'colgroup', 'tr', 'td', 'th', ...TABLE_SECTIONS]),
+      barriers: TABLE_SCOPE,
+    },
+  ],
+  ['rb', RUBY_END],
+  ['rt', RUBY_END],
+  ['rp', RUBY_END],
+  ['head', { closedBy: new Set(['body']), barriers: NOTHING }],
+  ['body', EXPLICIT_END],
+  ['html', EXPLICIT_END],
 ])
 const BLOCKS = new Set([
   'address',
@@ -925,28 +1075,142 @@ function skipMarkup(html: string, start: number): number {
   return end === -1 ? html.length : end + 1
 }
 
-/** A hidden or skipped subtree being passed over: its root's name and nesting. */
-interface Skip {
-  readonly name: string
-  depth: number
-}
+/**
+ * Open elements by name. Membership and barriers are counted, so neither a
+ * check nor a close walks a hostile page's nesting: each element is pushed
+ * and popped once.
+ */
+class OpenElements {
+  private readonly names: string[] = []
+  private readonly counts = new Map<string, number>()
+  private barrierCount = 0
 
-/** Updates a skip for a tag inside it; true once its root has closed. */
-function isSkipDone(skip: Skip, tag: Tag): boolean {
-  if (tag.name !== skip.name || VOID.has(tag.name) || (tag.isSelfClosing && !tag.isEnd)) {
-    return false
+  public constructor(private readonly barriers: ReadonlySet<string> = NOTHING) {}
+
+  public get top(): string | undefined {
+    return this.names.at(-1)
   }
-  skip.depth += tag.isEnd ? -1 : 1
-  return skip.depth === 0
+
+  /** Whether an element that keeps the enclosing one open is open here. */
+  public get hasBarrier(): boolean {
+    return this.barrierCount > 0
+  }
+
+  public has(name: string): boolean {
+    return (this.counts.get(name) ?? 0) > 0
+  }
+
+  public push(name: string): void {
+    this.names.push(name)
+    this.counts.set(name, (this.counts.get(name) ?? 0) + 1)
+    if (this.barriers.has(name)) {
+      this.barrierCount += 1
+    }
+  }
+
+  public pop(): void {
+    const name = this.names.pop()
+    if (name === undefined) {
+      return
+    }
+    this.counts.set(name, (this.counts.get(name) ?? 1) - 1)
+    if (this.barriers.has(name)) {
+      this.barrierCount -= 1
+    }
+  }
+
+  /** Closes the innermost `name` and all opened inside it; false when none is open. */
+  public closeTo(name: string): boolean {
+    if (!this.has(name)) {
+      return false
+    }
+    while (this.top !== name) {
+      this.pop()
+    }
+    this.pop()
+    return true
+  }
+
+  /** Closes the elements on top that a new `name` start tag ends without their end tags. */
+  public closeImplied(name: string): void {
+    for (let top = this.top; top !== undefined; top = this.top) {
+      if (IMPLIED_ENDS.get(top)?.closedBy.has(name) !== true) {
+        return
+      }
+      this.pop()
+    }
+  }
 }
 
-/** A container whose content is left out: skipped by kind, or hidden by the page. */
-function shouldSkip(tag: Tag): boolean {
+/**
+ * A hidden or skipped subtree being passed over: its root, what is open
+ * inside it, and, for an element a page may leave open, what ends it.
+ */
+interface Skip {
+  readonly root: string
+  readonly isHidden: boolean
+  readonly inner: OpenElements
+  readonly implied: ImpliedEnd | undefined
+}
+
+/**
+ * What a tag does to a skip: stays inside it, closes its root (`closed`),
+ * or ends it and is then read as usual (`after`): a start tag that closes
+ * an element a page may leave open, or the end tag of an element open
+ * around the hidden one, which closes it too.
+ */
+function skipStep(skip: Skip, tag: Tag, open: OpenElements): 'inside' | 'closed' | 'after' {
+  if (!tag.isEnd) {
+    if (skip.implied?.closedBy.has(tag.name) === true && !skip.inner.hasBarrier) {
+      return 'after'
+    }
+    if (!VOID.has(tag.name)) {
+      skip.inner.push(tag.name)
+    }
+    return 'inside'
+  }
+  if (skip.inner.closeTo(tag.name)) {
+    return 'inside'
+  }
+  if (tag.name === skip.root) {
+    return 'closed'
+  }
+  return skip.isHidden && open.has(tag.name) ? 'after' : 'inside'
+}
+
+/**
+ * Whether the element is hidden: by its own markup, or by what browsers
+ * never show (a dialog not opened, ruby's fallback parentheses).
+ */
+function isHiddenElement(tag: Tag): boolean {
   return (
-    !tag.isSelfClosing &&
-    !VOID.has(tag.name) &&
-    (SKIPPED.has(tag.name) || (!IMPLIED_END.has(tag.name) && isHidden(tag.attributes)))
+    (tag.name === 'dialog' && !tag.attributes.has('open')) ||
+    tag.name === 'rp' ||
+    isHidden(tag.attributes)
   )
+}
+
+/**
+ * A container whose content is left out: skipped by kind, or hidden. A
+ * self-closing slash means nothing on an HTML element, so a hidden one
+ * still hides what follows up to its end.
+ */
+function skipOf(tag: Tag): Skip | undefined {
+  if (tag.isEnd || VOID.has(tag.name)) {
+    return undefined
+  }
+  const isSkipped = SKIPPED.has(tag.name) && !tag.isSelfClosing
+  const isHiddenRoot = !SKIPPED.has(tag.name) && isHiddenElement(tag)
+  if (!isSkipped && !isHiddenRoot) {
+    return undefined
+  }
+  const implied = IMPLIED_ENDS.get(tag.name)
+  return {
+    root: tag.name,
+    isHidden: isHiddenRoot,
+    inner: new OpenElements(implied?.barriers),
+    implied,
+  }
 }
 
 /**
@@ -956,6 +1220,9 @@ function shouldSkip(tag: Tag): boolean {
  */
 export function htmlToMarkdown(html: string, base: URL, maxChars: number): MarkdownPage {
   const writer = new MarkdownWriter(base, maxChars)
+  // What is open around the text being read, for an end tag that closes a
+  // hidden element too.
+  const open = new OpenElements()
   let skip: Skip | undefined
   let index = 0
   while (index < html.length && !writer.isFull) {
@@ -992,21 +1259,34 @@ export function htmlToMarkdown(html: string, base: URL, maxChars: number): Markd
       continue
     }
     if (skip !== undefined) {
-      if (isSkipDone(skip, tag)) {
+      const step = skipStep(skip, tag, open)
+      if (step !== 'inside') {
         skip = undefined
       }
+      if (step !== 'after') {
+        continue
+      }
+    }
+    // A hidden image says nothing, not even its text alternative.
+    if (!tag.isEnd && VOID.has(tag.name) && isHiddenElement(tag)) {
       continue
     }
-    if (!tag.isEnd && shouldSkip(tag)) {
-      skip = { name: tag.name, depth: 1 }
+    if (!tag.isEnd) {
+      open.closeImplied(tag.name)
+    }
+    skip = skipOf(tag)
+    if (skip !== undefined) {
       continue
     }
     if (tag.isEnd) {
+      open.closeTo(tag.name)
       writer.endTag(tag.name)
     } else {
       writer.startTag(tag.name, tag.attributes)
       if (tag.isSelfClosing && !VOID.has(tag.name)) {
         writer.endTag(tag.name)
+      } else if (!VOID.has(tag.name)) {
+        open.push(tag.name)
       }
     }
   }
