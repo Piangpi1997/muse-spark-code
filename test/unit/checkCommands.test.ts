@@ -1,6 +1,8 @@
 import { execFileSync } from 'node:child_process'
+import { mkdtempSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { afterAll, describe, expect, it } from 'vitest'
 import {
   checkCommandLine,
   checkCommandsSchema,
@@ -17,10 +19,25 @@ import {
   MODEL_TEXT,
   WINDOWS_POWERSHELL_RELATIVE_PATH,
 } from '../../src/shared/constants'
+import { removeFolder } from './helpers/temporaryFolders'
 
 const LINT = { name: 'lint', command: 'npm run lint', changedFiles: true }
-// Names a shell would read as syntax, quotes of both kinds, and spaces.
-const TRICKY = ['src/a b.ts', "src/O'Brien’s.ts", 'src/$HOME;x|y&(z).ts']
+// Names with spaces, both kinds of single quote, and characters PowerShell
+// and cmd.exe pass through: they must reach a program as one argument each.
+const SAFE_ON_WINDOWS = [
+  'src/a b.ts',
+  "src/O'Brien’s s.ts",
+  'src/$HOME;x,y=(z) {w}.ts',
+  'src/ünï cödé.ts',
+]
+// On bash everything a single quote holds is literal, `"` and `&` included.
+const TRICKY_ON_POSIX = ['src/a b.ts', `src/O'Brien’s "q".ts`, 'src/$HOME;x|y&(z)%OS%!e^f.ts']
+// What Windows PowerShell 5.1 or cmd.exe reads as syntax. Measured on
+// Windows 11 with the quoting M68 first shipped (the M68 review): `a"` then
+// `b --inject` reached node.exe as ["a b", "--inject"]; `x&echo.INJECTED`
+// ran `echo` through a .cmd program; `%OS%` became Windows_NT; `^` vanished.
+const HOSTILE_ON_WINDOWS = ['a"', 'x&echo.INJECTED', 'y|z', 'a<b', 'a>b', 'c^d', '%OS%', 'e!f']
+const NODE_ARGV = `-e 'console.log(JSON.stringify(process.argv.slice(1)))' probe`
 
 describe('checkCommandsSchema', () => {
   it('takes the documented shape and trims names and commands', () => {
@@ -58,6 +75,10 @@ describe('checkCommandsSchema', () => {
   })
 })
 
+// Bash's way to put a single quote inside a single-quoted word: close, an
+// escaped quote, reopen.
+const BACKSLASH = String.fromCodePoint(92)
+
 describe('checkCommandLine', () => {
   it('runs an unscoped check, or a scoped one with no files, as the user wrote it', () => {
     expect(checkCommandLine({ name: 'test', command: 'npm test' }, ['a.ts'], 'linux')).toEqual({
@@ -70,7 +91,7 @@ describe('checkCommandLine', () => {
   it('puts each changed file after -- as one quoted argument for the platform shell', () => {
     expect(checkCommandLine(LINT, ['src/a.ts', "b'c.ts"], 'linux')).toEqual({
       ok: true,
-      line: String.raw`npm run lint -- 'src/a.ts' 'b'\''c.ts'`,
+      line: `npm run lint -- 'src/a.ts' 'b'${BACKSLASH}''c.ts'`,
     })
     expect(checkCommandLine(LINT, ['src/a.ts', "b'c.ts"], 'win32')).toEqual({
       ok: true,
@@ -78,66 +99,89 @@ describe('checkCommandLine', () => {
     })
   })
 
-  it('refuses a path that starts with - or holds a control character, never passing it', () => {
-    for (const unsafe of ['-rf', '--help', 'a\nb.ts', 'a\tb.ts', 'a\u{1B}b.ts', '']) {
-      expect(isSafeCheckPath(unsafe), JSON.stringify(unsafe)).toBe(false)
-      expect(checkCommandLine(LINT, ['ok.ts', unsafe], 'linux')).toEqual({
-        ok: false,
-        reason: MODEL_TEXT.checkSkipUnsafePath,
-      })
+  it('refuses a path that starts like an option or a response file, or holds a control character', () => {
+    for (const unsafe of ['-rf', '--help', '@args.rsp', 'a\nb.ts', 'a\tb.ts', 'a\u{1B}b.ts', '']) {
+      for (const platform of ['linux', 'win32'] as const) {
+        expect(isSafeCheckPath(unsafe, platform), JSON.stringify(unsafe)).toBe(false)
+        expect(checkCommandLine(LINT, ['ok.ts', unsafe], platform)).toEqual({
+          ok: false,
+          reason: MODEL_TEXT.checkSkipUnsafePath,
+        })
+      }
     }
-    // A dash inside a name is an ordinary file.
-    expect(isSafeCheckPath('src/-x.ts')).toBe(true)
+    // A dash or an at sign inside a name is an ordinary file.
+    expect(isSafeCheckPath('src/-x.ts', 'win32')).toBe(true)
+    expect(isSafeCheckPath('src/@x.ts', 'linux')).toBe(true)
   })
 
-  // The quoted paths reach the command as the exact arguments, through the
-  // same interpreter the shell tool runs (M27): Windows PowerShell here.
-  const systemRoot = process.env['SystemRoot']
-  it.skipIf(process.platform !== 'win32' || systemRoot === undefined)(
-    'hands PowerShell each path as one argument, whatever it holds',
-    () => {
-      const powershell = path.win32.join(systemRoot ?? '', WINDOWS_POWERSHELL_RELATIVE_PATH)
-      const built = checkCommandLine(
-        {
-          name: 'argv',
-          // `probe` first: node takes a -- right after its script as its own.
-          command: `& '${process.execPath}' -e 'console.log(JSON.stringify(process.argv.slice(1)))' probe`,
-          changedFiles: true,
-        },
-        TRICKY,
-        'win32',
-      )
-      if (!built.ok) {
-        throw new Error(built.reason)
-      }
-      const output = execFileSync(
-        powershell,
-        ['-NoProfile', '-NonInteractive', '-Command', built.line],
-        { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
-      )
-      expect(JSON.parse(output.trim())).toEqual(['probe', '--', ...TRICKY])
-    },
-  )
+  it('refuses on Windows what PowerShell 5.1 or cmd.exe would read as syntax, and only there', () => {
+    for (const hostile of HOSTILE_ON_WINDOWS) {
+      expect(isSafeCheckPath(hostile, 'win32'), hostile).toBe(false)
+      expect(checkCommandLine(LINT, ['ok.ts', hostile], 'win32').ok, hostile).toBe(false)
+      // Bash reads nothing inside single quotes.
+      expect(isSafeCheckPath(hostile, 'linux'), hostile).toBe(true)
+    }
+    for (const safe of SAFE_ON_WINDOWS) {
+      expect(isSafeCheckPath(safe, 'win32'), safe).toBe(true)
+    }
+  })
 
-  it.skipIf(process.platform === 'win32')(
-    'hands bash each path as one argument, whatever it holds',
-    () => {
-      const built = checkCommandLine(
-        {
-          name: 'argv',
-          command: `'${process.execPath}' -e 'console.log(JSON.stringify(process.argv.slice(1)))' probe`,
-          changedFiles: true,
-        },
-        TRICKY,
-        'linux',
-      )
-      if (!built.ok) {
-        throw new Error(built.reason)
-      }
-      const output = execFileSync('bash', ['-c', built.line], { encoding: 'utf8' })
-      expect(JSON.parse(output.trim())).toEqual(['probe', '--', ...TRICKY])
-    },
-  )
+  // The quoted paths reach the program as the exact arguments, through the
+  // same interpreter the shell tool runs (M27): Windows PowerShell 5.1, to a
+  // native program and to a .cmd one (cmd.exe re-reads its arguments).
+  const systemRoot = process.env['SystemRoot']
+  const isWindows = process.platform === 'win32' && systemRoot !== undefined
+  const folder = mkdtempSync(path.join(tmpdir(), 'm68-check-'))
+  afterAll(async () => {
+    await removeFolder(folder)
+  })
+  const throughPowerShell = (command: string, paths: readonly string[]): unknown => {
+    const built = checkCommandLine({ name: 'argv', command, changedFiles: true }, paths, 'win32')
+    if (!built.ok) {
+      throw new Error(built.reason)
+    }
+    const powershell = path.win32.join(systemRoot ?? '', WINDOWS_POWERSHELL_RELATIVE_PATH)
+    const output = execFileSync(
+      powershell,
+      ['-NoProfile', '-NonInteractive', '-Command', built.line],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
+    )
+    return JSON.parse(output.trim())
+  }
+
+  it.skipIf(!isWindows)('hands a native program each path as one argument', () => {
+    expect(throughPowerShell(`& '${process.execPath}' ${NODE_ARGV}`, SAFE_ON_WINDOWS)).toEqual([
+      'probe',
+      '--',
+      ...SAFE_ON_WINDOWS,
+    ])
+  })
+
+  it.skipIf(!isWindows)('hands a .cmd program each path as one argument, cmd.exe included', () => {
+    const probe = path.join(folder, 'probe.cmd')
+    writeFileSync(
+      probe,
+      `@"${process.execPath}" -e "console.log(JSON.stringify(process.argv.slice(1)))" probe %*\r\n`,
+    )
+    expect(throughPowerShell(`& '${probe}'`, SAFE_ON_WINDOWS)).toEqual([
+      'probe',
+      '--',
+      ...SAFE_ON_WINDOWS,
+    ])
+  })
+
+  it.skipIf(process.platform === 'win32')('hands bash each path as one argument', () => {
+    const built = checkCommandLine(
+      { name: 'argv', command: `'${process.execPath}' ${NODE_ARGV}`, changedFiles: true },
+      TRICKY_ON_POSIX,
+      'linux',
+    )
+    if (!built.ok) {
+      throw new Error(built.reason)
+    }
+    const output = execFileSync('bash', ['-c', built.line], { encoding: 'utf8' })
+    expect(JSON.parse(output.trim())).toEqual(['probe', '--', ...TRICKY_ON_POSIX])
+  })
 })
 
 describe('checkTimeoutMs', () => {

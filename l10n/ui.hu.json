@@ -1151,14 +1151,22 @@
     "refused": "az engedélyezési mód nem enged shellparancsokat",
     "restricted": "a shellparancsok korlátozott módban ki vannak kapcsolva",
     "unsafePath": "egy fájlnevet nem lehet biztonságosan átadni neki",
-    "changed": "a fájl a szerkesztés után megváltozott"
+    "changed": "a fájl a szerkesztés után megváltozott",
+    "hookDenied": "egy hook elutasította",
+    "stopped": "az ellenőrzések leálltak, miután körről körre sikertelenek voltak"
   },
   "thenRunLabel": "Utána futtatva",
   "thenRunNotRun": "Nem futott: {reason}",
   "thenRunTimedOut": "Az időkorlátnál leállítva",
   "checksStoppedNotice": {
-    "one": "Az ellenőrzések {count} javítási kör után is hibásak voltak, ezért ebben a körben már nem futnak le automatikusan.",
-    "other": "Az ellenőrzések {count} egymást követő javítási kör után is hibásak voltak, ezért ebben a körben már nem futnak le automatikusan."
+    "one": "Az ellenőrzések {count} javítási kör után is hibásak voltak, ezért a következő üzenetéig már nem futnak le automatikusan.",
+    "other": "Az ellenőrzések {count} egymást követő javítási kör után is hibásak voltak, ezért a következő üzenetéig már nem futnak le automatikusan."
   },
-  "exportThenRunLabel": "Utána futtatva:"
+  "exportThenRunLabel": "Utána futtatva:",
+  "verifyUnchecked": {
+    "one": "{count} fájl nincs ellenőrizve",
+    "other": "{count} fájl nincs ellenőrizve"
+  },
+  "thenRunNoExitCode": "Kilépési kód nélkül sikertelen",
+  "exportThenRunSkipped": "then_run `{command}`: {outcome}"
 }

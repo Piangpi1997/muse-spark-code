@@ -16,6 +16,7 @@ import {
   USER_SHELL_PREFIX,
 } from '../../shared/constants'
 import { fill, plural } from '../../shared/l10n/text'
+import { thenRunOutcomeText, verifySummaryText } from '../../shared/verifyText'
 
 export interface TranscriptExport {
   readonly title: string
@@ -99,11 +100,35 @@ function toolSection(item: ItemSnapshot, heading: string): string {
     const { files, added, removed } = item.patchSummary
     lines.push(note(plural(UI_TEXT.exportFilesChanged, files, { added, removed })), '')
   }
-  // An edit's then_run (M68): the command and what it printed.
-  if (item.thenRun !== undefined) {
-    const { command, output } = item.thenRun
-    const ran = [`$ ${command}`, ...(output === '' ? [] : [output])].join('\n')
-    lines.push(UI_TEXT.exportThenRunLabel, '', fenced(ran), '')
+  // An edit's then_run (M68): what it printed and how it ended, or why it
+  // did not run; a verify row's summary line (the M68 review).
+  const { thenRun } = item
+  if (thenRun?.outcome === 'notRun') {
+    lines.push(
+      note(
+        fill(UI_TEXT.exportThenRunSkipped, {
+          command: thenRun.command,
+          outcome: thenRunOutcomeText(thenRun),
+        }),
+      ),
+      '',
+    )
+  } else if (thenRun !== undefined) {
+    const ran = [`$ ${thenRun.command}`, ...(thenRun.output === '' ? [] : [thenRun.output])].join(
+      '\n',
+    )
+    lines.push(
+      UI_TEXT.exportThenRunLabel,
+      '',
+      fenced(ran),
+      '',
+      note(thenRunOutcomeText(thenRun)),
+      '',
+    )
+  }
+  const verified = verifySummaryText(item.verifySummary)
+  if (verified !== undefined) {
+    lines.push(note(verified), '')
   }
   if (item.failureReason !== undefined) {
     lines.push(note(fill(UI_TEXT.exportFailure, { reason: item.failureReason })), '')

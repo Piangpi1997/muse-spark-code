@@ -1117,13 +1117,20 @@
     "refused": "权限模式拒绝 shell 命令",
     "restricted": "受限模式下 shell 命令已关闭",
     "unsafePath": "无法安全地传入某个文件名",
-    "changed": "编辑后文件已更改"
+    "changed": "编辑后文件已更改",
+    "hookDenied": "钩子拒绝了它",
+    "stopped": "检查在连续多轮失败后已停止"
   },
   "thenRunLabel": "随后运行",
   "thenRunNotRun": "未运行：{reason}",
   "thenRunTimedOut": "已在时间限制处停止",
   "checksStoppedNotice": {
-    "other": "连续修正 {count} 轮后检查仍然失败，本轮不再自动运行检查。"
+    "other": "连续修正 {count} 轮后检查仍然失败，在你发送下一条消息之前不再自动运行检查。"
   },
-  "exportThenRunLabel": "随后运行："
+  "exportThenRunLabel": "随后运行：",
+  "verifyUnchecked": {
+    "other": "{count} 个文件未检查"
+  },
+  "thenRunNoExitCode": "失败，没有退出代码",
+  "exportThenRunSkipped": "then_run `{command}`：{outcome}"
 }

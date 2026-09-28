@@ -1185,15 +1185,24 @@
     "refused": "o modo de permissão recusa comandos de shell",
     "restricted": "os comandos de shell ficam desativados no Modo Restrito",
     "unsafePath": "um nome de arquivo não pode ser passado a ele com segurança",
-    "changed": "o arquivo mudou depois da edição"
+    "changed": "o arquivo mudou depois da edição",
+    "hookDenied": "um hook o negou",
+    "stopped": "as verificações pararam após falhar rodada após rodada"
   },
   "thenRunLabel": "Depois executou",
   "thenRunNotRun": "Não executado: {reason}",
   "thenRunTimedOut": "Parado no limite de tempo",
   "checksStoppedNotice": {
-    "one": "As verificações ainda falhavam após {count} rodada de correções, então não serão executadas automaticamente de novo neste turno.",
-    "many": "As verificações ainda falhavam após {count} de rodadas de correções seguidas, então não serão executadas automaticamente de novo neste turno.",
-    "other": "As verificações ainda falhavam após {count} rodadas de correções seguidas, então não serão executadas automaticamente de novo neste turno."
+    "one": "As verificações ainda falhavam após {count} rodada de correções, então não serão executadas automaticamente até sua próxima mensagem.",
+    "many": "As verificações ainda falhavam após {count} de rodadas de correções seguidas, então não serão executadas automaticamente até sua próxima mensagem.",
+    "other": "As verificações ainda falhavam após {count} rodadas de correções seguidas, então não serão executadas automaticamente até sua próxima mensagem."
   },
-  "exportThenRunLabel": "Depois executou:"
+  "exportThenRunLabel": "Depois executou:",
+  "verifyUnchecked": {
+    "one": "{count} arquivo não verificado",
+    "many": "{count} de arquivos não verificados",
+    "other": "{count} arquivos não verificados"
+  },
+  "thenRunNoExitCode": "Falhou sem código de saída",
+  "exportThenRunSkipped": "then_run `{command}`: {outcome}"
 }

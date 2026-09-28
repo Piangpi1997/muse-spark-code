@@ -85,14 +85,35 @@ Only the latest release on the Visual Studio Marketplace receives fixes.
 - **Check commands and `then_run` (Model API backend).** The commands the
   extension runs after the agent's edits (`museSpark.checkCommands`,
   machine-scoped, none by default) and the one an edit's `then_run` names
-  take the shell tool's own permission path: they ask wherever a shell
-  command would ask (every mode but Bypass permissions), never run in Plan
-  mode or Restricted Mode, and run with the shell tool's runner, job object
-  and time cap. The agent can change what a check runs (a `package.json`
-  script), which is why they ask. Edited file names reach a check only as
-  quoted arguments after `--`, and a name that starts with `-` or holds a
-  control character keeps the check from running. `then_run` runs only if
-  the file still holds what the edit wrote.
+  take the shell tool's own hooks and permission path: the user's
+  PreToolUse, PostToolUse and PostToolUseFailure hooks see each as a call
+  of the shell tool (a denial, a rewrite or a demanded question holds), as
+  does PermissionRequest wherever the shell's card would show; they ask wherever a shell command would ask (every mode
+  but Bypass permissions), never run in Plan mode or Restricted Mode, and
+  run with the shell tool's runner, job object and time cap. The agent can
+  change what a check runs (a `package.json` script), which is why they
+  ask; after the agent edits a file that decides what a command runs (the
+  manifest, a `Makefile`, a tool's configuration, a file the command
+  names), "Always allow in this session" no longer answers for it until the
+  user's next message. Edited file names reach a check only as quoted
+  arguments after `--`, and only files that exist in the workspace; a name
+  that starts with `-` or `@` or holds a control character keeps the check
+  from running, and on Windows so does one holding `"`, `&`, `|`, `<`, `>`,
+  `^`, `%` or `!`, which Windows PowerShell 5.1's argument passing and
+  `cmd.exe` (for a `.cmd` or `.bat` program) would read as syntax (measured:
+  `x&echo.INJECTED` ran a second command through a `.cmd`). `then_run` runs
+  only if the file still holds what the edit wrote.
+- **Opening files for their diagnostics.** VS Code's language servers
+  report only on files an editor shows, so the verify loop and the
+  `getDiagnostics` tool open files. Opening a file can make an extension
+  load its configuration as code (an ESLint or Prettier JavaScript config,
+  `package.json`, `node_modules`), so neither ever opens or formats such a
+  file, and once the agent writes one the loop opens and formats nothing
+  more until the user's next message. `getDiagnostics` opens only a file
+  inside the workspace by its real path (links and junctions resolved).
+  Muse Code's own edits are not seen by the extension, so after Muse Code
+  writes such a config, a later `getDiagnostics` request for an ordinary
+  file can still open that file and let the extension load the config.
 - **Installing Muse Code.** The panel runs only Meta's published install
   command for the platform (`constants.ts` `MUSE_INSTALL_COMMANDS`), and
   only after a confirmation that shows it, in a visible terminal. It never

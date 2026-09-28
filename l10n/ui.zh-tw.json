@@ -1117,13 +1117,20 @@
     "refused": "權限模式拒絕 shell 命令",
     "restricted": "限制模式下 shell 命令已關閉",
     "unsafePath": "無法安全地傳入某個檔案名稱",
-    "changed": "編輯後檔案已變更"
+    "changed": "編輯後檔案已變更",
+    "hookDenied": "鉤子拒絕了它",
+    "stopped": "檢查在連續多次失敗後已停止"
   },
   "thenRunLabel": "隨後執行",
   "thenRunNotRun": "未執行：{reason}",
   "thenRunTimedOut": "已在時間限制處停止",
   "checksStoppedNotice": {
-    "other": "連續修正 {count} 次後檢查仍然失敗，這個回合不再自動執行檢查。"
+    "other": "連續修正 {count} 次後檢查仍然失敗，在你傳送下一則訊息之前不再自動執行檢查。"
   },
-  "exportThenRunLabel": "隨後執行："
+  "exportThenRunLabel": "隨後執行：",
+  "verifyUnchecked": {
+    "other": "{count} 個檔案未檢查"
+  },
+  "thenRunNoExitCode": "失敗，沒有結束代碼",
+  "exportThenRunSkipped": "then_run `{command}`：{outcome}"
 }

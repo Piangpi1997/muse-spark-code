@@ -1151,14 +1151,22 @@
     "refused": "der Berechtigungsmodus lässt keine Shell-Befehle zu",
     "restricted": "Shell-Befehle sind im eingeschränkten Modus aus",
     "unsafePath": "ein Dateiname lässt sich nicht sicher übergeben",
-    "changed": "die Datei hat sich nach der Bearbeitung geändert"
+    "changed": "die Datei hat sich nach der Bearbeitung geändert",
+    "hookDenied": "ein Hook hat es abgelehnt",
+    "stopped": "die Prüfungen wurden nach wiederholt fehlgeschlagenen Runden angehalten"
   },
   "thenRunLabel": "Danach ausgeführt",
   "thenRunNotRun": "Nicht ausgeführt: {reason}",
   "thenRunTimedOut": "Beim Zeitlimit angehalten",
   "checksStoppedNotice": {
-    "one": "Die Prüfungen schlugen auch nach {count} Korrekturrunde fehl und laufen in diesem Durchgang nicht mehr automatisch.",
-    "other": "Die Prüfungen schlugen auch nach {count} Korrekturrunden in Folge fehl und laufen in diesem Durchgang nicht mehr automatisch."
+    "one": "Die Prüfungen schlugen auch nach {count} Korrekturrunde fehl und laufen bis zu Ihrer nächsten Nachricht nicht mehr automatisch.",
+    "other": "Die Prüfungen schlugen auch nach {count} Korrekturrunden in Folge fehl und laufen bis zu Ihrer nächsten Nachricht nicht mehr automatisch."
   },
-  "exportThenRunLabel": "Danach ausgeführt:"
+  "exportThenRunLabel": "Danach ausgeführt:",
+  "verifyUnchecked": {
+    "one": "{count} Datei nicht geprüft",
+    "other": "{count} Dateien nicht geprüft"
+  },
+  "thenRunNoExitCode": "Ohne Exitcode fehlgeschlagen",
+  "exportThenRunSkipped": "then_run `{command}`: {outcome}"
 }

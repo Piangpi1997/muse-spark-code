@@ -1,6 +1,8 @@
 // The editor's side of the verify loop (M68): the language servers' reports
-// on edited files once they settle, and format on edit, over the `vscode`
-// mock. The real API is exercised by the integration test inside VS Code.
+// on edited files once they settle, the tabs it opens and closes, the one
+// queue every caller shares, the diagnostics tool's file, and format on
+// edit, over the `vscode` mock. The real API is exercised by the integration
+// test inside VS Code.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type * as vscode from 'vscode'
@@ -8,7 +10,9 @@ import {
   commands,
   diagnosticsChanged,
   EndOfLine,
+  FakeUri,
   languages,
+  TabInputText,
   Uri,
   ViewColumn,
   window,
@@ -21,11 +25,14 @@ import { createLogger } from '../../src/host/logger'
 
 const shownDocument = window.showTextDocument
 
+const ROOT = '/ws'
 const FILE = { relative: 'src/a.ts', absolute: '/ws/src/a.ts' }
 const OTHER = { relative: 'src/b.ts', absolute: '/ws/src/b.ts' }
 const SETTLE = { firstMs: 60, quietMs: 25, maxMs: 400 }
 const FORMAT = { syncMs: 60, pollMs: 5, formatMs: 60 }
 const EDITOR_SETTINGS: Readonly<Record<string, unknown>> = { tabSize: 2, insertSpaces: true }
+const BESIDE_COLUMN = 2
+const USER_COLUMN = 1
 
 interface DocumentState {
   text: string
@@ -96,15 +103,47 @@ function textEdit(
   } as unknown as vscode.TextEdit
 }
 
-function editor(platform: NodeJS.Platform = 'linux'): {
+/** The editor groups and their tabs, as the tab API reports them. */
+const groups = new Map<number, vscode.Tab[]>()
+
+function addTab(column: number, path: string, isDirty = false): vscode.Tab {
+  const tabs = groups.get(column) ?? []
+  groups.set(column, tabs)
+  const group: vscode.TabGroup = {
+    isActive: false,
+    activeTab: undefined,
+    viewColumn: column,
+    tabs,
+  }
+  const tab: vscode.Tab = {
+    label: path,
+    group,
+    input: new TabInputText(Uri.file(path)),
+    isActive: true,
+    isDirty,
+    isPinned: false,
+    isPreview: false,
+  }
+  tabs.push(tab)
+  window.tabGroups.all = Array.from(groups.values(), (groupTabs) => groupTabs[0]?.group ?? group)
+  return tab
+}
+
+function tabPaths(tabs: readonly vscode.Tab[]): readonly string[] {
+  return tabs.map((tab) => (tab.input instanceof TabInputText ? tab.input.uri.fsPath : '?'))
+}
+
+function editor(options: { platform?: NodeJS.Platform; links?: Record<string, string> } = {}): {
   verify: VerifyEditor
   channel: FakeLogOutputChannel
 } {
   const channel = new FakeLogOutputChannel()
   return {
     verify: createVerifyEditor({
-      platform,
+      platform: options.platform ?? 'linux',
       log: createLogger(channel),
+      workspaceRoot: ROOT,
+      realPath: (absolutePath) => Promise.resolve(options.links?.[absolutePath] ?? absolutePath),
       settle: SETTLE,
       format: FORMAT,
     }),
@@ -117,6 +156,8 @@ function report(...paths: readonly string[]): void {
 }
 
 beforeEach(() => {
+  groups.clear()
+  window.tabGroups.all = []
   vi.mocked(workspace.openTextDocument).mockImplementation((uri) =>
     Promise.resolve(fakeDocument({ text: uri.fsPath }, uri)),
   )
@@ -125,7 +166,19 @@ beforeEach(() => {
     get: (key: string) => EDITOR_SETTINGS[key],
   } as unknown as vscode.WorkspaceConfiguration)
   vi.mocked(languages.getDiagnostics).mockReturnValue([])
-  vi.mocked(shownDocument).mockResolvedValue(fakeEditor(Uri.file('/shown')))
+  // Showing a document beside opens a tab in the second group.
+  vi.mocked(shownDocument).mockImplementation((uri: vscode.Uri | vscode.TextDocument) => {
+    const target = 'fsPath' in uri ? uri : uri.uri
+    addTab(BESIDE_COLUMN, target.fsPath)
+    return Promise.resolve(fakeEditor(target))
+  })
+  vi.mocked(window.tabGroups.close).mockImplementation((tabs) => {
+    for (const tab of tabs) {
+      const list = groups.get(tab.group.viewColumn) ?? []
+      list.splice(list.indexOf(tab), 1)
+    }
+    return Promise.resolve(true)
+  })
   window.visibleTextEditors = []
 })
 
@@ -134,33 +187,28 @@ afterEach(() => {
   vi.mocked(commands.executeCommand).mockReset()
   vi.mocked(languages.getDiagnostics).mockReset()
   vi.mocked(shownDocument).mockReset()
+  vi.mocked(window.tabGroups.close).mockReset()
 })
 
 describe('diagnosticsAfterEdit', () => {
-  it('shows each file beside, waits for its report to settle, and maps what the servers hold', async () => {
+  it('shows each file beside as a tab of its own, reads it once settled, and closes the tabs', async () => {
     const { verify } = editor()
     vi.mocked(languages.getDiagnostics).mockReturnValue([
       [Uri.file(FILE.absolute), [diagnostic(0, 2, 4, 'bad'), diagnostic(1, 0, 0, 'unused')]],
       [Uri.file('/ws/elsewhere.ts'), [diagnostic(0, 0, 0, 'not ours')]],
     ])
-    const started = Date.now()
     const pending = verify.diagnosticsAfterEdit([FILE, OTHER], new AbortController().signal)
     setTimeout(() => {
       report(FILE.absolute)
     }, 10)
     const files = await pending
-    // The first file settles on its report; the second waits out its first wait.
-    expect(Date.now() - started).toBeLessThan(SETTLE.firstMs * 2 + SETTLE.quietMs)
-    expect(vi.mocked(workspace.openTextDocument).mock.calls.map(([uri]) => uri.fsPath)).toEqual([
-      FILE.absolute,
-      OTHER.absolute,
-    ])
-    // Each shown beside the user's editor, as a preview, without taking focus.
+    // Each beside the user's editor, never a preview (which would replace
+    // the user's own), without taking focus.
     expect(
       vi.mocked(shownDocument).mock.calls.map(([uri, options]) => [uri.fsPath, options]),
     ).toEqual([
-      [FILE.absolute, { viewColumn: ViewColumn.Beside, preview: true, preserveFocus: true }],
-      [OTHER.absolute, { viewColumn: ViewColumn.Beside, preview: true, preserveFocus: true }],
+      [FILE.absolute, { viewColumn: ViewColumn.Beside, preview: false, preserveFocus: true }],
+      [OTHER.absolute, { viewColumn: ViewColumn.Beside, preview: false, preserveFocus: true }],
     ])
     expect(files).toEqual([
       {
@@ -177,74 +225,230 @@ describe('diagnosticsAfterEdit', () => {
           },
         ],
       },
-      { file: OTHER, entries: [] },
+      // No report arrived: not checked, never clean.
+      { file: OTHER, entries: [], unchecked: 'noReport' },
     ])
+    const [closed, preserveFocus] = vi.mocked(window.tabGroups.close).mock.calls[0] ?? []
+    expect(tabPaths(closed ?? [])).toEqual([FILE.absolute, OTHER.absolute])
+    expect(preserveFocus).toBe(true)
+    expect(groups.get(BESIDE_COLUMN)).toEqual([])
   })
 
-  it('gives up waiting for a first report, ignoring other files’ reports', async () => {
+  it('starts its timers once the file is shown, so a slow show is not "no report"', async () => {
     const { verify } = editor()
-    const started = Date.now()
+    vi.mocked(shownDocument).mockImplementation((uri: vscode.Uri | vscode.TextDocument) => {
+      const target = 'fsPath' in uri ? uri : uri.uri
+      return new Promise((resolve) => {
+        setTimeout(() => {
+          resolve(fakeEditor(target))
+        }, SETTLE.firstMs * 2)
+      })
+    })
     const pending = verify.diagnosticsAfterEdit([FILE], new AbortController().signal)
-    report('/ws/unrelated.ts')
-    await pending
-    expect(Date.now() - started).toBeGreaterThanOrEqual(SETTLE.firstMs - 5)
+    setTimeout(
+      () => {
+        report(FILE.absolute)
+      },
+      SETTLE.firstMs * 2 + 10,
+    )
+    const [result] = await pending
+    expect(result?.unchecked).toBeUndefined()
   })
 
-  it('stops waiting at the cap while the reports keep coming, and at once on a stop', async () => {
+  it('keeps a report that came while the file was being shown', async () => {
     const { verify } = editor()
+    vi.mocked(shownDocument).mockImplementation((uri: vscode.Uri | vscode.TextDocument) => {
+      const target = 'fsPath' in uri ? uri : uri.uri
+      report(FILE.absolute)
+      return Promise.resolve(fakeEditor(target))
+    })
     const started = Date.now()
+    const [result] = await verify.diagnosticsAfterEdit([FILE], new AbortController().signal)
+    expect(result?.unchecked).toBeUndefined()
+    expect(Date.now() - started).toBeLessThan(SETTLE.firstMs)
+  })
+
+  it('reads a file whose reports keep coming at the cap, ignoring other files’ reports', async () => {
+    const { verify } = editor()
     const chatter = setInterval(() => {
       report(FILE.absolute)
     }, 5)
+    const started = Date.now()
+    let result: readonly unknown[]
     try {
-      await verify.diagnosticsAfterEdit([FILE], new AbortController().signal)
+      result = await verify.diagnosticsAfterEdit([FILE], new AbortController().signal)
     } finally {
       clearInterval(chatter)
     }
-    const elapsed = Date.now() - started
-    expect(elapsed).toBeGreaterThanOrEqual(SETTLE.maxMs - 5)
-    const stop = new AbortController()
-    const quick = Date.now()
-    const pending = verify.diagnosticsAfterEdit([FILE], stop.signal)
-    stop.abort()
-    await pending
-    expect(Date.now() - quick).toBeLessThan(SETTLE.firstMs)
+    expect(Date.now() - started).toBeGreaterThanOrEqual(SETTLE.maxMs - 5)
+    expect(result).toEqual([{ file: FILE, entries: [] }])
+    const lonely = verify.diagnosticsAfterEdit([OTHER], new AbortController().signal)
+    report('/ws/unrelated.ts')
+    expect(await lonely).toEqual([{ file: OTHER, entries: [], unchecked: 'noReport' }])
   })
 
-  it('matches files case-insensitively on Windows, and does not show a file already shown', async () => {
-    const { verify } = editor('win32')
+  it('honours a stop: at once, and for every file left', async () => {
+    const { verify } = editor()
+    const before = new AbortController()
+    before.abort()
+    expect(await verify.diagnosticsAfterEdit([FILE, OTHER], before.signal)).toEqual([
+      { file: FILE, entries: [], unchecked: 'stopped' },
+      { file: OTHER, entries: [], unchecked: 'stopped' },
+    ])
+    expect(shownDocument).not.toHaveBeenCalled()
+    const during = new AbortController()
+    const started = Date.now()
+    const pending = verify.diagnosticsAfterEdit([FILE, OTHER], during.signal)
+    setTimeout(() => {
+      during.abort()
+    }, 5)
+    expect(await pending).toEqual([
+      { file: FILE, entries: [], unchecked: 'stopped' },
+      { file: OTHER, entries: [], unchecked: 'stopped' },
+    ])
+    expect(Date.now() - started).toBeLessThan(SETTLE.firstMs)
+    expect(vi.mocked(shownDocument).mock.calls.map(([uri]) => uri.fsPath)).toEqual([FILE.absolute])
+  })
+
+  it('runs one caller at a time: a second waits for the first', async () => {
+    const { verify } = editor()
+    const order: string[] = []
+    const held = Promise.withResolvers<undefined>()
+    vi.mocked(workspace.openTextDocument).mockImplementation(async (uri) => {
+      order.push(uri.fsPath)
+      if (uri.fsPath === FILE.absolute) {
+        await held.promise
+      }
+      return fakeDocument({ text: '' }, uri)
+    })
+    const first = verify.diagnosticsAfterEdit([FILE], new AbortController().signal)
+    const second = verify.diagnosticsAfterEdit([OTHER], new AbortController().signal)
+    await vi.waitFor(() => {
+      expect(order).toEqual([FILE.absolute])
+    })
+    // A while later the second still waits: the first is not done.
+    await new Promise((resolve) => setTimeout(resolve, SETTLE.firstMs * 2))
+    expect(order).toEqual([FILE.absolute])
+    held.resolve(undefined)
+    await Promise.all([first, second])
+    expect(order).toEqual([FILE.absolute, OTHER.absolute])
+  })
+
+  it('matches files case-insensitively on Windows, and leaves a shown file as it is', async () => {
+    const { verify } = editor({ platform: 'win32' })
     window.visibleTextEditors = [fakeEditor(Uri.file('/WS/Src/a.ts'))]
     vi.mocked(languages.getDiagnostics).mockReturnValue([
       [Uri.file('/WS/SRC/A.TS'), [diagnostic(0, 0, 0, 'bad')]],
     ])
     const pending = verify.diagnosticsAfterEdit([FILE], new AbortController().signal)
-    report('/WS/src/A.ts')
+    // A report counts from the moment the check starts, a tick after the call.
+    setTimeout(() => {
+      report('/WS/src/A.ts')
+    }, 5)
     const [only] = await pending
     expect(only?.entries.map((entry) => entry.message)).toEqual(['bad'])
     expect(shownDocument).not.toHaveBeenCalled()
+    expect(window.tabGroups.close).not.toHaveBeenCalled()
   })
 
-  it('logs a file it cannot open or show, and does not wait for it', async () => {
+  it('closes only the tabs it opened, and none the user has since changed', async () => {
+    const { verify } = editor()
+    const users = addTab(USER_COLUMN, FILE.absolute)
+    vi.mocked(shownDocument).mockImplementation((uri: vscode.Uri | vscode.TextDocument) => {
+      const target = 'fsPath' in uri ? uri : uri.uri
+      // The user types into the tab the loop opened for OTHER.
+      addTab(BESIDE_COLUMN, target.fsPath, target.fsPath === OTHER.absolute)
+      return Promise.resolve(fakeEditor(target))
+    })
+    await verify.diagnosticsAfterEdit([FILE, OTHER], new AbortController().signal)
+    const [closed] = vi.mocked(window.tabGroups.close).mock.calls[0] ?? []
+    expect(tabPaths(closed ?? [])).toEqual([FILE.absolute])
+    expect(closed?.[0]?.group.viewColumn).toBe(BESIDE_COLUMN)
+    expect(groups.get(USER_COLUMN)).toEqual([users])
+  })
+
+  it('does not read a file with unsaved changes, nor one it cannot open or show', async () => {
     const { verify, channel } = editor()
-    vi.mocked(workspace.openTextDocument).mockRejectedValueOnce(new Error('too large'))
+    const THIRD = { relative: 'src/c.ts', absolute: '/ws/src/c.ts' }
+    vi.mocked(workspace.openTextDocument).mockImplementation((uri) =>
+      uri.fsPath === FILE.absolute
+        ? Promise.reject(new Error('too large'))
+        : Promise.resolve(fakeDocument({ text: '', isDirty: uri.fsPath === THIRD.absolute }, uri)),
+    )
     vi.mocked(shownDocument).mockRejectedValueOnce(new Error('no editor group'))
     const started = Date.now()
-    const files = await verify.diagnosticsAfterEdit([FILE, OTHER], new AbortController().signal)
+    const files = await verify.diagnosticsAfterEdit(
+      [FILE, OTHER, THIRD],
+      new AbortController().signal,
+    )
     expect(Date.now() - started).toBeLessThan(SETTLE.firstMs)
-    expect(files.map((result) => result.entries)).toEqual([[], []])
+    expect(files.map((result) => result.unchecked)).toEqual(['notShown', 'notShown', 'unsaved'])
     const logged = logLines(channel).join('\n')
     expect(logged).toContain('Verify: src/a.ts could not be opened for diagnostics: too large')
     expect(logged).toContain('Verify: src/b.ts could not be shown for diagnostics: no editor group')
   })
 
-  it('settles one file for the diagnostics tool', async () => {
+  it('logs tabs that could not be closed', async () => {
+    const { verify, channel } = editor()
+    vi.mocked(window.tabGroups.close).mockRejectedValueOnce(new Error('busy'))
+    await verify.diagnosticsAfterEdit([FILE], new AbortController().signal)
+    expect(logLines(channel).join('\n')).toContain(
+      'Verify: the files shown for diagnostics could not be closed: busy',
+    )
+  })
+})
+
+describe('settleFile (the diagnostics tool)', () => {
+  it('shows a workspace file and reads what its server reported before the tab closes', async () => {
     const { verify } = editor()
-    const pending = verify.settleFile(FILE.absolute, FILE.relative)
+    vi.mocked(languages.getDiagnostics).mockReturnValue([
+      [Uri.file(FILE.absolute), [diagnostic(0, 2, 4, 'bad')]],
+    ])
+    // The server clears a file's diagnostics when its tab closes (the
+    // integration run found the JSON server doing so).
+    vi.mocked(window.tabGroups.close).mockImplementationOnce(() => {
+      vi.mocked(languages.getDiagnostics).mockReturnValue([])
+      return Promise.resolve(true)
+    })
+    const pending = verify.settleFile(FILE.absolute)
     setTimeout(() => {
       report(FILE.absolute)
     }, 5)
-    await pending
+    expect(await pending).toEqual([
+      { path: 'src/a.ts', severity: 'error', line: 3, column: 5, message: 'bad', source: 'ts' },
+    ])
     expect(vi.mocked(shownDocument).mock.calls[0]?.[0].fsPath).toBe(FILE.absolute)
+    expect(window.tabGroups.close).toHaveBeenCalledTimes(1)
+    // No report: nothing read.
+    expect(await verify.settleFile(OTHER.absolute)).toBeUndefined()
+  })
+
+  it('never opens a link out of the workspace, code the editor runs, or anything without a folder', async () => {
+    const { verify } = editor({ links: { '/ws/creds.ts': '/home/me/.aws/credentials' } })
+    expect(await verify.settleFile('/ws/creds.ts')).toBeUndefined()
+    expect(await verify.settleFile('/ws/eslint.config.js')).toBeUndefined()
+    expect(await verify.settleFile('/ws/node_modules/x/index.js')).toBeUndefined()
+    const channel = new FakeLogOutputChannel()
+    const folderless = createVerifyEditor({
+      platform: 'linux',
+      log: createLogger(channel),
+      workspaceRoot: undefined,
+      realPath: (absolutePath) => Promise.resolve(absolutePath),
+    })
+    expect(await folderless.settleFile(FILE.absolute)).toBeUndefined()
+    expect(workspace.openTextDocument).not.toHaveBeenCalled()
+  })
+
+  it('stops waiting when its caller goes away', async () => {
+    const { verify } = editor()
+    const gone = new AbortController()
+    const started = Date.now()
+    const pending = verify.settleFile(FILE.absolute, gone.signal)
+    setTimeout(() => {
+      gone.abort()
+    }, 5)
+    expect(await pending).toBeUndefined()
+    expect(Date.now() - started).toBeLessThan(SETTLE.firstMs)
   })
 })
 
@@ -266,7 +470,8 @@ describe('formatAfterEdit', () => {
     )
     const [command, uri, options] = vi.mocked(commands.executeCommand).mock.calls[0] ?? []
     expect(command).toBe('vscode.executeFormatDocumentProvider')
-    expect((uri as vscode.Uri).fsPath).toBe(FILE.absolute)
+    expect(uri).toBeInstanceOf(FakeUri)
+    expect(uri).toMatchObject({ fsPath: FILE.absolute })
     expect(options).toEqual({ tabSize: 2, insertSpaces: true })
   })
 
@@ -324,6 +529,10 @@ describe('formatAfterEdit', () => {
       }),
     )
     expect(await verify.formatAfterEdit(FILE.absolute, 'abcdef')).toBeUndefined()
+    // A formatter that never answered in time is logged, not skipped silently.
+    expect(logLines(channel).join('\n')).toContain(
+      `the formatter did not answer in ${String(FORMAT.formatMs)} ms`,
+    )
   })
 
   it('returns nothing when there is no formatter or it changes nothing', async () => {

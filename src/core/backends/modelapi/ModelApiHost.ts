@@ -84,6 +84,8 @@ import {
   UI_TEXT,
   USER_SHELL_ITEM_KIND,
   USER_SHELL_TIMEOUT_MS,
+  VERIFY_NOTE_MAX_CHARS,
+  VERIFY_SHOWN_FILES_MAX,
   VERIFY_TOOLS,
 } from '../../../shared/constants'
 import { fill, plural } from '../../../shared/l10n/text'
@@ -187,6 +189,7 @@ import {
   type PermissionQuery,
   type PermissionVerdict,
   type ToolClass,
+  verdictFor,
 } from './permissions'
 import {
   headerOf,
@@ -219,6 +222,7 @@ import {
 } from './schemas'
 import {
   classifyTool,
+  type EditFormatter,
   executeTool,
   fingerprint,
   parseQuestions,
@@ -247,18 +251,22 @@ import {
   type CheckRun,
   checksSection,
   finishedCheck,
+  newVerifyState,
   roundVerdict,
   skippedCheck,
   skipReason,
   type VerifyHooks,
+  type VerifyState,
   outcomeOf,
 } from './verifyLoop'
 import { parseRunChecks, thenRunOf } from './verifyTools'
 import { checkCommandLine, checkTimeoutMs } from '../../verify/checkCommands'
+import { canChangeWhatRuns, isCodeLoading } from '../../verify/codeFiles'
 import {
-  type DiagnosticsReport,
   DiagnosticsHistory,
   type EditedFile,
+  type FileDiagnostics,
+  type PendingReport,
 } from '../../verify/diagnosticsReport'
 
 /** Paid state and usage are injected by the host, never read from workspace settings. */
@@ -462,15 +470,14 @@ interface ActiveTurn {
   isWebSearchAllowed: boolean
   /**
    * The verify loop (M68): the files the edit tools wrote in this round (by
-   * absolute path), checked before the next request; those written in the
-   * whole turn, `run_checks`'s default; the rounds in a row whose checks
-   * failed, the loop stopped at its limit, and the checks the user rejected.
+   * absolute path), checked before the next request; the checks already run
+   * since the round's last edit (by run_checks, or a then_run of a check's
+   * own command), which the automatic step does not run again; and the runs
+   * of run_checks in this round, which the fix loop counts (the M68 review).
    */
   readonly editedInRound: Map<string, EditedFile>
-  readonly editedInTurn: Map<string, EditedFile>
-  failedCheckRounds: number
-  areChecksStopped: boolean
-  readonly rejectedChecks: Set<string>
+  readonly checksSinceEdit: Set<string>
+  readonly roundCheckRuns: CheckRun[]
 }
 
 interface HookToolResult {
@@ -502,7 +509,42 @@ type QuestionReply =
 interface Performed {
   readonly outcome: ToolOutcome
   readonly running?: Promise<ToolOutcome>
+  /**
+   * What the hooks of the shell commands a call ran (then_run, run_checks,
+   * M68) add: replayed after the call's output, a stop ending the turn.
+   */
+  readonly hookEffects?: HookEffects
 }
+
+/** What the user's tool hooks said about the commands a step ran (M68). */
+interface HookEffects {
+  readonly contexts: string[]
+  readonly messages: string[]
+  stopReason: string | undefined
+}
+
+function newHookEffects(): HookEffects {
+  return { contexts: [], messages: [], stopReason: undefined }
+}
+
+/** A check or then_run command, before its hooks and its permission path (M68). */
+interface VerifyCommand {
+  readonly line: string
+  /** What "always allow in this session" is keyed on. */
+  readonly ruleCommand: string
+  readonly description: string
+  readonly timeoutMs: number
+  /** A hook demanded a question for the call that carries it. */
+  readonly isForced: boolean
+  /** The conversation edited a file that decides what the command runs. */
+  readonly isRuleIgnored: boolean
+  /** then_run's: the file still holds what the edit left. */
+  readonly guard?: () => Promise<boolean>
+}
+
+type CommandOutcome =
+  | { readonly kind: 'skipped'; readonly skip: CheckSkip; readonly detail?: string }
+  | { readonly kind: 'ran'; readonly line: string; readonly result: ShellResult }
 
 /** A permission check and the tool, or the refusal. */
 interface CallResult extends Performed {
@@ -659,6 +701,8 @@ const DECISION_APPROVED = 'approved'
 const DECISION_ABORT = 'abort'
 const RESOLVED_BY_USER = 'user'
 const NO_UNSUBSCRIBE = (): undefined => undefined
+// A verify report whose diagnostics could not be read moves no history (M68).
+const NOTHING_TO_COMMIT = (): undefined => undefined
 // A child is recorded inside its parent, not in the host's session map.
 const NO_CHILD_DISPOSAL = (): undefined => undefined
 
@@ -1247,6 +1291,8 @@ export class ModelApiSession implements AgentSession {
   private readonly seenFiles = new Map<string, string>()
   /** Each edited file's diagnostics at its last check, to say what changed (M68). */
   private readonly diagnosticsHistory = new DiagnosticsHistory()
+  /** The verify loop's state since the user's last message (M68, the M68 review). */
+  private verifyState: VerifyState = newVerifyState()
   /** Keeps each request within the page and encoded-media budgets (M54, PLAN.md D47). */
   private readonly budget: MediaBudget
   private mediaNoticeSent = false
@@ -2875,7 +2921,7 @@ export class ModelApiSession implements AgentSession {
     signal: AbortSignal,
   ): Promise<ToolOutcome> {
     if (external.kind === 'ide') {
-      const text = clipOutput(await external.tool.call(argumentsOf(call)))
+      const text = clipOutput(await external.tool.call(argumentsOf(call), signal))
       return { output: text, visibleOutput: text }
     }
     const servers = this.deps.mcpServers
@@ -3550,10 +3596,10 @@ export class ModelApiSession implements AgentSession {
         return await this.runShellCall(itemId, call, signal)
       }
       case VERIFY_TOOLS.runChecks: {
-        return { outcome: await this.runChecksCall(itemId, call, signal) }
+        return await this.runChecksCall(itemId, call, signal)
       }
       default: {
-        const format = this.formatter()
+        const formatter = this.formatter()
         return {
           outcome: await executeTool(call.name, call.arguments, {
             workspaceRoot: this.deps.workspaceRoot,
@@ -3562,7 +3608,7 @@ export class ModelApiSession implements AgentSession {
             signal,
             seen: this.seenFiles,
             ...(approvedTarget !== undefined && { approvedTarget }),
-            ...(format !== undefined && { format }),
+            ...(formatter !== undefined && { formatter }),
           }),
         }
       }
@@ -3571,53 +3617,71 @@ export class ModelApiSession implements AgentSession {
 
   /**
    * Format on edit (M68), while it is on: the editor's formatter over what an
-   * edit wrote. A formatter that fails leaves the edit as written and is
+   * edit wrote. Never over a file the editor's tools run as code, and not at
+   * all once the conversation wrote one since the user's message (the M68
+   * review). A formatter that fails leaves the edit as written and is
    * logged; it never fails the edit.
    */
-  private formatter():
-    ((absolutePath: string, text: string) => Promise<string | undefined>) | undefined {
+  private formatter(): EditFormatter | undefined {
     const verify = this.deps.verify
     if (verify?.isFormatOnEdit() !== true) {
       return undefined
     }
-    return async (absolutePath, text) => {
-      try {
-        return await verify.formatAfterEdit(absolutePath, text)
-      } catch (error: unknown) {
-        this.deps.log.warn(`Format on edit failed; the edit stays as written: ${describe(error)}`)
-        return
-      }
+    const warn = (message: string) => {
+      this.deps.log.warn(message)
+    }
+    return {
+      format: async (target, text) => {
+        if (
+          this.verifyState.codeFile !== undefined ||
+          isCodeLoading(target.relative) ||
+          isCodeLoading(target.canonical)
+        ) {
+          return
+        }
+        try {
+          return await verify.formatAfterEdit(target.checkedAbsolute, text)
+        } catch (error: unknown) {
+          warn(`Format on edit failed; the edit stays as written: ${describe(error)}`)
+          return
+        }
+      },
+      warn,
     }
   }
 
+  /** Whether the conversation edited, since the user's message, a file that decides what `command` runs. */
+  private changesWhatRunsNow(command: string): boolean {
+    return [...this.verifyState.writtenNames].some((name) => canChangeWhatRuns(name, command))
+  }
+
   /**
-   * Whether a command may run now, by the shell tool's own path (M68, PLAN.md
-   * D49): never in Restricted Mode, never where the mode refuses a shell
-   * command, and with the approval card wherever a shell command would ask,
+   * Whether a command may run now, by the shell tool's own permission path
+   * (M68, PLAN.md D49): never where the mode refuses a shell command, and
+   * with the shell's approval card wherever a shell command would ask,
    * "always allow in this session" keyed on `ruleCommand` as the shell tool
-   * keys it. A hook that demanded a question for the call (`isForced`) gets
-   * one here too. Undefined when it may run, else why not.
+   * keys it. A hook that demanded a question (`isForced`) gets one; a
+   * session rule does not answer when `isRuleIgnored`. A hook's denial is
+   * told apart from the user's Reject, each with its words (the M68
+   * review). Undefined when it may run, else why not.
    */
   private async authorizeCommand(
     itemId: string,
-    line: string,
-    ruleCommand: string,
-    description: string,
+    request: VerifyCommand,
     signal: AbortSignal,
-    isForced = false,
-  ): Promise<CheckSkip | undefined> {
-    if (!this.deps.isWorkspaceTrusted()) {
-      return 'restricted'
-    }
+  ): Promise<{ readonly skip: CheckSkip; readonly detail?: string } | undefined> {
     const shell = shellToolFor(this.deps.platform)
     const query: PermissionQuery = {
       toolName: shell.name,
       toolClass: 'shell',
-      command: ruleCommand,
+      command: request.ruleCommand,
     }
-    const verdict = this.verdictWithHook(query, isForced)
+    const permitted = request.isRuleIgnored
+      ? verdictFor(this.permissions.currentMode, 'shell')
+      : this.permissions.verdict(query)
+    const verdict = permitted === 'allow' && request.isForced ? 'ask' : permitted
     if (verdict === 'deny') {
-      return 'refused'
+      return { skip: 'refused' }
     }
     if (verdict === 'allow') {
       return undefined
@@ -3627,37 +3691,164 @@ export class ModelApiSession implements AgentSession {
       type: 'function_call',
       call_id: this.deps.newId(),
       name: shell.name,
-      arguments: JSON.stringify({ command: line, description }),
+      arguments: JSON.stringify({ command: request.line, description: request.description }),
     }
     const approval = await this.askApproval(
       itemId,
       call,
       signal,
       query,
-      { card: { kind: 'shell', command: line } },
-      isForced,
+      { card: { kind: 'shell', command: request.line } },
+      request.isForced,
     )
-    return approval.isApproved ? undefined : 'rejected'
+    if (approval.isApproved) {
+      return undefined
+    }
+    return {
+      skip: approval.deniedByHook === true ? 'hookDenied' : 'rejected',
+      ...(approval.feedback !== undefined && { detail: approval.feedback }),
+    }
   }
 
-  /** One check: its line, the permission path, and the run under its time cap. */
+  /**
+   * A check or then_run command by the shell tool's own path (M68, the M68
+   * review): Restricted Mode refuses; the user's PreToolUse hooks see it as a
+   * call of the shell tool and may block it, demand a question or rewrite
+   * it; the permission path above; then_run's guard; the run; then the
+   * PostToolUse or PostToolUseFailure hooks. What the hooks add for the
+   * model, and a hook's stop, go into `effects` for the caller to place
+   * after the output they follow.
+   */
+  private async runVerifyCommand(
+    itemId: string,
+    request: VerifyCommand,
+    signal: AbortSignal,
+    effects: HookEffects,
+  ): Promise<CommandOutcome> {
+    if (!this.deps.isWorkspaceTrusted()) {
+      return { kind: 'skipped', skip: 'restricted' }
+    }
+    const shell = shellToolFor(this.deps.platform)
+    const turnId = this.active?.turnId
+    const toolUseId = this.deps.newId()
+    const matcher = toolMatcherNames(shell.name)
+    const pre = await this.runHooks(
+      'PreToolUse',
+      turnId,
+      {
+        tool_name: shell.name,
+        tool_input: toolHookInput({ command: request.line, description: request.description }),
+        tool_use_id: toolUseId,
+      },
+      matcher,
+      signal,
+      false,
+    )
+    effects.contexts.push(...pre.contexts)
+    if (pre.blockedReason !== undefined) {
+      return { kind: 'skipped', skip: 'hookDenied', detail: pre.blockedReason }
+    }
+    let { line, ruleCommand } = request
+    if (pre.updatedInput !== undefined) {
+      const updated = pre.updatedInput['command']
+      if (typeof updated !== 'string' || updated.trim() === '') {
+        return { kind: 'skipped', skip: 'hookDenied', detail: MODEL_TEXT.hookInputNoCommand }
+      }
+      line = updated
+      ruleCommand = updated
+    }
+    const refusal = await this.authorizeCommand(
+      itemId,
+      { ...request, line, ruleCommand, isForced: request.isForced || pre.forceApproval },
+      signal,
+    )
+    if (refusal !== undefined) {
+      return { kind: 'skipped', ...refusal }
+    }
+    if (request.guard !== undefined && !(await request.guard())) {
+      return { kind: 'skipped', skip: 'changed' }
+    }
+    const startedAt = this.deps.now()
+    const result = await this.runCommand(line, request.timeoutMs, signal)
+    const ran = shellOutcome(result, request.timeoutMs)
+    const input = toolHookInput({ command: line, description: request.description })
+    const post = await this.runHooks(
+      ran.failureReason === undefined ? 'PostToolUse' : 'PostToolUseFailure',
+      turnId,
+      ran.failureReason === undefined
+        ? {
+            tool_name: shell.name,
+            tool_input: input,
+            tool_use_id: toolUseId,
+            tool_response: toolHookOutput(ran.output),
+          }
+        : {
+            tool_name: shell.name,
+            tool_input: input,
+            tool_use_id: toolUseId,
+            error: toolHookOutput(ran.failureReason),
+            is_interrupt: false,
+            duration_ms: this.deps.now() - startedAt,
+          },
+      matcher,
+      signal,
+      false,
+    )
+    effects.contexts.push(...post.contexts)
+    if (post.stopReason !== undefined) {
+      effects.stopReason ??= post.stopReason
+    } else if (post.blockedReason !== undefined) {
+      effects.messages.push(post.blockedReason)
+    }
+    return { kind: 'ran', line, result }
+  }
+
+  /**
+   * One check: skipped when the fix loop stopped the checks or the user
+   * rejected it since their message; its line (paths refused when they
+   * cannot be passed safely); then the command's path above, a Reject
+   * remembered. Its output takes `maxChars` of the note's budget.
+   */
   private async runCheck(
     itemId: string,
     check: CheckCommandSetting,
     paths: readonly string[],
     signal: AbortSignal,
+    effects: HookEffects,
+    maxChars: number,
   ): Promise<CheckRun> {
+    const state = this.verifyState
+    if (state.isStopped) {
+      return skippedCheck(check, 'stopped')
+    }
+    if (state.rejected.has(check.name)) {
+      return skippedCheck(check, 'rejected')
+    }
     const built = checkCommandLine(check, paths, this.deps.platform)
     if (!built.ok) {
       return skippedCheck(check, 'unsafePath')
     }
-    const skip = await this.authorizeCommand(itemId, built.line, check.command, check.name, signal)
-    if (skip !== undefined) {
-      return skippedCheck(check, skip)
-    }
     const timeoutMs = checkTimeoutMs(check)
-    const result = await this.runCommand(built.line, timeoutMs, signal)
-    return finishedCheck(check, built.line, result, timeoutMs)
+    const outcome = await this.runVerifyCommand(
+      itemId,
+      {
+        line: built.line,
+        ruleCommand: check.command,
+        description: check.name,
+        timeoutMs,
+        isForced: false,
+        isRuleIgnored: this.changesWhatRunsNow(check.command),
+      },
+      signal,
+      effects,
+    )
+    if (outcome.kind === 'skipped') {
+      if (outcome.skip === 'rejected') {
+        state.rejected.add(check.name)
+      }
+      return skippedCheck(check, outcome.skip, outcome.detail)
+    }
+    return finishedCheck(check, outcome.line, outcome.result, timeoutMs, maxChars)
   }
 
   /**
@@ -3689,49 +3880,75 @@ export class ModelApiSession implements AgentSession {
     checks: readonly CheckCommandSetting[],
     paths: readonly string[],
     signal: AbortSignal,
+    effects: HookEffects,
+    maxChars: number,
   ): Promise<readonly CheckRun[]> {
     const runs: CheckRun[] = []
     for (const check of checks) {
       if (isAbortRequested(signal)) {
         throw new AbortedError()
       }
-      runs.push(await this.runCheck(itemId, check, paths, signal))
+      runs.push(await this.runCheck(itemId, check, paths, signal, effects, maxChars))
     }
     return runs
   }
 
+  /** The files that still exist, workspace-relative: only those reach a check (the M68 review). */
+  private async existingPaths(files: readonly EditedFile[]): Promise<readonly string[]> {
+    const exists = await Promise.all(
+      files.map(async (file) => {
+        try {
+          return await this.deps.io.pathExists(file.absolute)
+        } catch (error: unknown) {
+          this.deps.log.warn(`Verify: ${file.relative} could not be looked up: ${describe(error)}`)
+          return false
+        }
+      }),
+    )
+    return files.filter((_file, index) => exists[index] === true).map((file) => file.relative)
+  }
+
   /**
    * `run_checks` (M68): the checks the model names (all of them by default)
-   * over the files it names, or those edited in this turn.
+   * over the files it names (each must exist in the workspace), or those
+   * edited since the user's message, with the same state as the automatic
+   * step: the fix loop's stop and the user's rejections hold, a Reject is
+   * remembered, and a check run over the edited files is not run again
+   * automatically after this round (the M68 review).
    */
   private async runChecksCall(
     itemId: string,
     call: FunctionCallItem,
     signal: AbortSignal,
-  ): Promise<ToolOutcome> {
+  ): Promise<Performed> {
     const configured = this.checkCommands()
     if (configured.length === 0) {
-      return toolFailure(MODEL_TEXT.runChecksNone)
+      return { outcome: toolFailure(MODEL_TEXT.runChecksNone) }
     }
     const parsed = parseRunChecks(call.arguments)
     if (!parsed.ok) {
-      return toolFailure(parsed.reason)
+      return { outcome: toolFailure(parsed.reason) }
     }
     const names = parsed.args.names ?? configured.map((check) => check.name)
     const unknown = names.find((name) => configured.every((check) => check.name !== name))
     if (unknown !== undefined) {
-      return toolFailure(
-        fill(MODEL_TEXT.runChecksUnknown, {
-          name: unknown,
-          names: configured.map((check) => check.name).join(', '),
-        }),
-      )
+      return {
+        outcome: toolFailure(
+          fill(MODEL_TEXT.runChecksUnknown, {
+            name: unknown,
+            names: configured.map((check) => check.name).join(', '),
+          }),
+        ),
+      }
     }
-    let paths: string[] = []
-    if (parsed.args.paths === undefined) {
-      paths = Array.from(this.active?.editedInTurn.values() ?? [], (file) => file.relative)
+    const isEditedScope = parsed.args.paths === undefined
+    const paths: string[] = []
+    if (isEditedScope) {
+      const edited = Array.from(this.verifyState.edited, ([, file]) => file)
+      paths.push(...(await this.existingPaths(edited)))
     } else {
-      for (const given of parsed.args.paths) {
+      const named = parsed.args.paths ?? []
+      for (const given of named) {
         const resolved = await confineWorkspacePath(
           this.deps.workspaceRoot,
           given,
@@ -3739,18 +3956,41 @@ export class ModelApiSession implements AgentSession {
           this.deps.io,
         )
         if (!resolved.ok) {
-          return toolFailure(resolved.reason)
+          return { outcome: toolFailure(resolved.reason) }
+        }
+        if (!(await this.deps.io.pathExists(resolved.checkedAbsolute))) {
+          return {
+            outcome: toolFailure(
+              fill(MODEL_TEXT.runChecksMissingPath, { path: resolved.relative }),
+            ),
+          }
         }
         paths.push(resolved.relative)
       }
     }
     const selected = configured.filter((check) => names.includes(check.name))
-    const runs = await this.runChecks(itemId, selected, paths, signal)
+    const effects = newHookEffects()
+    const share = Math.floor(VERIFY_NOTE_MAX_CHARS / Math.max(selected.length, 1))
+    const runs = await this.runChecks(itemId, selected, paths, signal, effects, share)
+    const turn = this.active
+    if (turn !== undefined) {
+      turn.roundCheckRuns.push(...runs)
+      for (const [index, run] of runs.entries()) {
+        const check = selected[index]
+        const hasRun = run.summary.outcome !== 'notRun' && run.summary.outcome !== 'cancelled'
+        if (hasRun && check !== undefined && (isEditedScope || check.changedFiles !== true)) {
+          turn.checksSinceEdit.add(check.name)
+        }
+      }
+    }
     const section = checksSection(runs)
     return {
-      output: `${MODEL_TEXT.runChecksLead}\n\n${section}`,
-      visibleOutput: section,
-      verifySummary: { files: paths, checks: runs.map((run) => run.summary) },
+      outcome: {
+        output: `${MODEL_TEXT.runChecksLead}\n\n${section}`,
+        visibleOutput: section,
+        verifySummary: { files: paths, checks: runs.map((run) => run.summary) },
+      },
+      hookEffects: effects,
     }
   }
 
@@ -3997,41 +4237,73 @@ export class ModelApiSession implements AgentSession {
     const isEdited =
       performed.outcome.patch !== undefined && performed.outcome.failureReason === undefined
     if (isEdited) {
-      this.noteEdited({ relative: target.relative, absolute: target.absolute })
+      this.noteEdited(target)
     }
     const command = thenRunOf(call.arguments)
     if (command === undefined) {
       return { ...performed, isRejected: false }
     }
+    if (!isEdited) {
+      return {
+        outcome: {
+          ...performed.outcome,
+          output: `${performed.outcome.output}\n${MODEL_TEXT.thenRunEditFailed}`,
+        },
+        isRejected: false,
+      }
+    }
     return {
-      outcome: isEdited
-        ? await this.thenRun(
-            itemId,
-            target,
-            command,
-            performed.outcome,
-            signal,
-            shouldForceApproval,
-          )
-        : {
-            ...performed.outcome,
-            output: `${performed.outcome.output}\n${MODEL_TEXT.thenRunEditFailed}`,
-          },
+      ...(await this.thenRun(
+        itemId,
+        target,
+        command,
+        performed.outcome,
+        signal,
+        shouldForceApproval,
+      )),
       isRejected: false,
     }
   }
 
-  /** A file an edit tool wrote: checked after this round (M68). */
-  private noteEdited(file: EditedFile): void {
-    this.active?.editedInRound.set(file.absolute, file)
-    this.active?.editedInTurn.set(file.absolute, file)
+  /**
+   * A file an edit tool wrote (M68): checked after this round, the checks
+   * already run no longer covering it, and remembered since the user's
+   * message, with the first file that the editor's tools run as code.
+   */
+  private noteEdited(target: {
+    readonly relative: string
+    readonly absolute: string
+    readonly canonical: string
+  }): void {
+    const file: EditedFile = { relative: target.relative, absolute: target.absolute }
+    this.active?.editedInRound.set(target.absolute, file)
+    this.active?.checksSinceEdit.clear()
+    const state = this.verifyState
+    state.edited.set(target.absolute, file)
+    state.writtenNames.add(target.relative)
+    state.writtenNames.add(target.canonical)
+    if (
+      state.codeFile === undefined &&
+      (isCodeLoading(target.relative) || isCodeLoading(target.canonical))
+    ) {
+      state.codeFile = target.relative
+    }
+  }
+
+  /** A then_run that ran a check's own command covers that check for this round (M68). */
+  private noteCheckCommandRun(line: string): void {
+    for (const check of this.checkCommands()) {
+      if (check.command === line.trim()) {
+        this.active?.checksSinceEdit.add(check.name)
+      }
+    }
   }
 
   /**
    * An edit's `then_run` (M68, SoL-Pi's Action Fusion, reimplemented): the
-   * command takes the shell tool's permission path, then runs only if the
-   * file still holds what the edit left (formatted, when format on edit is
-   * on); its result is the call's second one.
+   * command by the shell tool's path, hooks included (the M68 review), run
+   * only if the file still holds what the edit left (formatted, when format
+   * on edit is on); its result is the call's second one.
    */
   private async thenRun(
     itemId: string,
@@ -4040,51 +4312,71 @@ export class ModelApiSession implements AgentSession {
     edit: ToolOutcome,
     signal: AbortSignal,
     isForced: boolean,
-  ): Promise<ToolOutcome> {
-    let skip: CheckSkip | undefined
+  ): Promise<Performed> {
+    const effects = newHookEffects()
+    let ran: CommandOutcome
     try {
-      skip = await this.authorizeCommand(
+      ran = await this.runVerifyCommand(
         itemId,
-        command,
-        command,
-        THEN_RUN_DESCRIPTION,
+        {
+          line: command,
+          ruleCommand: command,
+          description: THEN_RUN_DESCRIPTION,
+          timeoutMs: SHELL_DEFAULT_TIMEOUT_MS,
+          isForced,
+          isRuleIgnored: this.changesWhatRunsNow(command),
+          guard: () => this.isAsEdited(target),
+        },
         signal,
-        isForced,
+        effects,
       )
     } catch (error: unknown) {
-      if (!(error instanceof AbortedError)) {
+      if (!(error instanceof AbortedError) && !isAbortRequested(signal)) {
         throw error
       }
-      // Stopped at the card: the edit happened, so the call keeps its result
-      // and its diff; the turn ends when the loop sees the stop.
+      // Stopped at its hooks or its card: the edit happened, so the call keeps
+      // its result and its diff; the turn ends when the loop sees the stop.
       return {
-        ...edit,
-        output: `${edit.output}\n\n${fill(MODEL_TEXT.thenRunNotRun, { reason: MODEL_TEXT.toolCancelledByStop })}`,
-        thenRun: { command, outcome: 'cancelled', output: '' },
+        outcome: {
+          ...edit,
+          output: `${edit.output}\n\n${fill(MODEL_TEXT.thenRunNotRun, { reason: MODEL_TEXT.toolCancelledByStop })}`,
+          thenRun: { command, outcome: 'cancelled', output: '' },
+        },
+        hookEffects: effects,
       }
     }
-    if (skip === undefined && !(await this.isAsEdited(target))) {
-      skip = 'changed'
-    }
-    if (skip !== undefined) {
-      const reason = skipReason(skip)
+    if (ran.kind === 'skipped') {
+      const reason = skipReason(ran.skip, ran.detail)
       return {
-        ...edit,
-        output: `${edit.output}\n\n${fill(MODEL_TEXT.thenRunNotRun, { reason })}`,
-        thenRun: { command, outcome: 'notRun', skip, output: '' },
+        outcome: {
+          ...edit,
+          output: `${edit.output}\n\n${fill(MODEL_TEXT.thenRunNotRun, { reason })}`,
+          thenRun: {
+            command,
+            outcome: 'notRun',
+            skip: ran.skip,
+            ...(ran.detail !== undefined && ran.detail.trim() !== '' && { detail: ran.detail }),
+            output: '',
+          },
+        },
+        hookEffects: effects,
       }
     }
-    const result = await this.runCommand(command, SHELL_DEFAULT_TIMEOUT_MS, signal)
-    const ran = shellOutcome(result, SHELL_DEFAULT_TIMEOUT_MS)
+    const { line, result } = ran
+    this.noteCheckCommandRun(line)
+    const finished = shellOutcome(result, SHELL_DEFAULT_TIMEOUT_MS)
     return {
-      ...edit,
-      output: `${edit.output}\n\n${MODEL_TEXT.thenRunLead} $ ${command}\n${ran.output}`,
-      thenRun: {
-        command,
-        outcome: outcomeOf(result),
-        output: shellText(result),
-        ...(result.exitCode !== null && { exitCode: result.exitCode }),
+      outcome: {
+        ...edit,
+        output: `${edit.output}\n\n${MODEL_TEXT.thenRunLead} $ ${line}\n${finished.output}`,
+        thenRun: {
+          command: line,
+          outcome: outcomeOf(result),
+          output: shellText(result),
+          ...(result.exitCode !== null && { exitCode: result.exitCode }),
+        },
       },
+      hookEffects: effects,
     }
   }
 
@@ -4222,7 +4514,7 @@ export class ModelApiSession implements AgentSession {
       await this.touchPath(effectiveCall)
     }
     let { outcome } = result
-    const { isRejected, running } = result
+    const { isRejected, running, hookEffects } = result
     if (running === undefined) {
       if (!this.canQueueToolMedia(outcome)) {
         outcome = {
@@ -4239,7 +4531,7 @@ export class ModelApiSession implements AgentSession {
     } else {
       this.continueInBackground(turnId, started, effectiveCall, outcome, running)
     }
-    for (const context of pre.contexts) {
+    for (const context of [...pre.contexts, ...(hookEffects?.contexts ?? [])]) {
       this.replay.push({
         turnId,
         item: {
@@ -4270,13 +4562,19 @@ export class ModelApiSession implements AgentSession {
       toolMatcherNames(effectiveCall.name),
       signal,
     )
-    if (post.stopReason === undefined && post.blockedReason !== undefined) {
+    const blocked = [
+      ...(post.stopReason === undefined && post.blockedReason !== undefined
+        ? [post.blockedReason]
+        : []),
+      ...(hookEffects?.messages ?? []),
+    ]
+    for (const reason of blocked) {
       this.replay.push({
         turnId,
         item: {
           type: 'message',
           role: 'user',
-          content: [{ type: 'input_text', text: post.blockedReason }],
+          content: [{ type: 'input_text', text: reason }],
         },
       })
     }
@@ -4287,7 +4585,7 @@ export class ModelApiSession implements AgentSession {
         tool_use_id: itemId,
         tool_response: toolHookOutput(outcome.output),
       },
-      stopReason: post.stopReason,
+      stopReason: post.stopReason ?? hookEffects?.stopReason,
     }
   }
 
@@ -4508,30 +4806,43 @@ export class ModelApiSession implements AgentSession {
   /**
    * The verify loop's automatic step (M68, PLAN.md D49), after a round that
    * edited files and before the next request: the edited files' diagnostics
-   * once the language servers settle, then the user's check commands, each by
-   * the shell tool's permission path. Its row shows what ran, and the model
-   * reads it all as tool data. After CHECK_FIX_MAX_ROUNDS failing rounds in a
-   * row the checks stop for the turn, and the model and the user are told.
+   * once the language servers settle, then the user's check commands (those
+   * not already run since the round's last edit), each by the shell tool's
+   * path, its hooks included. Its row shows what ran, and the model reads it
+   * all as tool data, within one budget. After CHECK_FIX_MAX_ROUNDS failing
+   * rounds in a row the checks stop until the user's next message, and the
+   * model and the user are told. Nothing runs after the turn's last round
+   * (no request would read it) or a Stop (the M68 review). A hook's stop is
+   * returned.
    */
-  private async verifyRound(turn: ActiveTurn): Promise<void> {
+  private async verifyRound(turn: ActiveTurn, isLastRound: boolean): Promise<string | undefined> {
     const edited = Array.from(turn.editedInRound, ([, file]) => file)
     turn.editedInRound.clear()
+    const earlierRuns = turn.roundCheckRuns.splice(0)
+    const alreadyRun = new Set(turn.checksSinceEdit)
     const { verify } = this.deps
-    // A stopped turn checks nothing: the loop ends it before the next request.
-    if (verify === undefined || edited.length === 0 || isAbortRequested(turn.abort.signal)) {
-      return
+    const { signal } = turn.abort
+    if (isLastRound || verify === undefined || edited.length === 0 || isAbortRequested(signal)) {
+      return undefined
     }
+    const state = this.verifyState
     const isDiagnosticsOn = verify.isDiagnosticsOn()
     // Restricted Mode runs no shell (D13): the checks are left out, not refused one by one.
     const checks =
-      turn.areChecksStopped || !this.deps.isWorkspaceTrusted()
+      state.isStopped || !this.deps.isWorkspaceTrusted()
         ? []
-        : verify.checkCommands().filter((check) => !turn.rejectedChecks.has(check.name))
+        : verify
+            .checkCommands()
+            .filter((check) => !state.rejected.has(check.name) && !alreadyRun.has(check.name))
     if (!isDiagnosticsOn && checks.length === 0) {
-      return
+      if (this.countFixRound(earlierRuns)) {
+        this.noteFixLoopStopped(turn.turnId, [])
+      }
+      return undefined
     }
-    const { signal } = turn.abort
     const paths = edited.map((file) => file.relative)
+    const parts = (isDiagnosticsOn ? 1 : 0) + checks.length
+    const share = Math.floor(VERIFY_NOTE_MAX_CHARS / Math.max(parts, 1))
     const started: ItemSnapshot = {
       itemId: this.deps.newId(),
       kind: 'toolCall',
@@ -4542,11 +4853,16 @@ export class ModelApiSession implements AgentSession {
     }
     this.recordTranscript(turn.turnId, started)
     this.emit({ type: 'itemStarted', item: started })
-    let diagnostics: DiagnosticsReport | undefined
+    const effects = newHookEffects()
+    let pending: PendingReport | undefined
     let runs: readonly CheckRun[]
     try {
-      diagnostics = isDiagnosticsOn ? await this.editDiagnostics(verify, edited, signal) : undefined
-      runs = await this.runChecks(started.itemId, checks, paths, signal)
+      pending = isDiagnosticsOn
+        ? await this.editDiagnostics(verify, edited, signal, share)
+        : undefined
+      // Looked up after the language servers' wait, so a file gone by now is not passed.
+      const existing = checks.length === 0 ? [] : await this.existingPaths(edited)
+      runs = await this.runChecks(started.itemId, checks, existing, signal, effects, share)
       if (isAbortRequested(signal)) {
         throw new AbortedError()
       }
@@ -4561,13 +4877,9 @@ export class ModelApiSession implements AgentSession {
       this.rerecordTranscript(ended)
       throw isStopped ? new AbortedError() : error
     }
-    for (const run of runs) {
-      if (run.summary.skip === 'rejected') {
-        turn.rejectedChecks.add(run.summary.name)
-      }
-    }
+    const report = pending?.report
     const sections = [
-      ...(diagnostics === undefined ? [] : [diagnostics.text]),
+      ...(report === undefined ? [] : [report.text]),
       ...(runs.length === 0 ? [] : [checksSection(runs)]),
     ]
     const completed: ItemSnapshot = {
@@ -4576,70 +4888,114 @@ export class ModelApiSession implements AgentSession {
       visibleOutput: sections.join('\n\n'),
       verifySummary: {
         files: paths,
-        ...(diagnostics?.errors !== undefined && { errors: diagnostics.errors }),
-        ...(diagnostics?.warnings !== undefined && { warnings: diagnostics.warnings }),
+        ...(report?.errors !== undefined && { errors: report.errors }),
+        ...(report?.warnings !== undefined && { warnings: report.warnings }),
+        ...(report?.unchecked !== undefined && { unchecked: report.unchecked }),
         checks: runs.map((run) => run.summary),
       },
     }
     this.emit({ type: 'itemCompleted', item: completed })
     this.rerecordTranscript(completed)
-    const isLoopStopped = this.countFixRound(turn, runs)
-    const stopped = isLoopStopped
-      ? [fill(MODEL_TEXT.checksStopped, { count: String(CHECK_FIX_MAX_ROUNDS) })]
-      : []
-    this.replay.push({
-      turnId: turn.turnId,
-      item: noteItem([MODEL_TEXT.verifyLead, ...sections, ...stopped].join('\n\n')),
-    })
-    if (isLoopStopped) {
-      this.emit({
-        type: 'backendNotice',
-        level: 'warning',
-        text: plural(UI_TEXT.checksStoppedNotice, CHECK_FIX_MAX_ROUNDS),
+    if (this.countFixRound([...earlierRuns, ...runs])) {
+      this.noteFixLoopStopped(turn.turnId, sections)
+    } else {
+      this.replay.push({
+        turnId: turn.turnId,
+        item: noteItem([MODEL_TEXT.verifyLead, ...sections].join('\n\n')),
       })
+    }
+    // The model has the reads now: they become the baseline of the next check.
+    pending?.commit()
+    this.appendHookEffects(turn.turnId, effects)
+    return effects.stopReason
+  }
+
+  /** The verify note with the fix loop's stop at its end, and the panel's notice (M68). */
+  private noteFixLoopStopped(turnId: string, sections: readonly string[]): void {
+    const stopped = fill(MODEL_TEXT.checksStopped, { count: String(CHECK_FIX_MAX_ROUNDS) })
+    this.replay.push({
+      turnId,
+      item: noteItem([MODEL_TEXT.verifyLead, ...sections, stopped].join('\n\n')),
+    })
+    this.emit({
+      type: 'backendNotice',
+      level: 'warning',
+      text: plural(UI_TEXT.checksStoppedNotice, CHECK_FIX_MAX_ROUNDS),
+    })
+  }
+
+  /** What the checks' hooks added, after the verify note: their contexts, then their reasons. */
+  private appendHookEffects(turnId: string, effects: HookEffects): void {
+    for (const text of [...effects.contexts, ...effects.messages]) {
+      this.replay.push({ turnId, item: noteItem(text) })
     }
   }
 
   /**
    * The edited files' diagnostics, compared with their previous check (M68).
-   * Diagnostics that cannot be read are said so, to the model and the log,
-   * rather than reported clean.
+   * At most VERIFY_SHOWN_FILES_MAX files are shown and read, none once the
+   * conversation wrote a file the editor's tools run as code (the M68
+   * review); the others are "not checked" with the reason. Diagnostics that
+   * cannot be read at all are said so, to the model and the log, rather than
+   * reported clean.
    */
   private async editDiagnostics(
     verify: VerifyHooks,
     edited: readonly EditedFile[],
     signal: AbortSignal,
-  ): Promise<DiagnosticsReport> {
-    try {
-      const files = await unlessStopped(verify.diagnosticsAfterEdit(edited, signal), signal)
-      return this.diagnosticsHistory.report(files)
-    } catch (error: unknown) {
-      if (error instanceof AbortedError) {
-        throw error
+    maxChars: number,
+  ): Promise<PendingReport> {
+    const { codeFile } = this.verifyState
+    const shown = codeFile === undefined ? edited.slice(0, VERIFY_SHOWN_FILES_MAX) : []
+    const skipped: FileDiagnostics[] = edited.slice(shown.length).map((file) => ({
+      file,
+      entries: [],
+      unchecked: codeFile === undefined ? 'tooMany' : 'codeLoading',
+    }))
+    let read: readonly FileDiagnostics[] = []
+    if (shown.length > 0) {
+      try {
+        read = await unlessStopped(verify.diagnosticsAfterEdit(shown, signal), signal)
+      } catch (error: unknown) {
+        if (error instanceof AbortedError) {
+          throw error
+        }
+        this.deps.log.warn(`Verify: the diagnostics could not be read: ${describe(error)}`)
+        return {
+          report: {
+            text: fill(MODEL_TEXT.verifyDiagnosticsUnavailable, { reason: describe(error) }),
+            unchecked: edited.length,
+          },
+          commit: NOTHING_TO_COMMIT,
+        }
       }
-      this.deps.log.warn(`Verify: the diagnostics could not be read: ${describe(error)}`)
-      return { text: fill(MODEL_TEXT.verifyDiagnosticsUnavailable, { reason: describe(error) }) }
     }
+    return this.diagnosticsHistory.report([...read, ...skipped], {
+      maxChars,
+      ...(codeFile !== undefined && { codeFile }),
+    })
   }
 
   /**
    * The bounded fix loop (M68): a round whose checks failed counts, one that
    * passed resets the count, one where none ran leaves it. At the limit the
-   * checks stop for the rest of the turn; true when this round reached it.
+   * checks stop until the user's next message, a goal's wake included (the
+   * M68 review); true when this round reached it.
    */
-  private countFixRound(turn: ActiveTurn, runs: readonly CheckRun[]): boolean {
+  private countFixRound(runs: readonly CheckRun[]): boolean {
+    const state = this.verifyState
     const verdict = roundVerdict(runs)
     if (verdict === 'passed') {
-      turn.failedCheckRounds = 0
+      state.failedRounds = 0
     }
-    if (verdict !== 'failed') {
+    if (verdict !== 'failed' || state.isStopped) {
       return false
     }
-    turn.failedCheckRounds += 1
-    if (turn.failedCheckRounds < CHECK_FIX_MAX_ROUNDS) {
+    state.failedRounds += 1
+    if (state.failedRounds < CHECK_FIX_MAX_ROUNDS) {
       return false
     }
-    turn.areChecksStopped = true
+    state.isStopped = true
     return true
   }
 
@@ -4807,7 +5163,12 @@ export class ModelApiSession implements AgentSession {
         this.dropUndeliveredMedia(turn.turnId)
         return
       }
-      await this.verifyRound(turn)
+      const verifyStop = await this.verifyRound(turn, round === MODEL_API_MAX_TOOL_ROUNDS - 1)
+      if (verifyStop !== undefined) {
+        // A check's hook stopped the turn after the round, as PostToolBatch can.
+        this.dropUndeliveredMedia(turn.turnId)
+        return
+      }
     }
     // Input accepted during the last permitted round still needs a request
     // that sees it. Steered messages belonged to this turn, so run them
@@ -4833,13 +5194,15 @@ export class ModelApiSession implements AgentSession {
       goalWakePending: false,
       isWebSearchAllowed: false,
       editedInRound: new Map(),
-      editedInTurn: new Map(),
-      failedCheckRounds: 0,
-      areChecksStopped: false,
-      rejectedChecks: new Set(),
+      checksSinceEdit: new Set(),
+      roundCheckRuns: [],
       ...(queued.confirmedRequest !== undefined && {
         confirmedRequest: queued.confirmedRequest,
       }),
+    }
+    // A user's message starts the verify loop afresh; a goal's wake carries on (M68).
+    if (!queued.isGoalWake) {
+      this.verifyState = newVerifyState()
     }
     this.active = turn
     this.status = RUNNING

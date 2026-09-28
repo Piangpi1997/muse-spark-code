@@ -9,7 +9,8 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import * as vscode from 'vscode'
-import { createVerifyEditor } from '../../src/host/editor/verifyEditor'
+import { canonicalPath } from '../../src/host/canonicalPath'
+import { createVerifyEditor, type VerifyEditor } from '../../src/host/editor/verifyEditor'
 import { createLogger } from '../../src/host/logger'
 
 // A server that is still starting can take seconds to report here; the
@@ -20,16 +21,19 @@ const FORMAT = { syncMs: 2000, pollMs: 50, formatMs: 12_000 }
 
 suite('verify loop in VS Code (M68)', () => {
   let folder: string
+  let verify: VerifyEditor
   const channel = vscode.window.createOutputChannel('M68 verify', { log: true })
-  const verify = createVerifyEditor({
-    platform: process.platform,
-    log: createLogger(channel),
-    settle: SETTLE,
-    format: FORMAT,
-  })
 
   suiteSetup(async () => {
     folder = await mkdtemp(path.join(tmpdir(), 'm68-verify-'))
+    verify = createVerifyEditor({
+      platform: process.platform,
+      log: createLogger(channel),
+      workspaceRoot: folder,
+      realPath: canonicalPath,
+      settle: SETTLE,
+      format: FORMAT,
+    })
   })
 
   suiteTeardown(async () => {
@@ -61,14 +65,26 @@ suite('verify loop in VS Code (M68)', () => {
       ['Expected comma'],
     ])
     assert.equal(results[1]?.entries[0]?.line, 3)
+    // The tabs it opened are closed again (the M68 review).
+    const shown = new Set(
+      files.map((file) => vscode.Uri.file(path.join(folder, file.relative)).toString()),
+    )
+    const left = vscode.window.tabGroups.all
+      .flatMap((group) => group.tabs)
+      .filter(
+        (tab) => tab.input instanceof vscode.TabInputText && shown.has(tab.input.uri.toString()),
+      )
+    assert.deepEqual(left, [])
   })
 
-  test('settles one file for the diagnostics tool', async () => {
+  // The JSON server clears a file's diagnostics when its tab closes (this
+  // test found it), so the tool gets what was read while the file showed.
+  test('settles one file for the diagnostics tool, read before its tab closes', async () => {
     const absolute = path.join(folder, 'tool.json')
     await writeFile(absolute, '[1 2]\n')
-    await verify.settleFile(absolute, 'tool.json')
-    const held = vscode.languages.getDiagnostics(vscode.Uri.file(absolute))
-    assert.ok(held.length > 0, 'nothing reported for the file the tool named')
+    const read = await verify.settleFile(absolute)
+    assert.ok(read !== undefined && read.length > 0, 'nothing reported for the file the tool named')
+    assert.equal(read[0]?.path, 'tool.json')
   })
 
   test('formats a JSON file the tool wrote with the built-in formatter', async () => {

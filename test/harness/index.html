@@ -2435,16 +2435,31 @@
               tool: 'verify_edits',
               args: '{"paths":["src/parse.ts"]}',
               visibleOutput:
-                "Errors and warnings of the files you edited, from the language servers:\nsrc/parse.ts: errors 0, warnings 1 (0 new, 1 fixed since the previous check)\nsrc/parse.ts:3:9: warning: 'radix' is declared but never read. [ts]\n\nThe user's check commands:\n\nlint: passed\n$ npm run lint -- 'src/parse.ts'\n[exit code 0]",
+                "Errors and warnings of the files you edited, from the language servers:\nsrc/parse.ts: errors 0, warnings 1 (0 new, 1 fixed since the previous check)\nsrc/parse.ts:3:9: warning: 'radix' is declared but never read. [ts]\n\nThe user's check commands:\n\nlint: passed\n$ npm run lint -- 'src/parse.ts'\n[exit code 0]\n\ntest: failed\n$ npm test\n✗ parses \"42\" (expected 42, got NaN)\n1 failing\n[exit code 1]\n\ntypes: not run, the user rejected it",
               verifySummary: {
                 files: ['src/parse.ts'],
                 errors: 0,
                 warnings: 1,
                 checks: [
                   { name: 'lint', outcome: 'passed' },
-                  { name: 'test', outcome: 'notRun', skip: 'rejected' },
+                  { name: 'test', outcome: 'failed' },
+                  { name: 'types', outcome: 'notRun', skip: 'rejected' },
                 ],
               },
+            },
+          })
+          event({
+            type: 'itemCompleted',
+            item: {
+              itemId: 'ed2',
+              kind: 'toolCall',
+              status: 'completed',
+              turnId: 'tv1',
+              tool: 'edit_file',
+              args: '{"path":"src/parse.ts","find":"Number(text)","replace":"Number.parseInt(text, 10)"}',
+              visibleOutput:
+                'edited\n--- original\n+++ updated\n@@\n-  return Number(text)\n+  return Number.parseInt(text, 10)\n',
+              patchSummary: { files: 1, added: 1, removed: 1 },
             },
           })
           event({
@@ -2485,9 +2500,6 @@
             ],
             isJudgeEscalated: false,
             isProtectedWrite: false,
-          })
-          later(150, () => {
-            document.querySelector('[data-entry-id="ve1"] .tool-toggle')?.click()
           })
         },
         // --- M25: a refused image says why, and a link out of the workspace is refused ---

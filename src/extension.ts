@@ -784,13 +784,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // The verify loop (M68, PLAN.md D49): what the language servers report on
   // edited files, which only an editor showing a file makes them do, and the
   // formatter over the Model API backend's edits.
-  const verifyEditor = createVerifyEditor({ platform: process.platform, log })
+  const verifyEditor = createVerifyEditor({
+    platform: process.platform,
+    log,
+    workspaceRoot,
+    realPath: canonicalPath,
+  })
   const diagnostics = diagnosticsTool({
     getDiagnostics: collectDiagnostics,
     workspaceRoot,
     platform: process.platform,
     relativeInRoot: (absolutePath) => relativePathInWorkspace(vscode.Uri.file(absolutePath)),
-    settleFile: (absolutePath, relative) => verifyEditor.settleFile(absolutePath, relative),
+    settleFile: (absolutePath, signal) => verifyEditor.settleFile(absolutePath, signal),
   })
   // Images for Muse Code (M44, PLAN.md D37): made here with the stored key,
   // never by `muse serve`, each one confirmed with its price.
@@ -1362,10 +1367,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         },
         // Muse Code checks its own edits (M68): its checks run through its own
         // shell, so none are named while Restricted Mode runs no shell (D13).
-        verifyGuidance: () => {
+        // The diagnostics sentence only for a session that has the ide server.
+        verifyGuidance: (hasIdeServer) => {
           const settings = currentSettings()
           return verifyGuidance(
-            settings.diagnosticsAfterEdits,
+            settings.diagnosticsAfterEdits && hasIdeServer,
             vscode.workspace.isTrusted ? settings.checkCommands : [],
           )
         },

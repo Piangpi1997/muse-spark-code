@@ -282,10 +282,11 @@ export interface ConversationDeps {
   readonly forgetPaidUse: () => Promise<void>
   /**
    * The verify loop's note to Muse Code (M68, PLAN.md D49), read for each
-   * message: check the diagnostics of what it edits, run the user's checks.
-   * Undefined when there is nothing to say.
+   * message: check the diagnostics of what it edits (only when the session
+   * has the `ide` server), run the user's checks. Undefined when there is
+   * nothing to say.
    */
-  readonly verifyGuidance?: () => string | undefined
+  readonly verifyGuidance?: (hasIdeServer: boolean) => string | undefined
   readonly now: () => number
   readonly log: Logger
 }
@@ -503,6 +504,8 @@ export class ConversationController {
   /** User cards whose file bytes rewind cannot restore across every backend/history path. */
   private readonly fileMessageIds = new Set<string>()
   /** Fresh cards use local IDs until Muse Code serves their durable user item IDs. */
+  /** Sessions started or resumed with the `ide` server, whose tools they can call (M68). */
+  private readonly ideSessions = new WeakSet<AgentSession>()
   private readonly acceptedUserCards = new Map<
     string,
     { readonly turnId: string; readonly text: string }
@@ -1878,6 +1881,9 @@ export class ConversationController {
       ...(this.isSideChat && { sideChat: true }),
       ...(mcpServers !== undefined && { mcpServers }),
     })
+    if (mcpServers !== undefined) {
+      this.ideSessions.add(session)
+    }
     if (this.isDisposed || this.attachmentGeneration !== generation) {
       // The surface closed while the session was starting: nobody would listen.
       session.dispose()
@@ -1911,13 +1917,17 @@ export class ConversationController {
       return undefined
     }
     let loaded: LoadedSession
+    const mcpServers = await this.mcpServersFor(host)
     try {
       loaded = await host.resumeSession(
         target.sessionId,
         this.modelId,
-        await this.mcpServersFor(host),
+        mcpServers,
         this.sideResumeOptions(host),
       )
+      if (mcpServers !== undefined) {
+        this.ideSessions.add(loaded.session)
+      }
     } catch (error: unknown) {
       this.notice('warning', `${UI_TEXT.sessionNotContinued}: ${describe(error)}`)
       return undefined
@@ -2219,12 +2229,16 @@ export class ConversationController {
         return
       }
       this.watchList(host)
+      const mcpServers = await this.mcpServersFor(host)
       const loaded = await host.resumeSession(
         sessionId,
         this.modelId,
-        await this.mcpServersFor(host),
+        mcpServers,
         this.sideResumeOptions(host),
       )
+      if (mcpServers !== undefined) {
+        this.ideSessions.add(loaded.session)
+      }
       if (generation !== this.sendInvalidationEpoch || this.isDisposed) {
         loaded.session.dispose()
         return
@@ -2634,7 +2648,10 @@ export class ConversationController {
       }
       // Muse Code also hears how to check its edits (M68): the Model API
       // backend checks them itself and says so in its instructions.
-      const verifyNote = host.info.kind === 'museCode' ? this.deps.verifyGuidance?.() : undefined
+      const verifyNote =
+        host.info.kind === 'museCode'
+          ? this.deps.verifyGuidance?.(this.ideSessions.has(session))
+          : undefined
       const verifyParts: readonly TurnPart[] =
         verifyNote === undefined ? [] : [{ type: 'text', text: verifyNote }]
       const note: readonly TurnPart[] =

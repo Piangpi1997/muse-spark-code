@@ -4,17 +4,21 @@
 // path per mode, run_checks, then_run with its guard, and format on edit.
 
 import { describe, expect, it, vi } from 'vitest'
+import * as z from 'zod/mini'
 import type { AgentEvent, ItemSnapshot } from '../../src/shared/agentEvents'
 import {
   CHECK_FIX_MAX_ROUNDS,
   type CheckCommandSetting,
+  MODEL_API_MAX_TOOL_ROUNDS,
   MODEL_TEXT,
   SHELL_DEFAULT_TIMEOUT_MS,
   UI_TEXT,
+  VERIFY_NOTE_MAX_CHARS,
 } from '../../src/shared/constants'
 import { fill, plural } from '../../src/shared/l10n/text'
+import { type HookDefinition, parseHookConfig } from '../../src/core/backends/modelapi/hooks'
 import { ModelApiHost, type ModelApiSession } from '../../src/core/backends/modelapi/ModelApiHost'
-import type { ShellResult } from '../../src/core/backends/modelapi/tools'
+import type { ShellResult, ToolIo } from '../../src/core/backends/modelapi/tools'
 import type { VerifyHooks } from '../../src/core/backends/modelapi/verifyLoop'
 import type { DiagnosticEntry } from '../../src/core/diagnostics'
 import type { EditedFile, FileDiagnostics } from '../../src/core/verify/diagnosticsReport'
@@ -63,14 +67,57 @@ interface SetupOptions {
   readonly format?: (absolutePath: string, text: string) => Promise<string | undefined>
   readonly io?: MemoryToolIo
   readonly hasVerify?: boolean
+  /** The user's hooks (M51), and what each run of one answers. */
+  readonly hooks?: readonly HookDefinition[]
+  readonly runHook?: HookRunner
+}
+
+type HookRunner = NonNullable<ToolIo['runHook']>
+
+/** One hook for each event named, matching every tool; `runHook` answers them. */
+function hooksOn(...events: readonly string[]): readonly HookDefinition[] {
+  return parseHookConfig(
+    JSON.stringify({
+      hooks: Object.fromEntries(
+        events.map((event) => [event, [{ hooks: [{ type: 'command', command: event }] }]]),
+      ),
+    }),
+    'project',
+    'linux',
+  ).hooks
+}
+
+/** Each hook run's stdout: what `answer` gives for the event and the payload, as JSON. */
+function hookAnswers(
+  answer: (event: string, payload: Record<string, unknown>) => unknown,
+): HookRunner {
+  return (_command, payload) => {
+    const parsed = z.record(z.string(), z.unknown()).parse(JSON.parse(payload))
+    const reply = answer(String(parsed['hook_event_name']), parsed)
+    return Promise.resolve({
+      stdout: reply === undefined ? '{}' : JSON.stringify(reply),
+      stderr: '',
+      exitCode: 0,
+      isTimedOut: false,
+      isCancelled: false,
+    })
+  }
+}
+
+/** Whether a hook's payload names the shell tool, as a check or then_run does. */
+function isShell(payload: Record<string, unknown>): boolean {
+  return payload['tool_name'] === 'bash'
 }
 
 function setup(options: SetupOptions = {}) {
   const api = fakeModelApi()
   const log = new FakeLogOutputChannel()
-  const io =
+  const baseIo =
     options.io ??
     memoryToolIo(options.files ?? { 'src/a.ts': 'const a = 1\n' }, ROOT, options.shell)
+  const io: MemoryToolIo =
+    options.runHook === undefined ? baseIo : { ...baseIo, runHook: options.runHook }
+  const { hooks } = options
   const diagnosticsCalls: (readonly EditedFile[])[] = []
   const formatCalls: string[] = []
   const verify: VerifyHooks = {
@@ -116,6 +163,7 @@ function setup(options: SetupOptions = {}) {
     noteSubagentUsage: () => undefined,
     memory: undefined,
     ...(options.hasVerify !== false && { verify }),
+    ...(hooks !== undefined && { loadHooks: () => Promise.resolve(hooks) }),
   })
   return { api, host, io, log, diagnosticsCalls, formatCalls }
 }
@@ -136,6 +184,8 @@ async function start(
   events: AgentEvent[]
   cards: Extract<AgentEvent, { type: 'approvalRequested' }>[]
   turn: (text?: string) => Promise<void>
+  /** Runs `action` and waits for the turn it starts (a goal's wake) to end. */
+  untilTurnEnds: (action: () => Promise<unknown>) => Promise<void>
 }> {
   const session = (await t.host.startSession({
     workspaceRoot: ROOT,
@@ -175,6 +225,11 @@ async function start(
     turn: async (text = 'fix it') => {
       const finished = done.promise
       await session.sendTurn([{ type: 'text', text }])
+      await finished
+    },
+    untilTurnEnds: async (action) => {
+      const finished = done.promise
+      await action()
       await finished
     },
   }
@@ -266,6 +321,30 @@ function toolNames(body: Record<string, unknown> | undefined): readonly string[]
   return tools.flatMap((tool) => (tool.name === undefined ? [] : [tool.name]))
 }
 
+/** A turn of one edit whose then_run is `npm test`, finished. */
+async function editThenTest(t: Setup): Promise<Awaited<ReturnType<typeof start>>> {
+  const started = await start(t, 'allowAll')
+  t.api.script({ calls: [editCall('1', '2', 'npm test')] }, { text: 'ok' })
+  await started.turn()
+  return started
+}
+
+/** A PreToolUse hook's denial, with its words. */
+function deny(reason: string): Record<string, unknown> {
+  return {
+    hookSpecificOutput: {
+      hookEventName: 'PreToolUse',
+      permissionDecision: 'deny',
+      permissionDecisionReason: reason,
+    },
+  }
+}
+
+/** How many times the lint check ran. */
+function lintRuns(t: Setup): number {
+  return t.io.shellCalls.filter((call) => call.command.startsWith(LINT.command)).length
+}
+
 const TYPE_ERROR: DiagnosticEntry = {
   path: undefined,
   severity: 'error',
@@ -345,7 +424,7 @@ describe('the verify loop after a round of edits (Model API)', () => {
       fill(MODEL_TEXT.verifyDiagnosticsUnavailable, { reason: 'no language server' }),
     )
     const [row] = completedRows(events, 'verify_edits')
-    expect(row?.verifySummary).toEqual({ files: ['src/a.ts'], checks: [] })
+    expect(row?.verifySummary).toEqual({ files: ['src/a.ts'], unchecked: 1, checks: [] })
     expect(logLines(t.log).join('\n')).toContain('the diagnostics could not be read')
   })
 
@@ -558,7 +637,12 @@ describe('an automatic check takes the shell tool’s permission path, per mode'
 
 describe('run_checks (the model’s own call)', () => {
   it('is offered with the checks named, and runs the ones asked over the turn’s edits', async () => {
-    const t = setup({ checks: [LINT, TEST], shell: lintShell(), isDiagnosticsOn: false })
+    const t = setup({
+      files: { 'src/a.ts': 'const a = 1\n', 'src/b.ts': 'const b = 1\n' },
+      checks: [LINT, TEST],
+      shell: lintShell(),
+      isDiagnosticsOn: false,
+    })
     const { events, turn } = await start(t, 'allowAll')
     t.api.script(
       { calls: [{ name: 'run_checks', arguments: '{"names":["lint"]}' }] },
@@ -800,6 +884,560 @@ describe('the instructions', () => {
     await second.turn()
     expect(String(restricted.api.responseBodies()[0]?.['instructions'])).not.toContain(
       '# Checking your work',
+    )
+  })
+})
+
+// The M68 review: then_run and the checks go through the user's tool hooks
+// as calls of the shell tool, and a hook's "no" is told apart from the user's.
+describe('the user’s hooks see then_run and the checks as shell calls', () => {
+  it('lets a PreToolUse hook deny a then_run command, with its words, or a rewrite without one', async () => {
+    const payloads: Record<string, unknown>[] = []
+    const t = setup({
+      isDiagnosticsOn: false,
+      hooks: hooksOn('PreToolUse'),
+      runHook: hookAnswers((_event, payload) => {
+        if (!isShell(payload)) {
+          return undefined
+        }
+        payloads.push(payload)
+        return deny('no tests on main')
+      }),
+    })
+    const { events } = await editThenTest(t)
+    expect(t.io.shellCalls).toEqual([])
+    expect(payloads[0]?.['tool_input']).toMatchObject({ command: 'npm test' })
+    expect(completedRows(events, 'edit_file')[0]?.thenRun).toEqual({
+      command: 'npm test',
+      outcome: 'notRun',
+      skip: 'hookDenied',
+      detail: 'no tests on main',
+      output: '',
+    })
+    const reason = fill(MODEL_TEXT.checkDetail, {
+      reason: MODEL_TEXT.checkSkipHookDenied,
+      detail: 'no tests on main',
+    })
+    expect(outputs(t.api.responseBodies()[1])[0]).toContain(
+      fill(MODEL_TEXT.thenRunNotRun, { reason }),
+    )
+
+    // A rewrite with no command, then one whose command is blank.
+    const rewrites: readonly Record<string, unknown>[] = [{ script: 'npm test' }, { command: '  ' }]
+    let rewritten = 0
+    const blank = setup({
+      isDiagnosticsOn: false,
+      hooks: hooksOn('PreToolUse'),
+      runHook: hookAnswers((_event, payload) => {
+        if (!isShell(payload)) {
+          return undefined
+        }
+        rewritten += 1
+        return {
+          hookSpecificOutput: {
+            hookEventName: 'PreToolUse',
+            permissionDecision: 'ask',
+            updatedInput: rewrites[rewritten - 1],
+          },
+        }
+      }),
+    })
+    const second = await start(blank, 'allowAll')
+    blank.api.script(
+      { calls: [editCall('1', '2', 'npm test')] },
+      { calls: [editCall('2', '3', 'npm test')] },
+      { text: 'ok' },
+    )
+    await second.turn()
+    expect(blank.io.shellCalls).toEqual([])
+    expect(completedRows(second.events, 'edit_file').map((row) => row.thenRun)).toEqual([
+      expect.objectContaining({ skip: 'hookDenied', detail: MODEL_TEXT.hookInputNoCommand }),
+      expect.objectContaining({ skip: 'hookDenied', detail: MODEL_TEXT.hookInputNoCommand }),
+    ])
+  })
+
+  it('runs the command a PreToolUse hook rewrote, and asks when the hook says ask', async () => {
+    const t = setup({
+      isDiagnosticsOn: false,
+      hooks: hooksOn('PreToolUse'),
+      runHook: hookAnswers((_event, payload) =>
+        isShell(payload)
+          ? {
+              hookSpecificOutput: {
+                hookEventName: 'PreToolUse',
+                permissionDecision: 'ask',
+                updatedInput: { command: 'npm test -- --bail' },
+              },
+            }
+          : undefined,
+      ),
+    })
+    const { cards, events } = await editThenTest(t)
+    expect(cards.map((card) => card.subject)).toEqual([
+      { kind: 'shell', command: 'npm test -- --bail' },
+    ])
+    expect(t.io.shellCalls.map((call) => call.command)).toEqual(['npm test -- --bail'])
+    expect(completedRows(events, 'edit_file')[0]?.thenRun).toMatchObject({
+      command: 'npm test -- --bail',
+      outcome: 'passed',
+    })
+  })
+
+  it('asks for the then_run command too when a hook made the edit itself ask', async () => {
+    const t = setup({
+      isDiagnosticsOn: false,
+      hooks: hooksOn('PreToolUse'),
+      runHook: hookAnswers((_event, payload) =>
+        payload['tool_name'] === 'edit_file'
+          ? { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'ask' } }
+          : undefined,
+      ),
+    })
+    const { cards } = await editThenTest(t)
+    expect(cards.map((card) => card.subject.kind)).toEqual(['fileWrite', 'shell'])
+    expect(t.io.shellCalls).toHaveLength(1)
+  })
+
+  it('gives the model what a PostToolUse hook adds after the output, and stops when it says', async () => {
+    const t = setup({
+      isDiagnosticsOn: false,
+      hooks: hooksOn('PostToolUse'),
+      runHook: hookAnswers((_event, payload) =>
+        isShell(payload)
+          ? {
+              decision: 'block',
+              reason: 'tests are slow here',
+              hookSpecificOutput: {
+                hookEventName: 'PostToolUse',
+                additionalContext: 'CI runs them too',
+              },
+            }
+          : undefined,
+      ),
+    })
+    await editThenTest(t)
+    const input = z
+      .array(z.record(z.string(), z.unknown()))
+      .parse(t.api.responseBodies()[1]?.['input'])
+    const output = input.findIndex((item) => item['type'] === 'function_call_output')
+    const texts = input.map((item) => JSON.stringify(item))
+    const context = texts.findIndex((text) => text.includes('CI runs them too'))
+    const reason = texts.findIndex((text) => text.includes('tests are slow here'))
+    expect(output).toBeGreaterThan(-1)
+    expect(context).toBeGreaterThan(output)
+    expect(reason).toBeGreaterThan(context)
+
+    const stopping = setup({
+      isDiagnosticsOn: false,
+      hooks: hooksOn('PostToolUse'),
+      runHook: hookAnswers((_event, payload) =>
+        isShell(payload) ? { continue: false, stopReason: 'enough for today' } : undefined,
+      ),
+    })
+    const second = await start(stopping, 'allowAll')
+    stopping.api.script({ calls: [editCall('1', '2', 'npm test')] }, { text: 'never' })
+    await second.turn()
+    expect(stopping.io.shellCalls).toHaveLength(1)
+    expect(stopping.api.responseBodies()).toHaveLength(1)
+  })
+
+  it('runs each check through them: a denial is not a Reject, and a stop ends the turn', async () => {
+    let shellHooks = 0
+    const t = setup({
+      checks: [LINT],
+      isDiagnosticsOn: false,
+      shell: lintShell(),
+      hooks: hooksOn('PreToolUse'),
+      runHook: hookAnswers((_event, payload) => {
+        if (!isShell(payload)) {
+          return undefined
+        }
+        shellHooks += 1
+        return shellHooks === 1 ? deny('not now') : undefined
+      }),
+    })
+    const { events, turn } = await start(t, 'allowAll')
+    t.api.script({ calls: [editCall('1', '2')] }, { calls: [editCall('2', '3')] }, { text: 'ok' })
+    await turn()
+    expect(completedRows(events, 'verify_edits').map((row) => row.verifySummary?.checks)).toEqual([
+      [{ name: 'lint', outcome: 'notRun', skip: 'hookDenied', detail: 'not now' }],
+      [{ name: 'lint', outcome: 'failed' }],
+    ])
+    expect(userText(t.api.responseBodies()[1])).toContain(
+      fill(MODEL_TEXT.checkNotRun, {
+        name: 'lint',
+        reason: fill(MODEL_TEXT.checkDetail, {
+          reason: MODEL_TEXT.checkSkipHookDenied,
+          detail: 'not now',
+        }),
+      }),
+    )
+
+    const stopping = setup({
+      checks: [LINT],
+      isDiagnosticsOn: false,
+      hooks: hooksOn('PostToolUse'),
+      runHook: hookAnswers((_event, payload) =>
+        isShell(payload) ? { continue: false, stopReason: 'stop after lint' } : undefined,
+      ),
+    })
+    const second = await start(stopping, 'allowAll')
+    stopping.api.script({ calls: [editCall('1', '2')] }, { text: 'never' })
+    await second.turn()
+    expect(stopping.io.shellCalls).toHaveLength(1)
+    expect(stopping.api.responseBodies()).toHaveLength(1)
+    expect(completedRows(second.events, 'verify_edits')[0]?.status).toBe('completed')
+  })
+
+  it('tells a PermissionRequest hook’s denial from the user’s Reject, and asks again later', async () => {
+    let asked = 0
+    const t = setup({
+      checks: [LINT],
+      isDiagnosticsOn: false,
+      shell: lintShell(),
+      hooks: hooksOn('PermissionRequest'),
+      runHook: hookAnswers(() => {
+        asked += 1
+        return asked === 1
+          ? {
+              hookSpecificOutput: {
+                hookEventName: 'PermissionRequest',
+                decision: { behavior: 'deny', message: 'ask me later' },
+              },
+            }
+          : undefined
+      }),
+    })
+    const { cards, events, turn } = await start(t, 'onRequest')
+    t.api.script({ calls: [editCall('1', '2')] }, { calls: [editCall('2', '3')] }, { text: 'ok' })
+    await turn()
+    expect(cards).toHaveLength(1)
+    expect(completedRows(events, 'verify_edits').map((row) => row.verifySummary?.checks)).toEqual([
+      [{ name: 'lint', outcome: 'notRun', skip: 'hookDenied', detail: 'ask me later' }],
+      [{ name: 'lint', outcome: 'failed' }],
+    ])
+  })
+})
+
+// The M68 review: one state for the automatic checks and run_checks, kept
+// until the user's next message; nothing run twice, or after the last round.
+describe('the checks’ state since the user’s message', () => {
+  it('asks again for a check allowed for the session once the turn edits what decides what it runs', async () => {
+    const t = setup({
+      files: { 'src/a.ts': 'const a = 1\n', 'package.json': '{}\n' },
+      checks: [LINT],
+      isDiagnosticsOn: false,
+    })
+    const { cards, turn } = await start(t, 'onRequest', () => 'allow_session')
+    const manifestEdit: ScriptedCall = {
+      name: 'edit_file',
+      arguments: JSON.stringify({ path: 'package.json', find: '{}', replace: '{"x":1}' }),
+    }
+    // The second round's lint would be allowed by the rule (see "Always
+    // allow in this session" above), but that round also edits the manifest.
+    t.api.script(
+      { calls: [editCall('1', '2')] },
+      { calls: [editCall('2', '3'), manifestEdit] },
+      { text: 'ok' },
+    )
+    await turn()
+    expect(cards.map((card) => card.subject)).toEqual([
+      { kind: 'shell', command: "npm run lint -- 'src/a.ts'" },
+      { kind: 'shell', command: "npm run lint -- 'src/a.ts' 'package.json'" },
+    ])
+    // The user's next message trusts the session's rule again.
+    t.api.script({ calls: [editCall('3', '4')] }, { text: 'ok' })
+    await turn('go on')
+    expect(cards).toHaveLength(2)
+    expect(lintRuns(t)).toBe(3)
+  })
+
+  it('keeps a Reject and the fix loop’s stop for run_checks too, and remembers its Reject', async () => {
+    const t = setup({ checks: [LINT], isDiagnosticsOn: false })
+    const { cards, events, turn } = await start(t, 'onRequest', () => 'abort')
+    t.api.script(
+      { calls: [{ name: 'run_checks', arguments: '{}' }] },
+      { calls: [{ name: 'run_checks', arguments: '{}' }] },
+      { calls: [editCall('1', '2')] },
+      { text: 'ok' },
+    )
+    await turn()
+    expect(cards).toHaveLength(1)
+    expect(t.io.shellCalls).toEqual([])
+    expect(completedRows(events, 'run_checks').map((row) => row.verifySummary?.checks)).toEqual([
+      [{ name: 'lint', outcome: 'notRun', skip: 'rejected' }],
+      [{ name: 'lint', outcome: 'notRun', skip: 'rejected' }],
+    ])
+    expect(completedRows(events, 'verify_edits')).toEqual([])
+
+    const stopped = setup({ files: {}, checks: [LINT], shell: lintShell() })
+    const second = await start(stopped, 'allowAll')
+    stopped.api.script(
+      ...Array.from({ length: CHECK_FIX_MAX_ROUNDS }, (_, index): ScriptedReply => ({
+        calls: [writeCall(`src/f${String(index)}.ts`, 'x\n')],
+      })),
+      { calls: [{ name: 'run_checks', arguments: '{}' }] },
+      { text: 'ok' },
+    )
+    await second.turn()
+    expect(lintRuns(stopped)).toBe(CHECK_FIX_MAX_ROUNDS)
+    expect(completedRows(second.events, 'run_checks')[0]?.verifySummary?.checks).toEqual([
+      { name: 'lint', outcome: 'notRun', skip: 'stopped' },
+    ])
+  })
+
+  it('does not run a check again after the round when the model ran it since the edit', async () => {
+    const t = setup({ checks: [LINT, TEST], isDiagnosticsOn: false })
+    const { turn } = await start(t, 'allowAll')
+    t.api.script(
+      { calls: [editCall('1', '2'), { name: 'run_checks', arguments: '{"names":["lint"]}' }] },
+      { calls: [editCall('2', '3', 'npm test')] },
+      { text: 'ok' },
+    )
+    await turn()
+    expect(t.io.shellCalls.map((call) => call.command)).toEqual([
+      // run_checks over the round's edit, then the round's other check.
+      "npm run lint -- 'src/a.ts'",
+      'npm test',
+      // then_run ran the test check's own command, so the round runs lint only.
+      'npm test',
+      "npm run lint -- 'src/a.ts'",
+    ])
+  })
+
+  it('runs nothing after the turn’s last round, which no request would read', async () => {
+    const t = setup({ files: {}, checks: [LINT] })
+    const { events, turn } = await start(t, 'allowAll')
+    scriptWriteRounds(t, MODEL_API_MAX_TOOL_ROUNDS, 'never')
+    await turn()
+    expect(t.api.responseBodies()).toHaveLength(MODEL_API_MAX_TOOL_ROUNDS)
+    expect(completedRows(events, 'verify_edits')).toHaveLength(MODEL_API_MAX_TOOL_ROUNDS - 1)
+    expect(t.diagnosticsCalls).toHaveLength(MODEL_API_MAX_TOOL_ROUNDS - 1)
+    expect(lintRuns(t)).toBe(MODEL_API_MAX_TOOL_ROUNDS - 1)
+  })
+
+  it('keeps the fix loop’s stop through a goal’s wake; the user’s next message starts over', async () => {
+    const t = setup({ files: {}, checks: [LINT], shell: lintShell() })
+    const { session, turn, untilTurnEnds } = await start(t, 'allowAll')
+    scriptWriteRounds(t, CHECK_FIX_MAX_ROUNDS, 'gave up')
+    await turn()
+    expect(lintRuns(t)).toBe(CHECK_FIX_MAX_ROUNDS)
+    t.api.script(
+      { calls: [writeCall('src/g.ts', 'x\n')] },
+      { calls: [{ name: 'update_goal', arguments: '{"status":"complete"}' }] },
+      { text: 'goal done' },
+    )
+    await untilTurnEnds(() => session.controlGoal({ verb: 'set', objective: 'Ship it' }))
+    expect(userText(t.api.responseBodies().at(-2))).toContain(MODEL_TEXT.verifyLead)
+    expect(lintRuns(t)).toBe(CHECK_FIX_MAX_ROUNDS)
+    t.api.script({ calls: [writeCall('src/h.ts', 'x\n')] }, { text: 'again' })
+    await turn('once more')
+    expect(lintRuns(t)).toBe(CHECK_FIX_MAX_ROUNDS + 1)
+  })
+
+  it('keeps the note within one budget however much the checks print', async () => {
+    const checks = Array.from({ length: 8 }, (_, index) => ({
+      name: `c${String(index)}`,
+      command: `check${String(index)}`,
+    }))
+    // Each check floods both streams: without the one budget the note would be 8 outputs long.
+    const flood = 'x'.repeat(VERIFY_NOTE_MAX_CHARS)
+    const t = setup({
+      checks,
+      shell: () => ({ ...failed(flood), stderr: flood }),
+    })
+    const { turn } = await start(t, 'allowAll')
+    t.api.script({ calls: [editCall('1', '2')] }, { text: 'ok' })
+    await turn()
+    expect(t.io.shellCalls).toHaveLength(8)
+    const note = userText(t.api.responseBodies()[1])
+    expect(note.length).toBeLessThanOrEqual(VERIFY_NOTE_MAX_CHARS + 1000)
+    expect(note.length).toBeGreaterThan(VERIFY_NOTE_MAX_CHARS * 0.8)
+  })
+})
+
+describe('what reaches a check and the editor (the M68 review)', () => {
+  it('refuses a path a response file or the Windows shells would read as syntax', async () => {
+    const t = setup({ files: {}, checks: [LINT] })
+    const { events, turn } = await start(t, 'allowAll')
+    t.api.script({ calls: [writeCall('@args.txt', 'x\n')] }, { text: 'ok' })
+    await turn()
+    expect(t.io.shellCalls).toEqual([])
+    expect(completedRows(events, 'verify_edits')[0]?.verifySummary?.checks).toEqual([
+      { name: 'lint', outcome: 'notRun', skip: 'unsafePath' },
+    ])
+    const windows = setup({ files: {}, checks: [LINT], platform: 'win32' })
+    const second = await start(windows, 'allowAll')
+    windows.api.script({ calls: [writeCall('src/a&calc.ts', 'x\n')] }, { text: 'ok' })
+    await second.turn()
+    expect(windows.io.shellCalls).toEqual([])
+    expect(completedRows(second.events, 'verify_edits')[0]?.verifySummary?.checks).toEqual([
+      { name: 'lint', outcome: 'notRun', skip: 'unsafePath' },
+    ])
+  })
+
+  it('passes a check only files that exist; run_checks refuses one that does not', async () => {
+    const io = memoryToolIo({ 'src/a.ts': 'const a = 1\n' }, ROOT)
+    const t = setup({
+      io,
+      checks: [LINT],
+      diagnostics: (files) => {
+        // The file is gone by the time the checks run.
+        io.files.delete(`${ROOT}/src/n.ts`)
+        return Promise.resolve(files.map((file) => ({ file, entries: [] })))
+      },
+    })
+    const { turn } = await start(t, 'allowAll')
+    t.api.script(
+      { calls: [writeCall('src/n.ts', 'x\n'), editCall('1', '2')] },
+      { calls: [{ name: 'run_checks', arguments: '{"paths":["src/gone.ts"]}' }] },
+      { text: 'ok' },
+    )
+    await turn()
+    expect(t.io.shellCalls.map((call) => call.command)).toEqual(["npm run lint -- 'src/a.ts'"])
+    expect(outputs(t.api.responseBodies()[2]).at(-1)).toBe(
+      `Error: ${fill(MODEL_TEXT.runChecksMissingPath, { path: 'src/gone.ts' })}`,
+    )
+  })
+
+  it('never shows or formats code the editor’s tools run, nor anything once the turn wrote some', async () => {
+    const t = setup({
+      isFormatOnEdit: true,
+      format: (_path, text) => Promise.resolve(`${text}// formatted\n`),
+    })
+    const { events, turn } = await start(t, 'allowAll')
+    t.api.script(
+      { calls: [writeCall('eslint.config.js', 'export default []\n')] },
+      { calls: [editCall('1', '2')] },
+      { text: 'ok' },
+    )
+    await turn()
+    expect(t.diagnosticsCalls).toEqual([])
+    expect(t.formatCalls).toEqual([])
+    const reason = fill(MODEL_TEXT.verifyUncheckedCodeLoading, { file: 'eslint.config.js' })
+    expect(userText(t.api.responseBodies()[2])).toContain(
+      fill(MODEL_TEXT.verifyFileUnchecked, { path: 'src/a.ts', reason }),
+    )
+    expect(completedRows(events, 'verify_edits').map((row) => row.verifySummary)).toEqual([
+      { files: ['eslint.config.js'], unchecked: 1, checks: [] },
+      { files: ['src/a.ts'], unchecked: 1, checks: [] },
+    ])
+    // The user's next message shows and formats again.
+    t.api.script({ calls: [editCall('2', '3')] }, { text: 'ok' })
+    await turn('go on')
+    expect(t.diagnosticsCalls).toHaveLength(1)
+    expect(t.formatCalls).toEqual([`${ROOT}/src/a.ts`])
+  })
+
+  it('shows at most eight files a round, and says the rest were not checked', async () => {
+    const t = setup({ files: {} })
+    const { events, turn } = await start(t, 'allowAll')
+    const names = Array.from({ length: 9 }, (_, index) => `src/f${String(index)}.ts`)
+    t.api.script({ calls: names.map((name) => writeCall(name, 'x\n')) }, { text: 'ok' })
+    await turn()
+    expect(t.diagnosticsCalls.map((files) => files.length)).toEqual([8])
+    expect(completedRows(events, 'verify_edits')[0]?.verifySummary).toMatchObject({
+      errors: 0,
+      warnings: 0,
+      unchecked: 1,
+    })
+    expect(userText(t.api.responseBodies()[1])).toContain(
+      fill(MODEL_TEXT.verifyFileUnchecked, {
+        path: 'src/f8.ts',
+        reason: fill(MODEL_TEXT.verifyUncheckedTooMany, { count: '8' }),
+      }),
+    )
+  })
+
+  it('reports a file no language server reported on as not checked, never clean', async () => {
+    const t = setup({
+      diagnostics: (files) =>
+        Promise.resolve(
+          files.map((file) => ({ file, entries: [], unchecked: 'noReport' as const })),
+        ),
+    })
+    const { events, turn } = await start(t, 'allowAll')
+    t.api.script({ calls: [editCall('1', '2')] }, { text: 'ok' })
+    await turn()
+    const next = userText(t.api.responseBodies()[1])
+    expect(next).toContain(
+      fill(MODEL_TEXT.verifyFileUnchecked, {
+        path: 'src/a.ts',
+        reason: MODEL_TEXT.verifyUncheckedNoReport,
+      }),
+    )
+    expect(next).not.toContain(fill(MODEL_TEXT.verifyFileClean, { path: 'src/a.ts' }))
+    expect(completedRows(events, 'verify_edits')[0]?.verifySummary).toEqual({
+      files: ['src/a.ts'],
+      unchecked: 1,
+      checks: [],
+    })
+  })
+
+  it('moves the diagnostics baseline only once the model has the report', async () => {
+    let message = 'first'
+    const t = setup({
+      checks: [LINT],
+      diagnostics: (files) =>
+        Promise.resolve(files.map((file) => ({ file, entries: [{ ...TYPE_ERROR, message }] }))),
+    })
+    let choice: 'hold' | 'allow_once' = 'hold'
+    const started = await start(t, 'onRequest', () => choice)
+    // Stopped at the check's card: the report never reached the model.
+    await stopAtFirstCard(started, t, editCall('1', '2'))
+    choice = 'allow_once'
+    message = 'second'
+    t.api.script({ calls: [editCall('2', '3')] }, { text: 'ok' })
+    await started.turn('again')
+    const changed = fill(MODEL_TEXT.verifyFileChanges, { added: '1', fixed: '1' })
+    expect(userText(t.api.responseBodies().at(-1))).not.toContain(changed)
+    message = 'third'
+    t.api.script({ calls: [editCall('3', '4')] }, { text: 'ok' })
+    await started.turn('and again')
+    expect(userText(t.api.responseBodies().at(-1))).toContain(changed)
+  })
+
+  it('stops at once when the user stops while the language servers are awaited', async () => {
+    const t = setup({ checks: [LINT], diagnostics: () => new Promise(() => undefined) })
+    const { session, events, untilTurnEnds } = await start(t, 'allowAll')
+    t.api.script({ calls: [editCall('1', '2')] }, { text: 'never' })
+    await untilTurnEnds(async () => {
+      await session.sendTurn([{ type: 'text', text: 'fix it' }])
+      await vi.waitFor(() => {
+        expect(t.diagnosticsCalls).toHaveLength(1)
+      })
+      await session.cancel()
+    })
+    expect(t.io.shellCalls).toEqual([])
+    expect(completedRows(events, 'verify_edits')[0]?.status).toBe('cancelled')
+    expect(events.find((event) => event.type === 'turnCompleted')).toMatchObject({
+      terminal: 'cancelled',
+    })
+  })
+
+  it('keeps the edit as written when the formatted text cannot be written back', async () => {
+    const io = memoryToolIo({ 'src/a.ts': 'const a = 1\n' }, ROOT)
+    let writes = 0
+    const t = setup({
+      io: {
+        ...io,
+        writeFile: (...args) => {
+          writes += 1
+          return writes === 2 ? Promise.reject(new Error('disk full')) : io.writeFile(...args)
+        },
+      },
+      isDiagnosticsOn: false,
+      isFormatOnEdit: true,
+      format: (_path, text) => Promise.resolve(`${text}// formatted\n`),
+    })
+    const { events, turn } = await start(t, 'allowAll')
+    t.api.script({ calls: [editCall('1', '2')] }, { text: 'ok' })
+    await turn()
+    expect(io.files.get(`${ROOT}/src/a.ts`)).toBe('const a = 2\n')
+    expect(completedRows(events, 'edit_file')[0]?.status).toBe('completed')
+    expect(outputs(t.api.responseBodies()[1])[0]).not.toContain(MODEL_TEXT.formattedAfterEdit)
+    expect(logLines(t.log).join('\n')).toContain(
+      'Format on edit could not write src/a.ts; the edit stays as written: disk full',
     )
   })
 })

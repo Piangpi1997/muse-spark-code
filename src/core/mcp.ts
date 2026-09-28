@@ -14,8 +14,11 @@ export interface McpTool {
   readonly description: string
   /** JSON Schema for the arguments. */
   readonly inputSchema: Readonly<Record<string, unknown>>
-  /** The tool's text result; throw to report a tool error. */
-  readonly call: (args: Readonly<Record<string, unknown>>) => Promise<string>
+  /**
+   * The tool's text result; throw to report a tool error. `signal` stops a
+   * call whose caller went away (a turn's Stop, a closed request).
+   */
+  readonly call: (args: Readonly<Record<string, unknown>>, signal?: AbortSignal) => Promise<string>
 }
 
 export interface McpServerInfo {
@@ -55,6 +58,7 @@ function describe(error: unknown): string {
 async function callTool(
   tools: readonly McpTool[],
   params: Readonly<Record<string, unknown>> | undefined,
+  signal: AbortSignal | undefined,
 ): Promise<unknown> {
   const name = params?.['name']
   const tool = tools.find((candidate) => candidate.name === name)
@@ -65,7 +69,7 @@ async function callTool(
   const args =
     typeof rawArgs === 'object' && rawArgs !== null ? (rawArgs as Record<string, unknown>) : {}
   try {
-    return { content: [{ type: 'text', text: await tool.call(args) }] }
+    return { content: [{ type: 'text', text: await tool.call(args, signal) }] }
   } catch (error: unknown) {
     return { content: [{ type: 'text', text: describe(error) }], isError: true }
   }
@@ -79,6 +83,7 @@ export async function handleMcpMessage(
   raw: string,
   tools: readonly McpTool[],
   serverInfo: McpServerInfo,
+  signal?: AbortSignal,
 ): Promise<McpOutcome> {
   let parsed: unknown
   try {
@@ -116,7 +121,7 @@ export async function handleMcpMessage(
       })
     }
     case 'tools/call': {
-      return resultResponse(message.id, await callTool(tools, message.params))
+      return resultResponse(message.id, await callTool(tools, message.params, signal))
     }
     default: {
       return errorResponse(

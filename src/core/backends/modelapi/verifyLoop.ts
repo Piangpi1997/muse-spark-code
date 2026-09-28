@@ -1,8 +1,9 @@
 // The verify loop's pieces the Model API session puts together (M68, PLAN.md
 // D49): what the host lends it (the settings, read at each use, and the
 // editor's diagnostics and formatter), how a finished check reads for the
-// model and its row, and the fix loop's rule. The session itself asks the
-// permission engine and runs the commands. Pure.
+// model and its row, the fix loop's rule, and the state a user's message
+// resets. The session itself asks the permission engine, runs the hooks and
+// runs the commands. Pure.
 
 import type { CheckSummary } from '../../../shared/agentEvents'
 import {
@@ -23,13 +24,41 @@ export interface VerifyHooks {
   readonly checkCommands: () => readonly CheckCommandSetting[]
   /** `museSpark.formatOnEdit`. */
   readonly isFormatOnEdit: () => boolean
-  /** Each file's diagnostics once the language servers settle. */
+  /** Each file's diagnostics once its server settles, or why they were not read. */
   readonly diagnosticsAfterEdit: (
     files: readonly EditedFile[],
     signal: AbortSignal,
   ) => Promise<readonly FileDiagnostics[]>
   /** The text the file's formatter makes of what an edit wrote, or undefined. */
   readonly formatAfterEdit: (absolutePath: string, text: string) => Promise<string | undefined>
+}
+
+/**
+ * What a user's message resets and a goal's wake keeps (the M68 review): the
+ * fix loop's count of failing rounds in a row, whether it stopped the
+ * checks, the checks the user rejected, the files the edit tools wrote (by
+ * absolute path; `run_checks`'s default), their names as given and after
+ * links (which files decide what a command runs), and the first file written
+ * that the editor's tools run as code.
+ */
+export interface VerifyState {
+  failedRounds: number
+  isStopped: boolean
+  readonly rejected: Set<string>
+  readonly edited: Map<string, EditedFile>
+  readonly writtenNames: Set<string>
+  codeFile: string | undefined
+}
+
+export function newVerifyState(): VerifyState {
+  return {
+    failedRounds: 0,
+    isStopped: false,
+    rejected: new Set(),
+    edited: new Map(),
+    writtenNames: new Set(),
+    codeFile: undefined,
+  }
 }
 
 /** One check, finished or not run. */
@@ -41,20 +70,25 @@ export interface CheckRun {
 
 const SKIP_REASONS: Readonly<Record<CheckSkip, string>> = {
   rejected: MODEL_TEXT.checkSkipRejected,
+  hookDenied: MODEL_TEXT.checkSkipHookDenied,
   refused: MODEL_TEXT.checkSkipRefused,
   restricted: MODEL_TEXT.checkSkipRestricted,
   unsafePath: MODEL_TEXT.checkSkipUnsafePath,
   changed: MODEL_TEXT.checkSkipChanged,
+  stopped: MODEL_TEXT.checkSkipStopped,
 }
 
-/** Why a command was not run, in the model's words. */
-export function skipReason(skip: CheckSkip): string {
-  return SKIP_REASONS[skip]
+/** Why a command was not run, in the model's words, with the user's or the hook's own. */
+export function skipReason(skip: CheckSkip, detail?: string): string {
+  const reason = SKIP_REASONS[skip]
+  return detail === undefined || detail.trim() === ''
+    ? reason
+    : fill(MODEL_TEXT.checkDetail, { reason, detail })
 }
 
 type FinishedOutcome = Exclude<CheckOutcome, 'notRun'>
 
-/** How a finished command ended. */
+/** How a finished command ended; one that could not start failed. */
 export function outcomeOf(result: ShellResult): FinishedOutcome {
   if (result.isCancelled) {
     return 'cancelled'
@@ -72,12 +106,16 @@ const OUTCOME_LINES: Readonly<Record<FinishedOutcome, string>> = {
   cancelled: MODEL_TEXT.checkCancelled,
 }
 
-/** A check that ran: its line, the command, and what it printed with how it ended. */
+/**
+ * A check that ran: its line, the command, and what it printed with how it
+ * ended, the output within `maxChars` (its share of the note's budget).
+ */
 export function finishedCheck(
   check: CheckCommandSetting,
   line: string,
   result: ShellResult,
   timeoutMs: number,
+  maxChars: number,
 ): CheckRun {
   const outcome = outcomeOf(result)
   return {
@@ -85,16 +123,25 @@ export function finishedCheck(
     text: [
       fill(OUTCOME_LINES[outcome], { name: check.name }),
       `$ ${line}`,
-      shellOutcome(result, timeoutMs).output,
+      shellOutcome(result, timeoutMs, maxChars).output,
     ].join('\n'),
   }
 }
 
 /** A check that was not run, and why. */
-export function skippedCheck(check: CheckCommandSetting, skip: CheckSkip): CheckRun {
+export function skippedCheck(
+  check: CheckCommandSetting,
+  skip: CheckSkip,
+  detail?: string,
+): CheckRun {
   return {
-    summary: { name: check.name, outcome: 'notRun', skip },
-    text: fill(MODEL_TEXT.checkNotRun, { name: check.name, reason: skipReason(skip) }),
+    summary: {
+      name: check.name,
+      outcome: 'notRun',
+      skip,
+      ...(detail !== undefined && detail.trim() !== '' && { detail }),
+    },
+    text: fill(MODEL_TEXT.checkNotRun, { name: check.name, reason: skipReason(skip, detail) }),
   }
 }
 

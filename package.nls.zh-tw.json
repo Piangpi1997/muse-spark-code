@@ -93,10 +93,10 @@
   "config.modelApiPromptCacheRetention.enumDescriptions.24h": "最多 24 小時，因此暫停後回來的對話仍可從快取讀取。價格與保留在記憶體中相同。",
   "config.modelApiPromptCacheRetention.enumDescriptions.inMemory": "Meta 的預設值：保留在記憶體中，在負載較高或一段時間閒置後會提早移除。",
   "config.diagnosticsAfterEdits.description": "每次編輯後，把 VS Code 語言伺服器回報的已編輯檔案錯誤與警告，連同自上次檢查以來的變化，交給模型 (Model API 後端)，或提示 Muse Code 自行檢查。預設開啟。",
-  "config.checkCommands.description": "Model API 後端在每次編輯後、模型下一個要求之前執行的 lint、測試或型別檢查命令；模型也可以用 run_checks 執行它們，並提示 Muse Code 自行執行。每個命令都像 shell 工具執行命令那樣執行：在 shell 命令會詢問的地方都會詢問 (除「略過權限」以外的所有權限模式)，在規劃模式和限制模式下絕不執行，並在時間限制處停止。連續三次失敗後，這個回合剩下的時間內不再執行。",
+  "config.checkCommands.description": "Model API 後端在每次編輯後、模型下一個要求之前執行的 lint、測試或型別檢查命令；模型也可以用 run_checks 執行它們，並提示 Muse Code 自行執行。每個命令都像 shell 工具執行命令那樣執行，包括你的工具鉤子：在 shell 命令會詢問的地方都會詢問 (除「略過權限」以外的所有權限模式)，在代理編輯了決定其執行內容的檔案後會再次詢問，在規劃模式和限制模式下絕不執行，並在時間限制處停止。連續三次失敗後，在你傳送下一則訊息之前不再執行。",
   "config.checkCommands.name.description": "檢查的簡短名稱，例如 lint 或 test。",
   "config.checkCommands.command.description": "由 shell 工具的 shell (Windows 上為 PowerShell，其他系統為 bash) 在工作區根目錄執行的命令列。",
-  "config.checkCommands.changedFiles.description": "在 -- 之後加入已編輯的檔案，每個檔案作為一個加上引號的引數。若有檔案名稱以 - 開頭，就不執行該檢查。",
+  "config.checkCommands.changedFiles.description": "在 -- 之後加入仍然存在的已編輯檔案，每個檔案作為一個加上引號的引數。若有檔案名稱以 - 或 @ 開頭，或在 Windows 上包含 \" & | < > ^ % 或 !，就不執行該檢查。",
   "config.checkCommands.timeoutSeconds.description": "命令被停止前的秒數 (未設定時為 300)。",
   "config.formatOnEdit.description": "對 Model API 後端編輯工具寫入的每個檔案，在檢查之前執行該檔案的格式器。預設關閉。"
 }

@@ -1332,6 +1332,8 @@ export const EN = {
   verifyErrors: forms({ one: '{count} error', other: '{count} errors' }),
   verifyWarnings: forms({ one: '{count} warning', other: '{count} warnings' }),
   verifyClean: 'No errors or warnings',
+  // {count}: edited files whose problems were not read (no report in time, …).
+  verifyUnchecked: forms({ one: '{count} file not checked', other: '{count} files not checked' }),
   // {name}: a check's name from museSpark.checkCommands, as the user wrote it.
   checkOutcomes: {
     passed: '{name} passed',
@@ -1343,23 +1345,29 @@ export const EN = {
   // Why a check or a then_run command did not run.
   checkSkips: {
     rejected: 'rejected',
+    hookDenied: 'a hook denied it',
     refused: 'the permission mode refuses shell commands',
     restricted: 'shell commands are off in Restricted Mode',
     unsafePath: 'a file name cannot be passed to it safely',
     changed: 'the file changed after the edit',
+    stopped: 'the checks stopped after failing round after round',
   },
   // An edit's then_run: the command it ran right after the edit.
   thenRunLabel: 'Then ran',
-  // {reason}: one of checkSkips.
+  // {reason}: one of checkSkips, with the user's or the hook's words after it.
   thenRunNotRun: 'Not run: {reason}',
   thenRunTimedOut: 'Stopped at its time limit',
+  // The command could not start or ended without an exit code.
+  thenRunNoExitCode: 'Failed without an exit code',
   // The fix loop reached its limit. {count}: the failing rounds in a row.
   checksStoppedNotice: forms({
-    one: 'The checks still failed after {count} round of fixes, so they will not run again automatically in this turn.',
+    one: 'The checks still failed after {count} round of fixes, so they will not run again automatically until your next message.',
     other:
-      'The checks still failed after {count} rounds of fixes in a row, so they will not run again automatically in this turn.',
+      'The checks still failed after {count} rounds of fixes in a row, so they will not run again automatically until your next message.',
   }),
   exportThenRunLabel: 'Then ran:',
+  // {command}: the then_run command; {outcome}: why it did not run.
+  exportThenRunSkipped: 'then_run `{command}`: {outcome}',
 }
 
 /** The shape every table has: English's keys, with any language's plural forms. */

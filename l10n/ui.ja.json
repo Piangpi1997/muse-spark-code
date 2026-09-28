@@ -1117,13 +1117,20 @@
     "refused": "権限モードがシェル コマンドを拒否します",
     "restricted": "制限モードではシェル コマンドはオフです",
     "unsafePath": "ファイル名を安全に渡せません",
-    "changed": "編集後にファイルが変更されました"
+    "changed": "編集後にファイルが変更されました",
+    "hookDenied": "フックが拒否しました",
+    "stopped": "失敗が続いたためチェックは停止しています"
   },
   "thenRunLabel": "続けて実行",
   "thenRunNotRun": "実行されませんでした: {reason}",
   "thenRunTimedOut": "制限時間で停止しました",
   "checksStoppedNotice": {
-    "other": "修正を {count} 回続けてもチェックが失敗したため、このターンではもう自動で実行しません。"
+    "other": "修正を {count} 回続けてもチェックが失敗したため、次のメッセージまで自動では実行しません。"
   },
-  "exportThenRunLabel": "続けて実行:"
+  "exportThenRunLabel": "続けて実行:",
+  "verifyUnchecked": {
+    "other": "{count} 個のファイルは未チェック"
+  },
+  "thenRunNoExitCode": "終了コードなしで失敗しました",
+  "exportThenRunSkipped": "then_run `{command}`: {outcome}"
 }

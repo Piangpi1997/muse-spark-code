@@ -7,7 +7,12 @@ import {
   type WorkspaceDiagnostic,
 } from '../../src/core/diagnostics'
 import { handleMcpMessage } from '../../src/core/mcp'
-import { DIAGNOSTIC_MESSAGE_MAX_CHARS, DIAGNOSTICS_MAX_ENTRIES } from '../../src/shared/constants'
+import {
+  DIAGNOSTIC_MESSAGE_MAX_CHARS,
+  DIAGNOSTICS_MAX_ENTRIES,
+  MODEL_TEXT,
+} from '../../src/shared/constants'
+import { fill } from '../../src/shared/l10n/text'
 
 const entries: readonly WorkspaceDiagnostic[] = [
   {
@@ -197,25 +202,48 @@ describe('diagnosticsTool (POSIX root and no root)', () => {
 
   // M68: the servers report only on a file an editor shows, so a request for
   // one file shows it and waits before reading; the whole workspace does not.
-  it('settles a named file before reading its diagnostics, and only a named one', async () => {
-    const settled: string[] = []
-    let current: readonly DiagnosticEntry[] = []
+  it('settles a named file and reads it while it shows, and only a named one', async () => {
+    const settled: { readonly path: string; readonly signal: AbortSignal | undefined }[] = []
     const tool = diagnosticsTool({
-      getDiagnostics: () => current,
+      // A server clears a file's diagnostics when its tab closes (the
+      // integration run), so what VS Code holds after is not what counts.
+      getDiagnostics: () => [],
       workspaceRoot: '/home/me/ws',
       platform: 'linux',
       relativeInRoot: relativeIn('/home/me/ws', 'linux'),
-      settleFile: (absolutePath, relative) => {
-        settled.push(`${absolutePath} ${relative}`)
-        current = [at('src/a.ts', 'reported once shown')]
-        return Promise.resolve()
+      settleFile: (absolutePath, signal) => {
+        settled.push({ path: absolutePath, signal })
+        return Promise.resolve([at('src/a.ts', 'reported once shown')])
       },
     })
     expect(await tool.call({})).toBe('No diagnostics.')
     expect(settled).toEqual([])
-    expect(await tool.call({ uri: 'src/a.ts' })).toBe('src/a.ts:1:1: error: reported once shown')
-    expect(settled).toEqual([`${path.posix.join('/home/me/ws', 'src/a.ts')} src/a.ts`])
+    const stop = new AbortController()
+    expect(await tool.call({ uri: 'src/a.ts' }, stop.signal)).toBe(
+      'src/a.ts:1:1: error: reported once shown',
+    )
+    // The caller's stop reaches the wait (M68, the review).
+    expect(settled).toEqual([
+      { path: path.posix.join('/home/me/ws', 'src/a.ts'), signal: stop.signal },
+    ])
     await expect(tool.call({ uri: '../outside.ts' })).rejects.toThrow('does not name a file')
     expect(settled).toHaveLength(1)
+  })
+
+  it('says a file its server never reported on is not checked, never clean', async () => {
+    let held: readonly DiagnosticEntry[] = []
+    const tool = diagnosticsTool({
+      getDiagnostics: () => held,
+      workspaceRoot: '/home/me/ws',
+      platform: 'linux',
+      relativeInRoot: relativeIn('/home/me/ws', 'linux'),
+      settleFile: () => Promise.resolve(undefined),
+    })
+    expect(await tool.call({ uri: 'src/a.ts' })).toBe(
+      fill(MODEL_TEXT.diagnosticsNotSettled, { path: 'src/a.ts' }),
+    )
+    // A file an editor already showed keeps what VS Code holds for it.
+    held = [at('src/a.ts', 'held from before')]
+    expect(await tool.call({ uri: 'src/a.ts' })).toBe('src/a.ts:1:1: error: held from before')
   })
 })

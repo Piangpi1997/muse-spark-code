@@ -196,7 +196,7 @@ function setup(
     editorContext?: EditorContext
     isAutosaveEnabled?: boolean
     /** The verify loop's note to Muse Code (M68). */
-    verifyGuidance?: () => string | undefined
+    verifyGuidance?: (hasIdeServer: boolean) => string | undefined
     /** Files the fake mention index lists (for the selection-text rule). */
     indexed?: readonly string[]
     ideMcpEndpoint?: SessionMcpHttpServer
@@ -2187,6 +2187,23 @@ describe('ConversationController: editor integration (M5)', () => {
     const quiet = setup({ verifyGuidance: () => current })
     await quiet.send('l1', 'hi')
     expect(turnStartParams(quiet)['input']).toEqual([{ type: 'text', text: 'hi' }, NOTE])
+  })
+
+  // The M68 review: the note names getDiagnostics only when the session has the ide server.
+  it('tells the guidance whether the session got the IDE tool server', async () => {
+    const endpoint = { url: 'http://127.0.0.1:1/mcp', headers: { Authorization: 'Bearer t' } }
+    const withServer = vi.fn<(hasIdeServer: boolean) => string | undefined>()
+    const granted = setup({
+      ideMcpEndpoint: endpoint,
+      grantedCapabilities: ['sessionMcp'],
+      verifyGuidance: withServer,
+    })
+    await granted.send('l1', 'hi')
+    expect(withServer).toHaveBeenCalledWith(true)
+    const without = vi.fn<(hasIdeServer: boolean) => string | undefined>()
+    const denied = setup({ ideMcpEndpoint: endpoint, verifyGuidance: without })
+    await denied.send('l1', 'hi')
+    expect(without).toHaveBeenCalledWith(false)
   })
 
   it('saves every editor before the turn when autosave is on, and never otherwise', async () => {

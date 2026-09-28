@@ -1398,23 +1398,87 @@ export const CHECK_COMMAND_MAX_CHARS = 1000
 export const CHECK_DEFAULT_TIMEOUT_SECONDS = 300
 export const CHECK_MAX_TIMEOUT_SECONDS = SHELL_MAX_TIMEOUT_MS / MILLISECONDS_PER_SECOND
 // A scoped check's paths follow the end-of-options marker, each quoted as one
-// argument; a path that starts with `-` is refused, never passed.
+// argument. A path that starts like an option (`-`) or a response file
+// (`@`) is refused, never passed; so, on Windows, is one holding a character
+// Windows PowerShell 5.1 or cmd.exe reads as syntax when it hands the
+// argument on: PowerShell 5.1 quotes an argument with a space without
+// escaping its `"`, and a `.cmd`/`.bat` program's cmd.exe re-reads `&`, `|`,
+// `<`, `>`, `^`, `%` and `!` (the M68 review).
 export const CHECK_PATHS_SEPARATOR = '--'
-export const OPTION_PREFIX = '-'
+export const UNSAFE_ARGUMENT_START = /^[-@]/
+export const WINDOWS_ARGUMENT_SYNTAX = /["&|<>^%!]/
 // The bounded fix loop: after this many rounds in a row whose automatic checks
-// failed, the checks stop for the rest of the turn and the model is told.
+// failed, the checks stop until the user's next message and the model is told.
 export const CHECK_FIX_MAX_ROUNDS = 3
-// How long the language servers are given to report on the edited files: a
-// first report is awaited this long (a file no server reads never gets
-// one), then the wait ends once they have been quiet this long, and never
-// later than the cap. Measured in VS Code 1.139.1 (M68): JSON's first report
-// came at once, a cold TypeScript server's in about 1.6 s, and TypeScript's
+// How long the language servers are given to report on an edited file once
+// it is shown: a first report is awaited this long (a file no server reads
+// never gets one, and is then "not checked", never clean), then the wait
+// ends once they have been quiet this long, and never later than the cap.
+// Measured in VS Code 1.139.1 and 1.125.0 (M68): JSON's first report came at
+// once, a cold TypeScript server's in about 1.6 s, and TypeScript's
 // semantic errors follow its syntax errors.
-export const DIAGNOSTICS_SETTLE_FIRST_MS = 3000
-export const DIAGNOSTICS_SETTLE_QUIET_MS = 1000
-export const DIAGNOSTICS_SETTLE_MAX_MS = 8000
+export const DIAGNOSTICS_SETTLE_FIRST_MS = 4000
+export const DIAGNOSTICS_SETTLE_QUIET_MS = 1500
+export const DIAGNOSTICS_SETTLE_MAX_MS = 10_000
+// At most this many edited files are shown and read after one round; the
+// rest are "not checked", so a round that touched many files cannot hold
+// the turn for minutes.
+export const VERIFY_SHOWN_FILES_MAX = 8
 // The edited files' errors and warnings sent after a round, at most.
 export const VERIFY_DIAGNOSTICS_MAX_ENTRIES = 50
+// One budget for everything a verify note or a `run_checks` result carries
+// (the diagnostics and every check's output), shared out equally: the size
+// of a single tool output's cap (TOOL_OUTPUT_MAX_CHARS), not one per check.
+export const VERIFY_NOTE_MAX_CHARS = 64_000
+// Files the editor's own tools load and run as code when a file is shown
+// or formatted (a linter's or formatter's JavaScript configuration, the
+// package manifest that names formatter plugins, installed packages). The
+// verify loop never shows or formats one, and a turn that wrote one shows
+// and formats nothing more until the user's next message (the M68 review).
+export const CODE_LOADING_FILE_PATTERNS: readonly RegExp[] = [
+  // eslint.config.js, prettier.config.mjs, vite.config.ts, karma.conf.js …
+  /\.(config|conf)\.[cm]?[jt]sx?$/i,
+  // .eslintrc.cjs, .prettierrc.js, .babelrc.js, .lintstagedrc.mjs …
+  /^\.[\w-]+rc\.[cm]?[jt]sx?$/i,
+  // gulpfile.js, Gruntfile.cjs, jakefile.ts …
+  /^(gulpfile|gruntfile|jakefile)(\.[\w-]+)?\.[cm]?[jt]s$/i,
+  // Data configurations that may name a plugin by a local path.
+  /^\.(eslintrc|prettierrc|stylelintrc|babelrc|swcrc|lintstagedrc)(\.(json5?|ya?ml|toml))?$/i,
+  /^(package\.json|\.pnpmfile\.cjs|biome\.jsonc?|deno\.jsonc?)$/i,
+]
+export const INSTALLED_PACKAGES_DIR = 'node_modules'
+// Files that decide what a check command runs besides the ones above (a
+// package script, a make target, a build tool's wrapper). A turn that edited
+// one asks again for every check, however it was allowed for the session.
+export const COMMAND_DEFINING_FILES: ReadonlySet<string> = new Set([
+  'makefile',
+  'gnumakefile',
+  'justfile',
+  'taskfile.yml',
+  'taskfile.yaml',
+  'pyproject.toml',
+  'setup.py',
+  'setup.cfg',
+  'tox.ini',
+  'noxfile.py',
+  'cargo.toml',
+  'build.gradle',
+  'build.gradle.kts',
+  'settings.gradle',
+  'settings.gradle.kts',
+  'gradlew',
+  'gradlew.bat',
+  'mvnw',
+  'mvnw.cmd',
+  'pom.xml',
+  'composer.json',
+  'rakefile',
+  '.npmrc',
+  '.yarnrc',
+  '.yarnrc.yml',
+  'turbo.json',
+  'nx.json',
+])
 // Format on edit: how long an open document is given to catch up with the
 // file the tool wrote, polled at this interval, and how long the formatter
 // may take.
@@ -1426,9 +1490,31 @@ export const EDITOR_DEFAULT_TAB_SIZE = 4
 // How a check or a `then_run` command ended, for its row.
 export const CHECK_OUTCOMES = ['passed', 'failed', 'timedOut', 'cancelled', 'notRun'] as const
 export type CheckOutcome = (typeof CHECK_OUTCOMES)[number]
-// Why one was not run.
-export const CHECK_SKIPS = ['rejected', 'refused', 'restricted', 'unsafePath', 'changed'] as const
+// Why one was not run: the user's Reject, a hook's denial or block, the mode,
+// Restricted Mode, a path that cannot be passed safely, a file changed after
+// the edit (then_run), the fix loop stopped.
+export const CHECK_SKIPS = [
+  'rejected',
+  'hookDenied',
+  'refused',
+  'restricted',
+  'unsafePath',
+  'changed',
+  'stopped',
+] as const
 export type CheckSkip = (typeof CHECK_SKIPS)[number]
+// Why an edited file's diagnostics were not read: its server sent no report,
+// it could not be shown, it has unsaved changes, it (or a file the turn
+// wrote) is code the editor's tools run, too many files, or the turn stopped.
+export const UNCHECKED_REASONS = [
+  'noReport',
+  'notShown',
+  'unsaved',
+  'codeLoading',
+  'tooMany',
+  'stopped',
+] as const
+export type UncheckedReason = (typeof UNCHECKED_REASONS)[number]
 export const JSON_RPC_ERRORS = {
   parseError: -32_700,
   invalidRequest: -32_600,
@@ -1848,6 +1934,17 @@ export const MODEL_TEXT = {
   verifyFileClean: '{path}: no errors or warnings',
   verifyFileCounts: '{path}: errors {errors}, warnings {warnings}',
   verifyFileChanges: '({added} new, {fixed} fixed since the previous check)',
+  // A file whose diagnostics were not read is never reported clean.
+  verifyFileUnchecked: '{path}: not checked, {reason}',
+  verifyUncheckedNoReport:
+    'its language server sent no report in time, so its problems are unknown',
+  verifyUncheckedNotShown: 'it could not be opened in an editor, so its problems are unknown',
+  verifyUncheckedUnsaved:
+    'it has unsaved changes in an editor, so its problems are those of the unsaved text',
+  verifyUncheckedCodeLoading:
+    "this turn wrote {file}, which the editor's own tools load and run as code, so no file is shown or formatted automatically until the user's next message",
+  verifyUncheckedTooMany: 'more than {count} files were edited in this round',
+  verifyUncheckedStopped: 'the turn was stopped',
   verifyDiagnosticsUnavailable: 'The diagnostics could not be read: {reason}',
   verifyChecksHeading: "The user's check commands:",
   checkPassed: '{name}: passed',
@@ -1855,21 +1952,31 @@ export const MODEL_TEXT = {
   checkTimedOut: '{name}: stopped at its time limit',
   checkCancelled: '{name}: stopped by the user',
   checkNotRun: '{name}: not run, {reason}',
+  // A reason's detail, the user's feedback or the hook's words.
+  checkDetail: '{reason}: {detail}',
   checkSkipRejected: 'the user rejected it',
+  checkSkipHookDenied: 'a hook denied it',
   checkSkipRefused: 'the permission mode refuses shell commands',
   checkSkipRestricted: 'shell commands are disabled while the workspace is in Restricted Mode',
   checkSkipUnsafePath:
-    'a path starts with "-" or holds a control character, so it cannot follow "--" safely',
+    'a path starts with "-" or "@", or holds a control character or a character the shell would read as syntax, so it cannot be passed safely',
   checkSkipChanged:
     'the file changed after the edit, so the command would not check what you wrote',
+  checkSkipStopped:
+    "the checks stopped after failing too many rounds in a row; they run again after the user's next message",
   checksStopped:
-    'The checks still failed after {count} rounds of fixes in a row, so they will not run again automatically in this turn. Stop fixing: tell the user what still fails and why.',
+    "The checks still failed after {count} rounds of fixes in a row, so they will not run again automatically until the user's next message. Stop fixing: tell the user what still fails and why.",
+  hookInputNoCommand: "the hook's updated input names no command",
   runChecksNone:
     'no check commands are configured; the user names them in the museSpark.checkCommands setting',
   runChecksUnknown: 'unknown check {name}; the configured checks are: {names}',
+  runChecksMissingPath: '{path} names no file or folder in the workspace',
   thenRunLead: '[then_run]',
   thenRunNotRun: 'then_run was not run: {reason}',
   thenRunEditFailed: 'then_run was not run, because the edit did not happen.',
+  // The diagnostics tool asked about a file it could not have the server read.
+  diagnosticsNotSettled:
+    '{path}: not checked; it was not shown in an editor (outside the workspace, code the editor runs, or no report in time), so its diagnostics are unknown.',
   formattedAfterEdit:
     "The editor's formatter then reformatted the file; read it again before you edit the same lines.",
   // Muse Code (M68): sent with each turn, as the choice-steering note is.

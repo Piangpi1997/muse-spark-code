@@ -1185,15 +1185,24 @@
     "refused": "el modo de permisos no admite comandos de shell",
     "restricted": "los comandos de shell están desactivados en modo restringido",
     "unsafePath": "no se le puede pasar un nombre de archivo con seguridad",
-    "changed": "el archivo cambió después de la edición"
+    "changed": "el archivo cambió después de la edición",
+    "hookDenied": "un hook lo denegó",
+    "stopped": "las comprobaciones se detuvieron tras fallar ronda tras ronda"
   },
   "thenRunLabel": "Después se ejecutó",
   "thenRunNotRun": "No se ejecutó: {reason}",
   "thenRunTimedOut": "Detenido al llegar a su límite de tiempo",
   "checksStoppedNotice": {
-    "one": "Las comprobaciones seguían fallando tras {count} ronda de correcciones, así que no volverán a ejecutarse automáticamente en este turno.",
-    "many": "Las comprobaciones seguían fallando tras {count} de rondas de correcciones seguidas, así que no volverán a ejecutarse automáticamente en este turno.",
-    "other": "Las comprobaciones seguían fallando tras {count} rondas de correcciones seguidas, así que no volverán a ejecutarse automáticamente en este turno."
+    "one": "Las comprobaciones seguían fallando tras {count} ronda de correcciones, así que no volverán a ejecutarse automáticamente hasta su próximo mensaje.",
+    "many": "Las comprobaciones seguían fallando tras {count} de rondas de correcciones seguidas, así que no volverán a ejecutarse automáticamente hasta su próximo mensaje.",
+    "other": "Las comprobaciones seguían fallando tras {count} rondas de correcciones seguidas, así que no volverán a ejecutarse automáticamente hasta su próximo mensaje."
   },
-  "exportThenRunLabel": "Después se ejecutó:"
+  "exportThenRunLabel": "Después se ejecutó:",
+  "verifyUnchecked": {
+    "one": "{count} archivo sin comprobar",
+    "many": "{count} de archivos sin comprobar",
+    "other": "{count} archivos sin comprobar"
+  },
+  "thenRunNoExitCode": "Falló sin código de salida",
+  "exportThenRunSkipped": "then_run `{command}`: {outcome}"
 }

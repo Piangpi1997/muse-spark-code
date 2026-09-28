@@ -38,7 +38,8 @@ import {
   WebBody,
   WorkflowBody,
 } from './ToolBodies'
-import { ThenRunBlock, VerifyBody, verifySummaryText } from './VerifyParts'
+import { verifySummaryText } from '../../shared/verifyText'
+import { ThenRunBlock, VerifyBody } from './VerifyParts'
 
 type ToolEntry = Extract<TranscriptEntry, { kind: 'tool' }>
 

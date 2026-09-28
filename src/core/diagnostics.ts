@@ -13,7 +13,9 @@ import {
   DIAGNOSTIC_MESSAGE_MAX_CHARS,
   DIAGNOSTICS_MAX_ENTRIES,
   IDE_MCP_TOOL_DIAGNOSTICS,
+  MODEL_TEXT,
 } from '../shared/constants'
+import { fill } from '../shared/l10n/text'
 import type { McpTool } from './mcp'
 import { resolveAgainstRoot } from './workspaceRoot'
 
@@ -143,11 +145,15 @@ export interface DiagnosticsToolDeps {
   /** An absolute path relative to the root, undefined outside it (`rootRelativePath`). */
   readonly relativeInRoot: (absolutePath: string) => string | undefined
   /**
-   * Shows a file the request names and waits for its language server (M68):
-   * the servers report only on files an editor shows. Absent, the tool reads
-   * what VS Code holds now.
+   * Shows a file the request names, waits for its language server and reads
+   * its diagnostics while it shows (M68): the servers report only on files
+   * an editor shows, and may clear them when its tab closes. Undefined when
+   * none were read; absent, the tool reads what VS Code holds now.
    */
-  readonly settleFile?: (absolutePath: string, relative: string) => Promise<void>
+  readonly settleFile?: (
+    absolutePath: string,
+    signal: AbortSignal | undefined,
+  ) => Promise<readonly DiagnosticEntry[] | undefined>
 }
 
 /** Paths compare as the platform's file system does: case-insensitively on Windows. */
@@ -171,7 +177,7 @@ export function diagnosticsTool(deps: DiagnosticsToolDeps): McpTool {
     },
     // A request that names no workspace file rejects, so the server answers
     // with an error result the model can read.
-    call: async (args) => {
+    call: async (args, signal) => {
       const uri = args[URI_ARGUMENT]
       const { platform } = deps
       const inWorkspace = () => deps.getDiagnostics().filter((entry) => isInWorkspace(entry))
@@ -182,11 +188,16 @@ export function diagnosticsTool(deps: DiagnosticsToolDeps): McpTool {
       if (!request.ok) {
         throw new Error(request.reason)
       }
-      await deps.settleFile?.(request.fsPath, request.path)
+      const read = await deps.settleFile?.(request.fsPath, signal)
+      if (read !== undefined) {
+        return formatDiagnostics(read.map((entry) => ({ ...entry, path: request.path })))
+      }
       const wanted = pathKey(request.path, platform)
-      return formatDiagnostics(
-        inWorkspace().filter((entry) => pathKey(entry.path, platform) === wanted),
-      )
+      const found = inWorkspace().filter((entry) => pathKey(entry.path, platform) === wanted)
+      // A file its server never reported on is not checked, never clean (M68).
+      return deps.settleFile !== undefined && found.length === 0
+        ? fill(MODEL_TEXT.diagnosticsNotSettled, { path: request.path })
+        : formatDiagnostics(found)
     },
   }
 }

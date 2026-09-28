@@ -9,22 +9,29 @@ import * as z from 'zod/mini'
 import { scheduleViewSchema } from './schedule'
 import { CHECK_OUTCOMES, CHECK_SKIPS, PAID_FEATURES } from './constants'
 
-/** One check command as a row reports it (M68): its name, how it ended, why it did not run. */
+/**
+ * One check command as a row reports it (M68): its name, how it ended, why
+ * it did not run, and that reason's detail (the user's feedback on Reject,
+ * or a hook's words).
+ */
 export const checkSummarySchema = z.object({
   name: z.string(),
   outcome: z.enum(CHECK_OUTCOMES),
   skip: z.optional(z.enum(CHECK_SKIPS)),
+  detail: z.optional(z.string()),
 })
 export type CheckSummary = z.infer<typeof checkSummarySchema>
 
 /**
- * The verify loop's row (M68, PLAN.md D49): the files it checked, their
- * errors and warnings (absent when the diagnostics are off), and each check.
+ * The verify loop's row (M68, PLAN.md D49): the files it checked, the errors
+ * and warnings of those it read (absent when the diagnostics are off or
+ * could not be read), how many files it could not read, and each check.
  */
 export const verifySummarySchema = z.object({
   files: z.array(z.string()),
   errors: z.optional(z.number()),
   warnings: z.optional(z.number()),
+  unchecked: z.optional(z.number()),
   checks: z.array(checkSummarySchema),
 })
 export type VerifySummary = z.infer<typeof verifySummarySchema>
@@ -34,6 +41,7 @@ export const thenRunResultSchema = z.object({
   command: z.string(),
   outcome: z.enum(CHECK_OUTCOMES),
   skip: z.optional(z.enum(CHECK_SKIPS)),
+  detail: z.optional(z.string()),
   output: z.string(),
   exitCode: z.optional(z.number()),
 })

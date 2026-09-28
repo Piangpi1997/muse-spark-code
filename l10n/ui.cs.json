@@ -1219,16 +1219,26 @@
     "refused": "režim oprávnění nepovoluje příkazy prostředí",
     "restricted": "příkazy prostředí jsou v Omezeném režimu vypnuté",
     "unsafePath": "název souboru mu nelze bezpečně předat",
-    "changed": "soubor se po úpravě změnil"
+    "changed": "soubor se po úpravě změnil",
+    "hookDenied": "zamítl ho háček",
+    "stopped": "kontroly se zastavily po opakovaných neúspěšných kolech"
   },
   "thenRunLabel": "Poté spuštěno",
   "thenRunNotRun": "Nespuštěno: {reason}",
   "thenRunTimedOut": "Zastaveno po vypršení časového limitu",
   "checksStoppedNotice": {
-    "one": "Kontroly selhaly i po {count} pokusu o opravu, takže se v tomto kole už automaticky nespustí.",
-    "few": "Kontroly selhaly i po {count} pokusech o opravu za sebou, takže se v tomto kole už automaticky nespustí.",
-    "many": "Kontroly selhaly i po {count} pokusu o opravu za sebou, takže se v tomto kole už automaticky nespustí.",
-    "other": "Kontroly selhaly i po {count} pokusech o opravu za sebou, takže se v tomto kole už automaticky nespustí."
+    "one": "Kontroly selhaly i po {count} pokusu o opravu, takže se automaticky nespustí až do vaší další zprávy.",
+    "few": "Kontroly selhaly i po {count} pokusech o opravu za sebou, takže se automaticky nespustí až do vaší další zprávy.",
+    "many": "Kontroly selhaly i po {count} pokusu o opravu za sebou, takže se automaticky nespustí až do vaší další zprávy.",
+    "other": "Kontroly selhaly i po {count} pokusech o opravu za sebou, takže se automaticky nespustí až do vaší další zprávy."
   },
-  "exportThenRunLabel": "Poté spuštěno:"
+  "exportThenRunLabel": "Poté spuštěno:",
+  "verifyUnchecked": {
+    "one": "{count} soubor nezkontrolován",
+    "few": "{count} soubory nezkontrolovány",
+    "many": "{count} souboru nezkontrolováno",
+    "other": "{count} souborů nezkontrolováno"
+  },
+  "thenRunNoExitCode": "Selhalo bez ukončovacího kódu",
+  "exportThenRunSkipped": "then_run `{command}`: {outcome}"
 }

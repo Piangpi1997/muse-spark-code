@@ -1151,14 +1151,22 @@
     "refused": "izin modu kabuk komutlarını reddediyor",
     "restricted": "Kısıtlı Mod’da kabuk komutları kapalı",
     "unsafePath": "bir dosya adı ona güvenle aktarılamıyor",
-    "changed": "dosya düzenlemeden sonra değişti"
+    "changed": "dosya düzenlemeden sonra değişti",
+    "hookDenied": "bir hook reddetti",
+    "stopped": "denetimler art arda başarısız turlardan sonra durdu"
   },
   "thenRunLabel": "Ardından çalıştırıldı",
   "thenRunNotRun": "Çalıştırılmadı: {reason}",
   "thenRunTimedOut": "Süre sınırında durduruldu",
   "checksStoppedNotice": {
-    "one": "Denetimler {count} düzeltme turundan sonra da başarısız oldu; bu turda artık otomatik olarak çalışmayacaklar.",
-    "other": "Denetimler art arda {count} düzeltme turundan sonra da başarısız oldu; bu turda artık otomatik olarak çalışmayacaklar."
+    "one": "Denetimler {count} düzeltme turundan sonra da başarısız oldu; bir sonraki mesajınıza kadar otomatik olarak çalışmayacaklar.",
+    "other": "Denetimler art arda {count} düzeltme turundan sonra da başarısız oldu; bir sonraki mesajınıza kadar otomatik olarak çalışmayacaklar."
   },
-  "exportThenRunLabel": "Ardından çalıştırıldı:"
+  "exportThenRunLabel": "Ardından çalıştırıldı:",
+  "verifyUnchecked": {
+    "one": "{count} dosya denetlenmedi",
+    "other": "{count} dosya denetlenmedi"
+  },
+  "thenRunNoExitCode": "Çıkış kodu olmadan başarısız oldu",
+  "exportThenRunSkipped": "then_run `{command}`: {outcome}"
 }

@@ -1185,15 +1185,24 @@
     "refused": "le mode d’autorisation refuse les commandes shell",
     "restricted": "les commandes shell sont désactivées en mode Restreint",
     "unsafePath": "un nom de fichier ne peut pas lui être transmis sans risque",
-    "changed": "le fichier a changé après la modification"
+    "changed": "le fichier a changé après la modification",
+    "hookDenied": "un hook l’a refusé",
+    "stopped": "les vérifications se sont arrêtées après des échecs répétés"
   },
   "thenRunLabel": "Puis exécuté",
   "thenRunNotRun": "Non exécuté : {reason}",
   "thenRunTimedOut": "Arrêté à sa limite de temps",
   "checksStoppedNotice": {
-    "one": "Les vérifications échouaient encore après {count} série de corrections ; elles ne seront plus lancées automatiquement pendant ce tour.",
-    "many": "Les vérifications échouaient encore après {count} de séries de corrections d’affilée ; elles ne seront plus lancées automatiquement pendant ce tour.",
-    "other": "Les vérifications échouaient encore après {count} séries de corrections d’affilée ; elles ne seront plus lancées automatiquement pendant ce tour."
+    "one": "Les vérifications échouaient encore après {count} série de corrections ; elles ne seront plus lancées automatiquement avant votre prochain message.",
+    "many": "Les vérifications échouaient encore après {count} de séries de corrections d’affilée ; elles ne seront plus lancées automatiquement avant votre prochain message.",
+    "other": "Les vérifications échouaient encore après {count} séries de corrections d’affilée ; elles ne seront plus lancées automatiquement avant votre prochain message."
   },
-  "exportThenRunLabel": "Puis exécuté :"
+  "exportThenRunLabel": "Puis exécuté :",
+  "verifyUnchecked": {
+    "one": "{count} fichier non vérifié",
+    "many": "{count} de fichiers non vérifiés",
+    "other": "{count} fichiers non vérifiés"
+  },
+  "thenRunNoExitCode": "Échec sans code de sortie",
+  "exportThenRunSkipped": "then_run `{command}` : {outcome}"
 }

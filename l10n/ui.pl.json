@@ -1219,16 +1219,26 @@
     "refused": "tryb uprawnień nie pozwala na polecenia powłoki",
     "restricted": "polecenia powłoki są wyłączone w trybie ograniczonym",
     "unsafePath": "nazwy pliku nie da się mu bezpiecznie przekazać",
-    "changed": "plik zmienił się po edycji"
+    "changed": "plik zmienił się po edycji",
+    "hookDenied": "hook go odrzucił",
+    "stopped": "sprawdzenia zatrzymały się po kolejnych nieudanych rundach"
   },
   "thenRunLabel": "Następnie uruchomiono",
   "thenRunNotRun": "Nie uruchomiono: {reason}",
   "thenRunTimedOut": "Zatrzymano po upływie limitu czasu",
   "checksStoppedNotice": {
-    "one": "Sprawdzenia nadal kończyły się błędem po {count} rundzie poprawek, więc w tej turze nie uruchomią się już automatycznie.",
-    "few": "Sprawdzenia nadal kończyły się błędem po {count} kolejnych rundach poprawek, więc w tej turze nie uruchomią się już automatycznie.",
-    "many": "Sprawdzenia nadal kończyły się błędem po {count} kolejnych rundach poprawek, więc w tej turze nie uruchomią się już automatycznie.",
-    "other": "Sprawdzenia nadal kończyły się błędem po {count} rundy poprawek z rzędu, więc w tej turze nie uruchomią się już automatycznie."
+    "one": "Sprawdzenia nadal kończyły się błędem po {count} rundzie poprawek, więc do Twojej następnej wiadomości nie uruchomią się już automatycznie.",
+    "few": "Sprawdzenia nadal kończyły się błędem po {count} kolejnych rundach poprawek, więc do Twojej następnej wiadomości nie uruchomią się już automatycznie.",
+    "many": "Sprawdzenia nadal kończyły się błędem po {count} kolejnych rundach poprawek, więc do Twojej następnej wiadomości nie uruchomią się już automatycznie.",
+    "other": "Sprawdzenia nadal kończyły się błędem po {count} rundy poprawek z rzędu, więc do Twojej następnej wiadomości nie uruchomią się już automatycznie."
   },
-  "exportThenRunLabel": "Następnie uruchomiono:"
+  "exportThenRunLabel": "Następnie uruchomiono:",
+  "verifyUnchecked": {
+    "one": "{count} plik niesprawdzony",
+    "few": "{count} pliki niesprawdzone",
+    "many": "{count} plików niesprawdzonych",
+    "other": "{count} pliku niesprawdzonego"
+  },
+  "thenRunNoExitCode": "Niepowodzenie bez kodu wyjścia",
+  "exportThenRunSkipped": "then_run `{command}`: {outcome}"
 }

@@ -97,7 +97,15 @@ export class IdeMcpServer {
       response.writeHead(HTTP_STATUS.badRequest).end()
       return
     }
-    const outcome = await handleMcpMessage(body, this.tools(), IDE_MCP_SERVER_INFO)
+    // A caller that goes away (Muse Code's turn stopped) stops the tool's
+    // wait, such as the diagnostics tool's for a language server (M68).
+    const gone = new AbortController()
+    response.once('close', () => {
+      if (!response.writableFinished) {
+        gone.abort()
+      }
+    })
+    const outcome = await handleMcpMessage(body, this.tools(), IDE_MCP_SERVER_INFO, gone.signal)
     if (outcome.kind === 'accepted') {
       response.writeHead(HTTP_STATUS.accepted).end()
       return

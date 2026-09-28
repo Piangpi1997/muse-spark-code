@@ -7,7 +7,7 @@ import { describe, expect, it } from 'vitest'
 import type { ItemSnapshot } from '../../src/shared/agentEvents'
 import { renderTranscriptMarkdown } from '../../src/core/export/transcriptMarkdown'
 import { describeTool } from '../../src/webview/toolPresentation'
-import { thenRunOutcomeText, verifySummaryText } from '../../src/webview/components/VerifyParts'
+import { thenRunOutcomeText, verifySummaryText } from '../../src/shared/verifyText'
 import { initialUiState, type UiState, uiReducer } from '../../src/webview/state/uiState'
 import { renderTranscript, tool } from './helpers/transcriptFixtures'
 
@@ -91,6 +91,16 @@ describe('the verify rows', () => {
     ).toBe('lint timed out · test stopped')
   })
 
+  // The M68 review: a file no report arrived for is "not checked", never clean.
+  it('counts the files it could not check apart from the clean ones', () => {
+    expect(verifySummaryText({ files: ['a', 'b'], unchecked: 2, checks: [] })).toBe(
+      '2 files not checked',
+    )
+    expect(
+      verifySummaryText({ files: ['a', 'b'], errors: 0, warnings: 0, unchecked: 1, checks: [] }),
+    ).toBe('No errors or warnings · 1 file not checked')
+  })
+
   it('label the model’s run_checks and the automatic row, with their files', () => {
     expect(describeTool('run_checks', '{"names":["lint"],"paths":["src/a.ts"]}')).toMatchObject({
       label: 'Run checks',
@@ -139,6 +149,22 @@ describe('an edit’s then_run', () => {
     expect(thenRunOutcomeText({ command: 'x', outcome: 'passed', output: 'ok', exitCode: 0 })).toBe(
       'Exit code 0',
     )
+  })
+
+  // The M68 review: a command that could not start failed; it was not stopped.
+  it('says a failure without an exit code failed, and gives a hook’s words', () => {
+    expect(thenRunOutcomeText({ command: 'x', outcome: 'failed', output: 'spawn ENOENT' })).toBe(
+      'Failed without an exit code',
+    )
+    expect(
+      thenRunOutcomeText({
+        command: 'x',
+        outcome: 'notRun',
+        skip: 'hookDenied',
+        detail: 'no tests on main',
+        output: '',
+      }),
+    ).toBe('Not run: a hook denied it: no tests on main')
   })
 })
 
@@ -198,6 +224,28 @@ describe('the reducer and the export keep both', () => {
       exportedAt: '2026-09-28T00:00:00.000Z',
       items: [edit],
     })
-    expect(markdown).toContain('Then ran:\n\n```\n$ npm test\nok\n```')
+    expect(markdown).toContain('Then ran:\n\n```\n$ npm test\nok\n```\n\n_Exit code 0_')
+  })
+
+  // The M68 review: the export says what the row says, skips and summary too.
+  it('exports a skipped then_run and a check row’s summary line', () => {
+    const skipped: ItemSnapshot = {
+      ...edit,
+      thenRun: { command: 'npm test', outcome: 'notRun', skip: 'rejected', output: '' },
+    }
+    const markdown = renderTranscriptMarkdown({
+      title: 'x',
+      sessionId: 's',
+      backendLabel: 'Model API',
+      modelId: 'muse-spark-1.3',
+      exportedAt: '2026-09-28T00:00:00.000Z',
+      items: [
+        skipped,
+        { ...check, verifySummary: { files: ['src/a.ts'], unchecked: 1, checks: [] } },
+      ],
+    })
+    expect(markdown).toContain('_then_run `npm test`: Not run: rejected_')
+    expect(markdown).not.toContain('$ npm test')
+    expect(markdown).toContain('_1 file not checked_')
   })
 })

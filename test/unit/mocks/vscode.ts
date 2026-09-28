@@ -94,6 +94,16 @@ export const window = {
   showTextDocument: vi.fn<typeof vscode.window.showTextDocument>(),
   // The editors on screen: the verify loop shows a file only when none does (M68).
   visibleTextEditors: [] as readonly vscode.TextEditor[],
+  // The tabs, so the verify loop closes the ones it opened (M68).
+  tabGroups: {
+    all: [] as readonly vscode.TabGroup[],
+    close: vi.fn<(tabs: readonly vscode.Tab[], shouldKeepFocus?: boolean) => Thenable<boolean>>(),
+  },
+}
+
+/** A text editor's tab input (M68): a tab showing a document at `uri`. */
+export class TabInputText implements vscode.TabInputText {
+  public constructor(public readonly uri: vscode.Uri) {}
 }
 
 export const workspace = {

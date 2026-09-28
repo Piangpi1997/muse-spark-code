@@ -629,44 +629,67 @@ files, and before the next request to Meta:
   files' errors and warnings from VS Code's language servers, with what
   changed since each file's previous check (new, fixed). VS Code's servers
   report only on a file an editor shows, so each edited file no editor shows
-  opens beside your editor, as a preview and without taking focus, for up to
-  8 seconds while its server reports. At most 50 problems are listed.
+  opens in a tab beside your editor, without taking focus, while its server
+  reports (up to 10 seconds a file), and the tab closes again unless you changed
+  it. A file no report arrived for, one with unsaved changes, or one past
+  the first 8 of a round is **not checked**, and the model and the row say
+  so; it is never reported clean. At most 50 problems are listed.
+- **Code the editor runs is never opened or formatted.** Opening a file can
+  make an extension load its configuration as code (`eslint.config.js`,
+  `.prettierrc.cjs`, `package.json`, anything under `node_modules`), so the
+  loop never shows or formats one, and after the agent writes one it shows
+  and formats nothing more until your next message.
 - **Check commands** (`checkCommands`, none by default): your lint, test or
   type-check commands, for example
   `[{ "name": "lint", "command": "npm run lint", "changedFiles": true }]`.
   Each runs as the shell tool runs a command, from the workspace root, in a
-  job object on Windows, with no sandbox: it **asks wherever a shell command
-  would ask** (every permission mode but Bypass permissions), "Always allow
-  in this session" allows that command for the conversation, and it never
-  runs in Plan mode or Restricted Mode. The model can change what a check
-  runs (a `package.json` script, a config file), which is why it asks.
-  `changedFiles` adds the edited files after `--`, each quoted as one
-  argument; a file name that starts with `-` keeps the check from running.
-  `timeoutSeconds` (300 unless set, 600 at most) caps each run. A check you
-  reject is not asked again in that turn.
+  job object on Windows, with no sandbox, and **your tool hooks see it as a
+  shell call** (PreToolUse can deny it, rewrite it or make it ask;
+  PostToolUse can add context or stop the turn). It **asks wherever a shell
+  command would ask** (every permission mode but Bypass permissions), and
+  never runs in Plan mode or Restricted Mode. "Always allow in this session"
+  allows that command for the conversation, but after the agent edits a
+  file that decides what the command runs (`package.json`, a `Makefile`, a
+  config the tools load, or a file the command names) it asks again until
+  your next message. `changedFiles` adds the edited files that still exist
+  after `--`, each quoted as one argument; a file name that starts with `-`
+  or `@`, or on Windows one holding `"`, `&`, `|`, `<`, `>`, `^`, `%` or `!`
+  (which Windows PowerShell 5.1 and `cmd.exe` would read as syntax), keeps
+  the check from running. `timeoutSeconds` (300 unless set, 600 at most)
+  caps each run. A check you reject is not asked again until your next
+  message, and a check the model already ran since its last edit is not run
+  again after the round. Nothing runs after the turn's last round.
+- **One budget.** What the model reads after a round, diagnostics and every
+  check's output together, is capped at 64,000 characters, shared out.
 - **The fix loop is bounded.** After three rounds in a row whose checks
-  failed, the checks stop for the rest of the turn; the model is told to
-  stop fixing and say what still fails, and the panel says so too.
+  failed, the checks stop until your next message (a goal's wake does not
+  start them again); the model is told to stop fixing and say what still
+  fails, and the panel says so too.
 - **Format on edit** (`formatOnEdit`, off by default): each file an edit
   tool writes goes through the formatter VS Code would use for it
   (`editor.defaultFormatter`) before anything checks it; the row's diff
   shows the formatted result, and the model is told to read the file again
-  before editing the same lines.
+  before editing the same lines. If the formatted text cannot be written,
+  the edit stays as written and the log says why.
 
 A **Check edits** row shows what ran: the files, their errors and warnings,
-and how each check ended; open it for what the model read. The model can
-also call **run_checks** itself (the files it names, or those edited in the
-turn), and give `write_file` or `edit_file` a **`then_run`** command, such
-as the test of the code it changed: the command takes the same permission
-path as the shell tool, runs only if the file still holds what the edit
-wrote (after formatting), and its output is the call's second result, under
-the diff in the same row.
+how many were not checked, and how each check ended; open it for what the
+model read. The model can also call **run_checks** itself (files it names,
+which must exist in the workspace, or those edited since your message), with
+the same rules, and give `write_file` or `edit_file` a **`then_run`**
+command, such as the test of the code it changed: the command takes the
+shell tool's hooks and permission path, runs only if the file still holds
+what the edit wrote (after formatting), and its output is the call's second
+result, under the diff in the same row. A command a hook denied says so,
+with the hook's words, apart from one you rejected.
 
 **On Muse Code**, which runs its own tools, each message tells the agent to
-check the files it edits with `mcp__ide__getDiagnostics` and to run your
-check commands through its own shell and approvals. Checks that run
-automatically after Muse Code's own edits would need an event Muse Code does
-not send (an ask for Meta, PLAN.md M68).
+check the files it edits with `mcp__ide__getDiagnostics` (only when the
+session has the IDE tool server) and to run your check commands through its
+own shell and approvals. `getDiagnostics` opens only a file inside the
+workspace by its real path, never one that is code the editor runs. Checks
+that run automatically after Muse Code's own edits would need an event Muse
+Code does not send (an ask for Meta, PLAN.md M68).
 
 ## The panel
 

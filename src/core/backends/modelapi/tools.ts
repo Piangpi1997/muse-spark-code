@@ -230,11 +230,24 @@ export interface ToolContext {
    * model has seen (D27).
    */
   readonly seen: Map<string, string>
-  /**
-   * Format on edit (M68): the text the file's formatter makes of what an
-   * edit just wrote, or undefined for none. Present only while it is on.
-   */
-  readonly format?: (absolutePath: string, text: string) => Promise<string | undefined>
+  /** Format on edit (M68); present only while it is on. */
+  readonly formatter?: EditFormatter
+}
+
+/** A file an edit just wrote, as format on edit sees it (M68). */
+export interface FormatTarget {
+  readonly checkedAbsolute: string
+  /** Workspace-relative as the model named it, and after links are resolved. */
+  readonly relative: string
+  readonly canonical: string
+}
+
+/** Format on edit (M68): the formatter over a written file, and where its failures go. */
+export interface EditFormatter {
+  /** The text the file's formatter makes of what the edit wrote, or undefined for none. */
+  readonly format: (target: FormatTarget, text: string) => Promise<string | undefined>
+  /** A formatted text that could not be written back, for the log. */
+  readonly warn: (message: string) => void
 }
 
 const FINGERPRINT_HASH = 'sha256'
@@ -659,17 +672,28 @@ export function fingerprint(raw: string): string {
  * Format on edit (M68): what the edit wrote, as the file's formatter leaves
  * it, written back when it changed; the text on disk either way. It runs
  * before the fingerprint is taken, so `then_run` checks the formatted file.
+ * The edit has landed by now: a formatted text that cannot be written back
+ * (the write is atomic, so the file still holds what the edit wrote) is
+ * logged and the edit stands as written (the M68 review).
  */
 async function formatWritten(
   written: string,
-  checkedAbsolute: string,
+  target: FormatTarget,
   context: ToolContext,
 ): Promise<string> {
-  const formatted = await context.format?.(checkedAbsolute, written)
-  if (formatted === undefined || formatted === written) {
+  const { formatter } = context
+  const formatted = await formatter?.format(target, written)
+  if (formatter === undefined || formatted === undefined || formatted === written) {
     return written
   }
-  await context.io.writeFile(checkedAbsolute, formatted, checkedAbsolute)
+  try {
+    await context.io.writeFile(target.checkedAbsolute, formatted, target.checkedAbsolute)
+  } catch (error: unknown) {
+    formatter.warn(
+      `Format on edit could not write ${target.relative}; the edit stays as written: ${error instanceof Error ? error.message : String(error)}`,
+    )
+    return written
+  }
   return formatted
 }
 
@@ -917,6 +941,7 @@ async function located(
   | {
       readonly ok: true
       readonly relative: string
+      readonly canonical: string
       readonly absolute: string
       readonly checkedAbsolute: string
       readonly before: string | undefined
@@ -943,6 +968,7 @@ async function located(
   return {
     ok: true,
     relative: resolved.relative,
+    canonical: resolved.canonical,
     absolute: resolved.absolute,
     checkedAbsolute: resolved.checkedAbsolute,
     before,
@@ -976,7 +1002,7 @@ async function writeFile(
   const { before, relative, absolute, checkedAbsolute } = file
   if (before === undefined) {
     await context.io.writeFile(checkedAbsolute, args.content, checkedAbsolute)
-    const created = await formatWritten(args.content, checkedAbsolute, context)
+    const created = await formatWritten(args.content, file, context)
     context.seen.set(absolute, fingerprint(created))
     return patchOutcome(
       relative,
@@ -1002,7 +1028,7 @@ async function writeFile(
       : normalized
   const after = fileText(text, shape)
   await context.io.writeFile(checkedAbsolute, after, checkedAbsolute)
-  const final = await formatWritten(after, checkedAbsolute, context)
+  const final = await formatWritten(after, file, context)
   context.seen.set(absolute, fingerprint(final))
   return patchOutcome(
     relative,
@@ -1048,7 +1074,7 @@ async function editFile(
   const updated = `${current.slice(0, first)}${replace}${current.slice(first + find.length)}`
   const after = fileText(updated, shape)
   await context.io.writeFile(checkedAbsolute, after, checkedAbsolute)
-  const final = await formatWritten(after, checkedAbsolute, context)
+  const final = await formatWritten(after, file, context)
   context.seen.set(absolute, fingerprint(final))
   return patchOutcome(
     relative,
@@ -1177,8 +1203,8 @@ async function shell(args: z.infer<typeof shellArgs>, context: ToolContext): Pro
  * What a finished command printed: each stream keeps its beginning and its
  * end within its share of the output budget (D27).
  */
-export function shellText(result: ShellResult): string {
-  const streamBudget = Math.floor(TOOL_OUTPUT_MAX_CHARS / SHELL_STREAMS)
+export function shellText(result: ShellResult, maxChars: number = TOOL_OUTPUT_MAX_CHARS): string {
+  const streamBudget = Math.floor(maxChars / SHELL_STREAMS)
   return [result.stdout.trimEnd(), result.stderr.trimEnd()]
     .filter((part) => part !== '')
     .map((part) => clipMiddle(part, streamBudget))
@@ -1189,16 +1215,20 @@ export function shellText(result: ShellResult): string {
  * A finished command as the model and the row read it (the shell tool, and
  * the user's own `!` command on this backend, M46): what it printed, then an
  * exit line that is never clipped, so a flood of output still says how the
- * command ended (D27).
+ * command ended (D27). A check's output takes its share of one budget (M68).
  */
-export function shellOutcome(result: ShellResult, timeoutMs: number): ToolOutcome {
+export function shellOutcome(
+  result: ShellResult,
+  timeoutMs: number,
+  maxChars: number = TOOL_OUTPUT_MAX_CHARS,
+): ToolOutcome {
   let exit = `exit code ${String(result.exitCode ?? 'unknown')}`
   if (result.isCancelled) {
     exit = SHELL_STOPPED_BY_USER
   } else if (result.isTimedOut) {
     exit = `stopped after ${String(timeoutMs)} ms`
   }
-  const body = `${shellText(result)}\n[${exit}]`.trim()
+  const body = `${shellText(result, maxChars)}\n[${exit}]`.trim()
   return {
     output: body,
     visibleOutput: body,

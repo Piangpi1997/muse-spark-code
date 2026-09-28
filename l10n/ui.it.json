@@ -1185,15 +1185,24 @@
     "refused": "la modalità di autorizzazione rifiuta i comandi shell",
     "restricted": "i comandi shell sono disattivati in Modalità con restrizioni",
     "unsafePath": "un nome file non può essergli passato in sicurezza",
-    "changed": "il file è cambiato dopo la modifica"
+    "changed": "il file è cambiato dopo la modifica",
+    "hookDenied": "un hook lo ha negato",
+    "stopped": "i controlli si sono fermati dopo cicli falliti uno dopo l’altro"
   },
   "thenRunLabel": "Poi eseguito",
   "thenRunNotRun": "Non eseguito: {reason}",
   "thenRunTimedOut": "Arrestato al limite di tempo",
   "checksStoppedNotice": {
-    "one": "I controlli non riuscivano ancora dopo {count} ciclo di correzioni, quindi in questo turno non verranno più eseguiti automaticamente.",
-    "many": "I controlli non riuscivano ancora dopo {count} di cicli di correzioni consecutivi, quindi in questo turno non verranno più eseguiti automaticamente.",
-    "other": "I controlli non riuscivano ancora dopo {count} cicli di correzioni consecutivi, quindi in questo turno non verranno più eseguiti automaticamente."
+    "one": "I controlli non riuscivano ancora dopo {count} ciclo di correzioni, quindi non verranno più eseguiti automaticamente fino al tuo prossimo messaggio.",
+    "many": "I controlli non riuscivano ancora dopo {count} di cicli di correzioni consecutivi, quindi non verranno più eseguiti automaticamente fino al tuo prossimo messaggio.",
+    "other": "I controlli non riuscivano ancora dopo {count} cicli di correzioni consecutivi, quindi non verranno più eseguiti automaticamente fino al tuo prossimo messaggio."
   },
-  "exportThenRunLabel": "Poi eseguito:"
+  "exportThenRunLabel": "Poi eseguito:",
+  "verifyUnchecked": {
+    "one": "{count} file non controllato",
+    "many": "{count} di file non controllati",
+    "other": "{count} file non controllati"
+  },
+  "thenRunNoExitCode": "Non riuscito senza codice di uscita",
+  "exportThenRunSkipped": "then_run `{command}`: {outcome}"
 }

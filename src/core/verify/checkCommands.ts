@@ -1,10 +1,19 @@
 // The user's check commands (M68, PLAN.md D49): `museSpark.checkCommands`,
 // validated, and the command line each one runs with. A check that asks to
-// be scoped gets the edited files after `--`, each quoted as one argument
-// for the shell the tool runs (PowerShell on Windows, bash elsewhere); a
-// path that starts with `-` or holds a control character is refused rather
-// than passed, so no file name can turn into an option or a second line.
-// The guidance Muse Code gets with each turn is built here too. Pure.
+// be scoped gets files after `--`, each quoted as one argument for the shell
+// the tool runs (PowerShell on Windows, bash elsewhere). A path is refused
+// rather than passed when it could reach the program as anything but one
+// file name (the M68 review):
+//
+// - it starts like an option (`-`) or a response file (`@`);
+// - it holds a control character (a second line, an escape);
+// - on Windows, it holds `"`, which Windows PowerShell 5.1 does not escape
+//   when it quotes an argument with a space for a native program, or `&`,
+//   `|`, `<`, `>`, `^`, `%` or `!`, which cmd.exe re-reads when the program
+//   is a `.cmd` or `.bat` (`npm`, `yarn`, `gradlew.bat`, `mvnw.cmd`).
+//
+// The callers pass only files that exist in the workspace. The guidance Muse
+// Code gets with each turn is built here too. Pure.
 
 import * as z from 'zod/mini'
 import {
@@ -18,7 +27,8 @@ import {
   HARNESS_NOTE_TAG,
   MILLISECONDS_PER_SECOND,
   MODEL_TEXT,
-  OPTION_PREFIX,
+  UNSAFE_ARGUMENT_START,
+  WINDOWS_ARGUMENT_SYNTAX,
 } from '../../shared/constants'
 import { fill } from '../../shared/l10n/text'
 import { posixQuoted, powerShellQuoted } from '../shellQuote'
@@ -49,12 +59,13 @@ function shellArgument(text: string, platform: NodeJS.Platform): string {
   return platform === 'win32' ? powerShellQuoted(text) : posixQuoted(text)
 }
 
-/** Whether a path can follow `--` as a plain file name. */
-export function isSafeCheckPath(relativePath: string): boolean {
+/** Whether a path can follow `--` as one plain file name on this platform (see above). */
+export function isSafeCheckPath(relativePath: string, platform: NodeJS.Platform): boolean {
   return (
     relativePath !== '' &&
-    !relativePath.startsWith(OPTION_PREFIX) &&
-    !CONTROL_CHARACTER.test(relativePath)
+    !UNSAFE_ARGUMENT_START.test(relativePath) &&
+    !CONTROL_CHARACTER.test(relativePath) &&
+    !(platform === 'win32' && WINDOWS_ARGUMENT_SYNTAX.test(relativePath))
   )
 }
 
@@ -71,7 +82,7 @@ export function checkCommandLine(
   if (check.changedFiles !== true || paths.length === 0) {
     return { ok: true, line: check.command }
   }
-  if (paths.some((relativePath) => !isSafeCheckPath(relativePath))) {
+  if (paths.some((relativePath) => !isSafeCheckPath(relativePath, platform))) {
     return { ok: false, reason: MODEL_TEXT.checkSkipUnsafePath }
   }
   const quoted = paths.map((relativePath) => shellArgument(relativePath, platform))
@@ -90,9 +101,10 @@ export function checkListText(checks: readonly CheckCommandSetting[]): string {
 
 /**
  * What Muse Code is told with each turn (M68): check the diagnostics of the
- * files it edits through the `ide` server, and run the user's checks. It
- * reads them itself and runs the checks through its own shell and approvals;
- * undefined when there is nothing to say.
+ * files it edits through the `ide` server (only when the session has it),
+ * and run the user's checks. It reads them itself and runs the checks
+ * through its own shell and approvals; undefined when there is nothing to
+ * say.
  */
 export function verifyGuidance(
   isDiagnosticsOn: boolean,

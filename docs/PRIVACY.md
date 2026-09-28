@@ -24,7 +24,10 @@ security notes for contributors are in `PLAN.md` §9.
   servers (`museSpark.diagnosticsAfterEdits`, on by default), and the
   commands and output of your check commands (`museSpark.checkCommands`,
   none by default) and of an edit's `then_run`, go to Meta with the next
-  request, as the shell tool's output does. On Muse Code the extension
+  request (at most 64,000 characters together), as the shell tool's output
+  does, with what your tool hooks add about those commands. Files that the
+  editor's tools would run as code are not opened for their diagnostics.
+  On Muse Code the extension
   sends only a note naming your check commands; Muse Code runs them itself.
 - **Through the Muse Code CLI** (what `museSpark.backend` at `auto` picks
   when the CLI is installed and signed in), the extension hands

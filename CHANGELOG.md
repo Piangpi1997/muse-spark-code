@@ -15,25 +15,42 @@ happened, not what was planned; superseded entries are kept.
   language servers, with what changed since each file's previous check
   (`museSpark.diagnosticsAfterEdits`, on by default), and the results of
   your **check commands** (`museSpark.checkCommands`: lint, test or
-  type-check commands, none by default). A **Check edits** row shows the
-  files, their problems and how each check ended.
-- **Check commands take the shell tool's permission path.** Each asks
+  type-check commands, none by default), within one 64,000-character
+  budget. A **Check edits** row shows the files, their problems, how many
+  were **not checked** (no report arrived, unsaved, or past the first 8;
+  never reported clean) and how each check ended.
+- **Check commands take the shell tool's hooks and permission path.** Your
+  PreToolUse, PostToolUse and PostToolUseFailure hooks see each check and
+  `then_run` command as a shell call (deny, rewrite, ask, add context, stop
+  the turn), and a hook's denial is shown apart from your Reject. Each asks
   wherever a shell command would ask (every mode but Bypass permissions),
-  "Always allow in this session" allows that command, and none runs in Plan
-  mode or Restricted Mode. `changedFiles` passes the edited files after
-  `--`, each quoted as one argument, and refuses a file name that starts
-  with `-`; `timeoutSeconds` caps each run. After three failing rounds in a
-  row the checks stop for the turn, and the model and the panel say so.
-- **`run_checks`**, the model's own call of the checks, and **`then_run`**
+  "Always allow in this session" allows that command until the agent edits a
+  file that decides what it runs (`package.json`, a `Makefile`, a config
+  the tools load, a file it names), and none runs in Plan mode or Restricted
+  Mode. `changedFiles` passes the edited files that still exist after `--`,
+  each quoted as one argument, and refuses a file name that starts with `-`
+  or `@`, or on Windows holds `"`, `&`, `|`, `<`, `>`, `^`, `%` or `!`;
+  `timeoutSeconds` caps each run. A rejected check is not asked again, and
+  after three failing rounds in a row the checks stop, until your next
+  message; the model and the panel say so. No check runs twice for the same
+  edit, or after the turn's last round.
+- **`run_checks`**, the model's own call of the checks (on files that exist
+  in the workspace, or those edited since your message), and **`then_run`**
   on `write_file` and `edit_file`: one command run right after the edit,
   asked for like any shell command, run only if the file still holds what
   the edit wrote, and shown under the diff as the call's second result
   (SoL-Pi's Action Fusion, reimplemented from its description).
 - **Format on edit** (`museSpark.formatOnEdit`, off by default): the file's
   formatter runs on each file the Model API backend's edit tools write,
-  before anything checks it.
+  before anything checks it. An edit whose formatted text cannot be written
+  stays as written, and the log says why.
+- **Code the editor runs is never opened or formatted by the loop**
+  (`eslint.config.js`, `.prettierrc.cjs`, `package.json`, `node_modules`),
+  and once the agent writes such a file nothing more is opened or formatted
+  until your next message.
 - **Muse Code** is told with each message to check the files it edits with
-  `mcp__ide__getDiagnostics` and to run your check commands.
+  `mcp__ide__getDiagnostics` (when the session has the IDE tool server) and
+  to run your check commands.
 
 ### Changed
 
@@ -41,8 +58,10 @@ happened, not what was planned; superseded entries are kept.
   servers report only on files an editor shows (TypeScript and JSON,
   measured in VS Code 1.139.1 and 1.125.0), so when the agent asks
   `getDiagnostics` about one such file, on either backend, the extension
-  opens it beside your editor, as a preview and without taking focus, and
-  waits up to 8 seconds for its report.
+  opens it in a tab beside your editor without taking focus, waits up to 10
+  seconds for its report, and closes the tab again; a file outside the
+  workspace by its real path, or code the editor runs, is not opened, and a
+  file no report arrived for is "not checked", never clean.
 - **Every paid use asks first, in a popup** (M58, PLAN.md D48): **Allow
   once**, **Allow always in this workspace**, or **Deny**, in every
   permission mode, Bypass included. It covers each image (on either
