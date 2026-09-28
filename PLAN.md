@@ -6674,8 +6674,12 @@ timeoutSeconds? }`, at most 8, names unique, 300 s unless set, 600 s at
     the configured command, which is safe because a path can no longer
     inject (below), but it does not answer after the conversation, since
     the user's message, edited a file that decides what the command runs
-    (`canChangeWhatRuns`: `COMMAND_DEFINING_FILES`, code-loading files, or a
-    file the command line names).
+    (`canChangeWhatRuns`: `COMMAND_DEFINING_FILES`, code-loading files, a
+    file whose path occurs in the command's text or a plain word of it
+    names, or, since PR #54's fourth Codex round, any edited file when the
+    command holds shell syntax that makes its words uncertain: quotes,
+    escapes, variables, substitutions, globs, operators). The judgement is
+    made on the command the rule is keyed on, a hook's rewrite included.
   - **Paths reaching a check** (the M68 review, P1): only edited files that
     exist, or `run_checks` paths that exist in the workspace; a leading `-`
     or `@`, or a control character, refuses the check, and on Windows so do
