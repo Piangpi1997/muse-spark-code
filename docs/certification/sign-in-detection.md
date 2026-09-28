@@ -221,6 +221,7 @@ captured frames.
 | AI    | A refresh begun before sign-out publishes its late answer (the review of PR #49)                               | `authService.test.ts`    | exit 1, 1 failed: the signed-out state was overwritten with "Sign-out is in progress"                                                    |
 | AJ    | A sign-in cancelled by sign-out still announces its own cancellation                                           | `authService.test.ts`    | exit 1, 1 failed: "Sign-in cancelled" was shown during the sign-out                                                                      |
 | AK    | The CLI's answer returned although the credential file was rewritten while it was asked (the review of PR #49) | `cliAccount.test.ts`     | exit 1, 1 failed: a sign-out rewrite during the probe still read as signed in                                                            |
+| AL    | The CLI's remembered answer kept after a confirmed logout that left the file unchanged (the review of PR #49)  | `authService.test.ts`    | exit 1, 1 failed: a Keychain-style logout stayed signed in and kept the hold                                                             |
 
 ## Not proved here
 

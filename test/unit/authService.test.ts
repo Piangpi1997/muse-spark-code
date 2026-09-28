@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { CliSignIn } from '../../src/core/backends/musecode/credentialFile'
+import type { AccountState } from '../../src/host/auth/accountHost'
 import { AuthService, type AuthServiceDeps } from '../../src/host/auth/authService'
 import { CliAccount } from '../../src/host/auth/cliAccount'
 import { CredentialStore } from '../../src/host/auth/credentialStore'
@@ -27,7 +28,7 @@ interface Harness {
     backendMode: BackendMode
   }
   readonly cliSignIn: ReturnType<typeof vi.fn<(isUserAction: boolean) => Promise<CliSignIn>>>
-  readonly abandonCliProbe: ReturnType<typeof vi.fn<() => void>>
+  readonly forgetCliAnswers: ReturnType<typeof vi.fn<() => void>>
   /** `account/logout`: by default it works and leaves the CLI signed out. */
   readonly logOutCli: ReturnType<typeof vi.fn<() => Promise<boolean>>>
   readonly restartBackend: ReturnType<
@@ -59,7 +60,7 @@ function harness(overrides: Partial<AuthServiceDeps> = {}): Harness {
   const cliSignIn = vi.fn<(isUserAction: boolean) => Promise<CliSignIn>>(() =>
     Promise.resolve(facts.cli),
   )
-  const abandonCliProbe = vi.fn<() => void>()
+  const forgetCliAnswers = vi.fn<() => void>()
   const logOutCli = vi.fn<() => Promise<boolean>>(() => {
     facts.cli = 'signedOut'
     return Promise.resolve(true)
@@ -82,7 +83,7 @@ function harness(overrides: Partial<AuthServiceDeps> = {}): Harness {
       resolveCli: () =>
         facts.cliPresent ? { ok: true, cliPath: '/bin/muse' } : { ok: false, reason: 'missing' },
       cliSignIn,
-      abandonCliProbe,
+      forgetCliAnswers,
       credentialFilePath: () => CREDENTIAL_PATH,
       hasEnvironmentKey: () => facts.envKey,
       getBackendMode: () => facts.backendMode,
@@ -119,7 +120,7 @@ function harness(overrides: Partial<AuthServiceDeps> = {}): Harness {
     broadcasts,
     facts,
     cliSignIn,
-    abandonCliProbe,
+    forgetCliAnswers,
     logOutCli,
     restartBackend,
     runInTerminal,
@@ -308,7 +309,7 @@ describe('AuthService.signIn', () => {
     h.cliSignIn.mockImplementation(() =>
       isAbandoned ? Promise.resolve(h.facts.cli) : new Promise<CliSignIn>(() => undefined),
     )
-    h.abandonCliProbe.mockImplementation(() => {
+    h.forgetCliAnswers.mockImplementation(() => {
       isAbandoned = true
     })
     const pending = h.service.signIn('browser')
@@ -318,7 +319,7 @@ describe('AuthService.signIn', () => {
     await expect(h.service.signOut()).resolves.toMatchObject({ status: 'signedOut' })
     // The interrupted sign-in settles too, instead of waiting out the probe.
     await expect(pending).resolves.toBeDefined()
-    expect(h.abandonCliProbe).toHaveBeenCalled()
+    expect(h.forgetCliAnswers).toHaveBeenCalled()
     // Its cancellation never showed over the sign-out's own state or as a notice.
     expect(
       h.broadcasts.some(
@@ -1204,7 +1205,7 @@ describe('AuthService over the CLI’s real credential file', () => {
     if (contents !== undefined) {
       writeFileSync(file, contents)
     }
-    const probe = vi.fn(() => Promise.resolve(undefined))
+    const probe = vi.fn<() => Promise<AccountState | undefined>>(() => Promise.resolve(undefined))
     const account = new CliAccount({
       platform: 'linux',
       credentialFilePath: () => file,
@@ -1215,7 +1216,13 @@ describe('AuthService over the CLI’s real credential file', () => {
     const facts = h.deps.backend
     const service = new AuthService({
       ...h.deps,
-      backend: { ...facts, cliSignIn: (isUserAction) => account.signIn(isUserAction) },
+      backend: {
+        ...facts,
+        cliSignIn: (isUserAction) => account.signIn(isUserAction),
+        forgetCliAnswers: () => {
+          account.forgetAnswers()
+        },
+      },
     })
     return { h, file, service, probe }
   }
@@ -1227,6 +1234,17 @@ describe('AuthService over the CLI’s real credential file', () => {
       hasCliSession: false,
     })
     expect(t.probe).not.toHaveBeenCalled()
+  })
+
+  // A Keychain logout removes the vault item and leaves the pointer file as it was.
+  it('forgets the CLI answer once account/logout confirms, the file unchanged (the review of PR #49)', async () => {
+    const t = withFile('{"schema_version": 1, "providers": ')
+    t.probe
+      .mockResolvedValueOnce({ state: 'accountLogin', credentialRequired: true })
+      .mockResolvedValue({ state: 'loggedOut', credentialRequired: true })
+    await expect(t.service.refresh(true)).resolves.toMatchObject({ status: 'signedIn' })
+    await expect(t.service.signOut()).resolves.toMatchObject({ status: 'signedOut' })
+    expect(t.h.logoutHoldState.isHeld).toBe(false)
   })
 
   it('signs out through account/logout: the file stays, empty, and the hold is released', async () => {

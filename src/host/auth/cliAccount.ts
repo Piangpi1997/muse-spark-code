@@ -156,11 +156,14 @@ export class CliAccount {
   }
 
   /**
-   * Leaves an unanswered probe behind (Cancel, sign-out; the review of PR
-   * #49): later questions start a fresh one instead of waiting on it.
+   * Forgets what the CLI said (Cancel, sign-out; the review of PR #49): an
+   * unanswered probe is left behind, and a remembered answer is dropped, so
+   * the next question asks afresh. A logout that leaves the file as it was
+   * (a Keychain sign-in) would otherwise keep reading as signed in.
    */
-  public abandonAsking(): void {
+  public forgetAnswers(): void {
     this.asking = undefined
+    this.answered = undefined
   }
 
   /**

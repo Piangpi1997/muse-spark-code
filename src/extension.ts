@@ -686,8 +686,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             }
       },
       cliSignIn: (isUserAction) => cliAccount.signIn(isUserAction),
-      abandonCliProbe: () => {
-        cliAccount.abandonAsking()
+      forgetCliAnswers: () => {
+        cliAccount.forgetAnswers()
       },
       credentialFilePath: () => backend.credentialFilePath(),
       hasEnvironmentKey: () => backend.hasEnvironmentKey(),

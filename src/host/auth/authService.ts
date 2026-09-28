@@ -36,8 +36,8 @@ export interface AuthBackendFacts {
    * too (its host reads the Keychain); otherwise it does not.
    */
   readonly cliSignIn: (isUserAction: boolean) => Promise<CliSignIn>
-  /** Stops later questions waiting on a probe the CLI has not answered. */
-  readonly abandonCliProbe: () => void
+  /** Drops what the CLI said: an unanswered probe, and a remembered answer. */
+  readonly forgetCliAnswers: () => void
   /** Where the CLI keeps its sign-in, named when the file stops it starting. */
   readonly credentialFilePath: () => string
   readonly hasEnvironmentKey: () => boolean
@@ -567,7 +567,11 @@ export class AuthService {
    * Returns false when that terminal could not open.
    */
   private async logOutCli(cliPath: string): Promise<boolean> {
-    if (await this.deps.backend.logOutCli()) {
+    const isConfirmed = await this.deps.backend.logOutCli()
+    // What the CLI said before the logout no longer holds, even when the
+    // file did not change (the review of PR #49).
+    this.deps.backend.forgetCliAnswers()
+    if (isConfirmed) {
       return true
     }
     this.deps.log.warn('Muse Code did not sign out through its account host; running muse logout')
@@ -656,7 +660,7 @@ export class AuthService {
     this.deviceAbort?.abort()
     // Sign-out and the next sign-in ask afresh rather than wait on a probe
     // the CLI left unanswered (the review of PR #49).
-    this.deps.backend.abandonCliProbe()
+    this.deps.backend.forgetCliAnswers()
   }
 
   /** One visible installer terminal and one location watch per window. */

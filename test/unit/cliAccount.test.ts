@@ -235,7 +235,7 @@ describe('CliAccount', () => {
     const probe = vi.fn(() => answers.shift() ?? Promise.resolve(undefined))
     const checker = linuxChecker(home.file, probe)
     const abandoned = checker.signIn(true)
-    checker.abandonAsking()
+    checker.forgetAnswers()
     await expect(checker.signIn(true)).resolves.toBe('signedOut')
     expect(probe).toHaveBeenCalledTimes(2)
     // The first probe answers late: it settles its own caller only.
