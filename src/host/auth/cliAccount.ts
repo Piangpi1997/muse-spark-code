@@ -119,7 +119,10 @@ export class CliAccount {
     this.asking = asking
     try {
       const signIn = await asking.signIn
-      this.answered = { key, signIn }
+      // An abandoned probe's late answer is not remembered.
+      if (this.asking === asking) {
+        this.answered = { key, signIn }
+      }
       return signIn
     } finally {
       if (this.asking === asking) {
@@ -136,6 +139,14 @@ export class CliAccount {
       `Muse Code sign-in confirmed by account/read: ${account?.state ?? 'no answer'} (${signIn})`,
     )
     return signIn
+  }
+
+  /**
+   * Leaves an unanswered probe behind (Cancel, sign-out; the review of PR
+   * #49): later questions start a fresh one instead of waiting on it.
+   */
+  public abandonAsking(): void {
+    this.asking = undefined
   }
 
   /**

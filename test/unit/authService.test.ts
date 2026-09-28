@@ -27,6 +27,7 @@ interface Harness {
     backendMode: BackendMode
   }
   readonly cliSignIn: ReturnType<typeof vi.fn<(isUserAction: boolean) => Promise<CliSignIn>>>
+  readonly abandonCliProbe: ReturnType<typeof vi.fn<() => void>>
   /** `account/logout`: by default it works and leaves the CLI signed out. */
   readonly logOutCli: ReturnType<typeof vi.fn<() => Promise<boolean>>>
   readonly restartBackend: ReturnType<
@@ -58,6 +59,7 @@ function harness(overrides: Partial<AuthServiceDeps> = {}): Harness {
   const cliSignIn = vi.fn<(isUserAction: boolean) => Promise<CliSignIn>>(() =>
     Promise.resolve(facts.cli),
   )
+  const abandonCliProbe = vi.fn<() => void>()
   const logOutCli = vi.fn<() => Promise<boolean>>(() => {
     facts.cli = 'signedOut'
     return Promise.resolve(true)
@@ -80,6 +82,7 @@ function harness(overrides: Partial<AuthServiceDeps> = {}): Harness {
       resolveCli: () =>
         facts.cliPresent ? { ok: true, cliPath: '/bin/muse' } : { ok: false, reason: 'missing' },
       cliSignIn,
+      abandonCliProbe,
       credentialFilePath: () => CREDENTIAL_PATH,
       hasEnvironmentKey: () => facts.envKey,
       getBackendMode: () => facts.backendMode,
@@ -116,6 +119,7 @@ function harness(overrides: Partial<AuthServiceDeps> = {}): Harness {
     broadcasts,
     facts,
     cliSignIn,
+    abandonCliProbe,
     logOutCli,
     restartBackend,
     runInTerminal,
@@ -295,6 +299,26 @@ describe('AuthService.signIn', () => {
     h.service.cancelSignIn()
     await expect(pending).resolves.toMatchObject({ status: 'signedOut' })
     expect(h.runDeviceSignIn).not.toHaveBeenCalled()
+  })
+
+  it('signs out without waiting on a pre-flight probe the CLI never answered (the review of PR #49)', async () => {
+    const h = harness()
+    // Like CliAccount: a question joins the unanswered probe until it is abandoned.
+    let isAbandoned = false
+    h.cliSignIn.mockImplementation(() =>
+      isAbandoned ? Promise.resolve(h.facts.cli) : new Promise<CliSignIn>(() => undefined),
+    )
+    h.abandonCliProbe.mockImplementation(() => {
+      isAbandoned = true
+    })
+    const pending = h.service.signIn('browser')
+    await vi.waitFor(() => {
+      expect(h.cliSignIn).toHaveBeenCalled()
+    })
+    await expect(h.service.signOut()).resolves.toMatchObject({ status: 'signedOut' })
+    // The interrupted sign-in settles too, instead of waiting out the probe.
+    await expect(pending).resolves.toBeDefined()
+    expect(h.abandonCliProbe).toHaveBeenCalled()
   })
 
   it('shows the device code, waits for the credential, and restarts the backend', async () => {

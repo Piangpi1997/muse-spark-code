@@ -216,9 +216,14 @@ export async function runDeviceSignIn(deps: DeviceSignInDeps): Promise<DeviceSig
     const hasLanded = async () => {
       const modified = deps.credentialFileModifiedAt()
       const current = await untilStopped(readAccountState(session.connection))
+      // A stop (Cancel, an ending) decides the flow: a file change alone
+      // must not turn it into a sign-in (the review of PR #49).
+      if (current === STOPPED) {
+        return false
+      }
       return isSignedIn({
         initial,
-        current: current === STOPPED ? undefined : current,
+        current,
         isFileWritten: modified !== undefined && modified !== before,
       })
     }

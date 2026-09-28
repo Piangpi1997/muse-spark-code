@@ -129,7 +129,10 @@ describe('Muse Code device sign-in', () => {
     expect(t.close).toHaveBeenCalledOnce()
   })
 
-  it('reports a completed credential write when cancellation races the same poll', async () => {
+  // A stop decides the flow: a file written as Cancel lands is not a sign-in
+  // on its own (an unrelated sign-out rewrites the file too). A real sign-in
+  // is still seen afterwards from the file's structure (the review of PR #49).
+  it('keeps a cancellation that races a credential write in the same poll', async () => {
     const t = session()
     const abort = new AbortController()
     let modified: number | undefined
@@ -147,8 +150,8 @@ describe('Muse Code device sign-in', () => {
         onCode: vi.fn(),
         log,
       }),
-    ).resolves.toBe('signedIn')
-    expect(t.request).not.toHaveBeenCalledWith('account/loginCancel', {})
+    ).resolves.toBe('cancelled')
+    expect(t.request).toHaveBeenCalledWith('account/loginCancel', {})
     expect(t.close).toHaveBeenCalledOnce()
   })
 
@@ -504,6 +507,17 @@ function wedgedSession() {
 // PR #49 P2: an unanswered `account/read` holds up neither Cancel nor the
 // host's ending, and an unanswered `loginCancel` does not hold up the close.
 describe('Muse Code device sign-in: a CLI that stops answering', () => {
+  it('ends on the host’s ending, not a sign-in, when the file changes while a poll is unanswered', async () => {
+    const { t, polling } = wedgedSession()
+    let modified = 1
+    const pending = run(t, { modified: () => modified })
+    await polling()
+    // An unrelated sign-out rewrites the file as the code expires.
+    modified = 2
+    t.complete(CAPTURED_EXPIRED_ENDING)
+    await expect(pending).resolves.toBe('expired')
+  })
+
   it('notices Cancel at once while a poll is unanswered', async () => {
     const { t, polling } = wedgedSession()
     const abort = new AbortController()

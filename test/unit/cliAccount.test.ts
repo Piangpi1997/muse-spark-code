@@ -207,4 +207,27 @@ describe('CliAccount', () => {
     await expect(Promise.all([first, second])).resolves.toEqual(['signedIn', 'signedIn'])
     expect(probe).toHaveBeenCalledOnce()
   })
+
+  it('asks afresh after an unanswered probe is abandoned, and forgets its late answer (the review of PR #49)', async () => {
+    const home = configHome()
+    home.write(MALFORMED)
+    const stale = Promise.withResolvers<AccountState | undefined>()
+    const answers = [stale.promise, Promise.resolve(LOGGED_OUT)]
+    const probe = vi.fn(() => answers.shift() ?? Promise.resolve(undefined))
+    const checker = new CliAccount({
+      platform: 'linux',
+      credentialFilePath: () => home.file,
+      probe,
+      log: new FakeLogOutputChannel(),
+    })
+    const abandoned = checker.signIn(true)
+    checker.abandonAsking()
+    await expect(checker.signIn(true)).resolves.toBe('signedOut')
+    expect(probe).toHaveBeenCalledTimes(2)
+    // The first probe answers late: it settles its own caller only.
+    stale.resolve(SIGNED_IN)
+    await expect(abandoned).resolves.toBe('signedIn')
+    await expect(checker.signIn(false)).resolves.toBe('signedOut')
+    expect(probe).toHaveBeenCalledTimes(2)
+  })
 })

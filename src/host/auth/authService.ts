@@ -36,6 +36,8 @@ export interface AuthBackendFacts {
    * too (its host reads the Keychain); otherwise it does not.
    */
   readonly cliSignIn: (isUserAction: boolean) => Promise<CliSignIn>
+  /** Stops later questions waiting on a probe the CLI has not answered. */
+  readonly abandonCliProbe: () => void
   /** Where the CLI keeps its sign-in, named when the file stops it starting. */
   readonly credentialFilePath: () => string
   readonly hasEnvironmentKey: () => boolean
@@ -648,6 +650,9 @@ export class AuthService {
 
   public cancelSignIn(): void {
     this.deviceAbort?.abort()
+    // Sign-out and the next sign-in ask afresh rather than wait on a probe
+    // the CLI left unanswered (the review of PR #49).
+    this.deps.backend.abandonCliProbe()
   }
 
   /** One visible installer terminal and one location watch per window. */
