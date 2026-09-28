@@ -74,6 +74,17 @@ function requireFile(file: string): unknown {
   return createRequire(file)(file)
 }
 
+/**
+ * Forgets a file Node loaded but that is not the bundle, so the next build
+ * reads it again: a module that ran without throwing stays in Node's cache,
+ * and a file repaired in place would otherwise never be seen (the review of
+ * PR #47). One that threw while loading is never cached.
+ */
+function forgetFile(file: string): void {
+  const nodeRequire = createRequire(file)
+  Reflect.deleteProperty(nodeRequire.cache, nodeRequire.resolve(file))
+}
+
 function describe(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
@@ -123,6 +134,9 @@ export class ModelApiBackendManager {
     }
     if (!isModelApiBundle(loaded)) {
       this.deps.log.error(`${bundlePath} does not export the Model API backend's factory`)
+      if (this.deps.loadBundle === undefined) {
+        forgetFile(bundlePath)
+      }
       throw new Error(UI_TEXT.modelApiBundleUnavailable)
     }
     return loaded
