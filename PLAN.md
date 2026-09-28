@@ -2406,7 +2406,10 @@ both backends comes before what serves one.
 - **Untrusted content.** Fetched pages, PR and review comments, imported
   files and tool output are data, never instructions. They are marked as
   untrusted where the model receives them, and nothing in them can raise
-  a permission, pick a model or skip a question.
+  a permission, pick a model or skip a question. A conversation built on
+  such content (an imported session, a PR someone else wrote) starts in a
+  mode that asks, whatever `museSpark.initialPermissionMode` says, and
+  only the user's own action relaxes it.
 - **Automatic actions follow the mode.** Anything the extension runs on
   its own (checks after an edit, a memory flush, a review turn) takes the
   same path as the call it stands for: a shell command asks wherever the
@@ -2424,7 +2427,9 @@ both backends comes before what serves one.
 **The program**, in order. Size S is two days or less, M is three to five
 days, L is one to two weeks. The milestone numbers were given before the
 order was settled, so the table, not the numbers, is the order: M80 comes
-last because it waits for PR #32.
+after wave 5's others because it waits for PR #32, and D50's M85 comes
+last, after M73, M75, M76 and M78 that it builds on, and after the
+owner's TypeSafe key for its capture.
 
 | Wave                       | Milestone | What                                                                                                                   | Backends                              | Who has it                              | Size |
 | -------------------------- | --------- | ---------------------------------------------------------------------------------------------------------------------- | ------------------------------------- | --------------------------------------- | ---- |
@@ -2446,6 +2451,7 @@ last because it waits for PR #32.
 |                            | M83       | Import from Claude Code, Codex and Cursor: MCP servers, hooks, agents, commands (extends M30)                          | both                                  | Codex `/import`, Junie                  | S    |
 |                            | M84       | Session export and import as JSON, and a local share file                                                              | both (import resumes on API)          | OpenCode, Codex, Amp                    | S    |
 |                            | M80       | Headless run and a GitHub Action for review and fix, through the ACP agent's package                                   | API; MC                               | Codex, Claude Code, OpenCode            | M    |
+| 6 Experimental (D50)       | M85       | TypeSafe assist: skill and agent suggestion, an advisory Auto risk score, relevance and grading once measured          | API                                   | TypeSafe cookbook                       | M    |
 
 **Not taken.**
 
@@ -6533,17 +6539,24 @@ harness scenario, which is what the accessibility gate checks (D32).
     its own window as M32 does, so trust and language services apply to
     it. M77 reuses it.
   - "Open PR in a conversation" checks out the PR's branch in a
-    worktree. The worktree inherits its parent folder's trust, so a PR the
-    user did not author opens in its own window, as M32 does, with its
-    project rules, skills, hooks and MCP servers off until the user turns
-    them on for that worktree.
+    worktree. A PR the user did not author is adversarial content until
+    the user says otherwise:
+    - its worktree is created under the extension's own storage, outside
+      every folder the user trusted, and opens in its own window, so VS
+      Code starts it in Restricted Mode and asks for trust itself;
+    - where workspace trust is switched off (everything is trusted), the
+      conversation there starts in Plan mode with project rules, skills,
+      hooks and MCP servers off, and the panel refuses a more permissive
+      mode until the user confirms trust for that worktree in a card;
+    - either way, the user's explicit action is what lifts it.
 - **Rules.** Never force-push. Pushing and creating a PR always ask.
   GitHub only (D49, not taken). Unavailable in Restricted Mode.
 - **Backends.** Both.
 - **Acceptance.** No path force-pushes; every push and PR creation asks
-  and shows what goes out; a PR by someone else opens with its project
-  configuration off; the worktree conversation cannot touch the main
-  checkout.
+  and shows what goes out; a PR by someone else opens untrusted (Restricted
+  Mode, or Plan mode with its project configuration off where trust is
+  switched off) until the user lifts it; the worktree conversation cannot
+  touch the main checkout.
 - **Tests.** A fake git extension API and a fake GitHub endpoint, with a
   drill for the force-push refusal and the project-configuration switch.
 - **Size.** M.
@@ -6778,7 +6791,7 @@ harness scenario, which is what the accessibility gate checks (D32).
   - An `exec` mode in the ACP agent's package:
     - a prompt in, JSONL events or a final JSON out;
     - a schema for the output;
-    - a budget and an attempt cap.
+    - a budget, kept by reservation as in M82, and an attempt cap.
   - M63 and D61 are defined in PR #32, which is not merged yet; M80 is
     blocked until it is. PR #32 also amends AGENTS.md rule 8 to name the OS
     credential store as the store outside VS Code (it is the one
@@ -6864,14 +6877,25 @@ harness scenario, which is what the accessibility gate checks (D32).
   - An OS notification when a long turn ends or waits for approval while
     the window is unfocused.
   - Tokens and cost per reply (optional).
-  - A session budget cap, machine-scoped, that stops at a set cost on the
-    Model API.
+  - A session budget cap, machine-scoped, on the Model API, kept by
+    reservation, since a request's cost is incurred once it is sent:
+    - before each request, its input is estimated high (the previous
+      request's reported input plus what was added since, counted
+      conservatively), and `max_output_tokens` is set so that input plus
+      output at list price fits what is left;
+    - a request that cannot fit is not sent, and the turn stops and says
+      so;
+    - the only overrun possible is the error in that input estimate; the
+      setting's description says so, and the turn's cost after the fact
+      is shown against the cap.
   - Cache savings shown in Account & usage, on the Model API only (D26:
     Muse Code reports no honest cache totals).
 - **Backends.** Both. Cost is for the Model API.
-- **Acceptance.** A turn stops at the cap and says so; no notification
-  shows while the window is focused.
-- **Tests.** The fake Model API with priced usage.
+- **Acceptance.** A request that would not fit the budget left is never
+  sent, and the turn says why; no notification shows while the window is
+  focused.
+- **Tests.** The fake Model API with priced usage, including a request
+  whose reservation does not fit.
 - **Size.** S.
 
 ### M83 — Import from other agents (D49)
@@ -6913,15 +6937,17 @@ harness scenario, which is what the accessibility gate checks (D32).
     always left out; account ids and paths are redacted by default. A
     preview shows the file first.
   - Import resumes on the Model API. It drops the permission mode, session
-    rules, goals, schedules and patches, starts in
-    `museSpark.initialPermissionMode`, and marks the imported turns as
-    untrusted.
+    rules, goals, schedules and patches, and marks the imported turns as
+    untrusted. It starts in Manual, or in Plan when
+    `museSpark.initialPermissionMode` is Plan, whatever else that setting
+    says; only the user's own mode change relaxes it.
   - A local share file, rendered read-only in the panel.
   - No hosted sharing.
 - **Backends.** The Model API resumes; Muse Code exports its own log (M30).
 - **Acceptance.** An export never holds a credential or the key digest;
-  an import starts in `museSpark.initialPermissionMode` with no session
-  rules, goals, schedules or patches.
+  an import starts in Manual (or Plan) even when the initial mode is Auto,
+  Edit automatically or Bypass, with no session rules, goals, schedules
+  or patches.
 - **Tests.** Round trips with zod on both ends, and drills for each
   dropped field.
 - **Size.** S.
