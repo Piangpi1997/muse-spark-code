@@ -327,6 +327,40 @@ describe('fetchWebPage (M69)', () => {
     expect(w.requests.map((target) => target.address)).toEqual([NSP_PUBLIC, PUBLIC])
   })
 
+  it('asks whether it is still allowed before each lookup and each request, redirects included', async () => {
+    const w = world({
+      answers: { 'docs.example.com': [[PUBLIC]] },
+      replies: {
+        [DOCS]: { status: 301, headers: { location: '/guide/v2' } },
+        'https://docs.example.com/guide/v2': { headers: { 'content-type': 'text/plain' } },
+      },
+    })
+    const stop = new AbortController().signal
+    // Withdrawn from the start: nothing is looked up.
+    const never = await fetchWebPage(DOCS, w.deps, stop, () => false)
+    expect(failure(never).reason).toBe(MODEL_TEXT.webFetchWithdrawn)
+    expect(failure(never).visibleReason).toBe(UI_TEXT.webFetchWithdrawn)
+    expect(w.lookups).toEqual([])
+    // Withdrawn while the name was being looked up: nothing is requested.
+    let asked = 0
+    const duringLookup = await fetchWebPage(DOCS, w.deps, stop, () => {
+      asked += 1
+      return asked < 2
+    })
+    expect(failureKind(duringLookup)).toBe('withdrawn')
+    expect(w.lookups).toEqual(['docs.example.com'])
+    expect(w.requests).toEqual([])
+    // Withdrawn after the first hop: the redirect's hop is not looked up.
+    asked = 0
+    const beforeRedirect = await fetchWebPage(DOCS, w.deps, stop, () => {
+      asked += 1
+      return asked <= 2
+    })
+    expect(failureKind(beforeRedirect)).toBe('withdrawn')
+    expect(w.lookups).toEqual(['docs.example.com', 'docs.example.com'])
+    expect(w.requests.map((target) => target.url.href)).toEqual([DOCS])
+  })
+
   it('uses no IPv6 answer while NAT64 is unknown, and refuses a name that has only IPv6 ones', async () => {
     const unknown: Nat64Discovery = { isKnown: false, detail: 'ipv4only.arpa: EAI_AGAIN' }
     const w = world({

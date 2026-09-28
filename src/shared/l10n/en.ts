@@ -414,6 +414,8 @@ export const EN = {
   webFetchPrivateAddress:
     '{host} leads to {address}, which is not a public internet address. Nothing was fetched.',
   webFetchUnresolved: '{host} could not be found from this computer.',
+  webFetchWithdrawn:
+    'Web fetch is no longer allowed here (the workspace lost its trust, the permission mode changed, or the sandbox network setting became restricted), so the fetch stopped before its next request.',
   webFetchNat64Unknown:
     '{host} has only IPv6 addresses here, and whether this network translates them to IPv4 addresses (NAT64) could not be learned ({detail}), so they could not be checked for a private address. Nothing was fetched.',
   webFetchTooManyRedirects: 'The page redirected more than {max} times.',

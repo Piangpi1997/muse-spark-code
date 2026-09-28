@@ -27,6 +27,7 @@ export type WebFetchFailureKind =
   | 'privateAddress'
   | 'unresolved'
   | 'nat64Unknown'
+  | 'withdrawn'
   | 'tooManyRedirects'
   | 'redirectWithoutLocation'
   | 'httpStatus'
@@ -191,6 +192,9 @@ function urlSentences(kind: WebFetchFailureKind, facts: FailureFacts): Sentences
         fill(MODEL_TEXT.webFetchUnresolved, { host }),
         fill(UI_TEXT.webFetchUnresolved, { host }),
       ]
+    }
+    case 'withdrawn': {
+      return [MODEL_TEXT.webFetchWithdrawn, UI_TEXT.webFetchWithdrawn]
     }
     case 'nat64Unknown': {
       const detail = facts.detail ?? ''

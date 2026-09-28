@@ -9904,6 +9904,67 @@ describe('web fetch on the Model API backend (M69)', () => {
     })
   })
 
+  it('asks trust and the mode again after the card, and fetches nothing once either is gone', async () => {
+    const fetch = recordingFetch()
+    const options = { webFetch: fetch.fetcher, isTrusted: true }
+    const untrusted = setup(options)
+    const first = await startSession(untrusted)
+    scriptFetches(untrusted, 'https://docs.example.com/guide')
+    await first.session.sendTurn([{ type: 'text', text: 'read' }])
+    const card = await approvalRequest(first.events, 0)
+    // Trust is revoked while the card is open; the user then allows.
+    options.isTrusted = false
+    await first.session.decideApproval({
+      approvalId: card.approvalId,
+      choiceId: 'allow_once',
+      requirementId: card.requirementId,
+    })
+    await first.turnDone()
+    expect(fetch.urls).toEqual([])
+    expect(fetchRows(first.events)[0]).toMatchObject({
+      status: 'rejected',
+      failureReason: UI_TEXT.webFetchRestrictedMode,
+    })
+
+    const planned = setup({ webFetch: fetch.fetcher })
+    const second = await startSession(planned)
+    scriptFetches(planned, 'https://docs.example.com/guide')
+    await second.session.sendTurn([{ type: 'text', text: 'read' }])
+    const secondCard = await approvalRequest(second.events, 0)
+    // The mode turns to Plan while the card is open.
+    await second.session.setApprovalMode('denyUnmatched')
+    await second.session.decideApproval({
+      approvalId: secondCard.approvalId,
+      choiceId: 'allow_once',
+      requirementId: secondCard.requirementId,
+    })
+    await second.turnDone()
+    expect(fetch.urls).toEqual([])
+    expect(fetchRows(second.events)[0]?.status).toBe('rejected')
+  })
+
+  it('gives the fetch a check it asks before each request, and drops a page trust no longer allows', async () => {
+    const answers: boolean[] = []
+    const options: { webFetch: WebFetcher; isTrusted: boolean } = {
+      webFetch: (_url, _signal, isStillAllowed) => {
+        answers.push(isStillAllowed?.() ?? true)
+        // Trust is revoked while the page is being fetched.
+        options.isTrusted = false
+        answers.push(isStillAllowed?.() ?? true)
+        return Promise.resolve(FETCHED_PAGE)
+      },
+      isTrusted: true,
+    }
+    const t = setup(options)
+    const { session, events, turnDone } = await startSession(t, 'allowAll')
+    scriptFetches(t, 'https://docs.example.com/guide')
+    await session.sendTurn([{ type: 'text', text: 'read' }])
+    await turnDone()
+    expect(answers).toEqual([true, false])
+    expect(toolOutput(t, 'fetch_0')).toBe(`Error: ${MODEL_TEXT.webFetchRestrictedMode}`)
+    expect(fetchRows(events)[0]?.failureReason).toBe(UI_TEXT.webFetchRestrictedMode)
+  })
+
   it('refuses a URL the fetch would refuse before any card, in the words of the user', async () => {
     const fetch = recordingFetch()
     const t = setup({ webFetch: fetch.fetcher })

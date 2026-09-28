@@ -12,7 +12,8 @@
 //   Code's own approval treats it as more than a read;
 // - asks in the extension's own modal before every call, naming the host
 //   and the URL, whatever mode Muse Code runs in, as the image tools do, and
-//   checks again after the answer that it is still offered;
+//   checks that it is still offered after the answer, before each request
+//   the fetch sends, and once the page is in;
 // - stops when Muse Code stops waiting (a stopped turn closes the request
 //   and sends `notifications/cancelled`, captured from Muse Code 1.4.0): an
 //   answer given after that fetches nothing, and a fetch under way ends.
@@ -138,8 +139,16 @@ async function callWebFetch(
   if (!deps.isOffered()) {
     throw new Error(MODEL_TEXT.webFetchNotOffered)
   }
-  // Muse Code's stop reaches the fetch too; the fetch's own deadline bounds it.
-  const result = await deps.fetchPage(checked.url.href, signal)
+  // Muse Code's stop reaches the fetch too; the fetch's own deadline bounds
+  // it. The offer is asked again before each request goes out, and once the
+  // page is in: it reaches the model only while web fetch is still offered.
+  const result = await deps.fetchPage(checked.url.href, signal, deps.isOffered)
+  if (signal.aborted) {
+    throw new Error(MODEL_TEXT.webFetchCancelled)
+  }
+  if (!deps.isOffered()) {
+    throw new Error(MODEL_TEXT.webFetchNotOffered)
+  }
   if (result.kind === 'failed') {
     throw new Error(result.failure.reason)
   }

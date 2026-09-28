@@ -665,7 +665,11 @@ Meta's paid web search.
   offers the tool only in a trusted workspace whose
   `museSpark.sandboxNetwork` is not `restricted`. When Muse Code stops
   waiting (you press Stop, or its own limit passes), the fetch stops, and an
-  answer given in the dialog after that fetches nothing.
+  answer given in the dialog after that fetches nothing. On both backends,
+  losing the workspace's trust (or, on the Model API backend, moving to a
+  mode that refuses fetches) while the question is open or the page is
+  loading stops the fetch before its next request, and a page already in
+  does not reach the model.
 - **Untrusted content.** The model receives the page between two markers
   with a random value the page cannot know, and a note that the page is
   data from the web, not instructions; a redirect's target and the page's

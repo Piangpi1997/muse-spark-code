@@ -146,8 +146,15 @@ export type WebFetchResult =
     }
   | { readonly kind: 'failed'; readonly failure: WebFetchFailure }
 
-/** The host's fetch: one URL, stopped by the turn's signal. */
-export type WebFetcher = (url: string, signal: AbortSignal) => Promise<WebFetchResult>
+/**
+ * The host's fetch: one URL, stopped by the turn's signal; `isStillAllowed`
+ * is asked before each request goes out.
+ */
+export type WebFetcher = (
+  url: string,
+  signal: AbortSignal,
+  isStillAllowed?: () => boolean,
+) => Promise<WebFetchResult>
 
 const MEDIA_TYPE_SEPARATOR = ';'
 const CHARSET_PARAMETER = 'charset='
@@ -743,10 +750,21 @@ async function fetchHops(
   first: CheckedPageUrl,
   deps: WebFetchDeps,
   signal: AbortSignal,
+  isStillAllowed: () => boolean,
 ): Promise<WebFetchResult> {
+  // What allowed the fetch (trust, the mode, the setting) may change while a
+  // lookup or a connection is awaited: it is asked again before each sends
+  // anything.
+  const ensureAllowed = () => {
+    if (!isStillAllowed()) {
+      refuse('withdrawn')
+    }
+  }
   let current = first
   for (let redirects = 0; ; redirects += 1) {
+    ensureAllowed()
     const targets = await pin(current, deps, signal)
+    ensureAllowed()
     const response = await requestPinned(targets, deps, signal)
     try {
       if (!HTTP_REDIRECT_STATUSES.has(response.status)) {
@@ -766,14 +784,21 @@ async function fetchHops(
   }
 }
 
+/** For a caller with no condition that can change during the fetch. */
+function isAlwaysAllowed(): boolean {
+  return true
+}
+
 /**
  * Fetches one page. Resolves with the page, a redirect to another host, or
  * the reason nothing was read; rejects only when `turn` aborts (Stop).
+ * `isStillAllowed` is asked before each hop's lookup and connection.
  */
 export async function fetchWebPage(
   rawUrl: string,
   deps: WebFetchDeps,
   turn: AbortSignal,
+  isStillAllowed: () => boolean = isAlwaysAllowed,
 ): Promise<WebFetchResult> {
   const first = checkPageUrl(rawUrl)
   if (!first.ok) {
@@ -782,7 +807,7 @@ export async function fetchWebPage(
   const deadline = AbortSignal.timeout(deps.timeoutMs ?? WEB_FETCH_TIMEOUT_MS)
   const signal = AbortSignal.any([turn, deadline])
   try {
-    return await fetchHops(first, deps, signal)
+    return await fetchHops(first, deps, signal, isStillAllowed)
   } catch (error: unknown) {
     if (turn.aborted) {
       throw error

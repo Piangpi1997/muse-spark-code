@@ -711,6 +711,18 @@ function webFetchRefusal(failure: WebFetchFailure): ToolOutcome {
   }
 }
 
+/** A web fetch refused in Restricted Mode: the model's reason, the row's in the user's language. */
+function webFetchRestricted(): CallResult {
+  return {
+    outcome: {
+      output: `Error: ${MODEL_TEXT.webFetchRestrictedMode}`,
+      visibleOutput: UI_TEXT.webFetchRestrictedMode,
+      failureReason: UI_TEXT.webFetchRestrictedMode,
+    },
+    isRejected: true,
+  }
+}
+
 /** What the model and the row receive for a web fetch (M69). */
 function webFetchOutcome(result: WebFetchResult): ToolOutcome {
   return result.kind === 'failed'
@@ -3672,14 +3684,7 @@ export class ModelApiSession implements AgentSession {
       return { outcome: toolFailure(`unknown tool ${call.name}`), isRejected: false }
     }
     if (!this.deps.isWorkspaceTrusted()) {
-      return {
-        outcome: {
-          output: `Error: ${MODEL_TEXT.webFetchRestrictedMode}`,
-          visibleOutput: UI_TEXT.webFetchRestrictedMode,
-          failureReason: UI_TEXT.webFetchRestrictedMode,
-        },
-        isRejected: true,
-      }
+      return webFetchRestricted()
     }
     const parsed = webFetchArgs.safeParse(argumentsOf(call))
     if (!parsed.success) {
@@ -3690,15 +3695,57 @@ export class ModelApiSession implements AgentSession {
       return { outcome: webFetchRefusal(checked.failure), isRejected: false }
     }
     const url = checked.url.href
+    const query: PermissionQuery = {
+      toolName: call.name,
+      toolClass: 'network',
+      command: approvalHost(checked.url),
+    }
     const refusal = await this.judge(
       itemId,
       call,
       signal,
-      { toolName: call.name, toolClass: 'network', command: approvalHost(checked.url) },
+      query,
       { kind: WEB_FETCH_SUBJECT_KIND, target: url, toolName: call.name },
       shouldForceApproval,
     )
-    return refusal ?? { outcome: webFetchOutcome(await fetchPage(url, signal)), isRejected: false }
+    if (refusal !== undefined) {
+      return refusal
+    }
+    // The card or a hook was awaited: the turn may have stopped, the
+    // workspace lost its trust, or the mode turned to one that refuses.
+    const withdrawn = this.webFetchWithdrawn(call, query, signal)
+    if (withdrawn !== undefined) {
+      return withdrawn
+    }
+    const result = await fetchPage(url, signal, () => this.isWebFetchStillAllowed(query))
+    // Asked again once the page is in: it reaches the model only while web
+    // fetch is still allowed.
+    return (
+      this.webFetchWithdrawn(call, query, signal) ?? {
+        outcome: webFetchOutcome(result),
+        isRejected: false,
+      }
+    )
+  }
+
+  /** Whether what allowed a web fetch still holds: trust, and a mode that does not refuse it. */
+  private isWebFetchStillAllowed(query: PermissionQuery): boolean {
+    return this.deps.isWorkspaceTrusted() && this.permissions.verdict(query) !== 'deny'
+  }
+
+  /** The refusal for a web fetch no longer allowed after an await; throws when the turn stopped. */
+  private webFetchWithdrawn(
+    call: FunctionCallItem,
+    query: PermissionQuery,
+    signal: AbortSignal,
+  ): CallResult | undefined {
+    if (signal.aborted) {
+      throw new AbortedError()
+    }
+    if (!this.deps.isWorkspaceTrusted()) {
+      return webFetchRestricted()
+    }
+    return this.permissions.verdict(query) === 'deny' ? this.refusedByMode(call) : undefined
   }
 
   /** The permission check and, when it allows, the tool itself. May throw (an abort, an I/O error). */

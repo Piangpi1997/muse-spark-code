@@ -357,6 +357,7 @@
   "webFetchReservedHost": "{host} es un nombre local o reservado, no un sitio público.",
   "webFetchPrivateAddress": "{host} lleva a {address}, que no es una dirección pública de internet. No se obtuvo nada.",
   "webFetchUnresolved": "No se pudo encontrar {host} desde este equipo.",
+  "webFetchWithdrawn": "La obtención de páginas ya no está permitida aquí (el área de trabajo perdió su confianza, cambió el modo de permisos o la configuración de red del sandbox pasó a restringida), así que la obtención se detuvo antes de su siguiente solicitud.",
   "webFetchNat64Unknown": "{host} solo tiene direcciones IPv6 aquí y no se pudo averiguar si esta red las traduce a direcciones IPv4 (NAT64) ({detail}), así que no se pudo comprobar que no sean privadas. No se obtuvo nada.",
   "webFetchTooManyRedirects": "La página redirigió más de {max} veces.",
   "webFetchRedirectWithoutLocation": "El servidor respondió {status} sin indicar adónde ir.",

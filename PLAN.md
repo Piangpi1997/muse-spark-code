@@ -6575,6 +6575,12 @@ harness scenario, which is what the accessibility gate checks (D32).
     `nat64Unknown`); a `PermissionRequest` hook's allow no longer replaces
     the per-host card (it may still deny or ask). Swept: every other failed
     lookup or check already refuses.
+  - **PR #52 second review** (Codex): what allowed a fetch is asked again
+    after every await: after the card or hook (the turn, trust, a mode that
+    now refuses), before each hop's lookup and connection (a caller's
+    `isStillAllowed`, ending the fetch as `withdrawn`), and once the page is
+    in, before the model gets it; on Muse Code the offer (trust,
+    `sandboxNetwork`) is that check.
   - **Left**: a machine-scoped switch to turn web fetch off entirely,
     whether Muse Code's "Always allow this MCP tool" should also silence the
     extension's own modal, and whether Plan should allow fetches as reads,

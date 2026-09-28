@@ -37,13 +37,20 @@ function setup(
     result?: WebFetchResult
     /** The modal's answer, held until the test gives it. */
     held?: Promise<boolean>
+    /** Runs while the page is being fetched. */
+    onFetch?: () => void
   } = {},
 ) {
   const asked: { url: string; host: string }[] = []
-  const fetched: { url: string; signal: AbortSignal }[] = []
+  const fetched: {
+    url: string
+    signal: AbortSignal
+    isStillAllowed: (() => boolean) | undefined
+  }[] = []
   let isOffered = options.isOffered ?? true
-  const fetchPage: WebFetcher = (url, signal) => {
-    fetched.push({ url, signal })
+  const fetchPage: WebFetcher = (url, signal, isStillAllowed) => {
+    fetched.push({ url, signal, isStillAllowed })
+    options.onFetch?.()
     return Promise.resolve(options.result ?? PAGE)
   }
   const tools = () =>
@@ -177,6 +184,22 @@ describe('the ide server web fetch (M69)', () => {
     answer.resolve(true)
     await expect(calling).rejects.toThrow(MODEL_TEXT.webFetchNotOffered)
     expect(t.fetched).toEqual([])
+  })
+
+  it('gives the fetch the offer to ask before each request, and drops a page no longer offered', async () => {
+    const offered = setup()
+    await offered.call({ url: 'https://docs.example.com/' })
+    expect(offered.fetched[0]?.isStillAllowed?.()).toBe(true)
+    // The offer is withdrawn (trust, the sandbox network) while the page is fetched.
+    const withdrawn = setup({
+      onFetch: () => {
+        withdrawn.offer(false)
+      },
+    })
+    await expect(withdrawn.call({ url: 'https://docs.example.com/' })).rejects.toThrow(
+      MODEL_TEXT.webFetchNotOffered,
+    )
+    expect(withdrawn.fetched[0]?.isStillAllowed?.()).toBe(false)
   })
 
   it("reports the fetch's own refusal as a tool error", async () => {

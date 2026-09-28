@@ -113,7 +113,7 @@ export function createWebFetcher(
   log: Logger,
   lookupAnswers: Nat64Lookup = lookupNat64,
 ): WebFetcher {
-  return async (url, signal) => {
+  return async (url, signal, isStillAllowed) => {
     const result = await fetchWebPage(
       url,
       {
@@ -123,6 +123,7 @@ export function createWebFetcher(
         newMarker: () => randomBytes(WEB_FETCH_MARKER_BYTES).toString('hex'),
       },
       signal,
+      isStillAllowed,
     )
     log.info(`Web fetch from ${hostOf(url)}: ${outcomeOf(result)}`)
     return result

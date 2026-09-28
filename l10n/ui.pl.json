@@ -363,6 +363,7 @@
   "webFetchReservedHost": "{host} to nazwa lokalna lub zastrzeżona, a nie publiczna witryna.",
   "webFetchPrivateAddress": "{host} prowadzi do {address}, który nie jest publicznym adresem internetowym. Nic nie zostało pobrane.",
   "webFetchUnresolved": "Nie można znaleźć {host} z tego komputera.",
+  "webFetchWithdrawn": "Pobieranie stron nie jest tu już dozwolone (obszar roboczy utracił zaufanie, zmienił się tryb uprawnień lub ustawienie sieci piaskownicy zmieniło się na ograniczone), więc pobieranie zatrzymano przed kolejnym żądaniem.",
   "webFetchNat64Unknown": "{host} ma tu tylko adresy IPv6, a nie udało się ustalić, czy ta sieć tłumaczy je na adresy IPv4 (NAT64) ({detail}), więc nie można było sprawdzić, czy nie prowadzą do adresu prywatnego. Niczego nie pobrano.",
   "webFetchTooManyRedirects": "Strona przekierowała więcej niż {max} razy.",
   "webFetchRedirectWithoutLocation": "Serwer odpowiedział {status}, nie podając, dokąd przejść.",

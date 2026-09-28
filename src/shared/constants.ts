@@ -1934,6 +1934,8 @@ export const MODEL_TEXT = {
   webFetchPrivateAddress:
     '{host} resolves to {address}, which is not a public internet address (loopback, private, link-local, carrier-grade NAT, metadata or reserved); nothing was fetched',
   webFetchUnresolved: '{host} could not be resolved from this machine',
+  webFetchWithdrawn:
+    'web fetch is no longer allowed here (the workspace lost its trust, the permission mode changed, or museSpark.sandboxNetwork became restricted), so the fetch stopped before its next request',
   webFetchNat64Unknown:
     '{host} resolves only to IPv6 addresses here, and whether this network translates IPv6 addresses to IPv4 ones (NAT64) could not be learned ({detail}), so they cannot be checked for a private address; nothing was fetched',
   webFetchTooManyRedirects: 'more than {max} redirects',
