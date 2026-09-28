@@ -1745,15 +1745,20 @@ owner, with every change held to the same gates as a human pull request.
 - **Reviewers.** Each change is reviewed before it is pushed, one defect
   class at a time (concurrency and lifecycle; wire evidence, validation and
   security; failure paths, honesty and docs). **Grok Build** runs that
-  review on a test machine, read-only and in plan mode. On the pull
-  request, **Codex** reviews again. A finding is fixed with every sibling
-  of its class in one commit, and a change that reaches a third review
-  round is redesigned instead of patched.
-- **Gates.** `npm run quality` runs on dedicated test machines (Linux and
-  macOS) so builds never compete with the owner's workstation, then CI runs
-  it again on Ubuntu, Windows and macOS. Every guard added gets a red
-  drill: it is broken on purpose, its test must fail, and the file is
-  restored byte for byte (recorded in `docs/certification/`).
+  review on a test machine, limited to reading files and inspecting git.
+  On the pull request, **Codex** reviews again. A finding is fixed with
+  every sibling of its class in one commit. Since September 2026, a change
+  that reaches a third review round is redesigned instead of patched
+  (earlier milestones, such as M45, went through more patch rounds).
+- **Gates.** The full `npm run quality` (with the accessibility gate, the
+  secret scan and semgrep) runs on a dedicated test machine, Linux or
+  macOS, so it never competes with the owner's workstation; the
+  PowerShell lint runs only on Windows. CI then runs `quality:gates` on
+  Ubuntu, Windows and macOS, and the other gates as the jobs listed above.
+  A milestone's guards get red drills: each guard is broken on purpose, its
+  test must fail, and the file is restored byte for byte. The milestone's
+  record in `docs/certification/` lists the drills, and anything it did
+  not drill.
 - **Evidence.** Anything parsed from Muse Code or the Model API comes from a
   live capture (AGENTS.md rule 13), and live checks run on the contributor
   model in an empty workspace, with their model calls counted.
