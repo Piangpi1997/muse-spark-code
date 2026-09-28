@@ -105,7 +105,8 @@ Only the latest release on the Visual Studio Marketplace receives fixes.
   user's machine and refused when any answer is loopback, private,
   link-local, carrier-grade NAT, a cloud metadata address or reserved
   (IPv4 carried inside IPv6, the network's own NAT64 prefix included, is
-  judged as IPv4), and local or reserved names, with any trailing dots, are
+  judged as IPv4; while that prefix cannot be learned, no IPv6 answer is
+  used), and local or reserved names, with any trailing dots, are
   refused before any lookup. The connection is pinned to the checked
   addresses, raced as RFC 8305 says (TLS verifies the name); through a proxy
   the tunnel is asked for that address, and only an answer that arrived over
@@ -113,7 +114,8 @@ Only the latest release on the Visual Studio Marketplace receives fixes.
   five); another host's is handed back to the model, which asks again.
   5 MiB after decompression, 30 seconds, text types only, and the HTML
   converter's output is bounded. On the Model API backend each host asks in
-  every mode but Bypass (Plan refuses); on Muse Code the `ide` tool is listed
+  every mode but Bypass (Plan refuses), and a `PermissionRequest` hook's
+  allow does not replace that card; on Muse Code the `ide` tool is listed
   only in a trusted workspace without `sandboxNetwork: restricted`, carries
   `readOnlyHint: false, openWorldHint: true`, the extension asks before
   every call, and a call Muse Code stops waiting for (its request closed, or

@@ -23,12 +23,32 @@ describe("the window's web fetch (M69)", () => {
     const log = new FakeLogOutputChannel()
     expect(
       await discoverNat64(() => Promise.resolve(['2a01:4f8:c0c:1234:c0:0:aa00:0']), log),
-    ).toEqual([{ prefix: 0x2a_01_04_f8_0c_0c_12_34n, length: 64 }])
-    const absent = await discoverNat64(
-      () => Promise.reject(Object.assign(new Error('queryAaaa ENODATA'), { code: 'ENODATA' })),
-      log,
+    ).toEqual({ isKnown: true, prefixes: [{ prefix: 0x2a_01_04_f8_0c_0c_12_34n, length: 64 }] })
+    // getaddrinfo's answer on this machine (Windows 11) for a name with no AAAA record.
+    const absent = await discoverNat64(() => Promise.reject(lookupError('ENOTFOUND')), log)
+    expect(absent).toEqual({ isKnown: true, prefixes: [] })
+    expect(logLines(log)).toEqual(['Web fetch: no NAT64 prefix (ipv4only.arpa: ENOTFOUND)'])
+  })
+
+  it('leaves NAT64 unknown, never absent, when discovery fails or finds no prefix', async () => {
+    const log = new FakeLogOutputChannel()
+    for (const code of ['EAI_AGAIN', 'ESERVFAIL', 'ETIMEOUT', 'EAI_FAIL']) {
+      expect(await discoverNat64(() => Promise.reject(lookupError(code)), log)).toEqual({
+        isKnown: false,
+        detail: `ipv4only.arpa: ${code}`,
+      })
+    }
+    // An answer that carries neither of ipv4only.arpa's IPv4 addresses.
+    expect(await discoverNat64(() => Promise.resolve(['2001:db8::1']), log)).toEqual({
+      isKnown: false,
+      detail: 'ipv4only.arpa: 2001:db8::1',
+    })
+    expect(logLines(log).at(0)).toBe(
+      'Web fetch: NAT64 discovery failed (ipv4only.arpa: EAI_AGAIN); IPv6 answers are not used',
     )
-    expect(absent).toEqual([])
-    expect(logLines(log)).toEqual(['Web fetch: no NAT64 prefix from ipv4only.arpa (ENODATA)'])
   })
 })
+
+function lookupError(code: string): Error {
+  return Object.assign(new Error(`getaddrinfo ${code} ipv4only.arpa`), { code })
+}

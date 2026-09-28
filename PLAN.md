@@ -6568,6 +6568,13 @@ harness scenario, which is what the accessibility gate checks (D32).
     `http.noProxy` see the pinned address, not the name (@vscode/proxy-agent
     0.45.0 `agent.js` builds the proxy URL from `opts.host`): kept, since the
     name would let the proxy resolve it again; documented.
+  - **PR #52 review** (Codex): NAT64 discovery fails closed (only a
+    definite "no AAAA" from the page's own resolver means no DNS64; a
+    timeout, SERVFAIL or an answer without a prefix leaves it unknown, and
+    then no IPv6 answer is used, a name with only IPv6 answers refused as
+    `nat64Unknown`); a `PermissionRequest` hook's allow no longer replaces
+    the per-host card (it may still deny or ask). Swept: every other failed
+    lookup or check already refuses.
   - **Left**: a machine-scoped switch to turn web fetch off entirely,
     whether Muse Code's "Always allow this MCP tool" should also silence the
     extension's own modal, and whether Plan should allow fetches as reads,
@@ -7330,9 +7337,11 @@ Every lint or scanner suppression (`eslint-disable`, `@ts-expect-error`, `nosemg
   the proxy can resolve names, the local check refuses every fetch, which
   fails closed; (5) the proxy decision (`http.noProxy`, a PAC file) sees the
   pinned address, not the host name, so a rule written for a name does not
-  apply; (6) on a DNS64 network whose `ipv4only.arpa` lookup fails, a
-  network-specific NAT64 prefix is not known and an answer under it is
-  judged as IPv6; (7) VS Code cannot close a modal, so the extension's
+  apply; (6) NAT64 discovery asks the resolver the page's name used, and
+  only its definite "no AAAA" (getaddrinfo's ENOTFOUND, which folds NXDOMAIN
+  and NODATA together) means no DNS64; any other failure uses no IPv6
+  answer, so what remains is a resolver that lies about `ipv4only.arpa`
+  while synthesizing answers under its own prefix; (7) VS Code cannot close a modal, so the extension's
   question for a Muse Code call that was stopped stays open until answered,
   and its answer then fetches nothing.
 - Contributor-tier models send content Meta may train on; guarded by opt-in

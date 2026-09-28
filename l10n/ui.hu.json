@@ -351,6 +351,7 @@
   "webFetchReservedHost": "{host} helyi vagy fenntartott név, nem nyilvános webhely.",
   "webFetchPrivateAddress": "{host} ide vezet: {address}, ami nem nyilvános internetes cím. Semmi sem lett lekérve.",
   "webFetchUnresolved": "{host} nem található erről a számítógépről.",
+  "webFetchNat64Unknown": "{host} itt csak IPv6-címekkel rendelkezik, és nem sikerült megállapítani, hogy ez a hálózat IPv4-címekre fordítja-e őket (NAT64) ({detail}), így nem lehetett ellenőrizni, hogy nem privát címre mutatnak-e. Semmi sem lett letöltve.",
   "webFetchTooManyRedirects": "Az oldal több mint {max} alkalommal irányított át.",
   "webFetchRedirectWithoutLocation": "A kiszolgáló {status} választ adott, de nem jelezte, hová kell menni.",
   "webFetchRedirectRefused": "Az oldal elutasított címre irányított át: {reason}",

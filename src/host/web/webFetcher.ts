@@ -6,12 +6,18 @@
 
 import { randomBytes } from 'node:crypto'
 import { ADDRCONFIG } from 'node:dns'
-import { lookup, Resolver } from 'node:dns/promises'
-import { nat64PrefixesOf, type Nat64Prefix } from '../../core/web/publicAddress'
-import { fetchWebPage, type WebFetcher, type WebFetchResult } from '../../core/web/webFetch'
+import { lookup } from 'node:dns/promises'
+import { nat64PrefixesOf } from '../../core/web/publicAddress'
 import {
+  fetchWebPage,
+  type Nat64Discovery,
+  type WebFetcher,
+  type WebFetchResult,
+} from '../../core/web/webFetch'
+import {
+  ADDRESS_FAMILIES,
+  NAT64_ABSENT_CODES,
   NAT64_DISCOVERY_NAME,
-  NAT64_DISCOVERY_TIMEOUT_MS,
   WEB_FETCH_MARKER_BYTES,
 } from '../../shared/constants'
 import type { Logger } from '../logger'
@@ -27,31 +33,57 @@ async function resolveAll(host: string): Promise<readonly string[]> {
   return answers.map((answer) => answer.address)
 }
 
-/** The AAAA answers for `ipv4only.arpa`: none unless the network's DNS64 synthesizes them. */
+/**
+ * The AAAA answers for `ipv4only.arpa`, from the resolver the page's own
+ * name was looked up with, so a DNS64 that synthesized those answers is the
+ * one asked.
+ */
 export type Nat64Lookup = () => Promise<readonly string[]>
 
 async function lookupNat64(): Promise<readonly string[]> {
-  const resolver = new Resolver({ timeout: NAT64_DISCOVERY_TIMEOUT_MS, tries: 1 })
-  return await resolver.resolve6(NAT64_DISCOVERY_NAME)
+  const answers = await lookup(NAT64_DISCOVERY_NAME, { all: true, family: ADDRESS_FAMILIES.ipv6 })
+  return answers.map((answer) => answer.address)
+}
+
+function codeOf(error: unknown): string {
+  return typeof error === 'object' && error !== null && 'code' in error
+    ? String(error.code)
+    : 'error'
 }
 
 /**
- * The network's NAT64 prefixes (RFC 7050). A network without DNS64 answers
- * `ipv4only.arpa` with no AAAA record, which is an error to the resolver:
- * then there is no prefix, and the log says the lookup failed.
+ * The network's NAT64 prefixes (RFC 7050). Only a definite "no AAAA record"
+ * means no DNS64. A lookup that failed otherwise (a timeout, SERVFAIL), or
+ * answers that carry no RFC 6052 prefix, leave NAT64 unknown: the fetch
+ * then uses no IPv6 answer, since any could carry a private address.
  */
 export async function discoverNat64(
   lookupAnswers: Nat64Lookup,
   log: Logger,
-): Promise<readonly Nat64Prefix[]> {
+): Promise<Nat64Discovery> {
+  let answers: readonly string[]
   try {
-    return nat64PrefixesOf(await lookupAnswers())
+    answers = await lookupAnswers()
   } catch (error: unknown) {
-    const code =
-      typeof error === 'object' && error !== null && 'code' in error ? String(error.code) : 'error'
-    log.trace(`Web fetch: no NAT64 prefix from ${NAT64_DISCOVERY_NAME} (${code})`)
-    return []
+    const code = codeOf(error)
+    if (NAT64_ABSENT_CODES.has(code)) {
+      log.trace(`Web fetch: no NAT64 prefix (${NAT64_DISCOVERY_NAME}: ${code})`)
+      return { isKnown: true, prefixes: [] }
+    }
+    log.info(
+      `Web fetch: NAT64 discovery failed (${NAT64_DISCOVERY_NAME}: ${code}); IPv6 answers are not used`,
+    )
+    return { isKnown: false, detail: `${NAT64_DISCOVERY_NAME}: ${code}` }
   }
+  const prefixes = nat64PrefixesOf(answers)
+  if (prefixes.length === 0 && answers.length > 0) {
+    const shown = answers.join(', ')
+    log.info(
+      `Web fetch: ${NAT64_DISCOVERY_NAME} answered ${shown}, which carries no NAT64 prefix; IPv6 answers are not used`,
+    )
+    return { isKnown: false, detail: `${NAT64_DISCOVERY_NAME}: ${shown}` }
+  }
+  return { isKnown: true, prefixes }
 }
 
 function hostOf(url: string): string {
@@ -86,7 +118,7 @@ export function createWebFetcher(
       url,
       {
         resolve: resolveAll,
-        nat64Prefixes: async () => await discoverNat64(lookupAnswers, log),
+        nat64: async () => await discoverNat64(lookupAnswers, log),
         request: pinnedHttpsRequest,
         newMarker: () => randomBytes(WEB_FETCH_MARKER_BYTES).toString('hex'),
       },

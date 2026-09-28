@@ -9871,6 +9871,39 @@ describe('web fetch on the Model API backend (M69)', () => {
     }
   })
 
+  it("keeps the per-host card when a PermissionRequest hook allows; a hook's deny still refuses", async () => {
+    const fetch = recordingFetch()
+    const allowing = setup({
+      webFetch: fetch.fetcher,
+      hooks: hooksFor('PermissionRequest', 'allow'),
+      runHook: permitHook,
+    })
+    const first = await startSession(allowing)
+    scriptFetches(allowing, 'https://docs.example.com/guide')
+    await first.session.sendTurn([{ type: 'text', text: 'read' }])
+    // The hook's allow is not the user's: the card still asks, and a refusal holds.
+    await answerCard(first.session, first.events, 0, 'abort')
+    await first.turnDone()
+    expect(fetch.urls).toEqual([])
+    expect(fetchRows(first.events)[0]?.status).toBe('rejected')
+
+    const denying = setup({
+      webFetch: fetch.fetcher,
+      hooks: hooksFor('PermissionRequest', 'deny'),
+      runHook: denyHook,
+    })
+    const second = await startSession(denying)
+    scriptFetches(denying, 'https://docs.example.com/guide')
+    await second.session.sendTurn([{ type: 'text', text: 'read' }])
+    await second.turnDone()
+    expect(hasApprovalCard(second.events)).toBe(false)
+    expect(fetch.urls).toEqual([])
+    expect(fetchRows(second.events)[0]).toMatchObject({
+      status: 'rejected',
+      failureReason: 'web_fetch rejected by a hook',
+    })
+  })
+
   it('refuses a URL the fetch would refuse before any card, in the words of the user', async () => {
     const fetch = recordingFetch()
     const t = setup({ webFetch: fetch.fetcher })

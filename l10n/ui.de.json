@@ -351,6 +351,7 @@
   "webFetchReservedHost": "{host} ist ein lokaler oder reservierter Name, keine öffentliche Website.",
   "webFetchPrivateAddress": "{host} führt zu {address}, einer Adresse, die nicht öffentlich im Internet liegt. Es wurde nichts abgerufen.",
   "webFetchUnresolved": "{host} wurde von diesem Computer aus nicht gefunden.",
+  "webFetchNat64Unknown": "{host} hat hier nur IPv6-Adressen, und ob dieses Netzwerk sie in IPv4-Adressen übersetzt (NAT64), ließ sich nicht ermitteln ({detail}). Daher konnten sie nicht auf eine private Adresse geprüft werden. Es wurde nichts abgerufen.",
   "webFetchTooManyRedirects": "Die Seite wurde mehr als {max}-mal weitergeleitet.",
   "webFetchRedirectWithoutLocation": "Der Server antwortete mit {status}, ohne ein Ziel anzugeben.",
   "webFetchRedirectRefused": "Die Seite leitete zu einer abgelehnten Adresse weiter: {reason}",

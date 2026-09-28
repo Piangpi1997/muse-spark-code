@@ -648,7 +648,9 @@ Meta's paid web search.
   itself carries the name out), on your machine, and refused when any answer
   is loopback, private, link-local, carrier-grade NAT, a cloud metadata
   address or otherwise reserved; on an IPv6-only network, an answer under
-  the network's NAT64 prefix is judged by the IPv4 address it carries. The
+  the network's NAT64 prefix is judged by the IPv4 address it carries, and
+  while that prefix cannot be learned no IPv6 answer is used (a name with
+  only IPv6 answers is then refused with the reason). The
   request then goes to an address that was checked, never to a second
   lookup, and TLS still verifies the page's name; when one address does not
   connect within a quarter of a second, the next is tried too. A redirect on
@@ -656,7 +658,8 @@ Meta's paid web search.
   redirect to another host is handed back to the model, which asks again.
 - **Asking.** Each host is approved on its own: the Model API backend's card
   names the URL, and "Always allow in this session" covers that host only.
-  Bypass runs it without asking, Plan refuses it, a side chat does not offer
+  A `PermissionRequest` hook may refuse a fetch or ask, but its "allow"
+  does not replace the card. Bypass runs it without asking, Plan refuses it, a side chat does not offer
   it, and Restricted Mode turns it off. On Muse Code the extension asks in
   its own dialog before every fetch, whatever mode Muse Code runs in, and
   offers the tool only in a trusted workspace whose

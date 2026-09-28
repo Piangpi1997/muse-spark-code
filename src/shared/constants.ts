@@ -921,8 +921,11 @@ export const IPV6_SIX_TO_FOUR: readonly [string, number] = ['2002::', 16]
 export const NAT64_DISCOVERY_NAME = 'ipv4only.arpa'
 export const NAT64_DISCOVERY_ADDRESSES: readonly string[] = ['192.0.0.170', '192.0.0.171']
 export const NAT64_PREFIX_LENGTHS: readonly number[] = [96, 64, 56, 48, 40, 32]
-// The discovery's own deadline: one try, then no prefix is known.
-export const NAT64_DISCOVERY_TIMEOUT_MS = 2000
+// The lookup errors that answer "no AAAA record for ipv4only.arpa", which
+// means no DNS64: Node's getaddrinfo reports NXDOMAIN and NODATA as
+// ENOTFOUND, a DNS resolver as ENODATA or ENOTFOUND. Any other failure (a
+// timeout, SERVFAIL) leaves NAT64 unknown, and IPv6 answers go unused.
+export const NAT64_ABSENT_CODES: ReadonlySet<string> = new Set(['ENOTFOUND', 'ENODATA'])
 // The image tools the extension's `ide` session server offers Muse Code
 // while paid image generation is on and a Model API key is stored (M44):
 // billed to the key, never to the subscription (D1, D30).
@@ -1931,6 +1934,8 @@ export const MODEL_TEXT = {
   webFetchPrivateAddress:
     '{host} resolves to {address}, which is not a public internet address (loopback, private, link-local, carrier-grade NAT, metadata or reserved); nothing was fetched',
   webFetchUnresolved: '{host} could not be resolved from this machine',
+  webFetchNat64Unknown:
+    '{host} resolves only to IPv6 addresses here, and whether this network translates IPv6 addresses to IPv4 ones (NAT64) could not be learned ({detail}), so they cannot be checked for a private address; nothing was fetched',
   webFetchTooManyRedirects: 'more than {max} redirects',
   webFetchRedirectWithoutLocation: 'the server answered HTTP {status} without a Location to go to',
   webFetchRedirectRefused: 'the page redirected to a URL that is refused: {reason}',

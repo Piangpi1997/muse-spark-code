@@ -37,8 +37,9 @@
 // A web fetch (M69, PLAN.md D49, the M44b design) is a network tool: it
 // changes nothing, but the URL it sends can carry anything the conversation
 // holds, so it asks per host in every mode but Bypass (Auto included, as a
-// shell command does), "always allow in this session" keyed on the host.
-// Plan refuses it: its rules allow reads of the workspace, not of the
+// shell command does), "always allow in this session" keyed on the host;
+// a PermissionRequest hook may deny it or ask, but its "allow" does not
+// replace the card (ModelApiHost.askApproval). Plan refuses it: its rules allow reads of the workspace, not of the
 // network. Restricted Mode refuses it before the engine is asked.
 
 import type { ApprovalChoice } from '../../../shared/agentEvents'

@@ -1,9 +1,10 @@
 import { Buffer } from 'node:buffer'
 import { brotliCompressSync, gzipSync } from 'node:zlib'
 import { describe, expect, it } from 'vitest'
-import { nat64PrefixesOf, type Nat64Prefix } from '../../src/core/web/publicAddress'
+import { nat64PrefixesOf } from '../../src/core/web/publicAddress'
 import {
   fetchWebPage,
+  type Nat64Discovery,
   type PinnedResponse,
   type PinnedTarget,
   type WebFetchResult,
@@ -86,8 +87,8 @@ function world(options: {
   unreachable?: readonly string[]
   /** Addresses whose connection never completes (a broken route). */
   hanging?: readonly string[]
-  /** The network's NAT64 prefixes. */
-  nat64?: readonly Nat64Prefix[]
+  /** What NAT64 discovery learns: the network's prefixes, or that it could not tell. */
+  nat64?: Nat64Discovery
   timeoutMs?: number
 }) {
   const lookups: string[] = []
@@ -107,9 +108,9 @@ function world(options: {
       answered.set(host, index + 1)
       return Promise.resolve(turns[Math.min(index, turns.length - 1)] ?? [])
     },
-    nat64Prefixes: (): Promise<readonly Nat64Prefix[]> => {
+    nat64: (): Promise<Nat64Discovery> => {
       nat64Asked += 1
-      return Promise.resolve(options.nat64 ?? [])
+      return Promise.resolve(options.nat64 ?? { isKnown: true, prefixes: [] })
     },
     request: (
       target: PinnedTarget,
@@ -313,7 +314,7 @@ describe('fetchWebPage (M69)', () => {
         'v4.example.com': [[PUBLIC]],
       },
       replies: { 'https://public.example.com/': { headers: { 'content-type': 'text/plain' } } },
-      nat64: prefixes,
+      nat64: { isKnown: true, prefixes },
     })
     const intranet = await w.fetch('https://intranet.example.com/')
     expect(failureKind(intranet)).toBe('privateAddress')
@@ -324,6 +325,35 @@ describe('fetchWebPage (M69)', () => {
     await w.fetch('https://v4.example.com/')
     expect(w.nat64Asked()).toBe(2)
     expect(w.requests.map((target) => target.address)).toEqual([NSP_PUBLIC, PUBLIC])
+  })
+
+  it('uses no IPv6 answer while NAT64 is unknown, and refuses a name that has only IPv6 ones', async () => {
+    const unknown: Nat64Discovery = { isKnown: false, detail: 'ipv4only.arpa: EAI_AGAIN' }
+    const w = world({
+      answers: {
+        // Under a prefix nobody named, this could carry a private address.
+        'v6only.example.com': [[NSP_PRIVATE]],
+        'dual.example.com': [[NSP_PUBLIC, PUBLIC]],
+      },
+      replies: { 'https://dual.example.com/': { headers: { 'content-type': 'text/plain' } } },
+      nat64: unknown,
+    })
+    const v6only = failure(await w.fetch('https://v6only.example.com/'))
+    expect(v6only.kind).toBe('nat64Unknown')
+    expect(v6only.reason).toBe(
+      fill(MODEL_TEXT.webFetchNat64Unknown, {
+        host: 'v6only.example.com',
+        detail: 'ipv4only.arpa: EAI_AGAIN',
+      }),
+    )
+    // An IPv6 literal is no different.
+    expect(failureKind(await w.fetch(`https://[${NSP_PUBLIC}]/`))).toBe('nat64Unknown')
+    const dual = await w.fetch('https://dual.example.com/')
+    expect(dual.kind).toBe('page')
+    expect(w.requests.map((target) => target.address)).toEqual([PUBLIC])
+    // A plainly private IPv6 answer still refuses the whole name.
+    const loopback = world({ answers: { 'mixed.example.com': [['::1', PUBLIC]] }, nat64: unknown })
+    expect(failureKind(await loopback.fetch('https://mixed.example.com/'))).toBe('privateAddress')
   })
 
   it('tries the next checked address at once when one fails, never a new lookup', async () => {

@@ -6,7 +6,9 @@
 //   reserved name, no non-public address;
 // - resolves the name here and refuses it when any answer is not a public
 //   address (an answer under the network's NAT64 prefix is judged by the IPv4
-//   address it carries), then PINS the checked answers: the request goes to
+//   address it carries; while that prefix cannot be learned, no IPv6 answer
+//   is used, since any could carry a private address), then PINS the checked
+//   answers: the request goes to
 //   one of those addresses (TLS still verifies the name), so no second lookup
 //   can move it into the user's network. They are tried as RFC 8305 says: the
 //   next starts when the one before has not connected within
@@ -87,14 +89,22 @@ export interface PinnedResponse {
   close(): void
 }
 
+/**
+ * What NAT64 discovery (RFC 7050) learned: the network's prefixes (none where
+ * no DNS64 answers), or that it could not tell, and why.
+ */
+export type Nat64Discovery =
+  | { readonly isKnown: true; readonly prefixes: readonly Nat64Prefix[] }
+  | { readonly isKnown: false; readonly detail: string }
+
+/** No NAT64 to consider: every answer is IPv4. */
+const NO_NAT64: Nat64Discovery = { isKnown: true, prefixes: [] }
+
 export interface WebFetchDeps {
   /** Every address the name resolves to, from this machine's resolver. */
   readonly resolve: (host: string) => Promise<readonly string[]>
-  /**
-   * The network's NAT64 prefixes (RFC 7050), asked only when an answer is
-   * IPv6; none where no DNS64 answers.
-   */
-  readonly nat64Prefixes: () => Promise<readonly Nat64Prefix[]>
+  /** The network's NAT64 prefixes (RFC 7050), asked only when an answer is IPv6. */
+  readonly nat64: () => Promise<Nat64Discovery>
   /**
    * One GET to the pinned address; `onConnected` once its TLS connection is
    * up. Rejects when it cannot be made or `signal` aborts.
@@ -222,14 +232,23 @@ async function pin(
   const { host, url } = checked
   const addresses = await answersFor(checked, deps, signal)
   const hasIpv6 = addresses.some((address) => addressFamily(address) === ADDRESS_FAMILIES.ipv6)
-  const nat64 = hasIpv6 ? await unlessAborted(deps.nat64Prefixes(), signal) : []
+  const nat64 = hasIpv6 ? await unlessAborted(deps.nat64(), signal) : NO_NAT64
   // A name with any non-public answer is refused whole: a rebinding setup
   // mixes a public answer with a private one.
-  const blocked = addresses.find((address) => !isPublicAddress(address, nat64))
+  const prefixes = nat64.isKnown ? nat64.prefixes : []
+  const blocked = addresses.find((address) => !isPublicAddress(address, prefixes))
   if (blocked !== undefined) {
     refuse('privateAddress', { host, address: blocked })
   }
-  const targets = addresses.flatMap((address) => {
+  // Without a known answer about NAT64, an IPv6 answer may carry any IPv4
+  // address under a prefix nobody named: only the IPv4 answers are used.
+  const usable = nat64.isKnown
+    ? addresses
+    : addresses.filter((address) => addressFamily(address) === ADDRESS_FAMILIES.ipv4)
+  if (!nat64.isKnown && usable.length === 0) {
+    refuse('nat64Unknown', { host, detail: nat64.detail })
+  }
+  const targets = usable.flatMap((address) => {
     const family = addressFamily(address)
     return family === undefined ? [] : [{ url, host, address, family }]
   })

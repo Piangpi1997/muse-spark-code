@@ -345,6 +345,7 @@
   "webFetchReservedHost": "{host} はローカルまたは予約済みの名前で、公開サイトではありません。",
   "webFetchPrivateAddress": "{host} の宛先は {address} で、公開インターネットのアドレスではありません。何も取得していません。",
   "webFetchUnresolved": "このコンピューターから {host} が見つかりませんでした。",
+  "webFetchNat64Unknown": "ここでは {host} に IPv6 アドレスしかなく、このネットワークがそれを IPv4 アドレスに変換するか (NAT64) を確認できなかったため、プライベート アドレスかどうかを確認できませんでした。何も取得していません。({detail})",
   "webFetchTooManyRedirects": "ページのリダイレクトが {max} 回を超えました。",
   "webFetchRedirectWithoutLocation": "サーバーは {status} を返しましたが、移動先を示しませんでした。",
   "webFetchRedirectRefused": "ページが拒否されるアドレスにリダイレクトしました: {reason}",

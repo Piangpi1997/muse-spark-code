@@ -2344,8 +2344,10 @@ export class ModelApiSession implements AgentSession {
    * The user's decision on a call: an approval card, or for a paid call
    * (an image, a subagent task) the paid-use popup (M58, PLAN.md D48),
    * which asks in every mode unless the feature is allowed always in this
-   * workspace. A hook's "allow" never answers either for a protected write
-   * or a paid call; a hook that demands a question asks even then.
+   * workspace. A hook's "allow" never answers for a protected write, a web
+   * fetch (its URL can carry the conversation to the host; M69) or a paid
+   * call; a hook may still deny them, and one that demands a question asks
+   * even then.
    */
   private async askApproval(
     itemId: string,
@@ -2378,7 +2380,9 @@ export class ModelApiSession implements AgentSession {
         stopNotifying()
       }
     }
-    if (!requiresUserApproval && query.isProtected !== true && hook.approvalDecision === 'allow') {
+    const isHookAllowEnough =
+      !requiresUserApproval && query.isProtected !== true && query.toolClass !== 'network'
+    if (isHookAllowEnough && hook.approvalDecision === 'allow') {
       return { isApproved: true, feedback: undefined }
     }
     const approvalId = this.deps.newId()
