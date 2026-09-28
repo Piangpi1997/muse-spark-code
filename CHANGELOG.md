@@ -37,6 +37,20 @@ happened, not what was planned; superseded entries are kept.
   - The model receives the page between random markers, with a note that it
     is untrusted content; the row shows the URL, the size and type, and what
     the model read. 23 new strings in fifteen languages.
+  - After review: Muse Code's Stop (a closed request, or
+    `notifications/cancelled`) stops the fetch and voids a later answer in
+    the dialog, which is also asked only once per URL at a time and checks
+    the workspace again after it; the checked addresses are raced as RFC 8305
+    says; failures name the page's host and the addresses tried instead of
+    M56's advice about Meta, and a network failure's detail only by its
+    error codes (never a certificate's names); a server's text reaches the
+    model outside the markers only as short tokens; the HTML converter is bounded; names with
+    trailing dots or empty labels are refused; a network's own NAT64 prefix
+    is discovered (RFC 7050); damaged compression and unknown charsets are
+    handled as a browser would; `museSpark.sandboxNetwork`'s description now
+    says it also hides web fetch from Muse Code. Eight more strings, one
+    changed and one dropped, and two changed setting descriptions, in
+    fifteen languages.
 - **Dependency.** `entities` 8.1.0 (BSD-2-Clause, already in the tree
   through the test tools) decodes HTML's character references for web
   fetch's converter; it adds about 23 KiB to `dist/extension.js` only.

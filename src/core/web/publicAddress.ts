@@ -4,7 +4,8 @@
 // machine, their network, a carrier-grade NAT or a cloud metadata service.
 // IPv4 is public unless it falls in a special-purpose block; IPv6 only inside
 // global unicast (2000::/3) and outside its special blocks, and an IPv6 form
-// that carries an IPv4 address (mapped, compatible, NAT64, 6to4) is judged by
+// that carries an IPv4 address (mapped, compatible, NAT64 under the
+// well-known prefix or one the network's DNS64 reveals, 6to4) is judged by
 // that address. Pure; the ranges are in constants.ts.
 
 import { isIPv4, isIPv6 } from 'node:net'
@@ -14,6 +15,8 @@ import {
   IPV6_EMBEDDED_IPV4_PREFIXES,
   IPV6_GLOBAL_UNICAST,
   IPV6_SIX_TO_FOUR,
+  NAT64_DISCOVERY_ADDRESSES,
+  NAT64_PREFIX_LENGTHS,
   NON_PUBLIC_IPV4_RANGES,
   NON_PUBLIC_IPV6_RANGES,
 } from '../../shared/constants'
@@ -31,6 +34,11 @@ const HEX = 16
 const SIX_TO_FOUR_SHIFT = 80n
 const IPV4_MASK = (ONE_BIT << IPV4_BITS) - ONE_BIT
 const GROUP_MASK = (ONE_BIT << GROUP_BITS) - ONE_BIT
+const OCTET_MASK = (ONE_BIT << OCTET_BITS) - ONE_BIT
+const IPV6_OCTETS = 16
+const IPV4_OCTETS = 4
+// RFC 6052's `u` octet (bits 64 to 71), which never carries IPv4 bits.
+const U_OCTET = 8
 // An IPv6 zone (`fe80::1%eth0`) names a local interface: never public.
 const ZONE_SEPARATOR = '%'
 const GROUP_SEPARATOR = ':'
@@ -142,14 +150,83 @@ export function addressFamily(address: string): AddressFamily | undefined {
 }
 
 /**
- * Whether the address is a public internet address. Anything that is not an
- * address at all, and any IPv6 address with a zone, is not.
+ * A NAT64 prefix a DNS64 network synthesizes IPv6 answers under (RFC 6052):
+ * its first `length` bits, as a number. An answer inside it reaches the IPv4
+ * address it carries, so it is judged by that address.
  */
-export function isPublicAddress(address: string): boolean {
+export interface Nat64Prefix {
+  readonly prefix: bigint
+  readonly length: number
+}
+
+/** Octet `index` (0 = first) of an IPv6 address. */
+function octetOf(value: bigint, index: number): bigint {
+  return (value >> (OCTET_BITS * BigInt(IPV6_OCTETS - 1 - index))) & OCTET_MASK
+}
+
+/**
+ * The IPv4 address an address under a NAT64 prefix of `length` bits
+ * carries, per RFC 6052 §2.2: after the prefix, skipping octet 8 (the `u`
+ * octet, always zero), or in the last 32 bits under a /96.
+ */
+function embeddedIpv4(value: bigint, length: number): bigint {
+  const first = length / Number(OCTET_BITS)
+  const indexes =
+    first >= IPV6_OCTETS - IPV4_OCTETS
+      ? Array.from({ length: IPV4_OCTETS }, (_, index) => IPV6_OCTETS - IPV4_OCTETS + index)
+      : Array.from({ length: IPV4_OCTETS }, (_, index) =>
+          first + index < U_OCTET ? first + index : first + index + 1,
+        )
+  let ipv4 = NO_BITS
+  for (const index of indexes) {
+    ipv4 = (ipv4 << OCTET_BITS) | octetOf(value, index)
+  }
+  return ipv4
+}
+
+function isUnderPrefix(value: bigint, nat64: Nat64Prefix): boolean {
+  return value >> (IPV6_BITS - BigInt(nat64.length)) === nat64.prefix
+}
+
+/**
+ * The NAT64 prefixes the answers for `ipv4only.arpa` reveal (RFC 7050): each
+ * synthesized answer carries one of that name's two IPv4 addresses, and the
+ * prefix length is the RFC 6052 layout that finds it.
+ */
+export function nat64PrefixesOf(answers: readonly string[]): readonly Nat64Prefix[] {
+  const known = new Set(NAT64_DISCOVERY_ADDRESSES.map((address) => ipv4Value(address)))
+  const found: Nat64Prefix[] = []
+  for (const answer of answers) {
+    const value = ipv6Value(answer)
+    if (value === undefined) {
+      continue
+    }
+    for (const length of NAT64_PREFIX_LENGTHS) {
+      if (known.has(embeddedIpv4(value, length))) {
+        found.push({ prefix: value >> (IPV6_BITS - BigInt(length)), length })
+      }
+    }
+  }
+  return found
+}
+
+/**
+ * Whether the address is a public internet address. Anything that is not an
+ * address at all, and any IPv6 address with a zone, is not. An address under
+ * one of the network's NAT64 prefixes is judged by the IPv4 address it
+ * carries.
+ */
+export function isPublicAddress(address: string, nat64: readonly Nat64Prefix[] = []): boolean {
   const v4 = ipv4Value(address)
   if (v4 !== undefined) {
     return isPublicIpv4(v4)
   }
   const v6 = ipv6Value(address)
-  return v6 !== undefined && isPublicIpv6(v6)
+  if (v6 === undefined) {
+    return false
+  }
+  const translated = nat64.find((candidate) => isUnderPrefix(v6, candidate))
+  return translated === undefined
+    ? isPublicIpv6(v6)
+    : isPublicIpv4(embeddedIpv4(v6, translated.length))
 }

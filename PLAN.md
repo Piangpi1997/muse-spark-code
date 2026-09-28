@@ -6507,8 +6507,9 @@ harness scenario, which is what the accessibility gate checks (D32).
     `CONNECT 203.0.113.7:443` and a ClientHello naming the host, on VS Code
     1.139.1 and 1.125.0. Only an answer that arrived over TLS is read: a proxy's
     own refusal of the tunnel is reported as `Proxy response (N)`, M56's
-    proxy failure, never read as the page. The checked addresses are tried
-    in the resolver's order (ADDRCONFIG), never re-resolved.
+    proxy failure, never read as the page. The checked addresses are raced
+    in the resolver's order (ADDRCONFIG) as RFC 8305 says, never
+    re-resolved.
   - **Redirects**: same host (host and port) followed, each hop checked,
     resolved and pinned again, at most `WEB_FETCH_MAX_REDIRECTS` (5); a
     redirect to another host is handed back to the model as a URL to fetch
@@ -6527,8 +6528,12 @@ harness scenario, which is what the accessibility gate checks (D32).
     reads), Manual, Edit automatically and Auto ask, per host: the card
     (`webFetch` subject) names the URL as it will be fetched, and "Always
     allow in this session" is keyed on the host. Restricted Mode: not
-    offered, refused if called. A URL the fetch would refuse is refused
-    before any card.
+    offered, refused if called; a side chat (always Plan) is not offered
+    it. A URL refused on its face (scheme, credentials, length, a reserved
+    name, a non-public literal address) is refused before any card; a name
+    is resolved only after approval, since the lookup itself carries the
+    name out, so one that resolves to a private address is refused after
+    the card and before any connection.
   - **Untrusted content**: the model's text is the header line, a notice
     that the page is untrusted data, and the content between markers with
     8 random bytes the page cannot know; the instructions say the same.
@@ -6543,9 +6548,30 @@ harness scenario, which is what the accessibility gate checks (D32).
     output, which the row's size line reads (AGENTS rule 13).
   - **Row**: the URL beside the label, "Fetched 48.2 kB (text/html)" under
     it, and what the model read in the body; harness scenario `web-fetch`.
-  - **Left**: a machine-scoped switch to turn web fetch off entirely, and
+  - **Review round** (three class reviewers over `c3d7702c`, all fixed in
+    one commit): the `ide` call gets an `AbortSignal` aborted when Muse Code
+    closes the request or sends `notifications/cancelled` (both captured
+    from Muse Code 1.4.0 on a stopped turn, 2 model attempts), raced against
+    the modal, with `isOffered` checked again after it and one modal per URL
+    at a time; the checked addresses are raced as RFC 8305 says (250 ms);
+    connection failures in web fetch's own words naming the host and the
+    addresses (not M56's Meta advice), a proxy's refusal of the tunnel
+    included, the detail only as error codes (a name mismatch's message
+    lists the certificate's names); server text outside the markers only as short tokens, the
+    final URL, the title and a moved target inside them; the converter
+    bounded at 100,000 characters (prefix depth 4, rows unpadded); all
+    trailing dots stripped and empty labels refused; RFC 7050 NAT64 prefix
+    discovery; damaged compression is the coding's failure; the charset only
+    from `<meta>`, an unknown label ignored; sentences name "this tool";
+    Model API rows localized for a moved page and Restricted Mode;
+    `sandboxNetwork` described in fifteen manifest tables. PAC and
+    `http.noProxy` see the pinned address, not the name (@vscode/proxy-agent
+    0.45.0 `agent.js` builds the proxy URL from `opts.host`): kept, since the
+    name would let the proxy resolve it again; documented.
+  - **Left**: a machine-scoped switch to turn web fetch off entirely,
     whether Muse Code's "Always allow this MCP tool" should also silence the
-    extension's own modal, are the owner's (§3 is untouched until asked).
+    extension's own modal, and whether Plan should allow fetches as reads,
+    are the owner's (§3 is untouched until asked).
 
 ### M70 — Review (D49)
 
@@ -7302,8 +7328,13 @@ Every lint or scanner suppression (`eslint-disable`, `@ts-expect-error`, `nosemg
   the page's text steers the model like any tool output (the markers and
   the notice are a signal, not a guarantee); (4) on a network where only
   the proxy can resolve names, the local check refuses every fetch, which
-  fails closed; (5) a Muse Code call whose MCP request Muse Code abandons
-  still fetches once the user allows it, bounded by the 30-second deadline.
+  fails closed; (5) the proxy decision (`http.noProxy`, a PAC file) sees the
+  pinned address, not the host name, so a rule written for a name does not
+  apply; (6) on a DNS64 network whose `ipv4only.arpa` lookup fails, a
+  network-specific NAT64 prefix is not known and an answer under it is
+  judged as IPv6; (7) VS Code cannot close a modal, so the extension's
+  question for a Muse Code call that was stopped stays open until answered,
+  and its answer then fetches nothing.
 - Contributor-tier models send content Meta may train on; guarded by opt-in
   dialog and `confidentialWorkspace` setting.
 - The Marketplace token (M28, 2026-09-23): the publish job runs in the

@@ -1,7 +1,11 @@
 import { once } from 'node:events'
 import net from 'node:net'
 import { describe, expect, it } from 'vitest'
-import { describeNetworkFailure, networkFailureMessage } from '../../src/core/networkFailure'
+import {
+  describeNetworkFailure,
+  networkFailureCodes,
+  networkFailureMessage,
+} from '../../src/core/networkFailure'
 import { UI_TEXT } from '../../src/shared/constants'
 import { fill } from '../../src/shared/l10n/text'
 
@@ -97,6 +101,20 @@ describe('describeNetworkFailure (M56, PLAN.md D43)', () => {
     })
     expect(networkFailureMessage(capturedProxyFailure(403))).toContain(
       fill(UI_TEXT.networkProxyRefused, { status: '403' }),
+    )
+  })
+
+  it('names each cause by its code for web fetch, its message only where it has none (M69)', () => {
+    expect(networkFailureCodes(capturedCertificateFailure())).toBe(
+      'fetch failed: DEPTH_ZERO_SELF_SIGNED_CERT',
+    )
+    const mismatch = Object.assign(
+      new Error("Host: a.example. is not in the cert's altnames: DNS:anything a server chose"),
+      { code: 'ERR_TLS_CERT_ALTNAME_INVALID' },
+    )
+    expect(networkFailureCodes(mismatch)).toBe('ERR_TLS_CERT_ALTNAME_INVALID')
+    expect(networkFailureCodes(new Error('connect to https://user:hunter2@proxy.test'))).toBe(
+      'connect to https://[redacted]@proxy.test',
     )
   })
 

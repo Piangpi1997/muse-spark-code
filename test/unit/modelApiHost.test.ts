@@ -9899,8 +9899,44 @@ describe('web fetch on the Model API backend (M69)', () => {
     expect(fetch.urls).toEqual([])
     expect(fetchRows(events)[0]).toMatchObject({
       status: 'rejected',
-      failureReason: MODEL_TEXT.webFetchRestrictedMode,
+      failureReason: UI_TEXT.webFetchRestrictedMode,
     })
+    expect(toolOutput(t, 'fetch_0')).toBe(`Error: ${MODEL_TEXT.webFetchRestrictedMode}`)
+  })
+
+  it('shows a redirect to another host in the words of the user, and the model its own', async () => {
+    const moved: WebFetchResult = {
+      kind: 'moved',
+      location: 'https://other.example.net/',
+      text: 'model text with markers',
+      visibleText: 'visible text',
+    }
+    const fetch = recordingFetch(() => moved)
+    const t = setup({ webFetch: fetch.fetcher })
+    const { session, events, turnDone } = await startSession(t, 'allowAll')
+    scriptFetches(t, 'https://docs.example.com/guide')
+    await session.sendTurn([{ type: 'text', text: 'read' }])
+    await turnDone()
+    expect(fetchRows(events)[0]).toMatchObject({
+      status: 'completed',
+      visibleOutput: 'visible text',
+    })
+    expect(toolOutput(t, 'fetch_0')).toBe('model text with markers')
+  })
+
+  it('is not offered in a side chat, whose Plan mode refuses every fetch', async () => {
+    const fetch = recordingFetch()
+    const t = setup({ webFetch: fetch.fetcher, store: memorySessionStore() })
+    const { session, turnDone } = await startSession(t)
+    await answerFirst(t, session, turnDone)
+    const side = await openSideFork(t, session)
+    const sideTurns = watchTurns(side.session)
+    t.api.script({ text: 'side reply' })
+    await side.session.sendTurn([{ type: 'text', text: 'side question' }])
+    await sideTurns.turnDone()
+    const body = t.api.responseBodies().at(-1)
+    expect(toolNames(body)).not.toContain('web_fetch')
+    expect(String(body?.['instructions'])).not.toContain('web_fetch reads one public')
   })
 
   it("shows the fetch's own refusal to the user and the model", async () => {

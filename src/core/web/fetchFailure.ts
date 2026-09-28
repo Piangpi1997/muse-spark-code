@@ -1,6 +1,10 @@
 // Why a web fetch did not happen or did not finish (M69, PLAN.md D49): the
-// sentence the model reads (English, MODEL_TEXT) and the one the row shows
-// (the display language, UI_TEXT), made together so they always agree.
+// sentence the model reads (English, MODEL_TEXT) and the one the Model API
+// backend's row shows (the display language, UI_TEXT), made together so they
+// always agree. On Muse Code the row shows the tool's own result, which is
+// the model's English sentence. Nothing a server sent is echoed but short
+// tokens (a media type, a coding); a network failure is named by its error
+// codes, capped and redacted.
 
 import {
   MODEL_TEXT,
@@ -29,8 +33,11 @@ export type WebFetchFailureKind =
   | 'noContentType'
   | 'contentType'
   | 'encoding'
-  | 'charset'
   | 'timeout'
+  | 'certificate'
+  | 'proxyCredentials'
+  | 'proxyRefused'
+  | 'unreachable'
   | 'network'
 
 export interface WebFetchFailure {
@@ -43,24 +50,112 @@ export interface WebFetchFailure {
 
 /** The facts a failure's sentences name; each kind reads the ones it needs. */
 export interface FailureFacts {
-  readonly host?: string
-  readonly address?: string
-  readonly status?: number
-  readonly type?: string
-  readonly encoding?: string
-  readonly charset?: string
-  /** The network failure's technical detail (causes, redacted). */
-  readonly detail?: string
-  /** The same failure as the row says it: advice first (M56). */
-  readonly visibleDetail?: string
+  readonly host?: string | undefined
+  /** One address, or the addresses tried, joined. */
+  readonly address?: string | undefined
+  readonly status?: number | undefined
+  /** A media type or a coding, only when it is a short token; else "unnamed". */
+  readonly type?: string | undefined
+  readonly encoding?: string | undefined
+  /** A network failure's detail: its causes' error codes, redacted and capped. */
+  readonly detail?: string | undefined
 }
 
 const SECONDS = WEB_FETCH_TIMEOUT_MS / MS_PER_SECOND
 
-/** The two sentences of a kind, filled from the facts. */
-function sentences(kind: WebFetchFailureKind, facts: FailureFacts): readonly [string, string] {
-  const host = facts.host ?? ''
+type Sentences = readonly [string, string]
+
+/** The sentences that name the page's host and the address the request went to. */
+function connectionSentences(kind: WebFetchFailureKind, facts: FailureFacts): Sentences {
+  const values = {
+    host: facts.host ?? '',
+    address: facts.address ?? '',
+    status: String(facts.status ?? ''),
+    detail: facts.detail ?? '',
+  }
+  switch (kind) {
+    case 'certificate': {
+      return [
+        fill(MODEL_TEXT.webFetchCertificate, values),
+        fill(UI_TEXT.webFetchCertificate, values),
+      ]
+    }
+    case 'proxyCredentials': {
+      return [
+        fill(MODEL_TEXT.webFetchProxyCredentials, values),
+        fill(UI_TEXT.webFetchProxyCredentials, values),
+      ]
+    }
+    case 'proxyRefused': {
+      return [
+        fill(MODEL_TEXT.webFetchProxyRefused, values),
+        fill(UI_TEXT.webFetchProxyRefused, values),
+      ]
+    }
+    case 'unreachable': {
+      return [
+        fill(MODEL_TEXT.webFetchUnreachable, values),
+        fill(UI_TEXT.webFetchUnreachable, values),
+      ]
+    }
+    default: {
+      return [fill(MODEL_TEXT.webFetchNetwork, values), fill(UI_TEXT.webFetchNetwork, values)]
+    }
+  }
+}
+
+/** The sentences about what the server sent: a status, a type, a coding. */
+function responseSentences(kind: WebFetchFailureKind, facts: FailureFacts): Sentences {
   const status = String(facts.status ?? '')
+  switch (kind) {
+    case 'redirectWithoutLocation': {
+      return [
+        fill(MODEL_TEXT.webFetchRedirectWithoutLocation, { status }),
+        fill(UI_TEXT.webFetchRedirectWithoutLocation, { status }),
+      ]
+    }
+    case 'httpStatus': {
+      return [
+        fill(MODEL_TEXT.webFetchHttpStatus, { status }),
+        fill(UI_TEXT.webFetchHttpStatus, { status }),
+      ]
+    }
+    case 'tooLarge': {
+      return [
+        fill(MODEL_TEXT.webFetchTooLarge, { max: String(WEB_FETCH_MAX_BYTES) }),
+        fill(UI_TEXT.webFetchTooLarge, { size: formatBytes(WEB_FETCH_MAX_BYTES) }),
+      ]
+    }
+    case 'noContentType': {
+      return [MODEL_TEXT.webFetchNoContentType, UI_TEXT.webFetchNoContentType]
+    }
+    case 'contentType': {
+      const { type } = facts
+      return type === undefined
+        ? [MODEL_TEXT.webFetchContentTypeUnnamed, UI_TEXT.webFetchContentTypeUnnamed]
+        : [
+            fill(MODEL_TEXT.webFetchContentType, { type }),
+            fill(UI_TEXT.webFetchContentType, { type }),
+          ]
+    }
+    case 'encoding': {
+      const { encoding } = facts
+      return encoding === undefined
+        ? [MODEL_TEXT.webFetchEncodingUnnamed, UI_TEXT.webFetchEncodingUnnamed]
+        : [
+            fill(MODEL_TEXT.webFetchEncoding, { encoding }),
+            fill(UI_TEXT.webFetchEncoding, { encoding }),
+          ]
+    }
+    default: {
+      return connectionSentences(kind, facts)
+    }
+  }
+}
+
+/** The sentences about the URL and where it leads, before anything is sent. */
+function urlSentences(kind: WebFetchFailureKind, facts: FailureFacts): Sentences {
+  const host = facts.host ?? ''
   switch (kind) {
     case 'invalidUrl': {
       return [MODEL_TEXT.webFetchInvalidUrl, UI_TEXT.webFetchInvalidUrl]
@@ -102,59 +197,14 @@ function sentences(kind: WebFetchFailureKind, facts: FailureFacts): readonly [st
         fill(UI_TEXT.webFetchTooManyRedirects, { max: formatNumber(WEB_FETCH_MAX_REDIRECTS) }),
       ]
     }
-    case 'redirectWithoutLocation': {
-      return [
-        fill(MODEL_TEXT.webFetchRedirectWithoutLocation, { status }),
-        fill(UI_TEXT.webFetchRedirectWithoutLocation, { status }),
-      ]
-    }
-    case 'httpStatus': {
-      return [
-        fill(MODEL_TEXT.webFetchHttpStatus, { status }),
-        fill(UI_TEXT.webFetchHttpStatus, { status }),
-      ]
-    }
-    case 'tooLarge': {
-      return [
-        fill(MODEL_TEXT.webFetchTooLarge, { max: String(WEB_FETCH_MAX_BYTES) }),
-        fill(UI_TEXT.webFetchTooLarge, { size: formatBytes(WEB_FETCH_MAX_BYTES) }),
-      ]
-    }
-    case 'noContentType': {
-      return [MODEL_TEXT.webFetchNoContentType, UI_TEXT.webFetchNoContentType]
-    }
-    case 'contentType': {
-      const type = facts.type ?? ''
-      return [
-        fill(MODEL_TEXT.webFetchContentType, { type }),
-        fill(UI_TEXT.webFetchContentType, { type }),
-      ]
-    }
-    case 'encoding': {
-      const encoding = facts.encoding ?? ''
-      return [
-        fill(MODEL_TEXT.webFetchEncoding, { encoding }),
-        fill(UI_TEXT.webFetchEncoding, { encoding }),
-      ]
-    }
-    case 'charset': {
-      const charset = facts.charset ?? ''
-      return [
-        fill(MODEL_TEXT.webFetchCharset, { charset }),
-        fill(UI_TEXT.webFetchCharset, { charset }),
-      ]
-    }
     case 'timeout': {
       return [
         fill(MODEL_TEXT.webFetchTimeout, { seconds: String(SECONDS) }),
         fill(UI_TEXT.webFetchTimeout, { duration: formatUnit(SECONDS, 'second') }),
       ]
     }
-    case 'network': {
-      return [
-        fill(MODEL_TEXT.webFetchNetwork, { detail: facts.detail ?? '' }),
-        fill(UI_TEXT.webFetchNetwork, { detail: facts.visibleDetail ?? facts.detail ?? '' }),
-      ]
+    default: {
+      return responseSentences(kind, facts)
     }
   }
 }
@@ -163,7 +213,7 @@ export function webFetchFailure(
   kind: WebFetchFailureKind,
   facts: FailureFacts = {},
 ): WebFetchFailure {
-  const [reason, visibleReason] = sentences(kind, facts)
+  const [reason, visibleReason] = urlSentences(kind, facts)
   return { kind, reason, visibleReason }
 }
 

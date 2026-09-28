@@ -1,10 +1,12 @@
 // A fetched HTML page as Markdown for the model to read (M69, PLAN.md D49):
 // headings, paragraphs, lists, links, emphasis, code blocks, quotes and
-// tables kept; scripts, styles, forms' controls, embedded media, SVG and
-// anything the page hides left out. A single pass over the text, linear in
-// its length whatever the markup (a page is untrusted input, so no regular
-// expression walks its structure): the tokenizer jumps from one `<` to the
-// next, and the renderer keeps a small stack of open elements. Character
+// tables kept; scripts, styles, forms' controls, embedded media, SVG and what
+// the page's own markup hides left out (a stylesheet's hiding is not seen). A
+// single pass over the text, linear in its length whatever the markup (a
+// page is untrusted input, so no regular expression walks its structure):
+// the tokenizer jumps from one `<` to the next, the renderer keeps a small
+// stack of open elements, and the output is bounded, so a page built to
+// expand stops converting at the bound instead of growing. Character
 // references are decoded with the `entities` package, the WHATWG list
 // (M69's one new dependency, PLAN.md D49).
 
@@ -14,6 +16,8 @@ export interface MarkdownPage {
   /** The page's `<title>`, whitespace collapsed; undefined when it has none. */
   readonly title: string | undefined
   readonly markdown: string
+  /** The conversion stopped at its bound: the page holds more than this. */
+  readonly isTruncated: boolean
 }
 
 // Elements whose content is text up to their end tag, never markup.
@@ -133,10 +137,13 @@ const MARKERS: ReadonlyMap<string, string> = new Map([
 const LISTS = new Set(['ul', 'ol', 'menu', 'dir'])
 const CODE = new Set(['code', 'kbd', 'samp', 'tt', 'var'])
 // Open inline elements past this depth are plain text (see InlineText), and
-// quotes and lists past this one are indented no further.
+// quotes and lists past this one are indented no further, so no line's
+// prefix grows past a few characters whatever the page nests.
 const MAX_INLINE_DEPTH = 32
-const MAX_PREFIX_DEPTH = 16
+const MAX_PREFIX_DEPTH = 4
 const MAX_TABLE_COLUMNS = 32
+// Of a `<title>`, only this much source is read.
+const MAX_TITLE_SOURCE_CHARS = 1024
 const CELLS = new Set(['td', 'th'])
 const LINK_SCHEMES = new Set(['http:', 'https:', 'mailto:'])
 const IMAGE_SCHEMES = new Set(['http:', 'https:'])
@@ -163,7 +170,8 @@ const CDATA_CLOSE = ']]>'
 const SELF_CLOSE = '/'
 const ASSIGN = '='
 const QUOTES = new Set(['"', "'"])
-const DISPLAY_NONE = 'display:none'
+// Inline styles that hide an element (a stylesheet's rules are not read).
+const HIDING_STYLES = ['display:none', 'visibility:hidden', 'content-visibility:hidden']
 const ARIA_HIDDEN = 'true'
 const LINE = '\n'
 const PARAGRAPH = '\n\n'
@@ -316,15 +324,21 @@ function rawTextEnd(html: string, from: number, name: string): number {
   return html.length
 }
 
-/** Whether the page hides the element: `hidden`, `aria-hidden="true"` or `display: none`. */
+/**
+ * Whether the element's own markup hides it: `hidden`, `aria-hidden="true"`,
+ * or an inline `display: none` / `visibility: hidden`. What a stylesheet
+ * hides, or places off screen, is not seen here and reaches the model.
+ */
 function isHidden(attributes: ReadonlyMap<string, string>): boolean {
   if (attributes.has('hidden') || attributes.get('aria-hidden')?.toLowerCase() === ARIA_HIDDEN) {
     return true
   }
   const style = attributes.get('style')
-  return (
-    style !== undefined && collapse(style).replaceAll(' ', '').toLowerCase().includes(DISPLAY_NONE)
-  )
+  if (style === undefined) {
+    return false
+  }
+  const declarations = collapse(style).replaceAll(' ', '').toLowerCase()
+  return HIDING_STYLES.some((hiding) => declarations.includes(hiding))
 }
 
 /** The language a `class` names (`language-ts`, `lang-py`), for a code fence. */
@@ -354,15 +368,20 @@ interface OpenInline {
  */
 class InlineText {
   private parts: string[] = []
+  /** The characters in the paragraph now, for the output bound. */
+  public length = 0
 
   public get mark(): number {
     return this.parts.length
   }
 
   public append(text: string): void {
-    if (text !== '') {
-      this.parts.push(text)
+    if (text === '') {
+      return
     }
+
+    this.parts.push(text)
+    this.length += text.length
   }
 
   public lastChar(): string | undefined {
@@ -372,6 +391,7 @@ class InlineText {
   /** Everything after `mark`, replaced by its wrapped form (left as is when blank). */
   public wrapFrom(mark: number, wrap: (inner: string) => string): void {
     const inner = this.parts.splice(mark).join('')
+    this.length -= inner.length
     this.append(inner.trim() === '' ? inner : wrap(inner))
   }
 
@@ -379,6 +399,7 @@ class InlineText {
   public take(): string {
     const text = this.parts.join('')
     this.parts = []
+    this.length = 0
     return text
   }
 }
@@ -410,9 +431,16 @@ class MarkdownWriter {
   private pre: { text: string; language: string | undefined; depth: number } | undefined
   private table: TableState | undefined
   private tableDepth = 0
+  /** Characters written so far in blocks, and in the open table's cells. */
+  private written = 0
+  private tableChars = 0
   public title: string | undefined
 
-  public constructor(private readonly base: URL) {}
+  public constructor(
+    private readonly base: URL,
+    /** Past this many characters the conversion stops: the model reads fewer. */
+    private readonly maxChars: number,
+  ) {}
 
   /** The prefix of every line of a block: the quote marks, then the list indent. */
   private linePrefixes(): { first: string; rest: string } {
@@ -427,15 +455,37 @@ class MarkdownWriter {
     return { first: `${quote}${indent}${marker}`, rest: `${quote}${indent}${hang}` }
   }
 
+  /**
+   * A block, each line prefixed. Only as much of the text as the bound still
+   * allows is written, so a block of many short lines cannot multiply its
+   * size by its prefixes.
+   */
   private emit(text: string): void {
-    const { first, rest } = this.linePrefixes()
-    const lines = text.split(LINE)
-    const block = lines.map((line, index) => `${index === 0 ? first : rest}${line}`).join(LINE)
-    const isListItem = this.lists.length > 0
-    if (this.blocks.length > 0) {
-      this.blocks.push(isListItem && this.lastWasListItem ? LINE : PARAGRAPH)
+    const budget = this.maxChars - this.written
+    if (budget <= 0) {
+      return
     }
-    this.blocks.push(block)
+    const { first, rest } = this.linePrefixes()
+    const lines: string[] = []
+    let size = 0
+    for (const line of text.slice(0, budget).split(LINE)) {
+      const prefixed = `${lines.length === 0 ? first : rest}${line}`
+      lines.push(prefixed)
+      size += prefixed.length + LINE.length
+      if (size > budget) {
+        break
+      }
+    }
+    const block = lines.join(LINE)
+    const isListItem = this.lists.length > 0
+    // Items of one list follow each other on the next line; other blocks
+    // are a paragraph apart.
+    let separator = isListItem && this.lastWasListItem ? LINE : PARAGRAPH
+    if (this.blocks.length === 0) {
+      separator = ''
+    }
+    this.blocks.push(`${separator}${block}`)
+    this.written += separator.length + block.length
     this.lastWasListItem = isListItem
     this.itemMarker = undefined
   }
@@ -583,6 +633,7 @@ class MarkdownWriter {
     const cell = this.inline.take().trim().split(LINE).join(' ').split(PIPE).join(ESCAPED_PIPE)
     table.row ??= []
     table.row.push(cell)
+    this.tableChars += cell.length + CELL_SEPARATOR.length
   }
 
   private endRow(): void {
@@ -622,27 +673,37 @@ class MarkdownWriter {
     if (table.caption !== undefined && table.caption !== '') {
       this.emit(table.caption)
     }
+    this.tableChars = 0
     let widest = 0
     for (const row of table.rows) {
       widest = Math.max(widest, row.length)
     }
-    // Every row is padded to the widest, so the width is capped: the cells
-    // past the cap share the last column.
+    // The width is capped: the cells past the cap share the last column.
     const width = Math.min(widest, MAX_TABLE_COLUMNS)
     if (width === 0) {
       return
     }
-    const line = (cells: readonly string[]) => {
+    // Only the header and its rule are padded to the width (GFM reads a
+    // shorter body row as empty cells), so a row costs what it holds.
+    const line = (cells: readonly string[], columns: number) => {
       const kept = cells.slice(0, width - 1)
-      const last = cells.slice(width - 1).join(' ')
-      const padded = Array.from({ length: width }, (_, index) =>
-        index === width - 1 ? last : (kept[index] ?? ''),
-      )
+      const rest = cells.slice(width - 1)
+      const shown = rest.length === 0 ? kept : [...kept, rest.join(' ')]
+      const padded = Array.from({ length: columns }, (_, index) => shown[index] ?? '')
       return `${PIPE} ${padded.join(CELL_SEPARATOR)} ${PIPE}`
     }
     const [header = [], ...body] = table.rows
-    const separator = line(Array.from({ length: width }, () => RULE))
-    this.emit([line(header), separator, ...body.map((row) => line(row))].join(LINE))
+    const separator = line(
+      Array.from({ length: width }, () => RULE),
+      width,
+    )
+    this.emit(
+      [
+        line(header, width),
+        separator,
+        ...body.map((row) => line(row, Math.min(row.length, width))),
+      ].join(LINE),
+    )
   }
 
   private tableTag(name: string, isEnd: boolean): boolean {
@@ -749,6 +810,12 @@ class MarkdownWriter {
       }
       // Any other markup inside a code block is not part of its text.
     }
+  }
+
+  /** Whether the output has reached its bound; nothing more is converted then. */
+  public get isFull(): boolean {
+    const pending = this.inline.length + this.tableChars + (this.pre?.text.length ?? 0)
+    return this.written + pending > this.maxChars
   }
 
   public text(raw: string): void {
@@ -882,12 +949,16 @@ function shouldSkip(tag: Tag): boolean {
   )
 }
 
-/** The page as Markdown; links and images made absolute against `base`. */
-export function htmlToMarkdown(html: string, base: URL): MarkdownPage {
-  const writer = new MarkdownWriter(base)
+/**
+ * The page as Markdown; links and images made absolute against `base`. The
+ * conversion stops once the Markdown passes `maxChars` (a hostile page can
+ * expand, a relative link into a long absolute one), and says so.
+ */
+export function htmlToMarkdown(html: string, base: URL, maxChars: number): MarkdownPage {
+  const writer = new MarkdownWriter(base, maxChars)
   let skip: Skip | undefined
   let index = 0
-  while (index < html.length) {
+  while (index < html.length && !writer.isFull) {
     const lt = html.indexOf(TAG_OPEN, index)
     const textEnd = lt === -1 ? html.length : lt
     if (skip === undefined && textEnd > index) {
@@ -913,7 +984,8 @@ export function htmlToMarkdown(html: string, base: URL): MarkdownPage {
     if (!tag.isEnd && RAW_TEXT.has(tag.name)) {
       const end = rawTextEnd(html, index, tag.name)
       if (skip === undefined && tag.name === 'title' && writer.title === undefined) {
-        writer.title = collapse(decodeHTML(html.slice(index, end))).trim() || undefined
+        const title = html.slice(index, Math.min(end, index + MAX_TITLE_SOURCE_CHARS))
+        writer.title = collapse(decodeHTML(title)).trim() || undefined
       }
       const close = html.indexOf(TAG_CLOSE, end)
       index = close === -1 || end >= html.length ? html.length : close + 1
@@ -938,6 +1010,7 @@ export function htmlToMarkdown(html: string, base: URL): MarkdownPage {
       }
     }
   }
+  const isTruncated = writer.isFull
   const markdown = writer.finish()
-  return { title: writer.title, markdown }
+  return { title: writer.title, markdown, isTruncated }
 }

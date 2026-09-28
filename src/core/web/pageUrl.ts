@@ -34,12 +34,25 @@ function refused(failure: WebFetchFailure): PageUrlCheck {
   return { ok: false, failure }
 }
 
-/** The host as a lookup takes it: `[::1]` → `::1`, `example.com.` → `example.com`. */
+/**
+ * The host as a lookup takes it: `[::1]` → `::1`, and every trailing dot
+ * dropped (`example.com.` and `localhost..` → `example.com`, `localhost`),
+ * so no spelling slips past the reserved-name check.
+ */
 function bareHost(hostname: string): string {
   if (hostname.startsWith(IPV6_OPEN) && hostname.endsWith(IPV6_CLOSE)) {
     return hostname.slice(1, -1)
   }
-  return hostname.endsWith(LABEL_SEPARATOR) ? hostname.slice(0, -1) : hostname
+  let end = hostname.length
+  while (end > 0 && hostname[end - 1] === LABEL_SEPARATOR) {
+    end -= 1
+  }
+  return hostname.slice(0, end)
+}
+
+/** A name with an empty label (`a..b`, or nothing left): not a name DNS can hold. */
+function hasEmptyLabel(host: string): boolean {
+  return host.split(LABEL_SEPARATOR).includes('')
 }
 
 /** A single-label name, or one under a local or reserved name (RFC 6761 and others). */
@@ -71,6 +84,9 @@ export function checkPageUrl(raw: string): PageUrlCheck {
   url.hash = ''
   const host = bareHost(url.hostname.toLowerCase())
   if (addressFamily(host) === undefined) {
+    if (hasEmptyLabel(host)) {
+      return refused(webFetchFailure('invalidUrl'))
+    }
     return isReservedName(host)
       ? refused(webFetchFailure('reservedHost', { host }))
       : { ok: true, url, host, address: undefined }
@@ -81,9 +97,11 @@ export function checkPageUrl(raw: string): PageUrlCheck {
 }
 
 /**
- * What a per-host approval is keyed on (M69): the host and a port other
- * than 443, as the URL writes them.
+ * What a per-host approval is keyed on (M69): the host, its trailing dots
+ * dropped, and a port other than 443.
  */
 export function approvalHost(url: URL): string {
-  return url.host.toLowerCase()
+  const host = url.hostname.toLowerCase()
+  const name = host.startsWith(IPV6_OPEN) ? host : bareHost(host)
+  return url.port === '' ? name : `${name}:${url.port}`
 }

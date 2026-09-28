@@ -5,10 +5,13 @@
 // - checks the URL (pageUrl.ts): `https:` only, no credentials, no local or
 //   reserved name, no non-public address;
 // - resolves the name here and refuses it when any answer is not a public
-//   address, then PINS the first answer: the request goes to that address
-//   (TLS still verifies the name), so no second lookup can move it into the
-//   user's network. Through a proxy, the proxy is asked for that address
-//   too (see src/host/web/pinnedRequest.ts);
+//   address (an answer under the network's NAT64 prefix is judged by the IPv4
+//   address it carries), then PINS the checked answers: the request goes to
+//   one of those addresses (TLS still verifies the name), so no second lookup
+//   can move it into the user's network. They are tried as RFC 8305 says: the
+//   next starts when the one before has not connected within
+//   WEB_FETCH_ATTEMPT_DELAY_MS, the first to connect wins. Through a proxy,
+//   the proxy is asked for that address too (src/host/web/pinnedRequest.ts);
 // - follows a redirect on the same host, checked, resolved and pinned
 //   again, at most WEB_FETCH_MAX_REDIRECTS times; a redirect to another host
 //   is handed back to the model, which asks again (each host is approved on
@@ -18,9 +21,11 @@
 //   it is.
 //
 // What the model receives marks the page as untrusted data between markers
-// the page cannot know. Nothing here is billed: the fetch is the
-// extension's own, not Meta's paid search. The transport and the resolver
-// are the host's; this module decides.
+// the page cannot know; text the server chose (a redirect's URL, the title)
+// stays inside them, and what is said outside them is the extension's own,
+// naming a server's type or coding only when it is a short token. Nothing
+// here is billed: the fetch is the extension's own, not Meta's paid search.
+// The transport and the resolver are the host's; this module decides.
 
 import { Buffer } from 'node:buffer'
 import { pipeline, Readable, type Transform } from 'node:stream'
@@ -29,20 +34,28 @@ import { createBrotliDecompress, createGunzip, createInflate } from 'node:zlib'
 import * as z from 'zod/mini'
 import {
   type AddressFamily,
+  ADDRESS_FAMILIES,
+  HTTP_PROXY_AUTHENTICATION_REQUIRED,
   HTTP_REDIRECT_STATUSES,
   HTTP_SUCCESS_MAX,
   HTTP_SUCCESS_MIN,
   MODEL_TEXT,
+  UI_TEXT,
+  WEB_FETCH_ATTEMPT_DELAY_MS,
   WEB_FETCH_CHARSET_SNIFF_BYTES,
+  WEB_FETCH_CONVERT_MAX_CHARS,
+  WEB_FETCH_DETAIL_MAX_CHARS,
   WEB_FETCH_HTML_TYPES,
   WEB_FETCH_MAX_BYTES,
   WEB_FETCH_MAX_CONTENT_CHARS,
   WEB_FETCH_MAX_REDIRECTS,
+  WEB_FETCH_NOT_TLS_CODE,
   WEB_FETCH_TEXT_TYPES,
   WEB_FETCH_TIMEOUT_MS,
+  WEB_FETCH_TOKEN_MAX_CHARS,
 } from '../../shared/constants'
 import { fill } from '../../shared/l10n/text'
-import { describeNetworkFailure, networkFailureMessage } from '../networkFailure'
+import { describeNetworkFailure, networkFailureCodes } from '../networkFailure'
 import {
   type FailureFacts,
   redirectRefused,
@@ -52,7 +65,7 @@ import {
 } from './fetchFailure'
 import { htmlToMarkdown } from './htmlToMarkdown'
 import { approvalHost, type CheckedPageUrl, checkPageUrl } from './pageUrl'
-import { addressFamily, isPublicAddress } from './publicAddress'
+import { addressFamily, isPublicAddress, type Nat64Prefix } from './publicAddress'
 
 /** Where one request goes: the URL as sent, and the address it is pinned to. */
 export interface PinnedTarget {
@@ -77,8 +90,20 @@ export interface PinnedResponse {
 export interface WebFetchDeps {
   /** Every address the name resolves to, from this machine's resolver. */
   readonly resolve: (host: string) => Promise<readonly string[]>
-  /** One GET to the pinned address; rejects when it cannot be made or `signal` aborts. */
-  readonly request: (target: PinnedTarget, signal: AbortSignal) => Promise<PinnedResponse>
+  /**
+   * The network's NAT64 prefixes (RFC 7050), asked only when an answer is
+   * IPv6; none where no DNS64 answers.
+   */
+  readonly nat64Prefixes: () => Promise<readonly Nat64Prefix[]>
+  /**
+   * One GET to the pinned address; `onConnected` once its TLS connection is
+   * up. Rejects when it cannot be made or `signal` aborts.
+   */
+  readonly request: (
+    target: PinnedTarget,
+    signal: AbortSignal,
+    onConnected: () => void,
+  ) => Promise<PinnedResponse>
   /** Fresh random hexadecimal for the markers around the page's content. */
   readonly newMarker: () => string
   /** The whole fetch's deadline; WEB_FETCH_TIMEOUT_MS unless a test shortens it. */
@@ -106,6 +131,8 @@ export type WebFetchResult =
       readonly kind: 'moved'
       readonly location: string
       readonly text: string
+      /** What the row says, in the display language. */
+      readonly visibleText: string
     }
   | { readonly kind: 'failed'; readonly failure: WebFetchFailure }
 
@@ -120,18 +147,15 @@ const LATIN1 = 'latin1'
 const OPENING_QUOTE = /^["']/
 // Where a charset's value ends, in a header or a `<meta>` tag.
 const CHARSET_END = /[\s"';/>]/
+const META_OPEN = '<meta'
+const TAG_CLOSE = '>'
+const ADDRESS_LIST_SEPARATOR = ', '
+// A media type (`type/subtype`) or a coding: RFC 9110 token characters.
+const TOKEN = /^[\w!#$%&'*+.^`|~-]+(?:\/[\w!#$%&'*+.^`|~-]+)?$/
 
 /** A listener that has nothing to do until it is replaced. */
 function ignore(): void {
   // Replaced before it can run; see unlessAborted.
-}
-
-/**
- * `pipeline`'s callback when the decompressor is what is read: the error it
- * reports has already destroyed the decompressor, and the read reports it.
- */
-function settled(): void {
-  // The failure reaches the reader through the destroyed decompressor.
 }
 
 class FetchRefused extends Error {
@@ -143,6 +167,11 @@ class FetchRefused extends Error {
 
 function refuse(kind: WebFetchFailureKind, facts: FailureFacts = {}): never {
   throw new FetchRefused(webFetchFailure(kind, facts))
+}
+
+/** A server's type or coding, named only when it is a short token. */
+function shownToken(value: string): string | undefined {
+  return value.length <= WEB_FETCH_TOKEN_MAX_CHARS && TOKEN.test(value) ? value : undefined
 }
 
 /** `work`, or the signal's reason as soon as it aborts; `work` is left to settle. */
@@ -162,10 +191,28 @@ async function unlessAborted<T>(work: Promise<T>, signal: AbortSignal): Promise<
   }
 }
 
+/** The name's answers from this machine's resolver, or the refusal. */
+async function answersFor(
+  checked: CheckedPageUrl,
+  deps: WebFetchDeps,
+  signal: AbortSignal,
+): Promise<readonly string[]> {
+  if (checked.address !== undefined) {
+    return [checked.address]
+  }
+  try {
+    return await unlessAborted(deps.resolve(checked.host), signal)
+  } catch (error: unknown) {
+    if (signal.aborted) {
+      throw error
+    }
+    return refuse('unresolved', { host: checked.host })
+  }
+}
+
 /**
  * The addresses a checked URL's request may be pinned to, in the resolver's
- * order, once every answer is checked: the request tries them in turn, and
- * never looks the name up again.
+ * order, once every answer is checked; the name is never looked up again.
  */
 async function pin(
   checked: CheckedPageUrl,
@@ -173,22 +220,12 @@ async function pin(
   signal: AbortSignal,
 ): Promise<readonly PinnedTarget[]> {
   const { host, url } = checked
-  let addresses: readonly string[]
-  if (checked.address === undefined) {
-    try {
-      addresses = await unlessAborted(deps.resolve(host), signal)
-    } catch (error: unknown) {
-      if (signal.aborted) {
-        throw error
-      }
-      refuse('unresolved', { host })
-    }
-  } else {
-    addresses = [checked.address]
-  }
+  const addresses = await answersFor(checked, deps, signal)
+  const hasIpv6 = addresses.some((address) => addressFamily(address) === ADDRESS_FAMILIES.ipv6)
+  const nat64 = hasIpv6 ? await unlessAborted(deps.nat64Prefixes(), signal) : []
   // A name with any non-public answer is refused whole: a rebinding setup
   // mixes a public answer with a private one.
-  const blocked = addresses.find((address) => !isPublicAddress(address))
+  const blocked = addresses.find((address) => !isPublicAddress(address, nat64))
   if (blocked !== undefined) {
     refuse('privateAddress', { host, address: blocked })
   }
@@ -202,28 +239,180 @@ async function pin(
   return targets
 }
 
+/** A connection that failed, with the addresses it was tried at. */
+class ConnectFailed extends Error {
+  public constructor(
+    public readonly failure: unknown,
+    public readonly targets: readonly PinnedTarget[],
+  ) {
+    super('no pinned address answered')
+    this.name = 'ConnectFailed'
+  }
+}
+
 /**
- * The first pinned address that answers. A connection that could not be
- * made moves on to the next checked address (a dual-stack name on a network
- * without IPv6, say); one that answered is the response, whatever it says.
+ * The first pinned address to connect, as RFC 8305 races them: an attempt
+ * starts when the one before has not connected within the attempt delay, or
+ * at once when it failed; the first to connect wins and the others are
+ * stopped. An attempt that connected is the answer, whatever it says.
  */
-async function requestPinned(
+function requestPinned(
   targets: readonly PinnedTarget[],
   deps: WebFetchDeps,
   signal: AbortSignal,
 ): Promise<PinnedResponse> {
-  let lastError: unknown
-  for (const target of targets) {
-    try {
-      return await deps.request(target, signal)
-    } catch (error: unknown) {
-      if (signal.aborted) {
-        throw error
+  return new Promise((resolve, reject) => {
+    const attempts: AbortController[] = []
+    let next = 0
+    let failed = 0
+    let winner: number | undefined
+    let isSettled = false
+    let lastError: unknown
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const stopOthers = (keep: number) => {
+      for (const [index, attempt] of attempts.entries()) {
+        if (index !== keep) {
+          attempt.abort()
+        }
       }
-      lastError = error
+    }
+    const settle = (outcome: () => void) => {
+      if (isSettled) {
+        return
+      }
+      isSettled = true
+      clearTimeout(timer)
+      signal.removeEventListener('abort', onAbort)
+      outcome()
+    }
+    function onAbort(): void {
+      stopOthers(-1)
+      settle(() => {
+        reject(signal.reason instanceof Error ? signal.reason : new Error(String(signal.reason)))
+      })
+    }
+    const start = () => {
+      clearTimeout(timer)
+      const index = next
+      const target = targets[index]
+      if (isSettled || winner !== undefined || target === undefined) {
+        return
+      }
+      next += 1
+      const attempt = new AbortController()
+      attempts.push(attempt)
+      const connected = () => {
+        if (winner !== undefined) {
+          return
+        }
+        winner = index
+        clearTimeout(timer)
+        stopOthers(index)
+      }
+      const onFailure = (error: unknown) => {
+        if (winner === index) {
+          settle(() => {
+            reject(new ConnectFailed(error, [target]))
+          })
+          return
+        }
+        if (winner !== undefined || isSettled) {
+          return
+        }
+        lastError = error
+        failed += 1
+        if (failed === targets.length) {
+          settle(() => {
+            reject(new ConnectFailed(lastError, targets))
+          })
+        } else {
+          start()
+        }
+      }
+      const run = async () => {
+        let response: PinnedResponse
+        try {
+          response = await deps.request(
+            target,
+            AbortSignal.any([signal, attempt.signal]),
+            connected,
+          )
+        } catch (error: unknown) {
+          onFailure(error)
+          return
+        }
+        connected()
+        if (winner === index) {
+          settle(() => {
+            resolve(response)
+          })
+        } else {
+          response.close()
+        }
+      }
+      void run()
+      if (next < targets.length) {
+        timer = setTimeout(start, WEB_FETCH_ATTEMPT_DELAY_MS)
+      }
+    }
+    if (signal.aborted) {
+      onAbort()
+      return
+    }
+    signal.addEventListener('abort', onAbort, { once: true })
+    start()
+  })
+}
+
+/** The status of an answer the transport refused because it did not come over TLS. */
+function notTlsStatus(error: unknown): number | undefined {
+  return isNotTls(error) ? error.status : undefined
+}
+
+/** The transport's refusal of an answer that did not come over TLS; both fields checked. */
+function isNotTls(error: unknown): error is { readonly code: string; readonly status: number } {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    error.code === WEB_FETCH_NOT_TLS_CODE &&
+    'status' in error &&
+    typeof error.status === 'number'
+  )
+}
+
+/** Why no pinned address gave an answer, in web fetch's own words (not M56's Meta advice). */
+function connectionFailure(failed: ConnectFailed): WebFetchFailure {
+  const [first] = failed.targets
+  const host = first?.host ?? ''
+  const address = failed.targets.map((target) => target.address).join(ADDRESS_LIST_SEPARATOR)
+  const status = notTlsStatus(failed.failure)
+  if (status !== undefined) {
+    return webFetchFailure(
+      status === HTTP_PROXY_AUTHENTICATION_REQUIRED ? 'proxyCredentials' : 'proxyRefused',
+      { host, address, status },
+    )
+  }
+  const facts = { host, address, detail: detailOf(failed.failure) }
+  const { kind } = describeNetworkFailure(failed.failure)
+  switch (kind) {
+    case 'certificate':
+    case 'unreachable': {
+      return webFetchFailure(kind, facts)
+    }
+    // This transport reports a proxy's refusal by its code (above); M56 reads
+    // one from an error's message, which here may hold a server's text.
+    case 'proxyCredentials':
+    case 'proxyRefused':
+    case 'other': {
+      return webFetchFailure('network', facts)
     }
   }
-  throw lastError
+}
+
+/** A network failure's detail: its causes' codes, capped (never a certificate's names). */
+function detailOf(error: unknown): string {
+  return networkFailureCodes(error).slice(0, WEB_FETCH_DETAIL_MAX_CHARS)
 }
 
 /** The headers the fetch reads, checked at the transport's boundary. */
@@ -244,10 +433,9 @@ function mediaTypeOf(contentType: string): string {
   return (contentType.split(MEDIA_TYPE_SEPARATOR)[0] ?? '').trim().toLowerCase()
 }
 
-/** The `charset` parameter of a header or a meta tag, unquoted; undefined when absent. */
+/** The `charset` parameter in the text, unquoted; undefined when absent. */
 function charsetIn(text: string): string | undefined {
-  const lower = text.toLowerCase()
-  const at = lower.indexOf(CHARSET_PARAMETER)
+  const at = text.toLowerCase().indexOf(CHARSET_PARAMETER)
   if (at === -1) {
     return undefined
   }
@@ -258,28 +446,79 @@ function charsetIn(text: string): string | undefined {
 }
 
 /**
+ * The charset an HTML page declares in a `<meta>` tag near its start
+ * (`<meta charset>` or `<meta http-equiv content="…; charset=…">`), never a
+ * `charset=` elsewhere in its text.
+ */
+function metaCharset(head: string): string | undefined {
+  const lower = head.toLowerCase()
+  let at = lower.indexOf(META_OPEN)
+  while (at !== -1) {
+    const end = lower.indexOf(TAG_CLOSE, at)
+    const charset = charsetIn(head.slice(at, end === -1 ? head.length : end))
+    if (charset !== undefined) {
+      return charset
+    }
+    at = lower.indexOf(META_OPEN, at + META_OPEN.length)
+  }
+  return undefined
+}
+
+/** A decoder for the label, or undefined for one this runtime does not know. */
+function decoderFor(label: string | undefined): TextDecoder | undefined {
+  if (label === undefined) {
+    return undefined
+  }
+  try {
+    return new TextDecoder(label)
+  } catch {
+    // An unknown label is ignored, as the WHATWG encoding rules say.
+    return undefined
+  }
+}
+
+/**
+ * The body as text: the header's charset, else an HTML page's `<meta>`,
+ * else UTF-8; a label nobody knows counts as none.
+ */
+function decodeText(bytes: Uint8Array, contentType: string, isHtml: boolean): string {
+  const head = isHtml
+    ? Buffer.from(bytes.subarray(0, WEB_FETCH_CHARSET_SNIFF_BYTES)).toString(LATIN1)
+    : ''
+  const decoder =
+    decoderFor(charsetIn(contentType)) ??
+    decoderFor(isHtml ? metaCharset(head) : undefined) ??
+    new TextDecoder(DEFAULT_CHARSET)
+  return decoder.decode(bytes)
+}
+
+/** A decompressor's output, and whether the body under it failed (the network, not the data). */
+interface Decoded {
+  readonly chunks: AsyncIterable<Uint8Array>
+  readonly hasSourceFailed: () => boolean
+}
+
+/**
  * The body through a decompressor. `pipeline` destroys the decompressor with
  * the body's error (an abort, a reset), so reading it fails rather than
  * waiting forever; its callback has nothing left to do.
  */
-function through(
-  body: AsyncIterable<Uint8Array>,
-  decompressor: Transform,
-): AsyncIterable<Uint8Array> {
-  pipeline(Readable.from(body), decompressor, settled)
-  return decompressor
+function through(body: AsyncIterable<Uint8Array>, decompressor: Transform): Decoded {
+  let hasFailed = false
+  const source = Readable.from(body)
+  source.once('error', () => {
+    hasFailed = true
+  })
+  pipeline(source, decompressor, ignore)
+  return { chunks: decompressor, hasSourceFailed: () => hasFailed }
 }
 
 /** The body as it came off the wire, decompressed; refused for an unknown coding. */
-function decoded(
-  body: AsyncIterable<Uint8Array>,
-  coding: string | undefined,
-): AsyncIterable<Uint8Array> {
-  const name = (coding ?? IDENTITY).trim().toLowerCase()
-  switch (name) {
+function decoded(body: AsyncIterable<Uint8Array>, coding: string): Decoded {
+  switch (coding) {
     case '':
     case IDENTITY: {
-      return body
+      return { chunks: body, hasSourceFailed: () => true }
     }
     case 'gzip':
     case 'x-gzip': {
@@ -292,75 +531,71 @@ function decoded(
       return through(body, createBrotliDecompress())
     }
     default: {
-      return refuse('encoding', { encoding: name })
+      return refuse('encoding', { encoding: shownToken(coding) })
     }
   }
 }
 
-/** The whole body within the cap; refused as soon as it passes it. */
-async function readCapped(response: PinnedResponse, headers: ReadHeaders): Promise<Uint8Array> {
-  const declared = Number(headers['content-length'] ?? NaN)
-  if (Number.isFinite(declared) && declared > WEB_FETCH_MAX_BYTES) {
-    refuse('tooLarge')
-  }
-  const body = decoded(response.body, headers['content-encoding'])
-  const chunks: Uint8Array[] = []
+/** Every chunk, refused as soon as the total passes the cap. */
+async function collect(chunks: AsyncIterable<Uint8Array>): Promise<Uint8Array> {
+  const parts: Uint8Array[] = []
   let total = 0
-  for await (const chunk of body) {
+  for await (const chunk of chunks) {
     total += chunk.byteLength
     if (total > WEB_FETCH_MAX_BYTES) {
       refuse('tooLarge')
     }
-    chunks.push(chunk)
+    parts.push(chunk)
   }
-  const bytes = new Uint8Array(total)
-  let offset = 0
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset)
-    offset += chunk.byteLength
-  }
-  return bytes
+  return Buffer.concat(parts)
 }
 
-/** The body as text: the header's charset, else an HTML page's own `<meta>`, else UTF-8. */
-function decodeText(bytes: Uint8Array, contentType: string, isHtml: boolean): string {
-  let charset = charsetIn(contentType)
-  if (charset === undefined && isHtml) {
-    const head = Buffer.from(bytes.subarray(0, WEB_FETCH_CHARSET_SNIFF_BYTES)).toString(LATIN1)
-    charset = charsetIn(head)
+/**
+ * The whole body within the cap. Damaged compressed data is refused as the
+ * coding's, not reported as a network failure.
+ */
+async function readCapped(
+  response: PinnedResponse,
+  headers: ReadHeaders,
+  signal: AbortSignal,
+): Promise<Uint8Array> {
+  const declared = Number(headers['content-length'] ?? NaN)
+  if (Number.isFinite(declared) && declared > WEB_FETCH_MAX_BYTES) {
+    refuse('tooLarge')
   }
-  const label = charset ?? DEFAULT_CHARSET
-  let decoder: TextDecoder
+  const coding = (headers['content-encoding'] ?? IDENTITY).trim().toLowerCase()
+  const body = decoded(response.body, coding)
   try {
-    decoder = new TextDecoder(label)
-  } catch {
-    return refuse('charset', { charset: label })
+    return await collect(body.chunks)
+  } catch (error: unknown) {
+    if (error instanceof FetchRefused || signal.aborted || body.hasSourceFailed()) {
+      throw error
+    }
+    return refuse('encoding', { encoding: shownToken(coding) })
   }
-  return decoder.decode(bytes)
 }
 
-/** What the model receives for a page: facts, the notice, and the marked content. */
-function pageText(page: WebPage, content: string, isHtml: boolean, marker: string): string {
+/** The facts line, the notice and the marked content, as the model receives them. */
+function pageText(
+  page: WebPage,
+  content: string,
+  flags: { readonly isHtml: boolean; readonly hasMore: boolean },
+  marker: string,
+): string {
   const shown =
     content.length > WEB_FETCH_MAX_CONTENT_CHARS
       ? content.slice(0, WEB_FETCH_MAX_CONTENT_CHARS)
       : content
   const facts = [
     fill(MODEL_TEXT.webFetchHeader, {
-      url: page.finalUrl,
+      url: page.url,
       status: String(page.status),
       type: page.type,
       bytes: String(page.bytes),
     }),
-    ...(page.finalUrl === page.url ? [] : [fill(MODEL_TEXT.webFetchRedirected, { url: page.url })]),
-    isHtml ? MODEL_TEXT.webFetchConverted : MODEL_TEXT.webFetchAsText,
-    ...(shown.length < content.length
-      ? [
-          fill(MODEL_TEXT.webFetchTruncated, {
-            shown: String(shown.length),
-            total: String(content.length),
-          }),
-        ]
+    flags.isHtml ? MODEL_TEXT.webFetchConverted : MODEL_TEXT.webFetchAsText,
+    ...(flags.hasMore || shown.length < content.length
+      ? [fill(MODEL_TEXT.webFetchTruncated, { shown: String(shown.length) })]
       : []),
   ].join(' ')
   return [
@@ -372,12 +607,37 @@ function pageText(page: WebPage, content: string, isHtml: boolean, marker: strin
   ].join('\n')
 }
 
+/** The page's text, HTML as Markdown: the final URL and the title go inside the markers. */
+function contentOf(
+  text: string,
+  isHtml: boolean,
+  requested: URL,
+  finalUrl: URL,
+): { readonly content: string; readonly hasMore: boolean } {
+  const redirected =
+    finalUrl.href === requested.href
+      ? []
+      : [fill(MODEL_TEXT.webFetchRedirected, { url: finalUrl.href })]
+  if (!isHtml) {
+    return { content: [...redirected, text].join('\n\n'), hasMore: false }
+  }
+  const converted = htmlToMarkdown(text, finalUrl, WEB_FETCH_CONVERT_MAX_CHARS)
+  const title =
+    converted.title === undefined
+      ? []
+      : [fill(MODEL_TEXT.webFetchTitle, { title: converted.title })]
+  return {
+    content: [...redirected, ...title, converted.markdown].join('\n\n'),
+    hasMore: converted.isTruncated,
+  }
+}
+
 /** The page read and converted, once its status and type are allowed. */
 async function readPage(
   response: PinnedResponse,
-  requested: URL,
-  finalUrl: URL,
+  urls: { readonly requested: URL; readonly final: URL },
   deps: WebFetchDeps,
+  signal: AbortSignal,
 ): Promise<WebFetchResult> {
   const { status } = response
   if (status < HTTP_SUCCESS_MIN || status > HTTP_SUCCESS_MAX) {
@@ -391,26 +651,23 @@ async function readPage(
   const type = mediaTypeOf(contentType)
   const isHtml = WEB_FETCH_HTML_TYPES.has(type)
   if (!isHtml && !WEB_FETCH_TEXT_TYPES.has(type)) {
-    refuse('contentType', { type })
+    refuse('contentType', { type: shownToken(type) })
   }
-  const bytes = await readCapped(response, headers)
+  const bytes = await readCapped(response, headers, signal)
   const text = decodeText(bytes, contentType, isHtml)
-  let content = text
-  if (isHtml) {
-    const converted = htmlToMarkdown(text, finalUrl)
-    content =
-      converted.title === undefined
-        ? converted.markdown
-        : `${fill(MODEL_TEXT.webFetchTitle, { title: converted.title })}\n\n${converted.markdown}`
-  }
+  const { content, hasMore } = contentOf(text, isHtml, urls.requested, urls.final)
   const page: WebPage = {
-    url: requested.href,
-    finalUrl: finalUrl.href,
+    url: urls.requested.href,
+    finalUrl: urls.final.href,
     status,
     type,
     bytes: bytes.byteLength,
   }
-  return { kind: 'page', page, text: pageText(page, content, isHtml, deps.newMarker()) }
+  return {
+    kind: 'page',
+    page,
+    text: pageText(page, content, { isHtml, hasMore }, deps.newMarker()),
+  }
 }
 
 /** Why the request failed: a refusal, the deadline, or the network. */
@@ -421,10 +678,9 @@ function failureOf(error: unknown, deadline: AbortSignal): WebFetchFailure {
   if (deadline.aborted) {
     return webFetchFailure('timeout')
   }
-  return webFetchFailure('network', {
-    detail: describeNetworkFailure(error).detail,
-    visibleDetail: networkFailureMessage(error),
-  })
+  return error instanceof ConnectFailed
+    ? connectionFailure(error)
+    : webFetchFailure('network', { detail: detailOf(error) })
 }
 
 /** The redirect's target: checked like the first URL, or handed back when it is another host's. */
@@ -441,7 +697,7 @@ function nextHop(
   try {
     target = new URL(location.trim(), current.url)
   } catch {
-    return refuse('invalidUrl')
+    throw new FetchRefused(redirectRefused(webFetchFailure('invalidUrl')))
   }
   const checked = checkPageUrl(target.href)
   if (!checked.ok) {
@@ -450,6 +706,17 @@ function nextHop(
   return approvalHost(checked.url) === approvalHost(current.url)
     ? { next: checked }
     : { moved: checked.url.href }
+}
+
+/** A redirect to another host: the target stays inside the markers. */
+function movedResult(location: string, marker: string): WebFetchResult {
+  const text = [
+    MODEL_TEXT.webFetchMoved,
+    fill(MODEL_TEXT.webFetchMovedOpen, { marker }),
+    location,
+    fill(MODEL_TEXT.webFetchMovedClose, { marker }),
+  ].join('\n')
+  return { kind: 'moved', location, text, visibleText: fill(UI_TEXT.webFetchMoved, { location }) }
 }
 
 /** Every hop of one fetch, within the deadline and the redirect limit. */
@@ -464,15 +731,14 @@ async function fetchHops(
     const response = await requestPinned(targets, deps, signal)
     try {
       if (!HTTP_REDIRECT_STATUSES.has(response.status)) {
-        return await readPage(response, first.url, current.url, deps)
+        return await readPage(response, { requested: first.url, final: current.url }, deps, signal)
       }
       if (redirects >= WEB_FETCH_MAX_REDIRECTS) {
         refuse('tooManyRedirects')
       }
       const hop = nextHop(response, headersOf(response), current)
       if ('moved' in hop) {
-        const text = fill(MODEL_TEXT.webFetchMoved, { url: current.url.href, location: hop.moved })
-        return { kind: 'moved', location: hop.moved, text }
+        return movedResult(hop.moved, deps.newMarker())
       }
       current = hop.next
     } finally {

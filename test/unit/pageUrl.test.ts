@@ -43,9 +43,22 @@ describe('checkPageUrl (M69)', () => {
       'https://abc.onion/',
       'https://intranet/',
       'https://intranet./',
+      'https://intranet../',
+      'https://localhost../',
+      'https://x.onion../',
+      'https://printer.local.../',
     ]) {
       expect(refusal(raw), raw).toBe('reservedHost')
     }
+  })
+
+  it('refuses a name with an empty label, and one that is only dots', () => {
+    expect(refusal('https://a..example.com/')).toBe('invalidUrl')
+    expect(refusal('https://.example.com/')).toBe('invalidUrl')
+    expect(checkPageUrl('https://docs.example.com../')).toMatchObject({
+      ok: true,
+      host: 'docs.example.com',
+    })
   })
 
   it('judges an address in the URL however it is spelled', () => {
@@ -74,5 +87,7 @@ describe('checkPageUrl (M69)', () => {
     expect(approvalHost(new URL('https://Docs.Example.com/x'))).toBe('docs.example.com')
     expect(approvalHost(new URL('https://docs.example.com:443/x'))).toBe('docs.example.com')
     expect(approvalHost(new URL('https://docs.example.com:8443/x'))).toBe('docs.example.com:8443')
+    expect(approvalHost(new URL('https://docs.example.com../x'))).toBe('docs.example.com')
+    expect(approvalHost(new URL('https://[2606:4700::1111]:444/'))).toBe('[2606:4700::1111]:444')
   })
 })

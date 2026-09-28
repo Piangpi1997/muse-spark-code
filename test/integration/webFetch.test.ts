@@ -19,24 +19,42 @@ const TIMEOUT_MS = 8000
 const POLL_MS = 50
 const CRLF = '\r\n'
 
-interface ProxySeen {
-  readonly requestLines: string[]
-  readonly helloHasName: boolean[]
+/** One tunnel the proxy was asked for, and whether its ClientHello named the page. */
+interface Tunnel {
+  readonly requestLine: string
+  helloHasName: boolean | undefined
+}
+
+type ProxySeen = Tunnel[]
+
+/**
+ * The tunnels asked for this page, by its address or its name. The proxy is
+ * VS Code's setting for the whole window while a test runs, so VS Code's own
+ * requests may pass through it too; they are not the fetch's.
+ */
+function pageTunnels(seen: ProxySeen): readonly Tunnel[] {
+  return seen.filter(
+    (tunnel) => tunnel.requestLine.includes(PINNED) || tunnel.requestLine.includes(NAME),
+  )
 }
 
 /** A proxy that records each CONNECT; it answers `status`, and after a 200 reads the ClientHello. */
 async function recordingProxy(status: number): Promise<{ server: Server; seen: ProxySeen }> {
-  const seen: ProxySeen = { requestLines: [], helloHasName: [] }
+  const seen: ProxySeen = []
   const server = createServer((socket: Socket) => {
     socket.once('data', (chunk: Buffer) => {
-      seen.requestLines.push(chunk.toString('latin1').split(CRLF)[0] ?? '')
+      const tunnel: Tunnel = {
+        requestLine: chunk.toString('latin1').split(CRLF)[0] ?? '',
+        helloHasName: undefined,
+      }
+      seen.push(tunnel)
       if (status !== 200) {
         socket.end(`HTTP/1.1 ${String(status)} Refused${CRLF}Content-Length: 0${CRLF}${CRLF}`)
         return
       }
       socket.write(`HTTP/1.1 200 Connection established${CRLF}${CRLF}`)
       socket.once('data', (hello: Buffer) => {
-        seen.helloHasName.push(hello.includes(Buffer.from(NAME, 'latin1')))
+        tunnel.helloHasName = hello.includes(Buffer.from(NAME, 'latin1'))
         socket.destroy()
       })
     })
@@ -65,6 +83,11 @@ async function useProxy(url: string | undefined): Promise<void> {
   }
 }
 
+/** When the connection is up does not matter here: the proxy never completes TLS. */
+function ignoreConnected(): void {
+  // Nothing to record.
+}
+
 const TARGET: PinnedTarget = {
   url: new URL(`https://${NAME}/page`),
   host: NAME,
@@ -72,34 +95,45 @@ const TARGET: PinnedTarget = {
   family: 4,
 }
 
+/**
+ * The pinned request made through a recording proxy that answers CONNECT
+ * with `status`; the proxy setting is put back afterwards.
+ */
+async function throughProxy(
+  status: number,
+  check: (request: Promise<unknown>, seen: ProxySeen) => Promise<void>,
+): Promise<void> {
+  const { server, seen } = await recordingProxy(status)
+  const previous = vscode.workspace.getConfiguration('http').inspect('proxy')?.globalValue
+  await useProxy(`http://127.0.0.1:${String(portOf(server))}`)
+  try {
+    await check(pinnedHttpsRequest(TARGET, AbortSignal.timeout(TIMEOUT_MS), ignoreConnected), seen)
+  } finally {
+    await useProxy(typeof previous === 'string' ? previous : undefined)
+    server.close()
+  }
+}
+
 suite("web fetch through VS Code's proxy (M69)", () => {
   test('tunnels to the pinned address, with the name only in TLS', async () => {
-    const { server, seen } = await recordingProxy(200)
-    const previous = vscode.workspace.getConfiguration('http').inspect('proxy')?.globalValue
-    await useProxy(`http://127.0.0.1:${String(portOf(server))}`)
-    try {
-      await assert.rejects(pinnedHttpsRequest(TARGET, AbortSignal.timeout(TIMEOUT_MS)))
-      assert.deepEqual(seen.requestLines, [`CONNECT ${PINNED}:443 HTTP/1.1`])
-      assert.deepEqual(seen.helloHasName, [true])
-    } finally {
-      await useProxy(typeof previous === 'string' ? previous : undefined)
-      server.close()
-    }
+    await throughProxy(200, async (request, seen) => {
+      await assert.rejects(request)
+      assert.deepEqual(pageTunnels(seen), [
+        { requestLine: `CONNECT ${PINNED}:443 HTTP/1.1`, helloHasName: true },
+      ])
+    })
   })
 
   test("refuses the proxy's own answer to the tunnel, never reading it as the page", async () => {
-    const { server, seen } = await recordingProxy(403)
-    const previous = vscode.workspace.getConfiguration('http').inspect('proxy')?.globalValue
-    await useProxy(`http://127.0.0.1:${String(portOf(server))}`)
-    try {
+    await throughProxy(403, async (request, seen) => {
       await assert.rejects(
-        pinnedHttpsRequest(TARGET, AbortSignal.timeout(TIMEOUT_MS)),
-        /Proxy response \(403\) to the tunnel for the pinned address 203\.0\.113\.7/,
+        request,
+        /Proxy response \(403\) instead of a TLS connection to 203\.0\.113\.7/,
       )
-      assert.deepEqual(seen.requestLines, [`CONNECT ${PINNED}:443 HTTP/1.1`])
-    } finally {
-      await useProxy(typeof previous === 'string' ? previous : undefined)
-      server.close()
-    }
+      assert.deepEqual(
+        pageTunnels(seen).map((tunnel) => tunnel.requestLine),
+        [`CONNECT ${PINNED}:443 HTTP/1.1`],
+      )
+    })
   })
 })

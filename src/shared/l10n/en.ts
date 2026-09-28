@@ -421,10 +421,25 @@ export const EN = {
   webFetchTooLarge: 'The page is larger than {size}.',
   webFetchNoContentType: 'The server did not say what the page contains.',
   webFetchContentType: 'The page is {type}, not HTML or text.',
-  webFetchEncoding: 'The page is compressed with {encoding}, which cannot be read.',
-  webFetchCharset: 'The page’s character set {charset} cannot be read.',
+  webFetchContentTypeUnnamed: 'The page is not HTML or text.',
+  webFetchEncoding: 'The page’s compression ({encoding}) could not be read.',
+  webFetchEncodingUnnamed: 'The page’s compression could not be read.',
   webFetchTimeout: 'The page did not arrive within {duration}.',
+  // Why no connection gave an answer: the page's host, and the checked
+  // address(es) the request went to.
+  webFetchCertificate:
+    '{host}’s certificate at {address} is not trusted on this computer. Nothing was read. ({detail})',
+  webFetchProxyCredentials:
+    'The proxy asked for credentials before it would connect to {address} for {host}. Nothing was read.',
+  webFetchProxyRefused:
+    'A proxy or another machine in the way answered {status} instead of connecting securely to {address} ({host}). Nothing was read.',
+  webFetchUnreachable: '{host} could not be reached at {address}. ({detail})',
   webFetchNetwork: 'The request failed: {detail}',
+  // A redirect to another host, handed back to the model on the Model API
+  // backend; and the refusal in Restricted Mode.
+  webFetchMoved:
+    'The page redirected to {location}, on another host. Muse can fetch it in a new call, which asks again.',
+  webFetchRestrictedMode: 'Web fetch is off in Restricted Mode. Trust the workspace to use it.',
   textFileTooLarge: 'Text files must be 1 MB or smaller.',
   textFilesOverBudget:
     'Attachments fill Muse Code’s message limit. Remove an attachment or shorten the message.',

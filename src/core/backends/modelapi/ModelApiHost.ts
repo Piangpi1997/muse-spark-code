@@ -715,7 +715,10 @@ function webFetchRefusal(failure: WebFetchFailure): ToolOutcome {
 function webFetchOutcome(result: WebFetchResult): ToolOutcome {
   return result.kind === 'failed'
     ? webFetchRefusal(result.failure)
-    : { output: result.text, visibleOutput: result.text }
+    : {
+        output: result.text,
+        visibleOutput: result.kind === 'moved' ? result.visibleText : result.text,
+      }
 }
 
 /**
@@ -1498,7 +1501,7 @@ export class ModelApiSession implements AgentSession {
         shellName: shell.shellName,
         hasShell,
         hasMemory,
-        hasWebFetch: hasShell && this.deps.webFetch !== undefined,
+        hasWebFetch: this.isWebFetchOffered(hasShell),
         today: new Date(this.deps.now()).toISOString().slice(0, ISO_DATE_LENGTH),
         environment: this.environment ?? NO_ENVIRONMENT,
         context,
@@ -1560,7 +1563,7 @@ export class ModelApiSession implements AgentSession {
       isSubagent: this.isSubagent,
       hasMemory,
       // Trusted workspaces only, as the shell (M69).
-      hasWebFetch: hasShell && this.deps.webFetch !== undefined,
+      hasWebFetch: this.isWebFetchOffered(hasShell),
     })
     const ide = (this.deps.ideTools ?? []).map(
       (tool) => mcpFunctionDefinition(ideFunctionName(tool), tool).definition,
@@ -1568,6 +1571,14 @@ export class ModelApiSession implements AgentSession {
     const mcp = hasShell ? (this.deps.mcpServers?.definitions() ?? []) : []
     const offered = [...own, ...ide, ...mcp]
     return this.isWebSearchOffered() ? [...offered, { type: MODEL_API_WEB_SEARCH_TOOL }] : offered
+  }
+
+  /**
+   * Web fetch (M69): in a trusted workspace (`hasShell`) with the window's
+   * fetch, and not in a side chat, whose Plan mode refuses every fetch.
+   */
+  private isWebFetchOffered(hasShell: boolean): boolean {
+    return hasShell && this.deps.webFetch !== undefined && !this.isSideChat
   }
 
   /**
@@ -2851,7 +2862,7 @@ export class ModelApiSession implements AgentSession {
     signal: AbortSignal,
   ): Promise<ToolOutcome> {
     if (external.kind === 'ide') {
-      const text = clipOutput(await external.tool.call(argumentsOf(call)))
+      const text = clipOutput(await external.tool.call(argumentsOf(call), signal))
       return { output: text, visibleOutput: text }
     }
     const servers = this.deps.mcpServers
@@ -3657,7 +3668,14 @@ export class ModelApiSession implements AgentSession {
       return { outcome: toolFailure(`unknown tool ${call.name}`), isRejected: false }
     }
     if (!this.deps.isWorkspaceTrusted()) {
-      return { outcome: toolFailure(MODEL_TEXT.webFetchRestrictedMode), isRejected: true }
+      return {
+        outcome: {
+          output: `Error: ${MODEL_TEXT.webFetchRestrictedMode}`,
+          visibleOutput: UI_TEXT.webFetchRestrictedMode,
+          failureReason: UI_TEXT.webFetchRestrictedMode,
+        },
+        isRejected: true,
+      }
     }
     const parsed = webFetchArgs.safeParse(argumentsOf(call))
     if (!parsed.success) {

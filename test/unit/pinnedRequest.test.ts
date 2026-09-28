@@ -1,23 +1,32 @@
 import { Buffer } from 'node:buffer'
+import { EventEmitter } from 'node:events'
 import {
+  type ClientRequest,
   createServer,
   type IncomingHttpHeaders,
   request as httpRequest,
   type Server,
 } from 'node:http'
+import type { Socket } from 'node:net'
+import { PassThrough } from 'node:stream'
+import { TLSSocket } from 'node:tls'
 import { afterEach, describe, expect, it } from 'vitest'
-import { describeNetworkFailure } from '../../src/core/networkFailure'
 import type { PinnedTarget } from '../../src/core/web/webFetch'
-import { pinnedHttpsRequest, pinnedOptions } from '../../src/host/web/pinnedRequest'
+import {
+  pinnedHttpsRequest,
+  pinnedOptions,
+  type RequestFunction,
+} from '../../src/host/web/pinnedRequest'
 import {
   WEB_FETCH_ACCEPT_ENCODING,
   WEB_FETCH_DEFAULT_PORT,
+  WEB_FETCH_NOT_TLS_CODE,
   WEB_FETCH_USER_AGENT,
 } from '../../src/shared/constants'
 
 const servers: Server[] = []
 // The loopback server speaks plain HTTP, so these tests lift the TLS
-// requirement, except the one that shows it.
+// requirement, except the ones that show it.
 const IS_TLS_REQUIRED = false
 
 afterEach(async () => {
@@ -32,24 +41,20 @@ afterEach(async () => {
   )
 })
 
+interface Seen {
+  host: string | undefined
+  url: string | undefined
+  headers: IncomingHttpHeaders
+}
+
 /** A loopback server standing in for the pinned address; it records what it was asked. */
 async function listen(
-  handler: (
-    headers: IncomingHttpHeaders,
-    url: string | undefined,
-  ) => { body: string; hang?: boolean },
-): Promise<{
-  port: number
-  seen: { host: string | undefined; url: string | undefined; headers: IncomingHttpHeaders }[]
-}> {
-  const seen: {
-    host: string | undefined
-    url: string | undefined
-    headers: IncomingHttpHeaders
-  }[] = []
+  handler: () => { body: string; hang?: boolean },
+): Promise<{ port: number; seen: Seen[] }> {
+  const seen: Seen[] = []
   const server = createServer((request, response) => {
     seen.push({ host: request.headers.host, url: request.url, headers: request.headers })
-    const reply = handler(request.headers, request.url)
+    const reply = handler()
     response.writeHead(200, { 'content-type': 'text/plain', 'set-cookie': ['a=1', 'b=2'] })
     if (reply.hang === true) {
       response.write(reply.body)
@@ -75,6 +80,30 @@ function target(url: string, address = '127.0.0.1'): PinnedTarget {
 
 async function text(body: AsyncIterable<Uint8Array>): Promise<string> {
   return Buffer.concat(await Array.fromAsync(body)).toString('utf8')
+}
+
+/** Counts `onConnected`. */
+function connections() {
+  let count = 0
+  return {
+    onConnected: () => {
+      count += 1
+    },
+    count: () => count,
+  }
+}
+
+/** A request that only hands over a socket: what `onConnected` watches. */
+function socketOnly(socket: Socket): { request: RequestFunction; outgoing: EventEmitter } {
+  const outgoing = Object.assign(new EventEmitter(), {
+    end: () => undefined,
+    destroy: () => undefined,
+  })
+  const request: RequestFunction = () => outgoing as unknown as ClientRequest
+  setImmediate(() => {
+    outgoing.emit('socket', socket)
+  })
+  return { request, outgoing }
 }
 
 describe('pinnedHttpsRequest (M69)', () => {
@@ -109,14 +138,17 @@ describe('pinnedHttpsRequest (M69)', () => {
     expect(literal).not.toHaveProperty('servername')
   })
 
-  it('sends the request to the address, never looking the name up', async () => {
+  it('sends the request to the address, never looking the name up, and says when it connected', async () => {
     const { port, seen } = await listen(() => ({ body: 'hello' }))
+    const connected = connections()
     const response = await pinnedHttpsRequest(
       target(`https://never-resolved.invalid:${String(port)}/p?q=1`),
       new AbortController().signal,
+      connected.onConnected,
       httpRequest,
       IS_TLS_REQUIRED,
     )
+    expect(connected.count()).toBe(1)
     expect(response.status).toBe(200)
     expect(response.headers['content-type']).toBe('text/plain')
     expect(response.headers['set-cookie']).toBe('a=1, b=2')
@@ -132,6 +164,7 @@ describe('pinnedHttpsRequest (M69)', () => {
     const response = await pinnedHttpsRequest(
       target(`https://docs.example.com:${String(port)}/`),
       controller.signal,
+      connections().onConnected,
       httpRequest,
       IS_TLS_REQUIRED,
     )
@@ -139,40 +172,56 @@ describe('pinnedHttpsRequest (M69)', () => {
     controller.abort()
     await expect(reading).rejects.toThrow()
     const closed = await listen(() => ({ body: '' }))
-    const port2 = closed.port
     await new Promise((resolve) => {
       servers.pop()?.close(resolve)
     })
+    const never = connections()
     await expect(
       pinnedHttpsRequest(
-        target(`https://docs.example.com:${String(port2)}/`),
+        target(`https://docs.example.com:${String(closed.port)}/`),
         new AbortController().signal,
+        never.onConnected,
         httpRequest,
         IS_TLS_REQUIRED,
       ),
     ).rejects.toThrow(/ECONNREFUSED/)
+    expect(never.count()).toBe(0)
   })
 
   it("refuses an answer that did not come over TLS: a proxy's, never the page", async () => {
     const { port } = await listen(() => ({ body: 'Forbidden by policy' }))
-    const refusal = pinnedHttpsRequest(
-      target(`https://docs.example.com:${String(port)}/`),
-      new AbortController().signal,
-      httpRequest,
-    )
+    const connected = connections()
     let refused: unknown
     try {
-      await refusal
+      await pinnedHttpsRequest(
+        target(`https://docs.example.com:${String(port)}/`),
+        new AbortController().signal,
+        connected.onConnected,
+        httpRequest,
+      )
     } catch (error: unknown) {
       refused = error
     }
-    expect(String(refused)).toContain(
-      'Proxy response (200) to the tunnel for the pinned address 127.0.0.1',
-    )
-    // M56's network failures read it as a proxy's refusal, with their advice.
-    expect(describeNetworkFailure(refused)).toMatchObject({
-      kind: 'proxyRefused',
-      proxyStatus: 200,
-    })
+    expect(refused).toMatchObject({ code: WEB_FETCH_NOT_TLS_CODE, status: 200 })
+    expect(String(refused)).toContain('instead of a TLS connection to 127.0.0.1')
+    // A plain connection never counts as connected when TLS is required.
+    expect(connected.count()).toBe(0)
+  })
+
+  it('counts a TLS connection as up only once its handshake is done', async () => {
+    const tls = new TLSSocket(new PassThrough())
+    const { request } = socketOnly(tls)
+    const connected = connections()
+    void pinnedHttpsRequest(
+      target('https://docs.example.com/'),
+      new AbortController().signal,
+      connected.onConnected,
+      request,
+    ).catch(() => undefined)
+    await new Promise((resolve) => setImmediate(resolve))
+    expect(connected.count()).toBe(0)
+    tls.emit('secureConnect')
+    expect(connected.count()).toBe(1)
+    tls.destroy()
   })
 })

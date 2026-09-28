@@ -18,18 +18,29 @@
 // Only an answer that came over TLS is read. A proxy that refuses the tunnel
 // (a policy against addresses, missing credentials) answers the CONNECT
 // itself, and https-proxy-agent hands that answer to the request on a plain
-// socket; it is refused as the proxy's, never read as the page's, in the
-// words M56's network failures use ("Proxy response (403)").
+// socket; it is refused as the proxy's (WEB_FETCH_NOT_TLS_CODE), never read
+// as the page's.
+//
+// The proxy decision sees the address too. @vscode/proxy-agent 0.45.0 (VS
+// Code 1.139.1's) builds the URL it resolves a proxy for from the request's
+// `host` (agent.js: `hostname: opts.host`), and `http.noProxy` and the
+// environment's NO_PROXY match that host name's suffix (index.js
+// `noProxyFromConfig`). With the pinned address there, a PAC rule or a
+// no-proxy entry written for a host name does not match; one written for
+// addresses does. Giving the name instead would let the proxy resolve it
+// again, which pinning exists to prevent, so the address stays.
 
-import type { IncomingMessage } from 'node:http'
+import type { ClientRequest, IncomingMessage } from 'node:http'
 import { request as httpsRequest, type RequestOptions } from 'node:https'
 import type { Socket } from 'node:net'
+import { TLSSocket } from 'node:tls'
 import type { PinnedResponse, PinnedTarget } from '../../core/web/webFetch'
 import { addressFamily } from '../../core/web/publicAddress'
 import {
   WEB_FETCH_ACCEPT,
   WEB_FETCH_ACCEPT_ENCODING,
   WEB_FETCH_DEFAULT_PORT,
+  WEB_FETCH_NOT_TLS_CODE,
   WEB_FETCH_USER_AGENT,
 } from '../../shared/constants'
 
@@ -37,11 +48,7 @@ import {
 export type RequestFunction = (
   options: RequestOptions,
   onResponse: (response: IncomingMessage) => void,
-) => {
-  on(event: 'error', listener: (error: Error) => void): unknown
-  end(): unknown
-  destroy(): unknown
-}
+) => ClientRequest
 
 /** The request options for a pinned GET: the address to connect to, the name to verify. */
 export function pinnedOptions(target: PinnedTarget, signal: AbortSignal): RequestOptions {
@@ -80,13 +87,64 @@ function isOverTls(socket: Socket | null): boolean {
 }
 
 /**
- * One pinned GET; rejects when it cannot be made, when a proxy answered
- * instead of the server, or when the signal aborts. `isTlsRequired` is off
- * only for the tests' plain loopback server.
+ * Whether a TLS socket has finished its handshake: its Finished message is
+ * there only then (`getProtocol` may name a version before it is done).
+ */
+function isHandshakeDone(socket: TLSSocket): boolean {
+  return socket.getFinished() !== undefined
+}
+
+/**
+ * Calls `onConnected` once the request's connection is up: its TLS handshake
+ * done (to the pinned address, or through the proxy's tunnel to it), or for
+ * the tests' plain server its TCP connection. A socket kept alive from an
+ * earlier request is up already.
+ */
+function watchConnection(
+  outgoing: ClientRequest,
+  isTlsRequired: boolean,
+  onConnected: () => void,
+): void {
+  outgoing.once('socket', (socket: Socket) => {
+    if (socket instanceof TLSSocket) {
+      if (isHandshakeDone(socket)) {
+        onConnected()
+      } else {
+        socket.once('secureConnect', onConnected)
+      }
+      return
+    }
+    if (isTlsRequired) {
+      return
+    }
+    if (socket.connecting) {
+      socket.once('connect', onConnected)
+    } else {
+      onConnected()
+    }
+  })
+}
+
+/** The error for an answer that did not come over TLS: a proxy refused the tunnel. */
+function notOverTls(status: number, address: string): Error {
+  return Object.assign(
+    new Error(
+      `Proxy response (${String(status)}) instead of a TLS connection to ${address}; nothing was read`,
+    ),
+    { code: WEB_FETCH_NOT_TLS_CODE, status },
+  )
+}
+
+/**
+ * One pinned GET; `onConnected` once its connection is up. Rejects when it
+ * cannot be made, when a proxy answered instead of the server, or when the
+ * signal aborts. `isTlsRequired` is off only for the tests' plain loopback
+ * server.
  */
 export function pinnedHttpsRequest(
   target: PinnedTarget,
   signal: AbortSignal,
+  onConnected: () => void,
   request: RequestFunction = httpsRequest,
   isTlsRequired = true,
 ): Promise<PinnedResponse> {
@@ -95,11 +153,7 @@ export function pinnedHttpsRequest(
       if (isTlsRequired && !isOverTls(response.socket)) {
         response.destroy()
         outgoing.destroy()
-        reject(
-          new Error(
-            `Proxy response (${String(response.statusCode ?? 0)}) to the tunnel for the pinned address ${target.address}; nothing was sent to it`,
-          ),
-        )
+        reject(notOverTls(response.statusCode ?? 0, target.address))
         return
       }
       resolve({
@@ -112,6 +166,7 @@ export function pinnedHttpsRequest(
         },
       })
     })
+    watchConnection(outgoing, isTlsRequired, onConnected)
     outgoing.on('error', reject)
     outgoing.end()
   })

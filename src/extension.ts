@@ -74,7 +74,7 @@ import { canonicalPath } from './host/canonicalPath'
 import { loadToolImage } from './core/toolImages'
 import { ModelApiClient } from './core/backends/modelapi/client'
 import { ideImageTools } from './host/ide/imageTools'
-import { ideWebFetchTools, isIdeWebFetchOffered } from './host/ide/webFetchTool'
+import { ideWebFetchTools, isIdeWebFetchOffered, oneQuestionPerUrl } from './host/ide/webFetchTool'
 import { isWebFetchAllowed } from './host/web/webFetchConfirm'
 import { createWebFetcher } from './host/web/webFetcher'
 import { usablePaidFeatures } from './shared/paid'
@@ -813,6 +813,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // Web fetch (M69, PLAN.md D49): resolved, checked and pinned here, for the
   // Model API backend's `web_fetch` and Muse Code's `mcp__ide__webFetch`.
   const webFetch = createWebFetcher(log)
+  const askWebFetch = oneQuestionPerUrl(isWebFetchAllowed)
   const ideServer = new IdeMcpServer(
     () => [
       diagnostics,
@@ -823,7 +824,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         isOffered: () =>
           isIdeWebFetchOffered(vscode.workspace.isTrusted, currentSettings().sandboxNetwork),
         fetchPage: webFetch,
-        confirm: isWebFetchAllowed,
+        confirm: askWebFetch,
         log,
       }),
       ...ideImageTools({

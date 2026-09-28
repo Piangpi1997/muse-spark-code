@@ -11,7 +11,11 @@
 // - declares itself open-world and not read-only (MCP annotations), so Muse
 //   Code's own approval treats it as more than a read;
 // - asks in the extension's own modal before every call, naming the host
-//   and the URL, whatever mode Muse Code runs in, as the image tools do.
+//   and the URL, whatever mode Muse Code runs in, as the image tools do, and
+//   checks again after the answer that it is still offered;
+// - stops when Muse Code stops waiting (a stopped turn closes the request
+//   and sends `notifications/cancelled`, captured from Muse Code 1.4.0): an
+//   answer given after that fetches nothing, and a fetch under way ends.
 //
 // Nothing is billed: the fetch is the extension's, not Meta's paid search.
 
@@ -19,7 +23,7 @@ import * as z from 'zod/mini'
 import type { McpTool } from '../../core/mcp'
 import { WEB_FETCH_DESCRIPTION, WEB_FETCH_PARAMETERS } from '../../core/web/webFetchDefinition'
 import type { WebFetcher } from '../../core/web/webFetch'
-import { checkPageUrl } from '../../core/web/pageUrl'
+import { approvalHost, checkPageUrl } from '../../core/web/pageUrl'
 import {
   IDE_WEB_FETCH_TOOL,
   MCP_ANNOTATIONS_OPEN_WORLD,
@@ -40,6 +44,11 @@ export interface IdeWebFetchDeps {
 
 const argsSchema = z.object({ url: z.string() })
 
+/** A listener with nothing to do until it is replaced. */
+function noop(): void {
+  // Replaced before it can run; see unlessCancelled.
+}
+
 /**
  * Whether Muse Code is offered the fetch: a trusted workspace, and
  * `museSpark.sandboxNetwork` not set to deny its commands the network.
@@ -51,8 +60,58 @@ export function isIdeWebFetchOffered(
   return isTrusted && sandboxNetwork !== SANDBOX_NETWORK_DENIED
 }
 
+/**
+ * The modal, asked once per URL at a time: VS Code cannot close a modal a
+ * caller stopped waiting for, so a retry of the same URL while it is still
+ * open waits for that same answer instead of queueing a second modal.
+ */
+export function oneQuestionPerUrl(
+  isAllowedByUser: (url: string, host: string) => Promise<boolean>,
+): (url: string, host: string) => Promise<boolean> {
+  const open = new Map<string, Promise<boolean>>()
+  const isAllowedOnce = async (url: string, host: string): Promise<boolean> => {
+    try {
+      return await isAllowedByUser(url, host)
+    } finally {
+      open.delete(url)
+    }
+  }
+  return async (url, host) => {
+    const pending = open.get(url)
+    if (pending !== undefined) {
+      return await pending
+    }
+    const asked = isAllowedOnce(url, host)
+    open.set(url, asked)
+    return await asked
+  }
+}
+
+/**
+ * `start()`'s answer, or a refusal as soon as the caller stops waiting; a
+ * caller that already stopped starts nothing (no modal for nobody).
+ */
+async function unlessCancelled<T>(start: () => Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) {
+    throw new Error(MODEL_TEXT.webFetchCancelled)
+  }
+  let onAbort: () => void = noop
+  const cancelled = new Promise<never>((_resolve, reject) => {
+    onAbort = () => {
+      reject(new Error(MODEL_TEXT.webFetchCancelled))
+    }
+    signal.addEventListener('abort', onAbort, { once: true })
+  })
+  try {
+    return await Promise.race([start(), cancelled])
+  } finally {
+    signal.removeEventListener('abort', onAbort)
+  }
+}
+
 async function callWebFetch(
   args: Readonly<Record<string, unknown>>,
+  signal: AbortSignal,
   deps: IdeWebFetchDeps,
 ): Promise<string> {
   const parsed = argsSchema.safeParse(args)
@@ -64,12 +123,23 @@ async function callWebFetch(
   if (!checked.ok) {
     throw new Error(checked.failure.reason)
   }
-  if (!(await deps.confirm(checked.url.href, checked.url.host))) {
-    deps.log.info(`Web fetch from ${checked.url.host} declined in the extension's confirmation`)
+  const host = approvalHost(checked.url)
+  // Muse Code may stop waiting while the modal is open (Stop, its own time
+  // limit, a restart): its answer then fetches nothing.
+  const isAllowed = await unlessCancelled(
+    async () => await deps.confirm(checked.url.href, host),
+    signal,
+  )
+  if (!isAllowed) {
+    deps.log.info(`Web fetch from ${host} declined in the extension's confirmation`)
     throw new Error(MODEL_TEXT.webFetchDeclined)
   }
-  // No turn to stop it from here: the fetch's own deadline ends the wait.
-  const result = await deps.fetchPage(checked.url.href, new AbortController().signal)
+  // Trust or the sandbox network may have changed while the modal was open.
+  if (!deps.isOffered()) {
+    throw new Error(MODEL_TEXT.webFetchNotOffered)
+  }
+  // Muse Code's stop reaches the fetch too; the fetch's own deadline bounds it.
+  const result = await deps.fetchPage(checked.url.href, signal)
   if (result.kind === 'failed') {
     throw new Error(result.failure.reason)
   }
@@ -92,7 +162,7 @@ export function ideWebFetchTools(deps: IdeWebFetchDeps): readonly McpTool[] {
         additionalProperties: false,
       },
       annotations: MCP_ANNOTATIONS_OPEN_WORLD,
-      call: async (args) => await callWebFetch(args, deps),
+      call: async (args, signal) => await callWebFetch(args, signal, deps),
     },
   ]
 }

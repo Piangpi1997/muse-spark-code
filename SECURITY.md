@@ -104,20 +104,25 @@ Only the latest release on the Visual Studio Marketplace receives fixes.
   characters, on public internet addresses: the name is resolved on the
   user's machine and refused when any answer is loopback, private,
   link-local, carrier-grade NAT, a cloud metadata address or reserved
-  (IPv4 carried inside IPv6 is judged as IPv4), and local or reserved names
-  are refused before any lookup. The connection is pinned to the checked
-  address (TLS verifies the name); through a proxy the tunnel is asked for
-  that address, and only an answer that arrived over TLS is read. Same-host
-  redirects are checked and pinned again (at most five); another host's is
-  handed back to the model, which asks again. 5 MiB after decompression,
-  30 seconds, text types only. On the Model API backend each host asks in
+  (IPv4 carried inside IPv6, the network's own NAT64 prefix included, is
+  judged as IPv4), and local or reserved names, with any trailing dots, are
+  refused before any lookup. The connection is pinned to the checked
+  addresses, raced as RFC 8305 says (TLS verifies the name); through a proxy
+  the tunnel is asked for that address, and only an answer that arrived over
+  TLS is read. Same-host redirects are checked and pinned again (at most
+  five); another host's is handed back to the model, which asks again.
+  5 MiB after decompression, 30 seconds, text types only, and the HTML
+  converter's output is bounded. On the Model API backend each host asks in
   every mode but Bypass (Plan refuses); on Muse Code the `ide` tool is listed
   only in a trusted workspace without `sandboxNetwork: restricted`, carries
-  `readOnlyHint: false, openWorldHint: true`, and the extension asks before
-  every call. The page reaches the model between random markers as
-  untrusted content. Residual risk: an intranet service on a public address
-  looks like the internet, and the URL itself can carry conversation text
-  to the host the user approved (PLAN.md §9).
+  `readOnlyHint: false, openWorldHint: true`, the extension asks before
+  every call, and a call Muse Code stops waiting for (its request closed, or
+  `notifications/cancelled`) fetches nothing more. The page reaches the model
+  between random markers as untrusted content; only short tokens of what a
+  server sent appear outside them. Residual risk: an intranet service on a
+  public address looks like the internet, the URL itself can carry
+  conversation text to the host the user approved, and the proxy decides
+  for the address, not the name (PLAN.md §9).
 - **Webview.** `default-src 'none'`, a per-load script nonce, no remote
   origins, no inline styles; every message between the host and the
   webview is validated against a schema.

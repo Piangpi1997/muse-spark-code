@@ -6,9 +6,14 @@
 
 import { randomBytes } from 'node:crypto'
 import { ADDRCONFIG } from 'node:dns'
-import { lookup } from 'node:dns/promises'
+import { lookup, Resolver } from 'node:dns/promises'
+import { nat64PrefixesOf, type Nat64Prefix } from '../../core/web/publicAddress'
 import { fetchWebPage, type WebFetcher, type WebFetchResult } from '../../core/web/webFetch'
-import { WEB_FETCH_MARKER_BYTES } from '../../shared/constants'
+import {
+  NAT64_DISCOVERY_NAME,
+  NAT64_DISCOVERY_TIMEOUT_MS,
+  WEB_FETCH_MARKER_BYTES,
+} from '../../shared/constants'
 import type { Logger } from '../logger'
 import { pinnedHttpsRequest } from './pinnedRequest'
 
@@ -20,6 +25,33 @@ import { pinnedHttpsRequest } from './pinnedRequest'
 async function resolveAll(host: string): Promise<readonly string[]> {
   const answers = await lookup(host, { all: true, order: 'verbatim', hints: ADDRCONFIG })
   return answers.map((answer) => answer.address)
+}
+
+/** The AAAA answers for `ipv4only.arpa`: none unless the network's DNS64 synthesizes them. */
+export type Nat64Lookup = () => Promise<readonly string[]>
+
+async function lookupNat64(): Promise<readonly string[]> {
+  const resolver = new Resolver({ timeout: NAT64_DISCOVERY_TIMEOUT_MS, tries: 1 })
+  return await resolver.resolve6(NAT64_DISCOVERY_NAME)
+}
+
+/**
+ * The network's NAT64 prefixes (RFC 7050). A network without DNS64 answers
+ * `ipv4only.arpa` with no AAAA record, which is an error to the resolver:
+ * then there is no prefix, and the log says the lookup failed.
+ */
+export async function discoverNat64(
+  lookupAnswers: Nat64Lookup,
+  log: Logger,
+): Promise<readonly Nat64Prefix[]> {
+  try {
+    return nat64PrefixesOf(await lookupAnswers())
+  } catch (error: unknown) {
+    const code =
+      typeof error === 'object' && error !== null && 'code' in error ? String(error.code) : 'error'
+    log.trace(`Web fetch: no NAT64 prefix from ${NAT64_DISCOVERY_NAME} (${code})`)
+    return []
+  }
 }
 
 function hostOf(url: string): string {
@@ -45,12 +77,16 @@ function outcomeOf(result: WebFetchResult): string {
   }
 }
 
-export function createWebFetcher(log: Logger): WebFetcher {
+export function createWebFetcher(
+  log: Logger,
+  lookupAnswers: Nat64Lookup = lookupNat64,
+): WebFetcher {
   return async (url, signal) => {
     const result = await fetchWebPage(
       url,
       {
         resolve: resolveAll,
+        nat64Prefixes: async () => await discoverNat64(lookupAnswers, log),
         request: pinnedHttpsRequest,
         newMarker: () => randomBytes(WEB_FETCH_MARKER_BYTES).toString('hex'),
       },

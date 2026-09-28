@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { McpTool } from '../../src/core/mcp'
 import { IdeMcpServer } from '../../src/host/ide/ideMcpServer'
 import { FakeLogOutputChannel } from './helpers/fakes'
@@ -51,6 +51,40 @@ async function postJson(endpoint: Endpoint, body: unknown): Promise<unknown> {
 async function status(endpoint: Endpoint, body: string, headers?: Record<string, string>) {
   const response = await post(endpoint, body, headers)
   return response.status
+}
+
+function callBody(id: number) {
+  return { jsonrpc: '2.0', id, method: 'tools/call', params: { name: 'hold', arguments: {} } }
+}
+
+function cancelBody(requestId: number) {
+  return {
+    jsonrpc: '2.0',
+    method: 'notifications/cancelled',
+    params: { requestId, reason: 'client cancelled `tools/call`' },
+  }
+}
+
+/** A tool that waits until the test lets it finish, handing over its signal. */
+function holdingTool() {
+  const called = Promise.withResolvers<AbortSignal>()
+  const done = Promise.withResolvers<string>()
+  const held: McpTool = {
+    name: 'hold',
+    description: 'h',
+    inputSchema: { type: 'object' },
+    call: async (_args, signal) => {
+      called.resolve(signal)
+      return await done.promise
+    },
+  }
+  return {
+    tool: held,
+    called: called.promise,
+    finish: () => {
+      done.resolve('done')
+    },
+  }
 }
 
 describe('IdeMcpServer', () => {
@@ -150,6 +184,47 @@ describe('IdeMcpServer', () => {
     expect(await names()).toEqual(['getDiagnostics'])
     isImageOn = true
     expect(await names()).toEqual(['getDiagnostics', 'generateImage'])
+  })
+
+  it('tells a call its caller stopped waiting: the request closed (M69)', async () => {
+    const seen = holdingTool()
+    const server = new IdeMcpServer(() => [seen.tool], new FakeLogOutputChannel())
+    servers.push(server)
+    const endpoint = await server.start()
+    const caller = new AbortController()
+    const calling = fetch(endpoint.url, {
+      method: 'POST',
+      headers: { ...endpoint.headers, 'content-type': 'application/json' },
+      body: JSON.stringify(callBody(3)),
+      signal: caller.signal,
+    })
+    const signal = await seen.called
+    expect(signal.aborted).toBe(false)
+    caller.abort()
+    await expect(calling).rejects.toThrow()
+    await vi.waitFor(() => {
+      expect(signal.aborted).toBe(true)
+    })
+  })
+
+  it('tells a call its caller stopped waiting: notifications/cancelled names it (M69)', async () => {
+    const seen = holdingTool()
+    const server = new IdeMcpServer(() => [seen.tool], new FakeLogOutputChannel())
+    servers.push(server)
+    const endpoint = await server.start()
+    const calling = postJson(endpoint, callBody(3))
+    const signal = await seen.called
+    // Another id, and a malformed notice, stop nothing.
+    expect(await status(endpoint, JSON.stringify(cancelBody(4)))).toBe(202)
+    expect(
+      await status(endpoint, JSON.stringify({ jsonrpc: '2.0', method: 'notifications/cancelled' })),
+    ).toBe(202)
+    expect(signal.aborted).toBe(false)
+    // The shape Muse Code 1.4.0 sent for a stopped turn.
+    expect(await status(endpoint, JSON.stringify(cancelBody(3)))).toBe(202)
+    expect(signal.aborted).toBe(true)
+    seen.finish()
+    await expect(calling).resolves.toMatchObject({ id: 3, result: { content: [{ text: 'done' }] } })
   })
 
   it('shares a start in flight and can start again after a close (D25)', async () => {

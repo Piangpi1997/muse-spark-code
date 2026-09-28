@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { addressFamily, isPublicAddress } from '../../src/core/web/publicAddress'
+import { addressFamily, isPublicAddress, nat64PrefixesOf } from '../../src/core/web/publicAddress'
 
 describe('isPublicAddress (M69)', () => {
   it('refuses every non-public IPv4 block, at both edges', () => {
@@ -111,6 +111,38 @@ describe('isPublicAddress (M69)', () => {
     for (const text of ['fe80::1%eth0', '2606:4700::1%1', 'example.com', '', '1.2.3', '::g']) {
       expect(isPublicAddress(text), text).toBe(false)
     }
+  })
+
+  it("finds the network's NAT64 prefixes from ipv4only.arpa, in every RFC 6052 layout", () => {
+    // RFC 6052 §2.4's examples, with 192.0.0.170 in place of 192.0.2.33.
+    const answers: Readonly<Record<number, string>> = {
+      32: '2001:db8:c000:aa::',
+      40: '2001:db8:1c0:0:aa::',
+      48: '2001:db8:122:c000:0:aa00::',
+      56: '2001:db8:122:3c0:0:aa::',
+      64: '2001:db8:122:344:c0:0:aa00:0',
+      96: '2001:db8:122:344::c000:aa',
+    }
+    for (const [length, answer] of Object.entries(answers)) {
+      expect(
+        nat64PrefixesOf([answer]).map((prefix) => prefix.length),
+        answer,
+      ).toContain(Number(length))
+    }
+    expect(nat64PrefixesOf(['2001:db8::1', 'not an address', '192.0.0.170'])).toEqual([])
+  })
+
+  it('judges an address under a discovered NAT64 prefix by the IPv4 address it carries', () => {
+    const prefixes = nat64PrefixesOf(['2a01:4f8:c0c:1234:c0:0:aa00:0'])
+    expect(prefixes).toEqual([{ prefix: 0x2a_01_04_f8_0c_0c_12_34n, length: 64 }])
+    // 10.0.0.5 and 169.254.169.254 under the prefix: not public, whatever 2000::/3 says.
+    expect(isPublicAddress('2a01:4f8:c0c:1234:a:0:500:0', prefixes)).toBe(false)
+    expect(isPublicAddress('2a01:4f8:c0c:1234:a9:fea9:fe00:0', prefixes)).toBe(false)
+    expect(isPublicAddress('2a01:4f8:c0c:1234:a:0:500:0')).toBe(true)
+    // 8.8.8.8 under it is public, and an address outside it is judged as IPv6.
+    expect(isPublicAddress('2a01:4f8:c0c:1234:8:808:800:0', prefixes)).toBe(true)
+    expect(isPublicAddress('2606:4700:4700::1111', prefixes)).toBe(true)
+    expect(isPublicAddress('8.8.8.8', prefixes)).toBe(true)
   })
 
   it('names the family of an address and of nothing else', () => {
