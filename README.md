@@ -328,7 +328,8 @@ says why when it cannot.
     with a warning to read the file. A plan holding a control or format
     character (a direction override, a zero-width character), which the
     panel would paint otherwise than the model reads it, is neither saved
-    nor started.
+    nor started. That includes emoji joined with U+200D (👨‍👩‍👧) and the
+    left-to-right and right-to-left marks some right-to-left text uses.
   - Restricted Mode saves nothing.
 - **Implement in a fresh conversation** saves the plan (unless it is
   already saved), then starts a new conversation on the same backend:

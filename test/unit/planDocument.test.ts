@@ -254,6 +254,8 @@ describe('plan names, markup and the log (M79)', () => {
     expect(planLogName('2026-09-27-a.md')).not.toBe(planLogName('2026-09-27-b.md'))
     // A name that does not start with a real day is logged by its hash alone.
     for (const name of [
+      // The name in PR #53's review, whose first ten characters were logged.
+      'customer-secret.md',
       'customer-s-secret-plan.md',
       '2026-13-45-x.md',
       '2026-02-30-x.md',
