@@ -5,8 +5,10 @@ import {
 } from '../../src/core/backends/musecode/credentialFile'
 import {
   AUTH_SET_FILE,
+  capturedInlineVerdict,
   DEVICE_LOGIN_FILE,
   LOGOUT_SHELL,
+  SHIPPED_PLATFORMS,
   SLACK_CONNECTOR_ONLY,
 } from './helpers/credentialShapes'
 
@@ -68,6 +70,23 @@ describe('credentialFileVerdict', () => {
   it('leaves a file holding the credential to the CLI on macOS', () => {
     expect(credentialFileVerdict(AUTH_SET_FILE, 'darwin')).toBe('unrecognized')
     expect(credentialFileVerdict(DEVICE_LOGIN_FILE, 'darwin')).toBe('unrecognized')
+  })
+
+  // The table the e2e tests read a real file against on the host OS, pinned
+  // here for every OS: a macOS expectation fails on a Windows or Linux
+  // runner too, not only in macOS CI (the review of PR #49).
+  it('keeps the per-OS table the e2e tests expect in step with the read', () => {
+    expect(SHIPPED_PLATFORMS.map((platform) => capturedInlineVerdict(platform))).toEqual([
+      'inline',
+      'inline',
+      'unrecognized',
+    ])
+    for (const platform of SHIPPED_PLATFORMS) {
+      expect(credentialFileVerdict(AUTH_SET_FILE, platform)).toBe(capturedInlineVerdict(platform))
+      expect(credentialFileVerdict(DEVICE_LOGIN_FILE, platform)).toBe(
+        capturedInlineVerdict(platform),
+      )
+    }
   })
 
   // An empty version-2 file on macOS was never captured either.

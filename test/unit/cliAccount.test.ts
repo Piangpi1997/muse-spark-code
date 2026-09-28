@@ -10,7 +10,13 @@ import {
   readCredentialFile,
 } from '../../src/host/auth/cliAccount'
 import { MUSE_CREDENTIAL_FILE_MAX_BYTES } from '../../src/shared/constants'
-import { DEVICE_LOGIN_FILE, LOGOUT_SHELL, SLACK_CONNECTOR_ONLY } from './helpers/credentialShapes'
+import {
+  capturedInlineVerdict,
+  DEVICE_LOGIN_FILE,
+  LOGOUT_SHELL,
+  SHIPPED_PLATFORMS,
+  SLACK_CONNECTOR_ONLY,
+} from './helpers/credentialShapes'
 import { FakeLogOutputChannel } from './helpers/fakes'
 
 // Not captured here: macOS's pointer as a third party observed it (aonia
@@ -101,6 +107,14 @@ describe('readCredentialFile', () => {
     const reading = readCredentialFile(home.file, 'linux')
     expect(reading?.verdict).toBe('empty')
     expect(reading?.signature).toMatch(/^44:\d+(\.\d+)?$/)
+  })
+
+  // The real file read as each OS reads it, macOS's branch included, on any
+  // runner (the review of PR #49: an e2e expectation failed in macOS CI only).
+  it.each(SHIPPED_PLATFORMS)('reads a browser sign-in file as %s does', (platform) => {
+    const home = configHome()
+    home.write(DEVICE_LOGIN_FILE)
+    expect(readCredentialFile(home.file, platform)?.verdict).toBe(capturedInlineVerdict(platform))
   })
 
   it('does not read a folder or an oversized file', () => {

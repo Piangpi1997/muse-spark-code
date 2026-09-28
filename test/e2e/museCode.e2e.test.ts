@@ -23,6 +23,7 @@ import {
   UI_TEXT,
 } from '../../src/shared/constants'
 import { FakeLogOutputChannel } from '../unit/helpers/fakes'
+import { capturedInlineVerdict } from '../unit/helpers/credentialShapes'
 import { installFakeCredential, installFakeMuse, removeTestFolders } from './fakeMuse'
 
 const TURN_TIMEOUT_MS = 10_000
@@ -168,10 +169,13 @@ afterAll(() => {
 describe('Muse Code backend against a real child process', { timeout: TEST_TIMEOUT_MS }, () => {
   it('spawns the configured binary with the serve flags, shakes hands as the extension, and sees the credential file', async () => {
     const { manager: backend, log } = manager()
-    expect(backend.credentialFileVerdict()).toBe('inline')
+    // The browser sign-in file, as this OS reads it (on macOS the CLI's to
+    // say; the table is pinned for every OS in credentialFile.test.ts).
+    const verdict = capturedInlineVerdict(process.platform)
+    expect(backend.credentialFileVerdict()).toBe(verdict)
     const host = await backend.ensureHost()
     // Described by its structure, never by a value in it (D26).
-    expect(log.info).toHaveBeenCalledWith(expect.stringContaining('(credential file inline,'))
+    expect(log.info).toHaveBeenCalledWith(expect.stringContaining(`(credential file ${verdict},`))
     expect(host.info.serverName).toBe('muse')
     expect(host.info.serverVersion).toBe('0.0.0-fake serve --disable-sandbox --trust-workspace')
     expect(host.info.museHome).toBe(`/fake/home/${MSP_CLIENT_NAME}`)

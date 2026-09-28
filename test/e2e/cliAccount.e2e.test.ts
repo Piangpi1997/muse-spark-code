@@ -19,8 +19,10 @@ import { MuseCodeBackendManager } from '../../src/host/backend/museCodeBackendMa
 import { CAPTURES_FOLDER } from '../unit/helpers/accountLoginCapture'
 import {
   AUTH_SET_FILE,
+  capturedInlineVerdict,
   DEVICE_LOGIN_FILE,
   LOGOUT_SHELL,
+  SHIPPED_PLATFORMS,
   SLACK_CONNECTOR_ONLY,
 } from '../unit/helpers/credentialShapes'
 import { FakeLogOutputChannel } from '../unit/helpers/fakes'
@@ -233,9 +235,14 @@ describe('The device sign-in against a real child process', { timeout: TEST_TIME
   it('signs in on the captured granted sequence', async () => {
     const t = signIn(endingAfterStart('granted'), OPEN)
     await expect(t.outcome).resolves.toBe('signedIn')
-    expect(readCredentialFile(t.backend.credentialFilePath(), process.platform)?.verdict).toBe(
-      'inline',
-    )
+    // The file the sign-in left, read as each OS reads it: held in it off
+    // macOS, the CLI's to say on macOS, where no such file was captured.
+    // Every runner checks every OS (the review of PR #49).
+    for (const platform of SHIPPED_PLATFORMS) {
+      expect(readCredentialFile(t.backend.credentialFilePath(), platform)?.verdict).toBe(
+        capturedInlineVerdict(platform),
+      )
+    }
     expect(t.log.info).toHaveBeenCalledWith('Muse Code sign-in ended: granted')
     expect(everythingLogged(t.log)).not.toContain('person@example.com')
   })

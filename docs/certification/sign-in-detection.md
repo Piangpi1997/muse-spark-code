@@ -538,6 +538,54 @@ same way, on the final tree, from `scratchpad/cred-capture/drills5.mjs`
 | CX    | A switch opens no new admission generation                                           | exit 1, 1 failed: "ends the Model API conversation when a Cancel still lands a CLI sign-in"                |
 | CY    | The backend conversations run on is not recorded as states publish                   | exit 1, 8 failed; first "ends the Model API conversation when a Cancel still lands a CLI sign-in"          |
 
+Drills CZ to DB cover the macOS-only CI failure on `1ae3604f` (below).
+They ran the same way on this Windows machine, from
+`scratchpad/cred-capture/drills6.mjs` (`drills6-result.json`,
+`drills6.log`), and each target matched its pre-drill SHA-256 afterwards.
+
+| Drill | What was broken                                                                      | Suites                                              | Result                                                                                                                                             |
+| ----- | ------------------------------------------------------------------------------------ | --------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| CZ    | The granted e2e expects `inline` from every OS's reading, as before (the CI failure) | e2e                                                 | exit 1, 1 failed: "signs in on the captured granted sequence", `AssertionError: expected 'unrecognized' to be 'inline'` (`repro-ci.mjs`), as in CI |
+| DA    | The per-OS table drifts: macOS expected to read the file as holding the credential   | `credentialFile.test.ts`, `cliAccount.test.ts`, e2e | exit 1, 3 failed; first "signs in on the captured granted sequence"                                                                                |
+| DB    | The macOS branch regresses: a version-1 file holding the credential settled on macOS | `credentialFile.test.ts`, `cliAccount.test.ts`, e2e | exit 1, 5 failed; first "signs in on the captured granted sequence"                                                                                |
+
+## macOS CI on `1ae3604f`: expectations per OS
+
+CI failed on `macos-latest` only. Two e2e tests read a real credential file
+on the host OS and expected `inline`:
+
+- `cliAccount.e2e.test.ts` "signs in on the captured granted sequence";
+- `museCode.e2e.test.ts` "spawns the configured binary … and sees the
+  credential file".
+
+On macOS that file is `unrecognized` since W2: no version-1 file holding
+the credential was captured there, so the CLI is asked. The code was
+right; the tests hard-coded the Windows and Linux reading.
+
+- **The table.** `capturedInlineVerdict(platform)` in
+  `test/unit/helpers/credentialShapes.ts` gives the verdict the captured
+  inline shapes get on each OS. `credentialFile.test.ts` pins it for all
+  three OSes against the read, so a wrong macOS expectation fails on any
+  runner.
+- **The tests.**
+  - The granted e2e now reads the file the sign-in left as each OS reads
+    it (`SHIPPED_PLATFORMS`), so every runner checks macOS's branch.
+  - The chat e2e expects the host OS's entry.
+  - `cliAccount.test.ts` reads a real file as each OS does.
+- **Reproduced here.** Drill CZ puts the old expectation back and fails on
+  Windows with CI's message (`repro-ci.mjs`). The Mac mini was not needed:
+  the branch is keyed on the platform argument, which the tests pass.
+- **The gate.** `npm run quality` on the working tree (Windows 11,
+  2026-09-28, after drills CZ to DB) exited 0 on its first run:
+  - 180 files passed and 2 skipped; 2,714 tests passed and 23 skipped;
+    statements 94.56 %;
+  - `check:l10n` 0 problems; jscpd 0 clones;
+  - `dist/extension.js` 442.6 KiB of 600;
+  - a11y 0 rules violated; audit 0 advisories;
+  - gitleaks no leaks; Semgrep 0 findings.
+
+  macOS itself runs in CI after the push.
+
 ## Codex on `1ae3604f`: one way to switch backends
 
 **P2.** With the Model API signed in, a Cancel pressed just after the
