@@ -117,6 +117,10 @@ happened, not what was planned; superseded entries are kept.
   and WebSocket at all, instead of reading only the settings, and the
   README's Proxies and certificates section says what to use. The Model
   API's requests are routed on every supported version.
+- **README: How this extension is built** (Development): the owner, Claude
+  Code as lead, up to four headless Muse Code builders on the contributor
+  model, Grok Build and Codex as reviewers, and the gates on dedicated test
+  machines and CI.
 - **Every paid use asks first, in a popup** (M58, PLAN.md D48): **Allow
   once**, **Allow always in this workspace**, or **Deny**, in every
   permission mode, Bypass included. It covers each image (on either
