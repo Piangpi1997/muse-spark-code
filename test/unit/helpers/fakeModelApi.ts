@@ -65,6 +65,8 @@ export interface ScriptedReply {
   readonly garbage?: boolean
   /** Fail the fetch itself (network error) instead of answering. */
   readonly networkError?: string
+  /** The socket code under that error, as Node's fetch keeps it in `cause` (M56). */
+  readonly networkErrorCode?: string
   /** A keep-alive with empty data mid-stream and the OpenAI-style `data: [DONE]` at the end. */
   readonly doneSentinel?: boolean
 }
@@ -465,7 +467,14 @@ export function fakeModelApi(): FakeModelApi {
       const reply = replies[Math.min(consumed, replies.length - 1)] ?? { text: 'ok' }
       consumed += 1
       if (reply.networkError !== undefined) {
-        return Promise.reject(new TypeError(reply.networkError))
+        const code = reply.networkErrorCode
+        return Promise.reject(
+          code === undefined
+            ? new TypeError(reply.networkError)
+            : new TypeError(reply.networkError, {
+                cause: Object.assign(new Error(`connect ${code}`), { code }),
+              }),
+        )
       }
       if (reply.httpError !== undefined) {
         return Promise.resolve(

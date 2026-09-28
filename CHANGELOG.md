@@ -49,6 +49,15 @@ happened, not what was planned; superseded entries are kept.
   AI so far). On the Model API backend, a trusted folder gets Muse Code's
   memory tools as the panel does; subagents, which are paid, are not
   offered, and the package carries the C# of the shell tool's Windows job.
+- **The ACP agent and proxies.** The agent runs outside VS Code, so VS
+  Code's proxy and certificate settings do not reach it, and Node's own
+  `fetch` ignores `HTTPS_PROXY` unless `NODE_USE_ENV_PROXY=1` (Node 22.21 or
+  later, or 24). The agent does not re-route by itself: on the Model API
+  backend it warns once in its log at start when a proxy variable is set
+  and would not be used (or this Node cannot use one), and a request that
+  never reaches Meta now names the variables to set in the agent's
+  environment instead of VS Code's `http.*` settings, in all 15 languages.
+  `docs/acp.md` has a new "Networks and proxies" section.
 - **Open VSX and npm publishing** in the release workflow. A tag also
   publishes the VSIX to Open VSX, for VS Code forks that install from
   there, and the agent to npm, each only when its token is set in the

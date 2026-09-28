@@ -1121,5 +1121,8 @@
   "networkProxyCredentials": "프록시가 자격 증명을 요청했지만 받은 자격 증명을 수락하지 않았습니다. http.proxy와 http.proxyAuthorization 또는 VS Code가 요청한 자격 증명을 확인하세요.",
   "networkProxyRefused": "프록시가 연결을 거부했습니다(HTTP {status}). api.meta.ai를 허용하는지 확인하세요.",
   "networkUnreachable": "Meta 서버에 연결할 수 없습니다. 네트워크 연결을 확인하고, 프록시를 사용하는 경우 http.proxy와 http.proxySupport도 확인하세요.",
+  "acpNetworkUntrustedCertificate": "서버 인증서를 신뢰할 수 없습니다. 네트워크가 HTTPS를 검사하는 경우 에이전트 환경의 NODE_EXTRA_CA_CERTS에 해당 루트 인증서 파일을 지정하거나, 같은 환경의 NODE_OPTIONS에 --use-system-ca를 추가해(Node 22.15 이상) 에이전트가 운영 체제의 인증서 저장소를 신뢰하게 한 다음 에이전트를 다시 시작하세요.",
+  "acpNetworkProxyCredentials": "프록시가 자격 증명을 요청했지만 받은 자격 증명을 수락하지 않았습니다. 에이전트 환경의 HTTPS_PROXY에 있는 프록시 주소(http://user:password@host:port)의 사용자 이름과 암호를 확인한 다음 에이전트를 다시 시작하세요.",
+  "acpNetworkUnreachable": "Meta 서버에 연결할 수 없습니다. 네트워크 연결을 확인하세요. 프록시를 사용하는 경우 에이전트 환경에 HTTPS_PROXY와 NODE_USE_ENV_PROXY=1을 설정하고(Node 22.21 이상 또는 24) 에이전트를 다시 시작하세요. NODE_USE_ENV_PROXY가 없으면 에이전트는 프록시를 사용하지 않습니다.",
   "approvalModeCeiling": "Muse Code 구성(기본 권한 프로필 또는 관리자가 관리하는 정책)에서 이 권한 모드를 허용하지 않습니다. 수동과 같은 더 엄격한 모드를 선택하고 다시 보내세요."
 }

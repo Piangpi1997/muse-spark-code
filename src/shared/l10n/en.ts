@@ -1373,6 +1373,14 @@ export const EN = {
     'The proxy refused the connection (HTTP {status}). Check that it allows api.meta.ai.',
   networkUnreachable:
     'Meta’s server could not be reached. Check the network connection, and http.proxy and http.proxySupport if you use a proxy.',
+  // The same three in the ACP agent (PLAN.md D62, Q66), where VS Code's
+  // settings do not reach: they name the agent's environment variables.
+  acpNetworkUntrustedCertificate:
+    'The server’s certificate is not trusted. If your network inspects HTTPS, name its root certificate’s file in NODE_EXTRA_CA_CERTS in the agent’s environment, or add --use-system-ca to NODE_OPTIONS there (Node 22.15 or later) to trust the operating system’s store, then restart the agent.',
+  acpNetworkProxyCredentials:
+    'The proxy asked for credentials and did not accept the ones it got. Check the user name and password in the proxy’s address in HTTPS_PROXY (http://user:password@host:port) in the agent’s environment, then restart the agent.',
+  acpNetworkUnreachable:
+    'Meta’s server could not be reached. Check the network connection. Behind a proxy, set HTTPS_PROXY and NODE_USE_ENV_PROXY=1 in the agent’s environment (Node 22.21 or later, or 24) and restart the agent: without NODE_USE_ENV_PROXY the agent does not use the proxy.',
   // Muse Code refused a permission mode above the ceiling its configuration sets.
   approvalModeCeiling:
     'Muse Code’s configuration (its default permission profile, or a policy your administrator manages) does not allow this permission mode. Choose a stricter one, such as Manual, and send again.',

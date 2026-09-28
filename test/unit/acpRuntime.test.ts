@@ -462,6 +462,7 @@ describe('createRuntimeBackend', () => {
       secrets,
       runGit: () => Promise.reject(new Error('no git')),
       fetch: fakeModelApi().fetch,
+      sleep: () => Promise.resolve(),
       log,
     })
   }

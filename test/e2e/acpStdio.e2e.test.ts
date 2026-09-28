@@ -96,11 +96,15 @@ interface Session {
   run<T>(op: (client: acp.ClientContext) => Promise<T>): Promise<T>
 }
 
-function startAgent(configHome: string, args: readonly string[] = []): Session {
+function startAgent(
+  configHome: string,
+  args: readonly string[] = [],
+  extraEnv: NodeJS.ProcessEnv = {},
+): Session {
   const child = spawn(
     process.execPath,
     [AGENT, '--muse-binary', fake.binaryPath, '--shell-sandbox', 'off', ...args],
-    { env: agentEnvironment(configHome), cwd: workspace, stdio: 'pipe' },
+    { env: { ...agentEnvironment(configHome), ...extraEnv }, cwd: workspace, stdio: 'pipe' },
   )
   children.push(child)
   const updates: acp.SessionUpdate[] = []
@@ -130,6 +134,10 @@ async function newSession(client: acp.ClientContext): Promise<string> {
   await client.request('initialize', { protocolVersion: acp.PROTOCOL_VERSION })
   const { sessionId } = await client.request('session/new', { cwd: workspace, mcpServers: [] })
   return sessionId
+}
+
+function initialize(client: acp.ClientContext) {
+  return client.request('initialize', { protocolVersion: acp.PROTOCOL_VERSION })
 }
 
 function text(updates: readonly acp.SessionUpdate[]): string {
@@ -221,6 +229,26 @@ describe('the ACP agent over stdio (M63)', { timeout: TEST_TIMEOUT_MS }, () => {
     expect(modelApi.wire.join('')).not.toMatch(/LLM\|/)
   })
 
+  it('says at start that a proxy will not be used by the Model API backend, until Node’s switch is on (Q66)', async () => {
+    // A port nothing is asked on: the agent sends no request before a session.
+    const proxy = { HTTPS_PROXY: 'http://127.0.0.1:9', NODE_USE_ENV_PROXY: '' }
+    const unused = startAgent(signedIn, ['--backend', 'modelApi'], proxy)
+    await unused.run(initialize)
+    const said = unused.stderr.join('')
+    expect(said).toContain('HTTPS_PROXY is set, but')
+    expect(said).toContain('go to Meta directly')
+    expect(said).not.toContain('127.0.0.1:9')
+    const used = startAgent(signedIn, ['--backend', 'modelApi'], {
+      ...proxy,
+      NODE_USE_ENV_PROXY: '1',
+    })
+    await used.run(initialize)
+    expect(used.stderr.join('')).not.toContain('HTTPS_PROXY is set')
+    const museCode = startAgent(signedIn, [], proxy)
+    await museCode.run(initialize)
+    expect(museCode.stderr.join('')).not.toContain('HTTPS_PROXY is set')
+  })
+
   it('ships the Model API backend beside the agent, where the runtime loads it (M57)', async () => {
     const api = fakeModelApi()
     api.script({ text: 'From the bundle.' })
@@ -246,6 +274,7 @@ describe('the ACP agent over stdio (M63)', { timeout: TEST_TIMEOUT_MS }, () => {
       secrets,
       runGit: () => Promise.reject(new Error('no git')),
       fetch: api.fetch,
+      sleep: () => Promise.resolve(),
       log,
     })
     try {

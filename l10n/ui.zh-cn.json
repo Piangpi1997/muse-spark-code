@@ -1121,5 +1121,8 @@
   "networkProxyCredentials": "代理要求提供凭据，但未接受收到的凭据。请检查 http.proxy 和 http.proxyAuthorization，或 VS Code 向你询问的凭据。",
   "networkProxyRefused": "代理拒绝了连接（HTTP {status}）。请检查它是否允许 api.meta.ai。",
   "networkUnreachable": "无法连接到 Meta 的服务器。请检查网络连接；如果使用代理，还请检查 http.proxy 和 http.proxySupport。",
+  "acpNetworkUntrustedCertificate": "服务器的证书不受信任。如果你的网络会检查 HTTPS 流量，请在代理的环境中用 NODE_EXTRA_CA_CERTS 指定其根证书文件，或在该环境的 NODE_OPTIONS 中添加 --use-system-ca（Node 22.15 或更高版本），让代理信任操作系统的证书存储，然后重新启动代理。",
+  "acpNetworkProxyCredentials": "代理服务器要求提供凭据，但未接受收到的凭据。请检查代理环境中 HTTPS_PROXY 里代理服务器地址（http://user:password@host:port）的用户名和密码，然后重新启动代理。",
+  "acpNetworkUnreachable": "无法连接到 Meta 的服务器。请检查网络连接。如果使用代理服务器，请在代理的环境中设置 HTTPS_PROXY 和 NODE_USE_ENV_PROXY=1（Node 22.21 或更高版本，或 24），然后重新启动代理：没有 NODE_USE_ENV_PROXY，代理不会使用代理服务器。",
   "approvalModeCeiling": "Muse Code 的配置（其默认权限配置文件，或由管理员管理的策略）不允许此权限模式。请选择更严格的模式（例如“手动”），然后重新发送。"
 }

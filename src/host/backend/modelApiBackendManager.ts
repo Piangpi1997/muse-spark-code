@@ -13,6 +13,7 @@
 import { createHash } from 'node:crypto'
 import { createRequire } from 'node:module'
 import type { EnvironmentFacts } from '../../core/backends/modelapi/instructions'
+import type { NetworkAdvice } from '../../core/networkFailure'
 import type { McpPoolSnapshot, McpToolSource } from '../../core/backends/modelapi/mcp/pool'
 import type { ModelApiHost, ModelApiPaidHooks } from '../../core/backends/modelapi/ModelApiHost'
 import type { SessionStore } from '../../core/backends/modelapi/sessionStore'
@@ -65,6 +66,8 @@ export interface ModelApiBackendManagerDeps extends ModelApiPaidHooks {
   readonly bundlePath: string
   /** How the bundle is loaded: Node's `require` unless a test hands in the source module. */
   readonly loadBundle?: ((file: string) => unknown) | undefined
+  /** Whose settings a failed request names: VS Code's unless the ACP agent says its own (Q66). */
+  readonly networkAdvice?: NetworkAdvice | undefined
 }
 
 const MANAGER_DISPOSED = 'The Model API backend was stopped while it was starting'
@@ -159,6 +162,7 @@ export class ModelApiBackendManager {
         now: this.deps.now,
         random: this.deps.random,
         log: this.deps.log,
+        ...(this.deps.networkAdvice !== undefined && { networkAdvice: this.deps.networkAdvice }),
       },
       host: {
         workspaceRoot,

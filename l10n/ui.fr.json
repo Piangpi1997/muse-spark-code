@@ -1185,5 +1185,8 @@
   "networkProxyCredentials": "Le proxy a demandé des identifiants et n’a pas accepté ceux qu’il a reçus. Vérifiez http.proxy et http.proxyAuthorization, ou les identifiants que VS Code vous a demandés.",
   "networkProxyRefused": "Le proxy a refusé la connexion (HTTP {status}). Vérifiez qu’il autorise api.meta.ai.",
   "networkUnreachable": "Le serveur de Meta est injoignable. Vérifiez la connexion réseau, ainsi que http.proxy et http.proxySupport si vous utilisez un proxy.",
+  "acpNetworkUntrustedCertificate": "Le certificat du serveur n’est pas approuvé. Si votre réseau inspecte le trafic HTTPS, désignez le fichier de son certificat racine dans NODE_EXTRA_CA_CERTS dans l’environnement de l’agent, ou ajoutez-y --use-system-ca à NODE_OPTIONS (Node 22.15 ou ultérieur) pour que l’agent approuve le magasin de certificats du système d’exploitation, puis redémarrez l’agent.",
+  "acpNetworkProxyCredentials": "Le proxy a demandé des identifiants et n’a pas accepté ceux qu’il a reçus. Vérifiez le nom d’utilisateur et le mot de passe dans l’adresse du proxy dans HTTPS_PROXY (http://user:password@host:port) dans l’environnement de l’agent, puis redémarrez l’agent.",
+  "acpNetworkUnreachable": "Le serveur de Meta est injoignable. Vérifiez la connexion réseau. Derrière un proxy, définissez HTTPS_PROXY et NODE_USE_ENV_PROXY=1 dans l’environnement de l’agent (Node 22.21 ou ultérieur, ou 24) et redémarrez l’agent : sans NODE_USE_ENV_PROXY, l’agent n’utilise pas le proxy.",
   "approvalModeCeiling": "La configuration de Muse Code (son profil d’autorisations par défaut, ou une stratégie gérée par votre administrateur) n’autorise pas ce mode d’autorisation. Choisissez-en un plus strict, par exemple Manuel, puis renvoyez le message."
 }

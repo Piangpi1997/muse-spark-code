@@ -1217,5 +1217,8 @@
   "networkProxyCredentials": "Proxy server požádal o přihlašovací údaje a ty, které dostal, nepřijal. Zkontrolujte http.proxy a http.proxyAuthorization nebo údaje, o které vás požádal VS Code.",
   "networkProxyRefused": "Proxy server odmítl připojení (HTTP {status}). Zkontrolujte, že povoluje api.meta.ai.",
   "networkUnreachable": "Server Meta není dostupný. Zkontrolujte připojení k síti, a pokud používáte proxy server, také http.proxy a http.proxySupport.",
+  "acpNetworkUntrustedCertificate": "Certifikátu serveru se nedůvěřuje. Pokud vaše síť kontroluje HTTPS, uveďte soubor jejího kořenového certifikátu v NODE_EXTRA_CA_CERTS v prostředí agenta, nebo tam přidejte --use-system-ca do NODE_OPTIONS (Node 22.15 nebo novější), aby agent důvěřoval úložišti certifikátů operačního systému, a pak agenta restartujte.",
+  "acpNetworkProxyCredentials": "Proxy server požádal o přihlašovací údaje a ty, které dostal, nepřijal. Zkontrolujte uživatelské jméno a heslo v adrese proxy serveru v HTTPS_PROXY (http://user:password@host:port) v prostředí agenta a pak agenta restartujte.",
+  "acpNetworkUnreachable": "Server Meta není dostupný. Zkontrolujte připojení k síti. Pokud používáte proxy server, nastavte v prostředí agenta HTTPS_PROXY a NODE_USE_ENV_PROXY=1 (Node 22.21 nebo novější, případně 24) a agenta restartujte: bez NODE_USE_ENV_PROXY agent proxy server nepoužívá.",
   "approvalModeCeiling": "Konfigurace Muse Code (její výchozí profil oprávnění nebo zásada, kterou spravuje váš správce) tento režim oprávnění nepovoluje. Zvolte přísnější režim, například Ruční, a odešlete zprávu znovu."
 }

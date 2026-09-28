@@ -6,7 +6,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { createAcpAgent } from '../../src/acp/agent'
 import { createRuntimeBackend } from '../../src/runtime/backends'
 import { paidGrantsFile, workspaceKey } from '../../src/runtime/dataFolder'
-import { type AcpPaidFeature, SECRET_KEYS } from '../../src/shared/constants'
+import { type AcpPaidFeature, SECRET_KEYS, UI_TEXT } from '../../src/shared/constants'
 import { memorySecrets } from './helpers/fakes'
 import { fakeModelApi } from './helpers/fakeModelApi'
 import { buildModelApiBundle } from './helpers/modelApiBundle'
@@ -87,6 +87,7 @@ function setup(
     secrets,
     runGit: () => Promise.reject(new Error('no git')),
     fetch: api.fetch,
+    sleep: () => Promise.resolve(),
     log,
   })
   const agent = createAcpAgent({
@@ -282,6 +283,21 @@ describe('the ACP agent on the Model API backend (M63)', () => {
     await t.run((client) => promptOnce(client, t.workspace))
     expect(t.permissions).toHaveLength(1)
     expect(JSON.stringify(t.api.responseBodies()[0]?.['tools'])).not.toContain('web_search')
+    await t.runtime.close()
+  })
+
+  it('says what to set in the agent’s environment when Meta cannot be reached (Q66)', async () => {
+    const t = setup(allowOnce)
+    t.api.script({ networkError: 'fetch failed', networkErrorCode: 'ECONNREFUSED' })
+    let failure = 'the prompt succeeded'
+    try {
+      await t.run((client) => promptOnce(client, t.workspace))
+    } catch (error: unknown) {
+      failure = error instanceof Error ? error.message : String(error)
+    }
+    expect(failure).toContain(UI_TEXT.acpNetworkUnreachable)
+    expect(failure).toContain('NODE_USE_ENV_PROXY=1')
+    expect(failure).not.toContain('http.proxy')
     await t.runtime.close()
   })
 

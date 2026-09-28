@@ -287,10 +287,14 @@ system's certificate store, which `SSL_CERT_FILE` or `SSL_CERT_DIR`
 replace entirely, and has its own `endpoint_transport.proxy` setting. It
 needs no `NODE_USE_ENV_PROXY`.
 
-A Model API request that never reaches Meta is reported with Node's own
-detail, but the advice beside it names VS Code's settings
-(`http.proxy`, `http.systemCertificates`), which do not apply here; use
-the variables above instead.
+The agent says so rather than guessing: when `HTTPS_PROXY` or
+`HTTP_PROXY` (either case) is set for the Model API backend and Node's
+switch is off, or this Node does not have it, the agent's log says at
+start that the requests will go to Meta directly and what to set. A Model
+API request that never reaches Meta is reported with Node's own detail and
+advice in the agent's terms: the proxy variables and `NODE_USE_ENV_PROXY`,
+or `NODE_EXTRA_CA_CERTS` and `--use-system-ca` for a certificate it does
+not trust.
 
 ## Not yet
 

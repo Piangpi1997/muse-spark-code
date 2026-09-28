@@ -1121,5 +1121,8 @@
   "networkProxyCredentials": "プロキシが資格情報を要求し、受け取った資格情報を受け入れませんでした。http.proxy と http.proxyAuthorization、または VS Code から求められた資格情報を確認してください。",
   "networkProxyRefused": "プロキシが接続を拒否しました (HTTP {status})。api.meta.ai が許可されていることを確認してください。",
   "networkUnreachable": "Meta のサーバーに接続できませんでした。ネットワーク接続と、プロキシを使用している場合は http.proxy と http.proxySupport を確認してください。",
+  "acpNetworkUntrustedCertificate": "サーバーの証明書は信頼されていません。ネットワークが HTTPS を検査している場合は、エージェントの環境の NODE_EXTRA_CA_CERTS でそのルート証明書のファイルを指定するか、同じ環境の NODE_OPTIONS に --use-system-ca を追加して (Node 22.15 以降) オペレーティング システムの証明書ストアをエージェントに信頼させてから、エージェントを再起動してください。",
+  "acpNetworkProxyCredentials": "プロキシが資格情報を要求し、受け取った資格情報を受け入れませんでした。エージェントの環境の HTTPS_PROXY にあるプロキシのアドレス (http://user:password@host:port) のユーザー名とパスワードを確認してから、エージェントを再起動してください。",
+  "acpNetworkUnreachable": "Meta のサーバーに接続できませんでした。ネットワーク接続を確認してください。プロキシを使用している場合は、エージェントの環境で HTTPS_PROXY と NODE_USE_ENV_PROXY=1 を設定して (Node 22.21 以降、または 24)、エージェントを再起動してください。NODE_USE_ENV_PROXY がないと、エージェントはプロキシを使用しません。",
   "approvalModeCeiling": "Muse Code の構成 (既定の権限プロファイル、または管理者が管理するポリシー) では、この権限モードは許可されていません。手動モードなどのより厳しいモードを選択して、もう一度送信してください。"
 }

@@ -188,9 +188,8 @@ measured on this machine (Windows 11) with a throwaway script:
   extension in M56 (`docs/certification/m56.md`); the agent changes
   nothing of that, and hands it no VS Code setting.
 
-The agent does not turn Node's switch on by itself, and the network-failure
-advice (M56) names VS Code's settings: both are open for the owner as
-PLAN.md Q66, and `docs/acp.md` gives the variables that work today.
+The owner's ruling on Q66 (2026-09-27): loud, not re-routed. Recorded
+below, "Q66: the limit made loud".
 
 ## The key store on the owner's rigs
 
@@ -244,3 +243,63 @@ QUALITY EXIT 0
 
 Not run here: hosts.yml and forks.yml (CI only; they run on the pull
 request), and no live model call was needed.
+
+## Q66: the limit made loud
+
+The owner (2026-09-27): the agent does not re-route or add undici; make the
+limit loud and the advice correct.
+
+- **The warning** (`src/runtime/proxyWarning.ts`, logged by `serve` in
+  `src/runtime/main.ts`): on the Model API backend, when `HTTPS_PROXY`,
+  `https_proxy`, `HTTP_PROXY` or `http_proxy` is set (each named once; on
+  Windows the two spellings are one variable) and Node's switch is off,
+  one line says the requests go to Meta directly and to set
+  `NODE_USE_ENV_PROXY=1`. The switch counts as on for `NODE_USE_ENV_PROXY`
+  exactly `1` (measured: `true` and `0` do nothing), or `--use-env-proxy`
+  in `process.execArgv` or `NODE_OPTIONS`. On a Node without the switch
+  (below 22.21 on the 22 line, 23, anything older; measured 23.11.1: none),
+  the line names the running version and what would work, even with the
+  switch set. Nothing is said without a proxy variable, on the Muse Code
+  backend (Muse Code reads the variables itself), or once the switch is on.
+  Only the variables' names are logged, never an address.
+- **The advice** (`src/core/networkFailure.ts`): `networkFailureMessage`
+  takes `NetworkAdvice`, `'vscode'` by default. The runtime's manager passes
+  `networkAdvice: 'agent'` down to the bundle's `ModelApiClient`, and the
+  same classifier then returns `acpNetworkUntrustedCertificate`,
+  `acpNetworkProxyCredentials` or `acpNetworkUnreachable`, which name the
+  agent's environment (`NODE_EXTRA_CA_CERTS`, `--use-system-ca`,
+  `HTTPS_PROXY`, `NODE_USE_ENV_PROXY=1`). A proxy's refusal names no setting,
+  so both hosts share it; the extension's advice is unchanged. The three
+  strings are in `en.ts` and the 14 tables, translated; `check:l10n`: 0
+  problems.
+- **Also**: the runtime takes `sleep` from `main.ts`, so a test can run the
+  client's network retries without waiting; the fake Model API can put a
+  socket code under a failed fetch, as Node's does.
+
+Tests: `acpProxyWarning.test.ts` (18: no variable, ALL_PROXY only, the
+Muse Code backend; each of the four variables, the value never logged;
+the switch by variable, flag and `NODE_OPTIONS`; `true`, `0`, `yes` and a
+look-alike flag still warn; Node 22.0.0, 22.20.0, 23.11.1, 20.18.3 and an
+unreadable version are too old even with the switch; 22.21.0, 22.23.3,
+24.0.0, 24.20.0 and 25.1.0 have it; one spelling per variable on Windows);
+`networkFailure.test.ts` (the agent's advice for a certificate, a proxy
+wanting credentials and a real refused connection, never naming VS Code;
+the refusal shared; the extension's advice as before);
+`acpModelApi.test.ts` (a refused connection through the runtime, the
+built bundle and the ACP client: the prompt fails with the agent's advice
+and not `http.proxy`); `acpStdio.e2e.test.ts` (the built agent's stderr:
+the warning with `HTTPS_PROXY` on the Model API backend, none with
+`NODE_USE_ENV_PROXY=1`, none on the Muse Code backend).
+
+| Drill | Break                                                      | Result                                                                                              |
+| ----- | ---------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| Q1    | `--use-env-proxy` in `NODE_OPTIONS` not read               | exit 1: "says nothing once the switch is on: the variable, the flag, or the flag in NODE_OPTIONS"   |
+| Q2    | every Node taken as one with the switch                    | exit 1: 4 of "warns that Node … is too old for any proxy, even with the switch on"                  |
+| Q3    | any non-empty `NODE_USE_ENV_PROXY` taken as on             | exit 1: "still warns for a switch Node does not take: only "1" turns it on"                         |
+| Q4    | `serve` does not log the warning                           | the stdio suite, exit 1: "says at start that a proxy will not be used by the Model API backend, …"  |
+| Q5    | Windows spellings not merged                               | exit 1: "names each variable set once: both spellings on Linux, one on Windows, where they are one" |
+| Q6    | the runtime passes `networkAdvice: 'vscode'`               | exit 1: "says what to set in the agent's environment when Meta cannot be reached (Q66)"             |
+| Q7    | the client drops its `networkAdvice`                       | exit 1: the same test                                                                               |
+| Q8    | the agent's unreachable advice replaced by the extension's | exit 1: "names the agent's environment, never VS Code's settings, for the same failures"            |
+| Q9    | the default advice made the agent's                        | exit 1: 5 of M56's tests (the extension's advice), in `networkFailure` and `modelApiClient`         |
+| Q10   | one table without `acpNetworkUnreachable`                  | `check:l10n` exit 1: "l10n/ui.de.json: acpNetworkUnreachable: missing"                              |

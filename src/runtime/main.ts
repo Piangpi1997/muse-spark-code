@@ -24,6 +24,7 @@ import { parseCommandLine, type ServeOptions } from './cliArgs'
 import { readSecretLine } from './hiddenInput'
 import { credentialStoreName, keyringSecretStore } from './keyStore'
 import { displayLanguage } from './locale'
+import { envProxyWarning } from './proxyWarning'
 import type { Logger } from '../host/logger'
 import { type LogLevel, stderrLogger } from './stderrLog'
 import { webReadable } from './webStreams'
@@ -35,6 +36,12 @@ const packageRoot = path.dirname(distDir)
 
 function writeLine(stream: NodeJS.WriteStream, line: string): void {
   stream.write(`${line}\n`)
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms)
+  })
 }
 
 function packageVersion(): string {
@@ -100,12 +107,24 @@ function runtimeFor(options: ServeOptions, log: Logger) {
     secrets,
     runGit: processGitRunner(),
     fetch: globalThis.fetch.bind(globalThis),
+    sleep,
     log,
   })
 }
 
 async function serve(options: ServeOptions, log: Logger): Promise<number> {
   const runtime = runtimeFor(options, log)
+  // A proxy the Model API backend's requests will not use is said at once (Q66).
+  const proxyWarning = envProxyWarning({
+    backend: options.backend,
+    platform: process.platform,
+    env: process.env,
+    execArgv: process.execArgv,
+    nodeVersion: process.version,
+  })
+  if (proxyWarning !== undefined) {
+    log.warn(proxyWarning)
+  }
   // "Allow always" lapses for a paid feature started without its flag (M58).
   await runtime.paid.forgetUnflagged()
   const agent = createAcpAgent({

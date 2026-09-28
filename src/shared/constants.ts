@@ -183,6 +183,25 @@ export const PROXY_VARIABLE_SPELLINGS = [
   'http_proxy',
   'all_proxy',
 ] as const
+// Node's own switch for `fetch` and a proxy (the ACP agent, PLAN.md D62,
+// Q66): only "1" turns the variable on; the flag works on the command line
+// or in NODE_OPTIONS; Node 22.21 on the 22 line and every release from 24
+// have it (23 never did). Measured 2026-09-27 against a local proxy.
+export const NODE_ENV_PROXY = {
+  variable: 'NODE_USE_ENV_PROXY',
+  on: '1',
+  flag: '--use-env-proxy',
+  since: { lineMajor: 22, lineMinor: 21, allFromMajor: 24 },
+} as const
+export const NODE_OPTIONS_VARIABLE = 'NODE_OPTIONS'
+// The proxy variables Node reads with the switch on (HTTPS_PROXY falls back to
+// HTTP_PROXY); ALL_PROXY is not among them.
+export const NODE_PROXY_VARIABLES = [
+  'HTTPS_PROXY',
+  'https_proxy',
+  'HTTP_PROXY',
+  'http_proxy',
+] as const
 export const NO_PROXY_VARIABLE = 'NO_PROXY'
 export const NO_PROXY_SPELLINGS = [NO_PROXY_VARIABLE, 'no_proxy'] as const
 export const NO_PROXY_SEPARATOR = ','

@@ -60,6 +60,8 @@ export interface RuntimeBackendDeps {
   readonly runGit: (args: readonly string[], cwd: string) => Promise<string>
   /** The Model API's transport. */
   readonly fetch: typeof fetch
+  /** Waits between retries and rename attempts; injectable so tests do not sleep. */
+  readonly sleep: (ms: number) => Promise<void>
   readonly log: Logger
 }
 
@@ -78,12 +80,6 @@ const NO_EDITOR_PROXY: ProxySettings = { proxy: '', noProxy: [] }
 
 function describe(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms)
-  })
 }
 
 function museCodeManager(deps: RuntimeBackendDeps, workspaceRoot: string | undefined) {
@@ -173,7 +169,7 @@ function modelApiManager(
     fetch: deps.fetch,
     newId: () => randomUUID(),
     now: () => Date.now(),
-    sleep,
+    sleep: deps.sleep,
     random: () => Math.random(),
     personalSkillsRoot: personalSkillsRoot({
       platform,
@@ -186,7 +182,7 @@ function modelApiManager(
       log,
       retentionDays: () => SETTING_DEFAULTS.cleanupPeriodDays,
       now: () => Date.now(),
-      sleep,
+      sleep: deps.sleep,
     }),
     describeEnvironment: () =>
       describeEnvironment({
@@ -213,6 +209,9 @@ function modelApiManager(
     },
     memory,
     bundlePath: path.join(deps.distDir, MODEL_API_BUNDLE_FILE),
+    // VS Code's settings do not reach the agent: a failed request names its
+    // environment variables instead (PLAN.md D62, Q66).
+    networkAdvice: 'agent',
   })
 }
 
@@ -230,7 +229,7 @@ export function createRuntimeBackend(deps: RuntimeBackendDeps): RuntimeBackend {
     grants: paidGrantFile({
       file: paidGrantsFile({ platform: deps.platform, env: deps.env, homeDir: deps.homeDir }),
       log: deps.log,
-      sleep,
+      sleep: deps.sleep,
     }),
     log: deps.log,
   })
