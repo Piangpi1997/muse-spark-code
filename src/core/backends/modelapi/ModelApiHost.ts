@@ -143,6 +143,7 @@ import type { MemoryStore } from '../../memory/memoryStore'
 import type { CodeIntelDeps } from '../../codeIntel/codeIntelQuery'
 import { codeIntelToolOf } from '../../codeIntel/definitions'
 import type { LanguageServiceHost } from '../../codeIntel/languageService'
+import type { RenamePlanResult } from '../../codeIntel/rename'
 import { repoMapSection } from '../../codeIntel/repoMap'
 import {
   applyRename,
@@ -1236,6 +1237,8 @@ export class ModelApiSession implements AgentSession {
   private active: ActiveTurn | undefined
   /** Each file as the model last read or wrote it, for `write_file`'s check (D27). */
   private readonly seenFiles = new Map<string, string>()
+  /** Rename plans made for a call's PreToolUse hooks, which the call then writes (M67). */
+  private readonly hookRenamePlans = new WeakMap<FunctionCallItem, Promise<RenamePlanResult>>()
   /** Keeps each request within the page and encoded-media budgets (M54, PLAN.md D47). */
   private readonly budget: MediaBudget
   private mediaNoticeSent = false
@@ -1375,8 +1378,10 @@ export class ModelApiSession implements AgentSession {
 
   /**
    * A call's arguments as its PreToolUse hooks see them. A rename also names
-   * the files it would write (M67), planned for the hooks alone, and only
-   * when one would run and the mode allows the edit at all.
+   * the files it would write (M67), planned only when a hook would run and
+   * the mode allows the edit at all; the call then writes that same plan
+   * (`decideAndRunRename`), so a hook never allows one set of files while
+   * another is written.
    */
   private async preToolInput(
     call: FunctionCallItem,
@@ -1386,14 +1391,17 @@ export class ModelApiSession implements AgentSession {
     const deps = this.codeIntelDeps()
     if (
       deps === undefined ||
+      signal.aborted ||
       call.name !== CODE_INTEL_TOOLS.renameSymbol ||
       matchingHooks(this.enabledHooks(), 'PreToolUse', toolMatcherNames(call.name)).length === 0 ||
       this.verdictWithHook({ toolName: call.name, toolClass: 'edit' }, false) === 'deny'
     ) {
       return toolHookInput(args)
     }
+    const planning = planRenameCall(call.arguments, deps)
+    this.hookRenamePlans.set(call, planning)
     try {
-      const planned = await unlessStopped(planRenameCall(call.arguments, deps), signal)
+      const planned = await unlessStopped(planning, signal)
       return toolHookInput(planned.ok ? { ...args, files: renameHookFiles(planned.plan) } : args)
     } catch {
       // A Stop, or the provider's own refusal: the call itself then ends with
@@ -3784,7 +3792,12 @@ export class ModelApiSession implements AgentSession {
     if (this.verdictWithHook({ toolName: call.name, toolClass: 'edit' }, false) === 'deny') {
       return this.refusedByMode(call)
     }
-    const planned = await unlessStopped(planRenameCall(call.arguments, deps), signal)
+    // The plan the PreToolUse hooks were shown, if they were: it is the one
+    // written, each file checked again for its content after the card. A
+    // hook's new arguments are a new call object, planned afresh.
+    const planning = this.hookRenamePlans.get(call) ?? planRenameCall(call.arguments, deps)
+    this.hookRenamePlans.delete(call)
+    const planned = await unlessStopped(planning, signal)
     if (!planned.ok) {
       return { outcome: renameRefused(planned), isRejected: false }
     }

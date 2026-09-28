@@ -67,11 +67,11 @@ async function plannedFile(
   expected: string | undefined,
 ): Promise<RenameFile> {
   const { file, edits } = planned
-  const { io } = query.deps
-  if (io.hasUnsavedChanges(file.absolute) || io.hasUnsavedChanges(file.checkedAbsolute)) {
+  // By the real path: an editor may hold the file under a link's path.
+  if ((await query.unsavedPath(file)) !== undefined) {
     throw new CodeIntelRefusal(`${file.relative} ${MODEL_TEXT.fileHasUnsavedChanges}`)
   }
-  const before = await io.readFile(file.checkedAbsolute, file.checkedAbsolute)
+  const before = await query.deps.io.readFile(file.checkedAbsolute, file.checkedAbsolute)
   const document = await ask(query.service.open(file.absolute))
   const { text } = document
   if (

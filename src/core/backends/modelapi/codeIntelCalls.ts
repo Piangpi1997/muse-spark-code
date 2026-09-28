@@ -12,7 +12,7 @@
 import { MODEL_TEXT, RENAME_CARD_FILES_SHOWN, UI_TEXT } from '../../../shared/constants'
 import { fill, plural } from '../../../shared/l10n/text'
 import { ADD_MARKER, type PatchFile, REMOVE_MARKER } from '../../../shared/patchDocument'
-import type { CodeIntelDeps } from '../../codeIntel/codeIntelQuery'
+import { type CodeIntelDeps, unsavedDocumentPath } from '../../codeIntel/codeIntelQuery'
 import { answerCodeIntel, type CodeIntelReadTool } from '../../codeIntel/codeIntelTools'
 import {
   planRename,
@@ -126,7 +126,8 @@ async function recheck(file: RenameFile, context: RenameWriteContext): Promise<R
   if (!resolved.ok || resolved.checkedAbsolute !== file.checkedAbsolute) {
     return { ok: false, outcome: failed(MODEL_TEXT.pathChangedAfterApproval) }
   }
-  if (io.hasUnsavedChanges(file.absolute) || io.hasUnsavedChanges(file.checkedAbsolute)) {
+  // By the real path: an editor may hold the file under a link's path.
+  if ((await unsavedDocumentPath(io, file, context.platform)) !== undefined) {
     return { ok: false, outcome: failed(`${file.relative} ${MODEL_TEXT.fileHasUnsavedChanges}`) }
   }
   const current = await io.readFile(file.checkedAbsolute, file.checkedAbsolute)

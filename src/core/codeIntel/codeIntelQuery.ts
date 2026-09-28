@@ -16,6 +16,7 @@ import {
   UI_TEXT,
 } from '../../shared/constants'
 import { fill } from '../../shared/l10n/text'
+import { isSamePath } from '../paths'
 import { withDeadline } from '../timeouts'
 import { confineWorkspacePath, isBelow, type RealPathIo } from '../workspacePath'
 import { pathModule } from '../workspaceRoot'
@@ -34,7 +35,40 @@ export interface CodeIntelIo extends RealPathIo {
   readFile(absolutePath: string, expectedCanonicalPath?: string): Promise<string | undefined>
   /** Workspace-relative, forward-slash paths of the workspace's files. */
   listFiles(): Promise<readonly string[]>
-  hasUnsavedChanges(absolutePath: string): boolean
+  /** Absolute paths of the files open in an editor with unsaved changes, as the editor names them. */
+  unsavedFiles(): readonly string[]
+}
+
+/**
+ * The path of the editor holding unsaved changes to the file, or undefined:
+ * one naming it as the tools or the language service do, or naming another
+ * path whose real path is the file's. A workspace opened through a link
+ * has the editor name a file by the link and the language service by its
+ * real path (D27 by the file, not by its name).
+ */
+export async function unsavedDocumentPath(
+  io: Pick<CodeIntelIo, 'unsavedFiles' | 'realPath'>,
+  file: Pick<PlacedFile, 'absolute' | 'checkedAbsolute'>,
+  platform: NodeJS.Platform,
+): Promise<string | undefined> {
+  const open = io.unsavedFiles()
+  const named = open.find(
+    (path) =>
+      isSamePath(path, file.absolute, platform) || isSamePath(path, file.checkedAbsolute, platform),
+  )
+  if (named !== undefined) {
+    return named
+  }
+  for (const path of open) {
+    try {
+      if (isSamePath(await io.realPath(path), file.checkedAbsolute, platform)) {
+        return path
+      }
+    } catch {
+      // An editor's path the file system cannot resolve is not this file.
+    }
+  }
+  return undefined
 }
 
 export interface CodeIntelDeps {
@@ -238,15 +272,17 @@ export class CodeIntelQuery {
    * undefined when it is missing or not UTF-8 text.
    */
   private async readLines(file: PlacedFile): Promise<readonly string[] | undefined> {
-    const { io } = this.deps
     let text: string | undefined
     try {
-      if (io.hasUnsavedChanges(file.absolute) || io.hasUnsavedChanges(file.checkedAbsolute)) {
-        const document = await ask(this.service.open(file.absolute))
+      const edited = await this.unsavedPath(file)
+      if (edited === undefined) {
+        text = await this.deps.io.readFile(file.checkedAbsolute, file.checkedAbsolute)
+      } else {
+        // The editor's document, by the editor's own path: the same file
+        // opened by its real path would be another document, read from disk.
+        const document = await ask(this.service.open(edited))
         this.noteDocument(file, document)
         text = document.text
-      } else {
-        text = await io.readFile(file.checkedAbsolute, file.checkedAbsolute)
       }
     } catch {
       // A file that cannot be read as text keeps its locations, without their lines.
@@ -344,8 +380,8 @@ export class CodeIntelQuery {
     if (first === undefined) {
       throw new CodeIntelRefusal(fill(MODEL_TEXT.codeIntelNoSymbolNamed, { symbol }))
     }
-    const document = await ask(this.service.open(first.file.absolute))
-    this.noteDocument(first.file, document)
+    const { file, document } = await this.openAsEdited(first.file)
+    this.noteDocument(file, document)
     const { selection } = first.symbol
     // The provider's range may start before the name (`export class Foo`).
     const at =
@@ -357,7 +393,7 @@ export class CodeIntelQuery {
     const hidden = others.length - listed.length
     const places = hidden > 0 ? [...listed, `+${String(hidden)}`] : listed
     return {
-      file: first.file,
+      file,
       document,
       at,
       lead: joinLines([
@@ -429,6 +465,33 @@ export class CodeIntelQuery {
     return start
   }
 
+  /** The path of an editor with unsaved changes to the file (`unsavedDocumentPath`), or undefined. */
+  public async unsavedPath(
+    file: Pick<PlacedFile, 'absolute' | 'checkedAbsolute'>,
+  ): Promise<string | undefined> {
+    return await unsavedDocumentPath(
+      {
+        unsavedFiles: () => this.deps.io.unsavedFiles(),
+        realPath: async (path) => await this.io.realPath(path),
+      },
+      file,
+      this.deps.platform,
+    )
+  }
+
+  /**
+   * The file's document as the language service reads it: an editor's with
+   * unsaved changes, by the editor's path, when one holds the file (the file
+   * is then asked about at that path), else the file's own.
+   */
+  public async openAsEdited(
+    file: PlacedFile,
+  ): Promise<{ readonly file: PlacedFile; readonly document: OpenedDocument }> {
+    const edited = await this.unsavedPath(file)
+    const asked = edited === undefined ? file : { ...file, absolute: edited }
+    return { file: asked, document: await ask(this.service.open(asked.absolute)) }
+  }
+
   /** Remembers a document the answer read with unsaved changes, for `unsavedNotes`. */
   public noteDocument(file: PlacedFile, document: OpenedDocument): void {
     if (document.isDirty) {
@@ -489,8 +552,7 @@ export class CodeIntelQuery {
   public async target(args: LocateArgs): Promise<Target> {
     const symbol = args.symbol === undefined ? undefined : checkName('symbol', args.symbol)
     if (args.path !== undefined) {
-      const file = await this.confine(args.path)
-      const document = await ask(this.service.open(file.absolute))
+      const { file, document } = await this.openAsEdited(await this.confine(args.path))
       // The model's lines come from read_file, which reads the disk; the
       // service reads the editor's text, and the two differ here.
       if (document.isDirty && args.line !== undefined) {

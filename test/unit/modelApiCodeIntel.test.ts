@@ -25,7 +25,7 @@ import {
   type ScriptedCall,
 } from './helpers/fakeModelApi'
 import { disabledPaidFeatures } from './helpers/fakePaidFeatures'
-import { memoryToolIo } from './helpers/fakeToolIo'
+import { memoryToolIo, realPathThrough } from './helpers/fakeToolIo'
 
 const ROOT = '/ws'
 const A = `${ROOT}/src/a.ts`
@@ -79,11 +79,17 @@ interface StartOptions {
   /** Hooks from Muse Code's settings (M51), and what each one received on its stdin. */
   readonly hooks?: readonly HookDefinition[]
   readonly hookPayloads?: unknown[]
+  /** The folder the workspace is opened as: a link to the files' own (/ws). */
+  readonly linkedAs?: string
 }
 
 async function start(options: StartOptions = {}) {
   const api = fakeModelApi()
   const io = memoryToolIo(FILES, ROOT)
+  const root = options.linkedAs ?? ROOT
+  if (options.linkedAs !== undefined) {
+    io.realPath = realPathThrough(options.linkedAs, ROOT)
+  }
   const payloads = options.hookPayloads
   if (payloads !== undefined) {
     io.runHook = (_command, payload) => {
@@ -100,7 +106,11 @@ async function start(options: StartOptions = {}) {
   const service =
     options.service === null
       ? undefined
-      : fakeLanguageService({ files: io.files, ...options.service })
+      : fakeLanguageService({
+          files: io.files,
+          ...(options.linkedAs !== undefined && { links: { [options.linkedAs]: ROOT } }),
+          ...options.service,
+        })
   let ids = 0
   const log = new FakeLogOutputChannel()
   // Built directly on POSIX paths: the manager would take this machine's platform.
@@ -112,7 +122,7 @@ async function start(options: StartOptions = {}) {
     }),
     client: fakeModelApiClient(api, log),
     log,
-    workspaceRoot: ROOT,
+    workspaceRoot: root,
     platform: 'linux',
     io,
     contextIo: memoryContextIo(io.files),
@@ -132,7 +142,7 @@ async function start(options: StartOptions = {}) {
     loadHooks: () => Promise.resolve(options.hooks ?? []),
   })
   const session = await host.startSession({
-    workspaceRoot: ROOT,
+    workspaceRoot: root,
     modelId: 'muse-spark-1.3',
     approvalMode: options.approvalMode ?? 'promptUnmatched',
   })
@@ -214,13 +224,21 @@ async function stopOnceAsked(t: Started, provider: string, turns = 1) {
   })
 }
 
+/** `greet` renamed where it is: its definition in a.ts, its import and call in b.ts. */
+const GREET_FILES = [renamed(A, 0, 16), renamed(B, 0, 9), renamed(B, 1, 0)]
+
 const GREET_EVERYWHERE = {
-  rename: () =>
-    Promise.resolve({
-      files: [renamed(A, 0, 16), renamed(B, 0, 9), renamed(B, 1, 0)],
-      fileOperations: 'none' as const,
-    }),
+  rename: () => Promise.resolve({ files: GREET_FILES, fileOperations: 'none' as const }),
 }
+
+/** A project `PreToolUse` hook on `Edit`, which a rename matches. */
+const EDIT_HOOK = parseHookConfig(
+  JSON.stringify({
+    hooks: { PreToolUse: [{ matcher: 'Edit', hooks: [{ type: 'command', command: 'guard' }] }] },
+  }),
+  'project',
+  'linux',
+).hooks
 
 describe('code intelligence on the Model API backend', () => {
   it('offers the tools with their guidance only while language services are there', async () => {
@@ -342,6 +360,19 @@ describe('code intelligence on the Model API backend', () => {
     expect(t.io.files.get(A)).toBe(FILES['src/a.ts'])
   })
 
+  it("writes nothing when an editor gains unsaved changes under a link's path", async () => {
+    // The workspace is opened through a link; the service names the files by
+    // their real paths (/ws), the editor by the link's.
+    const t = await start({ linkedAs: '/link/ws', service: GREET_EVERYWHERE })
+    await t.turn([RENAME], true)
+    const card = await cardFor(t.events)
+    t.io.unsaved.add('/link/ws/src/b.ts')
+    await allowAndFinish(t, card)
+    expect(outputs(t.api)[0]).toBe(`Error: src/b.ts ${MODEL_TEXT.fileHasUnsavedChanges}`)
+    expect(t.io.files.get(A)).toBe(FILES['src/a.ts'])
+    expect(t.io.files.get(B)).toBe(FILES['src/b.ts'])
+  })
+
   it('stops writing, and says so, when a file changes while the others are written', async () => {
     const t = await start({ approvalMode: 'onRequest', service: GREET_EVERYWHERE })
     const write = t.io.writeFile
@@ -420,15 +451,7 @@ describe('code intelligence on the Model API backend', () => {
 
   it('runs an Edit hook for a rename, with the files it would write', async () => {
     const payloads: unknown[] = []
-    const hooks = parseHookConfig(
-      JSON.stringify({
-        hooks: {
-          PreToolUse: [{ matcher: 'Edit', hooks: [{ type: 'command', command: 'guard' }] }],
-        },
-      }),
-      'project',
-      'linux',
-    ).hooks
+    const hooks = EDIT_HOOK
     const t = await start({
       approvalMode: 'onRequest',
       service: GREET_EVERYWHERE,
@@ -459,6 +482,42 @@ describe('code intelligence on the Model API backend', () => {
     await stopped.turn([RENAME], true)
     await stopOnceAsked(stopped, 'rename')
     expect(finished(stopped.events).map((item) => item.tool)).toEqual(['rename_symbol'])
+  })
+
+  it('writes the plan its hook was shown, however the code changes while the hook runs', async () => {
+    const C = `${ROOT}/src/c.ts`
+    let isGrown = false
+    const payloads: unknown[] = []
+    const t = await start({
+      approvalMode: 'onRequest',
+      service: {
+        rename: () =>
+          Promise.resolve({
+            files: [
+              ...GREET_FILES,
+              // A reference added while the hook runs (by it, or by the user).
+              ...(isGrown ? [renamedFile(C)] : []),
+            ],
+            fileOperations: 'none' as const,
+          }),
+      },
+      hooks: EDIT_HOOK,
+      hookPayloads: payloads,
+    })
+    t.io.files.set(C, 'greet()\n')
+    const runHook = t.io.runHook?.bind(t.io)
+    t.io.runHook = async (...args) => {
+      isGrown = true
+      if (runHook === undefined) {
+        throw new Error('no hook runner')
+      }
+      return await runHook(...args)
+    }
+    await t.turn([RENAME])
+    expect(payloads).toMatchObject([{ tool_input: { files: ['src/a.ts', 'src/b.ts'] } }])
+    expect(t.service?.asked.filter((call) => call.startsWith('rename'))).toHaveLength(1)
+    expect(t.io.files.get(A)).toBe('export function welcome() {}\n')
+    expect(t.io.files.get(C)).toBe('greet()\n')
   })
 
   it('says which files a failed write left renamed, and the row can revert them', async () => {

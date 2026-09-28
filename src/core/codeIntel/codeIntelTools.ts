@@ -265,14 +265,21 @@ async function workspaceSymbols(query: CodeIntelQuery, raw: unknown): Promise<st
   ])
 }
 
-/** `line:column` of each call site, a few listed and the rest counted. */
-function callSites(ranges: readonly CodeRange[]): string {
+/**
+ * Each call site, a few listed and the rest counted: `line:column`, or
+ * `path:line:column` when the sites are in a file the line does not name.
+ */
+function callSites(ranges: readonly CodeRange[], relative?: string): string {
   const sorted = ranges
     .map((range) => range.start)
     .toSorted((a, b) => a.line - b.line || a.character - b.character)
   const listed = sorted
     .slice(0, CODE_INTEL_MAX_CALL_SITES)
-    .map((at) => `${String(at.line + 1)}:${String(at.character + 1)}`)
+    .map((at) =>
+      relative === undefined
+        ? `${String(at.line + 1)}:${String(at.character + 1)}`
+        : placeText(relative, at),
+    )
   const hidden = sorted.length - listed.length
   return (hidden > 0 ? [...listed, `+${String(hidden)}`] : listed).join(', ')
 }
@@ -310,17 +317,28 @@ async function callHierarchy(query: CodeIntelQuery, raw: unknown): Promise<strin
     (call) => symbolKey(call.symbol),
   )
   const shown = inside.slice(0, CODE_INTEL_MAX_CALLS)
-  const sites =
-    direction === 'incoming' ? MODEL_TEXT.codeIntelCallSites : MODEL_TEXT.codeIntelCalledAt
+  // Incoming calls are in the caller's file, the line's own; outgoing ones
+  // are in the file of the function asked about, named with each site.
+  const sitesOf = (ranges: readonly CodeRange[]): string => {
+    if (direction === 'incoming') {
+      return fill(MODEL_TEXT.codeIntelCallSites, { sites: callSites(ranges) })
+    }
+    return itemFile === undefined
+      ? fill(MODEL_TEXT.codeIntelCalledOutside, { sites: callSites(ranges) })
+      : fill(MODEL_TEXT.codeIntelCalledAt, { sites: callSites(ranges, itemFile.relative) })
+  }
   return joinLines([
     target.lead,
     header,
     ...(outside === 0 && inside.length === 0 ? [MODEL_TEXT.codeIntelNoCalls] : []),
     ...shown.map(
       (entry) =>
-        `${placeText(entry.relative, entry.at)}: ${kindName(entry.item.symbol.kind)} ${entry.item.symbol.name} (${fill(sites, { sites: callSites(entry.item.ranges) })})`,
+        `${placeText(entry.relative, entry.at)}: ${kindName(entry.item.symbol.kind)} ${entry.item.symbol.name} (${sitesOf(entry.item.ranges)})`,
     ),
     ...listingNotes(inside.length - shown.length, outside),
+    ...(answer.otherItems > 0
+      ? [fill(MODEL_TEXT.codeIntelOtherCallItems, { count: String(answer.otherItems) })]
+      : []),
   ])
 }
 

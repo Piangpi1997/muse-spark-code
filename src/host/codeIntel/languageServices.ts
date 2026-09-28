@@ -110,17 +110,33 @@ async function run<T>(command: string, ...args: unknown[]): Promise<T | undefine
   return await vscode.commands.executeCommand<T | undefined>(command, ...args)
 }
 
+/** Whether the range holds the position, its ends included. */
+function isWithin(range: CodeRange, at: CodePosition): boolean {
+  const { start, end } = range
+  return (
+    (at.line > start.line || (at.line === start.line && at.character >= start.character)) &&
+    (at.line < end.line || (at.line === end.line && at.character <= end.character))
+  )
+}
+
 async function callHierarchy(
   uri: vscode.Uri,
   at: CodePosition,
   direction: CallDirection,
 ): Promise<CallHierarchyAnswer | undefined> {
-  const items = await run<vscode.CallHierarchyItem[]>(
-    VSCODE_COMMANDS.prepareCallHierarchy,
-    uri,
-    toPosition(at),
-  )
-  const item = items?.[0]
+  const items =
+    (await run<vscode.CallHierarchyItem[]>(
+      VSCODE_COMMANDS.prepareCallHierarchy,
+      uri,
+      toPosition(at),
+    )) ?? []
+  // Several items (overloads, merged declarations): the one declared at the
+  // position is asked, else the first; the answer counts the others.
+  const item =
+    items.find(
+      (candidate) =>
+        pathOf(candidate.uri) === pathOf(uri) && isWithin(fromRange(candidate.selectionRange), at),
+    ) ?? items[0]
   if (item === undefined) {
     return undefined
   }
@@ -144,7 +160,7 @@ async function callHierarchy(
       ranges: call.fromRanges.map((range) => fromRange(range)),
     }))
   }
-  return { item: fromCallItem(item), calls }
+  return { item: fromCallItem(item), calls, otherItems: items.length - 1 }
 }
 
 async function rename(uri: vscode.Uri, at: CodePosition, newName: string): Promise<RenameEdits> {

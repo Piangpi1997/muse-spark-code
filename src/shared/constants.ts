@@ -1888,6 +1888,9 @@ export const MODEL_TEXT = {
   codeIntelCallsFrom: 'Calls from {symbol} at {place}:',
   codeIntelCallSites: 'calls at {sites}',
   codeIntelCalledAt: 'called at {sites}',
+  codeIntelCalledOutside: 'called at {sites} of its file outside the workspace',
+  codeIntelOtherCallItems:
+    "[{count} more functions share this position (overloads or merged declarations) and were not asked; ask at each one's own declaration for its calls]",
   codeIntelOutsideWorkspace: 'outside the workspace',
   codeIntelNoCalls: 'No calls found.',
   renameFileOperations:

@@ -44,7 +44,7 @@ function depsFor(root: string): CodeIntelDeps {
         const found = await vscode.workspace.findFiles(`${FIXTURE}/**`)
         return found.map((uri) => vscode.workspace.asRelativePath(uri, false))
       },
-      hasUnsavedChanges: () => false,
+      unsavedFiles: () => [],
     },
     now: () => Date.now(),
   }

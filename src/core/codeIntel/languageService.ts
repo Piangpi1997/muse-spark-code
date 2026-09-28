@@ -47,9 +47,11 @@ export interface CallSite {
 }
 
 export interface CallHierarchyAnswer {
-  /** The function or method the position names. */
+  /** The function or method the position names: the one declared there, when several are. */
   readonly item: CodeSymbol
   readonly calls: readonly CallSite[]
+  /** The others the position also names (overloads, merged declarations), not asked. */
+  readonly otherItems: number
 }
 
 export type CallDirection = 'incoming' | 'outgoing'

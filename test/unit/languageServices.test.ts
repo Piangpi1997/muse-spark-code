@@ -198,6 +198,28 @@ describe('vscodeLanguageServices', () => {
     expect(await services.callHierarchy(FILE, AT, 'incoming')).toBeUndefined()
   })
 
+  it('asks the one of several call items declared at the position, and counts the others', async () => {
+    const at = { line: 3, character: 18 }
+    const elsewhere = { name: 'greet', kind: 11, uri: vscode.Uri.file('/ws/b.ts') }
+    const items = [
+      { ...elsewhere, range: range(3, 0, 30), selectionRange: range(3, 16, 21) },
+      { ...elsewhere, uri: fileUri, range: range(0, 0, 30), selectionRange: range(0, 16, 21) },
+      { ...elsewhere, uri: fileUri, range: range(3, 0, 30), selectionRange: range(3, 16, 21) },
+    ]
+    answers.set(VSCODE_COMMANDS.prepareCallHierarchy, () => items)
+    answers.set(VSCODE_COMMANDS.provideIncomingCalls, (item) => [
+      { from: item, fromRanges: [range(9, 0, 5)] },
+    ])
+    expect(await services.callHierarchy(FILE, at, 'incoming')).toMatchObject({
+      item: { location: { path: FILE }, selection: range(3, 16, 21) },
+      otherItems: 2,
+    })
+    // None declared at the position: the first.
+    expect(await services.callHierarchy(FILE, { line: 7, character: 0 }, 'incoming')).toMatchObject(
+      { item: { location: { path: '/ws/b.ts' } }, otherItems: 2 },
+    )
+  })
+
   it("reads a rename's edits, notices file operations, and passes a refusal on", async () => {
     const edits = [{ range: range(0, 16, 21), newText: 'welcome' }]
     let workspaceEdit: unknown = vsCodeWorkspaceEdit([{ _type: 2, uri: fileUri, edit: edits[0] }])

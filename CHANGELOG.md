@@ -23,7 +23,10 @@ happened, not what was planned; superseded entries are kept.
   language has no service, or that declares nothing, says so instead of
   answering nothing, and an empty answer says that not every language
   provides every kind. In a file with unsaved changes a line number is
-  refused and a name is found in the editor's text, said so. On the Muse
+  refused and a name is found in the editor's text, said so, the editor
+  matched by the file's real path (a workspace opened through a link). A
+  call hierarchy names the file of each outgoing call site, and counts the
+  other functions a position names (overloads) that it did not ask. On the Muse
   Code backend the same tools are served to Muse Code as
   `mcp__ide__findDefinition` and the rest, each marked read-only; Muse Code
   1.4.0 still shows its own card for them in its on-request mode.
@@ -36,7 +39,7 @@ happened, not what was planned; superseded entries are kept.
   It refuses an edit that also creates, moves or deletes files, and one
   whose ranges no longer cover the old name (made from an older version of
   a file). A hook matching `Edit` runs for it, with the files it would
-  write. On Muse Code it changes nothing and hands Muse Code the diff to
+  write, and the rename writes the plan the hook was shown. On Muse Code it changes nothing and hands Muse Code the diff to
   apply with its own edit tool.
 - **A repo map in the Model API's prompt** (`museSpark.modelApiRepoMap`,
   off by default, machine-scoped, trusted workspaces only): the files other

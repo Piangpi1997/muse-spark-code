@@ -659,7 +659,7 @@ async function openRig(options: RigOptions): Promise<Rig> {
     env: () => process.env,
     // Built by `npm run build:dev`; no case here needs the search tool.
     searchWorkerPath: path.join(process.cwd(), 'dist', SEARCH_WORKER_FILE),
-    hasUnsavedChanges: () => false,
+    unsavedFiles: () => [],
     log: (message) => {
       log.warn(message)
     },

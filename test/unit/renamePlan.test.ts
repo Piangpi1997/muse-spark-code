@@ -7,14 +7,14 @@ import { describe, expect, it } from 'vitest'
 import type { CodeIntelDeps } from '../../src/core/codeIntel/codeIntelQuery'
 import type { FileEdits, RenameEdits } from '../../src/core/codeIntel/languageService'
 import { planRename, renameDiff } from '../../src/core/codeIntel/rename'
-import { RENAME_MAX_FILES } from '../../src/shared/constants'
+import { MODEL_TEXT, RENAME_MAX_FILES } from '../../src/shared/constants'
 import {
   type FakeServiceOptions,
   fakeLanguageService,
   KIND,
   sym,
 } from './helpers/fakeLanguageService'
-import { memoryToolIo } from './helpers/fakeToolIo'
+import { memoryToolIo, realPathThrough } from './helpers/fakeToolIo'
 
 const ROOT = '/ws'
 const A = `${ROOT}/src/a.ts`
@@ -202,5 +202,32 @@ describe('planRename', () => {
   it("passes the provider's refusal on", async () => {
     const t = setup({ rename: () => Promise.reject(new Error('You cannot rename this element.')) })
     await expect(t.plan(ARGS)).rejects.toThrow('You cannot rename this element.')
+  })
+
+  it('refuses a file an editor holds unsaved by the path of a link to the workspace', async () => {
+    // The workspace is opened as /link/ws; the language service names the
+    // files by their real paths under /ws, the editor by the link.
+    const link = '/link/ws'
+    const io = memoryToolIo(FILES, ROOT)
+    io.realPath = realPathThrough(link, ROOT)
+    io.unsaved.add(`${link}/src/b.ts`)
+    const service = fakeLanguageService({
+      files: io.files,
+      links: { [link]: ROOT },
+      dirty: new Set([`${link}/src/b.ts`]),
+      buffers: { [`${link}/src/b.ts`]: "import { greet } from './a'\ngreet()\n// edited\n" },
+      rename: () => Promise.resolve(EDITS),
+    })
+    const result = await planRename(ARGS, {
+      service,
+      workspaceRoot: link,
+      platform: 'linux',
+      io,
+      now: () => 0,
+    })
+    expect(result).toMatchObject({
+      ok: false,
+      reason: `src/b.ts ${MODEL_TEXT.fileHasUnsavedChanges}`,
+    })
   })
 })

@@ -6689,6 +6689,24 @@ code-intel` on VS Code stable and 1.125.0; live case19 of the Model
       (4 model attempts): it listed our tools with annotations, asked its
       own card for a `readOnlyHint` tool, and showed our text verbatim.
       The README's "reads in every mode" is the Model API's alone.
+  - **Second review (Grok Build on `585af100`).** One P1, five P2; all
+    held on inspection and are fixed in one commit:
+    - Unsaved changes by real path: `ToolIo.unsavedFiles()` lists the
+      editors' files, and `unsavedDocumentPath` matches one to a file by its
+      own path, the service's, or its real path (a workspace opened through
+      a link names files by the link in the editor and by the real path in
+      the language service). The plan, the recheck before each write, the
+      lines shown and the target all use it; a target is asked and read at
+      the editor's own path.
+    - Repo map: a batch the time or a Stop cuts off is dropped whole, so
+      nothing it finds later reaches the map or its counts; "no language
+      service" only when every lookup ran and none found anything, a cut
+      map being partial.
+    - A rename planned for its `PreToolUse` hooks is the plan written; a
+      hook's new arguments plan afresh.
+    - Call hierarchy: outgoing call sites name the file of the function
+      asked about; of several items at a position the one declared there is
+      asked, and the answer counts the others.
 - **Status.** Built on `feature/m67-code-intel` (2026-09-28); reviewed and
   fixed the same day. Drills and the live checks in
   `docs/certification/m67.md`.

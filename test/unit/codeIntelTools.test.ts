@@ -20,7 +20,7 @@ import {
   loc,
   sym,
 } from './helpers/fakeLanguageService'
-import { memoryToolIo, type MemoryToolIo } from './helpers/fakeToolIo'
+import { memoryToolIo, type MemoryToolIo, realPathThrough } from './helpers/fakeToolIo'
 
 const ROOT = '/ws'
 const A = `${ROOT}/src/a.ts`
@@ -40,6 +40,8 @@ const START = { line: 0, character: 0 }
 type Options = Omit<FakeServiceOptions, 'files'> & {
   readonly io?: MemoryToolIo
   readonly realPath?: (path: string) => Promise<string>
+  /** The folder the workspace is opened as, when not the files' own (a link to it). */
+  readonly workspaceRoot?: string
 }
 
 function setup(options: Options = {}) {
@@ -47,7 +49,7 @@ function setup(options: Options = {}) {
   const service = fakeLanguageService({ files: io.files, ...options })
   const deps: CodeIntelDeps = {
     service,
-    workspaceRoot: ROOT,
+    workspaceRoot: options.workspaceRoot ?? ROOT,
     platform: 'linux',
     io: options.realPath === undefined ? io : { ...io, realPath: options.realPath },
     now: () => 0,
@@ -366,6 +368,41 @@ describe('files with unsaved changes', () => {
       ].join('\n'),
     )
   })
+
+  it('finds them by the real path when the workspace is opened through a link', async () => {
+    // The editor names b.ts by the link; the language service by its real path.
+    const link = '/link/ws'
+    const edited = "import { greet } from './a'\n// a new line\ngreet('x')\n"
+    const t = setup({
+      workspaceRoot: link,
+      links: { [link]: ROOT },
+      realPath: realPathThrough(link, ROOT),
+      dirty: new Set([`${link}/src/b.ts`]),
+      buffers: { [`${link}/src/b.ts`]: edited },
+      references: () => [loc(B, 2, 0), loc(A, 0, 16)],
+    })
+    t.io.unsaved.add(`${link}/src/b.ts`)
+    expect(await textOf(t.ask('findReferences', { path: 'src/a.ts', symbol: 'greet' }))).toBe(
+      [
+        'Using `greet` at src/a.ts:1:17.',
+        'src/a.ts:1:17: export function greet(name: string): string {',
+        "src/b.ts:3:1: greet('x')",
+        "[unsaved changes in an editor: src/b.ts; their lines here are the editor's, not what read_file shows]",
+      ].join('\n'),
+    )
+    // An editor holding the real path: a position named through the link is refused.
+    const real = setup({
+      workspaceRoot: link,
+      links: { [link]: ROOT },
+      realPath: realPathThrough(link, ROOT),
+      dirty: new Set([B]),
+      buffers: { [B]: edited },
+    })
+    real.io.unsaved.add(B)
+    expect(
+      await reasonOf(real.ask('findReferences', { path: 'src/b.ts', line: 3, column: 1 })),
+    ).toContain('src/b.ts has unsaved changes in an editor')
+  })
 })
 
 describe('call_hierarchy', () => {
@@ -373,18 +410,30 @@ describe('call_hierarchy', () => {
   const ranges = Array.from({ length: 7 }, (_, index) => loc(B, index + 1, 2).range)
 
   it('lists the callers with their call sites, and the callees the other way', async () => {
+    const log = sym('log', KIND.method, LIB, 0, 0)
     const t = setup({
       symbols: { [B]: [caller] },
-      calls: (_path, _at, direction) =>
-        direction === 'incoming'
+      calls: (path, _at, direction) => {
+        if (direction === 'incoming') {
+          return {
+            item: GREET,
+            calls: [
+              { symbol: caller, ranges },
+              { symbol: sym('lib', KIND.function, LIB, 0, 0), ranges: [] },
+            ],
+            otherItems: 0,
+          }
+        }
+        // Outgoing: the sites are in the file of the function asked about
+        // (main in b.ts; log outside), not in the callee's.
+        return path === B
           ? {
-              item: GREET,
-              calls: [
-                { symbol: caller, ranges },
-                { symbol: sym('lib', KIND.function, LIB, 0, 0), ranges: [] },
-              ],
+              item: caller,
+              calls: [{ symbol: GREET, ranges: [loc(B, 1, 0).range] }],
+              otherItems: 1,
             }
-          : { item: sym('log', KIND.method, LIB, 0, 0), calls: [] },
+          : { item: log, calls: [{ symbol: GREET, ranges: [loc(LIB, 4, 0).range] }], otherItems: 0 }
+      },
     })
     expect(await textOf(t.ask('callHierarchy', { path: 'src/a.ts', line: 1, column: 17 }))).toBe(
       [
@@ -397,7 +446,23 @@ describe('call_hierarchy', () => {
       await textOf(
         t.ask('callHierarchy', { path: 'src/b.ts', line: 1, column: 10, direction: 'outgoing' }),
       ),
-    ).toBe(['Calls from method log at outside the workspace:', 'No calls found.'].join('\n'))
+    ).toBe(
+      [
+        'Calls from function main at src/b.ts:1:10:',
+        'src/a.ts:1:17: function greet (called at src/b.ts:2:1)',
+        "[1 more functions share this position (overloads or merged declarations) and were not asked; ask at each one's own declaration for its calls]",
+      ].join('\n'),
+    )
+    expect(
+      await textOf(
+        t.ask('callHierarchy', { path: 'src/a.ts', line: 1, column: 17, direction: 'outgoing' }),
+      ),
+    ).toBe(
+      [
+        'Calls from method log at outside the workspace:',
+        'src/a.ts:1:17: function greet (called at 5:1 of its file outside the workspace)',
+      ].join('\n'),
+    )
   })
 
   it('says why there is no hierarchy: nothing callable here, or no language service', async () => {

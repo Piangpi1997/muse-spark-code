@@ -162,6 +162,8 @@ export interface ToolIo {
   reserveFile(absolutePath: string, expectedCanonicalPath?: string): Promise<FileReservation>
   /** Whether an editor holds unsaved changes to the file (D27). */
   hasUnsavedChanges(absolutePath: string): boolean
+  /** Absolute paths of the files open in an editor with unsaved changes, as the editor names them. */
+  unsavedFiles(): readonly string[]
   /** Workspace-relative, forward-slash paths of every listed file. */
   listFiles(): Promise<readonly string[]>
   /** Evaluates the pattern off the host thread with a time budget (ReDoS containment). */

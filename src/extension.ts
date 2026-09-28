@@ -14,7 +14,6 @@ import { readBackendChoice } from './core/backendSelection'
 import { personalSkillsRoot } from './core/context/skills'
 import { memoryDataRoot } from './core/memory/memoryLocation'
 import { MemoryStore } from './core/memory/memoryStore'
-import { isSamePath } from './core/paths'
 import { terminalArgument } from './core/shellQuote'
 import { renderSupportReport } from './core/support/report'
 import { type CliInvocation, isSandboxNetworkApplied } from './core/backends/musecode/sandbox'
@@ -834,14 +833,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     // Each Windows command in a job object of its own, so a Stop ends
     // everything it started (PLAN.md M27).
     shellJobAssembly: windowsJobAssembly,
-    // An open editor with unsaved changes to the file (PLAN.md D27).
-    hasUnsavedChanges: (absolutePath) =>
-      vscode.workspace.textDocuments.some(
-        (document) =>
-          document.isDirty &&
-          document.uri.scheme === FILE_SCHEME &&
-          isSamePath(document.uri.fsPath, absolutePath, process.platform),
-      ),
+    // The open editors with unsaved changes to a file (PLAN.md D27).
+    unsavedFiles: () =>
+      vscode.workspace.textDocuments
+        .filter((document) => document.isDirty && document.uri.scheme === FILE_SCHEME)
+        .map((document) => document.uri.fsPath),
   })
   const diagnostics = diagnosticsTool({
     getDiagnostics: collectDiagnostics,

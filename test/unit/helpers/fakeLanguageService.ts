@@ -40,6 +40,21 @@ export interface FakeServiceOptions {
   readonly rename?: (path: string, at: CodePosition, newName: string) => Promise<RenameEdits>
   /** Folders a hover may describe outside the workspace; none unless given. */
   readonly libraryRoots?: readonly string[]
+  /**
+   * A folder an editor names files by (a link, such as the workspace opened
+   * through one) → the real folder the files are kept under.
+   */
+  readonly links?: Readonly<Record<string, string>>
+}
+
+/** The path with a linked folder replaced by the real one. */
+function throughLinks(path: string, links: Readonly<Record<string, string>> = {}): string {
+  for (const [link, real] of Object.entries(links)) {
+    if (path.startsWith(`${link}/`)) {
+      return `${real}${path.slice(link.length)}`
+    }
+  }
+  return path
 }
 
 export interface FakeLanguageService extends LanguageServiceHost {
@@ -107,7 +122,7 @@ export function fakeLanguageService(options: FakeServiceOptions): FakeLanguageSe
     asked,
     open: (path) => {
       asked.push(`open ${path}`)
-      const text = options.buffers?.[path] ?? options.files.get(path)
+      const text = options.buffers?.[path] ?? options.files.get(throughLinks(path, options.links))
       if (text === undefined) {
         return Promise.reject(new Error(`cannot open ${path}`))
       }

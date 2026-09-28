@@ -61,6 +61,9 @@ interface RankedFile {
 }
 
 /** Each name of `min` characters or more in the text, with how often it occurs. */
+/** A file left out of the counts: unreadable, not text, or too long. */
+const NO_NAMES: ReadonlyMap<string, number> = new Map()
+
 function countNames(text: string): ReadonlyMap<string, number> {
   const counts = new Map<string, number>()
   for (const [name] of text.matchAll(NAME)) {
@@ -134,30 +137,29 @@ class Limits {
 
 /**
  * Runs `work` over `items`, a few at a time, until the limits say stop;
- * returns how many ran.
+ * returns the results of the batches that finished, in order. A batch the
+ * limits cut off is left to run, and its results are dropped: nothing it
+ * finds later reaches the map or its counts.
  */
-async function inBatches<T>(
+async function inBatches<T, R>(
   items: readonly T[],
   limits: Limits,
-  work: (item: T) => Promise<void>,
-): Promise<number> {
-  let done = 0
-  while (done < items.length) {
-    const batch = items.slice(done, done + REPO_MAP_CONCURRENCY)
+  work: (item: T) => Promise<R>,
+): Promise<readonly R[]> {
+  const results: R[] = []
+  while (results.length < items.length) {
+    const batch = items.slice(results.length, results.length + REPO_MAP_CONCURRENCY)
     const finished = await limits.within(
-      async () =>
-        await Promise.all(
-          batch.map(async (item) => {
-            await work(item)
-          }),
-        ),
+      async () => await Promise.all(batch.map(async (item) => await work(item))),
     )
     if (finished === undefined) {
-      return done
+      break
     }
-    done += batch.length
+    for (const result of finished) {
+      results.push(result)
+    }
   }
-  return done
+  return results
 }
 
 /** Name → file → how often the file uses it, over the files that could be read. */
@@ -169,8 +171,7 @@ async function readUses(
   readonly uses: ReadonlyMap<string, ReadonlyMap<string, number>>
   readonly read: number
 }> {
-  const uses = new Map<string, Map<string, number>>()
-  const read = await inBatches(files, limits, async (relative) => {
+  const counted = await inBatches(files, limits, async (relative) => {
     let text: string | undefined
     try {
       const file = await query.confine(relative)
@@ -178,18 +179,23 @@ async function readUses(
     } catch {
       // A file that is not confined UTF-8 text is left out of the counts, as
       // the search tool leaves it out.
-      return
+      return { relative, names: NO_NAMES }
     }
-    if (text === undefined || text.length > REPO_MAP_MAX_FILE_CHARS) {
-      return
+    return {
+      relative,
+      names:
+        text === undefined || text.length > REPO_MAP_MAX_FILE_CHARS ? NO_NAMES : countNames(text),
     }
-    for (const [name, count] of countNames(text)) {
+  })
+  const uses = new Map<string, Map<string, number>>()
+  for (const { relative, names } of counted) {
+    for (const [name, count] of names) {
       const perFile = uses.get(name) ?? new Map<string, number>()
       perFile.set(relative, count)
       uses.set(name, perFile)
     }
-  })
-  return { uses, read }
+  }
+  return { uses, read: counted.length }
 }
 
 /** The names used by two files or more, the most widely used first. */
@@ -308,11 +314,8 @@ async function buildWithin(query: CodeIntelQuery, limits: Limits): Promise<Built
   const files = listed.slice(0, REPO_MAP_MAX_FILES)
   const { uses, read } = await readUses(query, files, limits)
   const names = candidates(uses)
-  const definitions = new Map<string, { relative: string; symbol: CodeSymbol }[]>()
-  let answered = 0
-  const looked = await inBatches(names, limits, async (name) => {
+  const lookups = await inBatches(names, limits, async (name) => {
     const found = await ask(query.service.workspaceSymbols(name))
-    answered += found.length
     const exact = await Promise.all(
       found
         .filter((symbol) => bareName(symbol) === name)
@@ -321,11 +324,18 @@ async function buildWithin(query: CodeIntelQuery, limits: Limits): Promise<Built
     const inside = exact.flatMap(({ symbol, file }) =>
       file === undefined ? [] : [{ relative: file.relative, symbol }],
     )
+    return { name, answered: found.length, inside }
+  })
+  const definitions = new Map<string, readonly { relative: string; symbol: CodeSymbol }[]>()
+  for (const { name, inside } of lookups) {
     if (inside.length > 0) {
       definitions.set(name, inside)
     }
-  })
-  if (answered === 0 && looked > 0) {
+  }
+  const looked = lookups.length
+  // No service only when every lookup ran and none found anything: a map
+  // cut short by the time or a Stop is a partial map, not a missing service.
+  if (looked > 0 && looked === names.length && lookups.every((lookup) => lookup.answered === 0)) {
     throw new CodeIntelRefusal(MODEL_TEXT.repoMapNoService, UI_TEXT.repoMapNoService)
   }
   const notes = [

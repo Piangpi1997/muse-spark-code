@@ -121,6 +121,35 @@ describe('repo map', () => {
     expect(await pending).toContain('[partial: looked up 0 of 8 names within the time budget]')
   })
 
+  it('keeps nothing from a batch the time cut off, and calls a cut map partial, not unserved', async () => {
+    // One lookup of the batch never answers: the others' definitions, found
+    // before the cut, stay out of the map the note says was not looked up.
+    vi.useFakeTimers()
+    const cut = setup({
+      workspace: (query) => (query === 'import' ? new Promise(() => undefined) : answers(query)),
+    })
+    const pending = cut.map()
+    await vi.advanceTimersByTimeAsync(10_000)
+    const text = await pending
+    expect(text).not.toContain('src/core.ts')
+    expect(text).toContain('[partial: looked up 0 of')
+    vi.useRealTimers()
+    // Lookups that found nothing before the time ran out: a partial map.
+    const names = 'alpha bravo charlie delta echo foxtrot golf hotel india juliet'
+    let clock = 0
+    const empty = setup({
+      io: memoryToolIo({ 'f0.ts': names, 'f1.ts': names }, ROOT),
+      now: () => clock,
+      workspace: () => {
+        clock += 6000
+        return Promise.resolve([])
+      },
+    })
+    const partial = await empty.map()
+    expect(partial).not.toContain('refused')
+    expect(partial).toContain('[partial: looked up 8 of 10 names within the time budget]')
+  })
+
   it('says how many files it read when the reading runs out of time, or the listing does', async () => {
     const files = Object.fromEntries(
       Array.from({ length: 20 }, (_, index) => [`f${String(index).padStart(2, '0')}.ts`, 'shared']),

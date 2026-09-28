@@ -590,7 +590,9 @@ work out of the box.
 - **Unsaved files.** The language services read the editor's text, while
   `read_file` reads the disk. In a file with unsaved changes a line number
   is refused; a name is found in the editor's text, and the answer says its
-  lines are the editor's.
+  lines are the editor's. An editor is matched to a file by its real path,
+  so a workspace opened through a link (whose files the language service
+  names by their real paths) counts the same editor.
 - **Reads in every mode (Model API).** On the Model API backend all but
   `rename_symbol` run without a card in every permission mode, Plan and
   Restricted Mode included.
@@ -605,7 +607,7 @@ work out of the box.
   not say that of), change a file with unsaved changes, or whose edits no
   longer match the file (the service answered from an older version). A hook
   that matches `Edit` runs for a rename too, and its `PreToolUse` input
-  names the files it would write.
+  names the files it would write: the rename then writes that same plan.
 - **On the Muse Code backend** the same tools reach Muse Code through the
   extension's tool server as `mcp__ide__findDefinition` and the rest, each
   marked read-only (`readOnlyHint`). Muse Code decides whether to ask: in
