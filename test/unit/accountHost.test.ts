@@ -156,6 +156,21 @@ describe('logOutAccount', () => {
     expect(t.close).toHaveBeenCalledOnce()
     expect(log.warn).toHaveBeenCalled()
   })
+
+  // The state vocabulary is open: a state not shaped like a protocol word
+  // is not logged (the review of PR #49).
+  it('logs an unconfirming state only in the shape of a protocol word', async () => {
+    const log = new FakeLogOutputChannel()
+    const t = host({
+      'account/logout': LOGGED_OUT,
+      'account/read': { state: String.raw`at C:\Users\someone`, credentialRequired: true },
+    })
+    await expect(logOutAccount(t.connect, log, OPEN)).resolves.toBe('unconfirmed')
+    expect(log.warn).toHaveBeenCalledWith(
+      'Muse Code did not confirm account/logout (an unrecognized value)',
+    )
+    expect(allLogged(log)).not.toContain('someone')
+  })
 })
 
 // The window closing ends every account host still open (the review of PR #49).

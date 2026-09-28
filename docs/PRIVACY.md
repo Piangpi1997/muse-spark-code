@@ -220,11 +220,17 @@ fields, never raw configuration or failed-command output.
     again**), or the **Sign Out** or **Diagnostics** command.
   - It also uses the file's size and modification time, to notice a new
     sign-in.
-- When Muse Code ends a browser sign-in, the log gets the word it ended
-  with. Its message goes to the log only for a code that expired or was
-  denied, whose captured messages name nothing personal. When Muse Code
-  could not save the sign-in, its message names a folder in your profile,
-  so the log says only that saving failed.
+- When Muse Code ends a browser sign-in, the log says how, in fixed words
+  (the code expired, the sign-in was denied, saving failed), never the
+  message Muse Code sent with it: a failed save's message names a folder
+  in your profile, and any message could name one, or your e-mail address.
+- Other text Muse Code writes reaches the log the same way: its error
+  messages by their kind and code, the state `account/read` reports and a
+  backend's sign-in reason only when shaped like a protocol word, and what
+  `muse serve` or `muse skills` writes to stderr as fixed words for the
+  lines Muse Code was seen writing (an unsupported credential file, an
+  unreadable Keychain item, a failed model-catalog fetch), otherwise only
+  its length.
 - **Muse Spark: Diagnostics** on macOS looks up the Keychain item by its
   attributes only, with `security find-generic-password` and no `-g` or
   `-w`. That lookup reads no secret and shows no prompt, and the report

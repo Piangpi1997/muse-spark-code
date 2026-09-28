@@ -63,6 +63,11 @@ happened, not what was planned; superseded entries are kept.
     sign in, sign out or choose **Check again**, which always asks afresh;
     pressing it twice asks once. On macOS it asks only when you act: a
     click in the panel, or the **Sign Out** or **Diagnostics** command.
+  - **Old answers.** An answer Muse Code gives to a question the extension
+    had already dropped (after Cancel, a sign-out or **Check again**)
+    reaches no one, and a slower, older check never replaces what a newer
+    one showed. While a browser sign-in shows its code, a check leaves the
+    code where it is.
   - **Signing out.** Sign-out uses Muse Code's own `account/logout` and
     confirms it with `account/read`. Only when Muse Code still reads signed
     in afterwards does it open `muse logout` in a terminal. With
@@ -92,7 +97,9 @@ happened, not what was planned; superseded entries are kept.
     sign-in that leaves the file as it was is seen.
   - **A host that exits.** The sign-in fails at once instead of waiting
     out the eleven-minute limit, unless the credential file changed first:
-    then the sign-in went through.
+    then the sign-in went through. A change Muse Code already called
+    signed out (another Muse process signing out) still counts as signed
+    out.
   - **Sign-out and closing the window** no longer wait on Muse Code's
     answer to a sign-in that had just finished or failed. Closing the
     window cancels the sign-in and closes its host and every short-lived
@@ -116,9 +123,14 @@ happened, not what was planned; superseded entries are kept.
   which reads no secret and shows no prompt. Its question to Muse Code
   about the sign-in may still show the Keychain's prompt, as Muse Code
   reads the Keychain to answer.
-- **The log.** When Muse Code could not save a browser sign-in, its message
-  names a folder in your profile; the log now says only that saving
-  failed.
+- **The log keeps no text Muse Code chose.** Its messages can name a folder
+  in your profile or your e-mail address, and the log's redaction catches
+  only keys. How a browser sign-in ended is logged in fixed words; an MSP
+  error by its kind and code; a sign-in state or reason only when shaped
+  like a protocol word; and what `muse serve` and `muse skills` write to
+  stderr as fixed words for the lines Muse Code was seen writing (an
+  unsupported credential file, an unreadable Keychain item, a failed
+  model-catalog fetch), otherwise by its length alone.
 
 ## [0.9.1] - 2026-09-27
 

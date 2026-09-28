@@ -491,6 +491,23 @@ describe('Muse Code device sign-in: how it ends', () => {
     )
   })
 
+  // The same evidence stands when a later `account/read` cannot answer: the
+  // file alone then speaks only for a write no answer contradicted (the
+  // review of PR #49).
+  it('keeps the signed-out answer about a write when account/read then cannot say', async () => {
+    let modified = 1
+    let reads = 0
+    const t = session(() => {
+      reads += 1
+      if (reads === 1) {
+        // A sign-out elsewhere rewrites the file as the flow starts.
+        modified = 2
+      }
+      return reads <= 2 ? CAPTURED_LOGGED_OUT : undefined
+    })
+    await expect(run(t, { modified: () => modified, step: ONE_POLL })).resolves.toBe('timedOut')
+  })
+
   it('counts a new file while META_API_KEY masks the login', async () => {
     const t = session(() => ({ state: 'envKey', credentialRequired: true }))
     let modified = 1
@@ -508,7 +525,7 @@ describe('Muse Code device sign-in: how it ends', () => {
     expect(CREDENTIAL_POLL_TIMEOUT_MS).toBeGreaterThan(CAPTURED_CODE_LIFETIME_MS)
   })
 
-  it('ends at once on the captured expired ending, logs its message, and sends no loginCancel', async () => {
+  it('ends at once on the captured expired ending, logs it in fixed words, and sends no loginCancel', async () => {
     const t = session(() => CAPTURED_LOGGED_OUT)
     const logged = new FakeLogOutputChannel()
     const sleep = () => {
@@ -519,14 +536,36 @@ describe('Muse Code device sign-in: how it ends', () => {
     expect(t.request).not.toHaveBeenCalledWith('account/loginCancel', {})
     expect(t.close).toHaveBeenCalledOnce()
     expect(logged.info).toHaveBeenCalledWith(
-      'Muse Code sign-in ended: expired: login failed: the request expired',
+      'Muse Code sign-in ended: expired: the code expired before it was approved',
     )
   })
+
+  // The words are captured, the message is the CLI's free text: whatever it
+  // holds, the log keeps fixed words (the review of PR #49).
+  it.each(['expired', 'denied'])(
+    'logs the captured %s in fixed words, never the message sent with it',
+    async (outcome) => {
+      const t = session(() => CAPTURED_LOGGED_OUT)
+      const log = new FakeLogOutputChannel()
+      const sleep = () => {
+        t.complete({
+          ...endingNamed(outcome),
+          params: {
+            outcome,
+            message: String.raw`login failed for someone@example.com at C:\Users\someone\auth.json`,
+          },
+        })
+        return Promise.resolve()
+      }
+      await expect(run(t, { sleep, log })).resolves.toBe(outcome)
+      expect(allLogged(log)).not.toContain('someone')
+    },
+  )
 
   // Captured live: Deny clicked, and an approval whose file could not be
   // written. Each has a meaning of its own (the review of PR #49).
   it.each([
-    ['denied', CAPTURED_DENIED_ENDING, 'login failed: the request was denied'],
+    ['denied', CAPTURED_DENIED_ENDING, 'the sign-in was denied in the browser'],
     ['failed', CAPTURED_FAILED_ENDING, 'saving the credential failed'],
   ] as const)(
     'ends at once on the captured %s, and logs no path',
@@ -560,7 +599,23 @@ describe('Muse Code device sign-in: how it ends', () => {
     }
     await expect(run(t, { sleep, log })).resolves.toEqual({ endedAs: 'somethingNew' })
     expect(t.request).not.toHaveBeenCalledWith('account/loginCancel', {})
-    expect(log.info).toHaveBeenCalledWith('Muse Code sign-in ended: somethingNew')
+    expect(log.info).toHaveBeenCalledWith(
+      'Muse Code sign-in ended: somethingNew (an ending no capture covers; its message is not logged)',
+    )
+    expect(allLogged(log)).not.toContain('someone')
+  })
+
+  // The word itself is the CLI's: one not shaped like a protocol word is
+  // shown in the panel, not logged (the review of PR #49).
+  it('logs an uncovered ending word only in the shape of one', async () => {
+    const t = session(() => CAPTURED_LOGGED_OUT)
+    const log = new FakeLogOutputChannel()
+    const word = 'someone@example.com'
+    const sleep = () => {
+      t.complete(endingNamed(word))
+      return Promise.resolve()
+    }
+    await expect(run(t, { sleep, log })).resolves.toEqual({ endedAs: word })
     expect(allLogged(log)).not.toContain('someone')
   })
 
@@ -642,6 +697,26 @@ describe('Muse Code device sign-in: a host that exits', () => {
     expect(logged.warn).toHaveBeenCalledWith(
       'The Muse Code sign-in host exited after writing the credential file',
     )
+  })
+
+  // Another Muse process's sign-out rewrote the file, and `account/read`
+  // said signed out about that write; then the host exits. The signed-out
+  // answer stands (the review of PR #49).
+  it('keeps the signed-out answer about a write when the host then exits', async () => {
+    const t = session(() => CAPTURED_LOGGED_OUT)
+    let modified = 1
+    let waits = 0
+    const sleep = vi.fn(() => {
+      waits += 1
+      if (waits === 1) {
+        modified = 2
+        return Promise.resolve()
+      }
+      unanswered(t, 'account/read')
+      t.exit()
+      return never<undefined>()
+    })
+    await expect(run(t, { sleep, modified: () => modified })).rejects.toThrow('exited')
   })
 
   it('fails at once when the host exits before loginStart answers', async () => {

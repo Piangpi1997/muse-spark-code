@@ -212,7 +212,7 @@ describe('The device sign-in against a real child process', { timeout: TEST_TIME
       'AAAA-AAAA',
     )
     expect(t.log.info).toHaveBeenCalledWith(
-      'Muse Code sign-in ended: expired: login failed: the request expired',
+      'Muse Code sign-in ended: expired: the code expired before it was approved',
     )
   })
 
@@ -240,9 +240,10 @@ describe('The device sign-in against a real child process', { timeout: TEST_TIME
     expect(everythingLogged(t.log)).not.toContain('person@example.com')
   })
 
-  // `failed`'s captured message names the credential file's path.
+  // The log keeps fixed words; `failed`'s captured message names the
+  // credential file's path.
   it.each([
-    ['denied', 'login failed: the request was denied'],
+    ['denied', 'the sign-in was denied in the browser'],
     ['failed', 'saving the credential failed'],
   ])('ends on the captured %s, and logs no path', async (outcome, logged) => {
     const t = signIn(endingAfterStart(outcome), OPEN)

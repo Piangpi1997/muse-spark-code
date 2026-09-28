@@ -41,11 +41,14 @@ Only the latest release on the Visual Studio Marketplace receives fixes.
   temporary `muse serve` that owns no conversation and is closed on
   success, cancel, timeout, error or when the window closes, after which
   no sign-in starts; a sign-in whose host exits fails at once unless the
-  credential file changed first. The only page sign-in opens must be on
-  `https://auth.meta.com`. A failed sign-in's message, which names a
-  folder in the user's profile, is not logged. The log channel redacts
-  key-shaped strings, in Meta's current `LLM_…` form and the older
-  `LLM|<id>|<secret>` one.
+  credential file changed first, by a write no `account/read` answer
+  called signed out. The only page sign-in opens must be on
+  `https://auth.meta.com`. The log channel redacts key-shaped strings, in
+  Meta's current `LLM_…` form and the older `LLM|<id>|<secret>` one; it
+  cannot catch a path or an e-mail address, so free text Muse Code writes
+  (sign-in endings, MSP error messages, `muse serve` and `muse skills`
+  stderr) is logged in fixed words, by its kind, or by its length, never
+  as sent.
 - **Workspace trust.** In VS Code's Restricted Mode the agent loads no
   workspace rules, skills or memory, runs no shell commands, and the
   extension runs no `git` (a repository's `.git/config` can name programs

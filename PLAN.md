@@ -916,10 +916,12 @@ action that fails is worse than hiding one that would work.
     `account/read` said `accountLogin`; it never ends the flow or counts
     on its own, and `account/read` or the file decides.
   - **`denied` and `failed`.** Each ends the flow with its own message.
-    `failed`'s message names the credential file's path under the user's
-    profile, so only `expired`'s and `denied`'s messages are logged.
+    No ending's message is logged: it is free text the CLI chose (`failed`'s
+    names the credential file's path), so the log names each captured
+    ending in fixed words (Codex on `886af682`).
   - **Every other word.** It ends the flow at once and is shown as Muse
-    Code sent it (AGENTS.md rule 13), its message unlogged.
+    Code sent it (AGENTS.md rule 13); the log keeps the word only in the
+    shape of a protocol word, never its message.
   - **With no first `account/read`,** a sign-in from before would pass for
     a new one, so `accountLogin` alone does not count: a file written
     since the flow began does, and so does the host's `granted` borne out
@@ -930,7 +932,9 @@ action that fails is worse than hiding one that would work.
     session, the code leaves the panel at once, before the refresh.
   - **A host that exits** fails the flow at once (`connection.closed`),
     unless the credential file changed since the flow began: then it
-    signed in.
+    signed in. A write that an answered `account/read` already called
+    signed out (another Muse process's sign-out) stays refuted, for an
+    exit and for a later `account/read` left unanswered alike.
 - **The backstop.** The extension waits 11 minutes, past the code's
   lifetime, so Muse Code's `expired` ends an unapproved code. The old
   5 minutes cancelled codes that were still live.
@@ -943,8 +947,26 @@ action that fails is worse than hiding one that would work.
   host before the backends stop; a click still in its pre-flight questions
   then starts nothing (a flag `stopSignIn` sets, checked by `signIn` and
   the device flow's join).
-- **The log.** The unsupported-file message names the credential file's
-  full path; the log says so in fixed words and the panel keeps the path.
+- **Stale answers (Codex on `886af682`).** A probe that Cancel, a sign-out
+  or Check again left behind gives its late answer to no caller, the ones
+  that joined it included: they look again and get the newer answer. Every
+  refresh takes a ticket as it starts and publishes only if nothing newer
+  has; while the browser sign-in waits, a refresh leaves its code on
+  screen.
+- **The log.** Text the CLI chose is never logged as sent, since the log
+  channel's redactor catches only key-shaped strings (Codex on
+  `886af682`):
+  - the unsupported-file message names the credential file's full path, so
+    the log says so in fixed words and the panel keeps the path;
+  - a sign-in ending, an `account/read` state and an `authRequired` reason
+    are logged only in the shape of a protocol word (`wireWordForLog`),
+    captured endings in fixed words;
+  - an MSP failure is logged by its kind and code (`failureForLog`), and
+    `muse serve` or `muse skills` stderr by the lines 1.4.0-R4302.1 was
+    captured writing (an unsupported schema version, an unreadable
+    Keychain item, a failed model-catalog fetch), in fixed words; any other
+    line by its length (`stderrForLog`,
+    `src/core/backends/musecode/logText.ts`).
 - **Where it is only as good as the schema.** `account/*` stays
   experimental.
 - **Owner steps.** A real sign-in remains an owner step on:

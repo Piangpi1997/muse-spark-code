@@ -68,7 +68,7 @@ made, and no token was read.
 | A macOS file on Windows or Linux (any version 2, the empty one included, or a Keychain lane on `meta`) is a named error that gives the file’s path; `muse serve` exits 3 with each on both (captured, review round 4). The browser sign-in is refused with the same text instead of starting a host that exits 3. With `META_API_KEY` set, `muse serve` starts with each of the three on both, and the key wins. The log names the state without the path.                                                  | `AuthService.selectedSnapshot`, `signInWithCli`, `cliCredential`; `UI_TEXT.cliCredentialUnsupported`                                                | `credentialFile.test.ts`; `authService.test.ts` "a credential file Muse Code cannot start with"                                                          |
 | Sign-out goes through MSP `account/logout`, confirmed by `account/read`. When that does not confirm it, the sign-in is read afresh; only a sign-in still there opens `muse logout` in a terminal, which gets `museSpark.environmentVariables`. The logout hold ends once the file or the CLI shows no sign-in, even though the file stays. A sign-out that keeps the hold is published as `error`, so the panel offers the Check again its message asks for.                                                | `logOutAccount`; `AuthService.performSignOut`, `logOutCli`, `refresh`; `terminalEnvironment`, `runCliInTerminal`                                    | `accountHost.test.ts`; `authService.test.ts`; `launch.test.ts`; e2e                                                                                      |
 | The device sign-in succeeds on either of two signals: `account/read` turning `accountLogin` while polling; a new file that `account/read` does not contradict. A CLI that cannot answer `account/read` falls back to the file. The captured `granted` comes after both, so it is no signal of its own, except that with no first `account/read` it counts when `account/read` says `accountLogin` (review round 4); `accountLogin` alone then does not. A host that exits after the file changed signed in. | `runDeviceSignIn`, `isSignedIn`                                                                                                                     | `deviceSignIn.test.ts` "how it ends"; `cliAccount.e2e.test.ts` (the granted sequence replayed)                                                           |
-| `account/loginCompleted` ends the flow at once on any outcome but `granted`. The captured `expired`, `denied` and `failed` show their own messages; any other word is shown as Muse Code sent it (`signInEnded`). Only `expired`’s and `denied`’s messages reach the log; `failed`’s names a path, so a fixed line stands in. A malformed ending keeps waiting.                                                                                                                                             | `runDeviceSignIn` (`loggedEnding`); `AuthService` (`signInExpired`, `signInDenied`, `signInSaveFailed`, `signInEnded`)                              | `deviceSignIn.test.ts`; `authService.test.ts` "how Muse Code ends a browser sign-in"; `cliAccount.e2e.test.ts` (the captured frames replayed)            |
+| `account/loginCompleted` ends the flow at once on any outcome but `granted`. The captured `expired`, `denied` and `failed` show their own messages; any other word is shown as Muse Code sent it (`signInEnded`). No ending’s message reaches the log: each captured ending is logged in fixed words, and an uncovered word only in the shape of a protocol word (Codex on `886af682`). A malformed ending keeps waiting.                                                                                   | `runDeviceSignIn` (`loggedEnding`); `AuthService` (`signInExpired`, `signInDenied`, `signInSaveFailed`, `signInEnded`)                              | `deviceSignIn.test.ts`; `authService.test.ts` "how Muse Code ends a browser sign-in"; `cliAccount.e2e.test.ts` (the captured frames replayed)            |
 | Cancel, the host’s ending and the host’s exit are noticed at once, even while an `account/read` goes unanswered: each poll and each wait races a stop signal, which `connection.closed` also trips. An exit fails the sign-in. `account/loginCancel` is bounded at 2 s, then the host is closed anyway.                                                                                                                                                                                                     | `runDeviceSignIn` (`untilStopped`, `cancelLogin`); `MUSE_LOGIN_CANCEL_TIMEOUT_MS`                                                                   | `deviceSignIn.test.ts` "a CLI that stops answering", "a host that exits"; `cliAccount.e2e.test.ts` (the fake leaves `account/read` unanswered, or exits) |
 | The extension waits 11 minutes, past the captured 600 s code lifetime, so Muse Code’s own `expired` ends an unapproved code. Before, it cancelled at 5 minutes a code the browser could still approve.                                                                                                                                                                                                                                                                                                      | `CREDENTIAL_POLL_TIMEOUT_MS`                                                                                                                        | `deviceSignIn.test.ts` "waits past the captured code lifetime"                                                                                           |
 | A Cancel pressed while the pre-check reads the file is kept: the controller exists before that read, and an aborted flow never starts. A Cancel pressed after the credential file changed lets the file decide (review round 3). With the hold on or a Model API session, the code leaves the panel before the refresh that follows (review round 4).                                                                                                                                                       | `AuthService.signInWithCli`, `finishCancelledCliSignIn`                                                                                             | `authService.test.ts` "cancels the running device flow", "lets the credential file decide a Cancel pressed just after the browser approved"              |
@@ -224,10 +224,11 @@ They were captured later the same evening (below).
   and drops it, with the label.
 - **What changed because of it.** `denied` and `failed` have their own
   messages (`signInDenied`, `signInSaveFailed`), and `signInEnded` is left
-  for words never seen. The log keeps `expired`'s and `denied`'s messages
-  only: `failed`'s names a path, so the log says "saving the credential
-  failed". `granted` keeps no handler: it comes after the file and
-  `account/read` already show the sign-in.
+  for words never seen. The log kept `expired`'s and `denied`'s messages
+  only: `failed`'s names a path, so the log said "saving the credential
+  failed". (Since Codex's review of `886af682`, no message is logged:
+  every captured ending has fixed words.) `granted` kept no handler: it
+  comes after the file and `account/read` already show the sign-in.
 
 **What the wire showed that the code had wrong.**
 
@@ -481,6 +482,138 @@ constants comment (W2).
 | BY    | W5: the fake CLI starts with a schema Muse Code exits 3 on                                             | e2e                                            | exit 1, 1 failed: "answers unknown when the host exits at startup"                                                                                           |
 | BZ    | W5: the fake CLI answers `accountLogin` for the `muse auth set` file                                   | e2e                                            | exit 1, 1 failed: "answers account/read about the muse auth set file as captured"                                                                            |
 
+Drills CA to CR cover Codex's review of `886af682` and the sibling sweep
+(below). They ran the same way, on the final tree, from
+`scratchpad/cred-capture/drills4.mjs` (SHA-256 `35BBAB1F…C661667B`;
+`drills4-result.json`, `drills4.log`). Each target's SHA-256 matched its
+pre-drill value after every drill and after all eighteen:
+
+| File                        | SHA-256 (start) |
+| --------------------------- | --------------- |
+| `cliAccount.ts`             | `139b3b77…`     |
+| `authService.ts`            | `103e3310…`     |
+| `deviceSignIn.ts`           | `76408a95…`     |
+| `logging.ts`                | `7e475991…`     |
+| `accountHost.ts`            | `b99cd09b…`     |
+| `logText.ts`                | `ac2b096a…`     |
+| `museCodeBackendManager.ts` | `dc91fb30…`     |
+| `skillsCommands.ts`         | `4b5096bf…`     |
+| `MuseCodeHost.ts`           | `b0dc0c3b…`     |
+
+"e2e (chat)" is `test/e2e/museCode.e2e.test.ts`.
+
+| Drill | What was broken                                                                          | Suites                                                                      | Result                                                                                                                                            |
+| ----- | ---------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| CA    | P2-1: an abandoned probe gives its late answer to the caller that started it             | `cliAccount.test.ts`                                                        | exit 1, 2 failed; first "asks afresh after an unanswered probe is abandoned, and gives its late answer to no one"                                 |
+| CB    | P2-1 sibling: a caller that joined an abandoned probe gets its late answer               | `cliAccount.test.ts`                                                        | exit 1, 1 failed: "gives the callers of a forgotten probe the newer answer, the one that joined it too"                                           |
+| CC    | P2-1 sibling: an older refresh publishes over a newer one (no ticket)                    | `authService.test.ts`                                                       | exit 1, 1 failed: "never publishes an older refresh over a newer one"                                                                             |
+| CD    | P2-1 sibling: a refresh while the device flow waits publishes over its code              | `authService.test.ts`                                                       | exit 1, 1 failed: "keeps the device code on screen through a refresh while the flow waits"                                                        |
+| CE    | P2-2: a signed-out answer about a write is not remembered                                | `deviceSignIn.test.ts`                                                      | exit 1, 2 failed: "keeps the signed-out answer about a write when the host then exits", "… when account/read then cannot say"                     |
+| CF    | P2-2: a host exit counts any file change as a sign-in, the refuted write included        | `deviceSignIn.test.ts`                                                      | exit 1, 1 failed: "keeps the signed-out answer about a write when the host then exits"                                                            |
+| CG    | P2-2 sibling: an unanswered `account/read` falls back to a file change an answer refuted | `deviceSignIn.test.ts`                                                      | exit 1, 1 failed: "keeps the signed-out answer about a write when account/read then cannot say"                                                   |
+| CH    | P2-3: the ending is logged with what the CLI sent, its message included                  | `deviceSignIn.test.ts`                                                      | exit 1, 7 failed; first "ends at once on the captured expired ending, logs it in fixed words, and sends no loginCancel"                           |
+| CI    | P2-3 sibling: an uncovered ending word is logged whatever its shape                      | `deviceSignIn.test.ts`                                                      | exit 1, 1 failed: "logs an uncovered ending word only in the shape of one"                                                                        |
+| CJ    | P2-3 sibling: any text passes as a protocol word                                         | `logText`, `cliAccount`, `accountHost`, `authService`, `deviceSignIn` tests | exit 1, 6 failed; first "logs an uncovered ending word only in the shape of one"                                                                  |
+| CK    | P2-3 sibling: `CliAccount` logs the `account/read` state as sent                         | `cliAccount.test.ts`                                                        | exit 1, 1 failed: "logs the CLI’s state only in the shape of a protocol word"                                                                     |
+| CL    | P2-3 sibling: an unconfirmed `account/logout` logs the state as sent                     | `accountHost.test.ts`                                                       | exit 1, 1 failed: "logs an unconfirming state only in the shape of a protocol word"                                                               |
+| CM    | P2-3 sibling: `markAuthRequired` logs the backend’s reason as sent                       | `authService.test.ts`                                                       | exit 1, 1 failed: "logs an authRequired reason only in the shape of a protocol word"                                                              |
+| CN    | P2-3 sibling: an MSP failure is logged by its message                                    | `logText.test.ts`, `MuseCodeHost.test.ts`                                   | exit 1, 2 failed: "names an MSP error by its kind and code, never its message", "logs a retried refusal and traces how long each command took"    |
+| CO    | P2-3 sibling: a stderr line no capture covers is logged as written                       | `logText.test.ts`, `skillsCommands.test.ts`, e2e (chat)                     | exit 1, 4 failed; first "logs any other line by its length alone, one entry per line"                                                             |
+| CP    | P2-3 sibling: the backend manager logs `muse serve` stderr as written                    | e2e (chat)                                                                  | exit 1, 2 failed: "reports a host that dies mid-turn and spawns a fresh one afterwards (drill)", "rejects when the binary will not start (drill)" |
+| CQ    | P2-3 sibling: a failed `muse skills` command logs its stderr as written                  | `skillsCommands.test.ts`                                                    | exit 1, 1 failed: "says so when the CLI is missing, the list fails or cannot be read"                                                             |
+| CR    | P2-3 sibling: a retried MSP refusal logs the CLI’s message                               | `MuseCodeHost.test.ts`                                                      | exit 1, 1 failed: "logs a retried refusal and traces how long each command took"                                                                  |
+
+## Codex on `886af682`, and the sibling sweep
+
+Codex reviewed `886af682` on PR #49 and raised three P2s. Each was fixed,
+and every sibling of its class across `src/host/auth` and
+`src/core/backends/musecode` (and the two places that log Muse Code's
+stderr, `museCodeBackendManager.ts` and `skillsCommands.ts`) was fixed in
+the same pass.
+
+**P2-1, stale answers.** `forgetAnswers()` and `abandonProbe()` cleared
+`this.asking`, but the abandoned promise still returned its answer to
+whoever awaited it, so a passive refresh could publish an older answer
+after Check again's newer one.
+
+- **Fixed.** A probe carries `isAbandoned`; its starter and everyone who
+  joined it get `OBSOLETE` instead of the answer and look again, which
+  finds the newer remembered answer or joins the newer probe (bounded by
+  `MUSE_CREDENTIAL_READ_ATTEMPTS`). Test: `authService.test.ts` "publishes
+  no answer from a probe Check again left behind" (the finding's own
+  sequence over a real file), `cliAccount.test.ts`.
+- **Siblings.**
+  - The joiners of an abandoned probe got its answer too (CB).
+  - Any two refreshes could publish out of order, for example a refresh
+    that read SecretStorage before a key was pasted. Every refresh now
+    takes a ticket as it starts and publishes only if nothing newer has
+    (CC).
+  - A refresh while the browser sign-in waited (a setting change) wiped
+    its code off the panel. The flow now owns the panel until the device
+    runner returns (CD).
+- **Checked, left as they were.** `activateApiKey`, the install path and
+  `signIn` check the sign-out epoch after each await. `confirmCliSignIn`
+  races the flow's signal, and concurrent sign-outs join one. The device
+  flow reads the file before each `account/read`, so an answer is never
+  matched to a later write.
+- **A cost of the fix.** A probe Cancel abandoned while the sign-in's
+  pre-check waited on it makes that orphaned caller look again, which can
+  start one more short-lived account host. None starts once the window
+  has closed, and the three read attempts bound it.
+
+**P2-2, a host exit read as success.** If a poll saw `loggedOut` for a
+write another Muse process made and the host then exited, R7's exit
+branch turned that same write into `signedIn`.
+
+- **Fixed.** A signed-out answer records the file's modification time as
+  a refuted write (read before the question, so an answer refutes only a
+  write it saw). Only a write no answer refuted counts.
+- **Sibling.** A later `account/read` that could not answer (the host
+  going away rejects it) fell back to the same refuted write. It now uses
+  the same rule (CG).
+- **Checked, left as they were.** `probeAccount` and `logOutAccount` read
+  a closed host as `unknown` or `unconfirmed`, never success. A Cancel
+  after a file change lets the file's structure decide. `stoppedEarly`
+  (an exit before the code) fails. `connectAccountSession` throws.
+
+**P2-3, free text in the log.** For `expired` and `denied` the outcome was
+allowlisted, but the CLI's message was logged as sent: `clipForLog` only
+shortens, and the redactor catches only key-shaped strings.
+
+- **Fixed.** Each captured ending is logged in fixed words, and the
+  schema no longer keeps the message.
+- **Siblings,** with helpers `wireWordForLog` (`src/core/logging.ts`) and
+  `failureForLog` and `stderrForLog`
+  (`src/core/backends/musecode/logText.ts`):
+  - an uncovered ending word (CI);
+  - the `account/read` state in `CliAccount` (CK) and in `logOutAccount`
+    (CL);
+  - `markAuthRequired`'s reason (CM);
+  - the MSP error messages in three `MuseCodeHost` logs (a retried
+    refusal, `task/stopAll`, `approval/listPending`; CN, CR);
+  - `muse serve` stderr and its two close errors in the backend manager
+    (CO, CP);
+  - `muse skills` stderr (CQ).
+
+  Stderr lines 1.4.0-R4302.1 was captured writing (an unsupported schema
+  version, an unreadable Keychain item, a failed model-catalog fetch) are
+  named in fixed words. Any other line is named by its length alone, so
+  the log no longer shows an unrecognized CLI error; the panel still shows
+  what it showed.
+
+- **Checked, left as they were.**
+  - `describeExit` is fixed words and an exit code.
+  - `MuseCodeHost`'s own dispatch exceptions (`String(error)`) come from
+    the extension's own code.
+  - The SDK's protocol-error text is its own, and logged by kind.
+  - `accountHost` logs an error's name only.
+  - The backend manager's spawn line (the CLI path the extension resolved)
+    and its `museHome` (a structured path the CLI reports) are M39's
+    deliberate facts, not free text. Both name the user's profile folder,
+    which is the owner's call.
+
+This pass added no UI string.
+
 ## Not proved here
 
 A real sign-in is the owner's to give, and each of these needs one:
@@ -599,3 +732,25 @@ With the fourth round's fixes, `npm run quality` on the working tree
 `test/e2e/` on its own: 2 files passed (the 14 `cliAccount.e2e.test.ts`
 tests among them) and the 2 opt-in live files skipped. This round added no
 fixture; the probe outputs stay in the scratchpad.
+
+With Codex's review of `886af682` settled, `npm run quality` on the working
+tree (Windows 11, 2026-09-28, after drills CA to CR, before the commit):
+
+- **First run: exit 1.** One test in a suite this pass did not touch,
+  `dictationHost.test.ts` "gives the helper its environment on top of the
+  host’s (M26)", hit vitest's 5 s timeout under the full parallel load.
+  Run alone three times, the suite passed each time (12 of 12, about
+  3.5 s).
+- **Second run: exit 0.**
+  - format, lint (PSScriptAnalyzer 0 findings), all five typechecks;
+    `check:l10n` 14 tables, 93 manifest strings, 0 problems; knip and dpdm
+    clean; jscpd 0 clones;
+  - vitest: 180 files passed and 2 skipped; 2,704 tests passed and 23
+    skipped; statements 94.54 %;
+  - build: `dist/extension.js` 442.0 KiB of 600, `dist/modelApi.js`
+    297.2 KiB of 400, the bundle-split check passed;
+  - a11y: 336 pages, 0 rules violated; audit 0 advisories;
+  - gitleaks: no leaks; Semgrep: 287 rules on 417 files, 0 findings.
+
+`logText.ts` and `logText.test.ts` were untracked during that run; they
+hold no secret (synthetic paths and addresses only).

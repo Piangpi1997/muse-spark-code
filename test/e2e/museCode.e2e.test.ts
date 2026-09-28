@@ -41,6 +41,14 @@ const configHome = installFakeCredential()
 process.env['XDG_CONFIG_HOME'] = configHome
 const managers: MuseCodeBackendManager[] = []
 
+/**
+ * How the log names a stderr line no capture covers: by its length, never
+ * its text (the review of PR #49).
+ */
+function stderrLogged(line: string): string {
+  return `muse serve stderr: a line of ${String(line.length)} characters (not logged: it may name a path or an account)`
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, ms)
@@ -425,7 +433,8 @@ describe('Muse Code backend against a real child process', { timeout: TEST_TIMEO
       isPersistent: false,
     })
     expect(backend.isRunning).toBe(false)
-    expect(log.warn).toHaveBeenCalledWith('muse serve stderr: fake muse: dying on purpose')
+    expect(log.warn).toHaveBeenCalledWith(stderrLogged('fake muse: dying on purpose'))
+    expect(log.warn).not.toHaveBeenCalledWith(expect.stringContaining('dying on purpose'))
     const next = await backend.ensureHost()
     expect(next).not.toBe(host)
     expect(next.info.serverName).toBe('muse')
@@ -455,9 +464,7 @@ describe('Muse Code backend against a real child process', { timeout: TEST_TIMEO
     const crashing = manager({ start: 'crash' })
     await expect(crashing.manager.ensureHost()).rejects.toThrow()
     expect(crashing.manager.isRunning).toBe(false)
-    expect(crashing.log.warn).toHaveBeenCalledWith(
-      'muse serve stderr: fake muse: refusing to start',
-    )
+    expect(crashing.log.warn).toHaveBeenCalledWith(stderrLogged('fake muse: refusing to start'))
   })
 
   it('gives up on a host that never answers the handshake, and ends it (drill, D25)', async () => {

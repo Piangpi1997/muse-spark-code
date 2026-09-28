@@ -11,6 +11,7 @@
 import { selectBackend } from '../../core/backendSelection'
 import type { BackendKind } from '../../core/agent/agentBackend'
 import type { CliSignIn } from '../../core/backends/musecode/credentialFile'
+import { wireWordForLog } from '../../core/logging'
 import { unlessAborted } from '../../core/timeouts'
 import {
   type BackendMode,
@@ -142,6 +143,9 @@ function signInLine(snapshot: AuthSnapshot, loggedDetail: string | undefined): s
 const UNSUPPORTED_FILE_LOGGED =
   'the Muse Code credential file is in a format Muse Code cannot start with on this system'
 
+/** The browser sign-in's pre-check found a file the sign-in host could not start with. */
+const UNSUPPORTED_FILE = Symbol('unsupported credential file')
+
 /**
  * Why a device sign-in the host ended did not sign in (read when shown, D33):
  * each captured ending in its own words, any other as Muse Code named it
@@ -206,6 +210,15 @@ export class AuthService {
   private isLogoutPersistenceFailed = false
   /** The window is closing: no browser sign-in starts any more. */
   private isStopped = false
+  /**
+   * Every publication's place in time (the review of PR #49): a refresh
+   * takes a ticket as it starts and publishes only if nothing that started
+   * or was published after it has published first.
+   */
+  private tickets = 0
+  private publishedTicket = 0
+  /** The browser sign-in's code is on screen: a refresh leaves the panel to that flow. */
+  private isDeviceFlowWaiting = false
 
   public constructor(private readonly deps: AuthServiceDeps) {
     this.isLogoutHeld = deps.logoutHold.get()
@@ -246,9 +259,26 @@ export class AuthService {
     }
   }
 
-  private set(snapshot: AuthSnapshot): AuthSnapshot {
+  private nextTicket(): number {
+    this.tickets += 1
+    return this.tickets
+  }
+
+  /**
+   * A refresh's answer, unless something newer was published while it was
+   * asked, or a browser sign-in's code is on screen: its facts may be older
+   * than what the panel shows (the review of PR #49).
+   */
+  private publishRefresh(ticket: number, snapshot: AuthSnapshot): AuthSnapshot {
+    return ticket < this.publishedTicket || this.isDeviceFlowWaiting
+      ? this.snapshot
+      : this.set(snapshot, ticket)
+  }
+
+  private set(snapshot: AuthSnapshot, ticket = this.nextTicket()): AuthSnapshot {
     const previous = this.snapshot
     this.snapshot = snapshot
+    this.publishedTicket = ticket
     if (previous.status !== snapshot.status || previous.backend !== snapshot.backend) {
       const isUnsupportedFile =
         snapshot.detail !== undefined && snapshot.detail === this.unsupportedFileText()
@@ -327,6 +357,38 @@ export class AuthService {
     }
   }
 
+  /**
+   * The flow's pre-check and the device runner, while the flow owns the
+   * panel: a refresh meanwhile does not publish over its code (the review of
+   * PR #49).
+   */
+  private async awaitDeviceRunner(
+    flow: CliSignInFlow,
+  ): Promise<DeviceSignInOutcome | typeof UNSUPPORTED_FILE> {
+    const { abort } = flow
+    this.isDeviceFlowWaiting = true
+    try {
+      // The sign-in host could not start with that file either. A probe the
+      // CLI never answers must not hold Cancel or sign-out (the review of
+      // PR #49): the look ends with the flow's own signal.
+      const credential = await unlessAborted(this.cliCredential(false), abort.signal)
+      if (credential?.isUnsupportedFile === true) {
+        return UNSUPPORTED_FILE
+      }
+      // A cancel or sign-out during that look ends the flow before it starts.
+      return abort.signal.aborted
+        ? 'cancelled'
+        : await this.deps.runDeviceSignIn(abort.signal, (url, code) => {
+            if (abort.signal.aborted) {
+              return
+            }
+            this.set({ ...this.snapshot, verificationUrl: url, userCode: code })
+          })
+    } finally {
+      this.isDeviceFlowWaiting = false
+    }
+  }
+
   private async signInWithCli(): Promise<AuthSnapshot> {
     const flow: CliSignInFlow = {
       initial: this.snapshot,
@@ -345,11 +407,8 @@ export class AuthService {
     this.deviceAbort = abort
     this.set({ ...this.snapshot, status: 'signingIn', detail: UI_TEXT.signInWaiting })
     try {
-      // The sign-in host could not start with that file either. A probe the
-      // CLI never answers must not hold Cancel or sign-out (the review of
-      // PR #49): the look ends with the flow's own signal.
-      const credential = await unlessAborted(this.cliCredential(false), abort.signal)
-      if (credential?.isUnsupportedFile === true) {
+      const outcome = await this.awaitDeviceRunner(flow)
+      if (outcome === UNSUPPORTED_FILE) {
         return await this.finishFailedCliSignIn(
           flow,
           'error',
@@ -357,15 +416,6 @@ export class AuthService {
           'warning',
         )
       }
-      // A cancel or sign-out during that look ends the flow before it starts.
-      const outcome: DeviceSignInOutcome = abort.signal.aborted
-        ? 'cancelled'
-        : await this.deps.runDeviceSignIn(abort.signal, (url, code) => {
-            if (abort.signal.aborted) {
-              return
-            }
-            this.set({ ...this.snapshot, verificationUrl: url, userCode: code })
-          })
       if (outcome === 'cancelled') {
         return await this.finishCancelledCliSignIn(flow)
       }
@@ -884,6 +934,9 @@ export class AuthService {
    */
   public async refresh(isUserAction = false): Promise<AuthSnapshot> {
     const epoch = this.signOutEpoch
+    // Publications are ordered by when their questions began: a slower,
+    // older refresh never overwrites a newer state (the review of PR #49).
+    const ticket = this.nextTicket()
     const selected = await this.selectedSnapshot(isUserAction)
     // A refresh begun before a sign-out (its probe may answer long after)
     // never overwrites what the sign-out, or a later sign-in, published (the
@@ -892,10 +945,14 @@ export class AuthService {
       return this.snapshot
     }
     if (this.isSigningOut) {
-      return this.set({ ...selected, status: 'error', detail: this.logoutDetail() })
+      return this.publishRefresh(ticket, {
+        ...selected,
+        status: 'error',
+        detail: this.logoutDetail(),
+      })
     }
     if (!this.isLogoutHeld) {
-      return this.set(selected)
+      return this.publishRefresh(ticket, selected)
     }
     const hasCliCredential = await this.hasCliCredential(isUserAction)
     const hasStoredKey = (await this.deps.credentials.getApiKey()) !== undefined
@@ -903,11 +960,19 @@ export class AuthService {
       return this.snapshot
     }
     if (hasCliCredential || hasStoredKey) {
-      return this.set({ ...selected, status: 'error', detail: this.logoutDetail() })
+      return this.publishRefresh(ticket, {
+        ...selected,
+        status: 'error',
+        detail: this.logoutDetail(),
+      })
     }
     const isHoldSaved = await this.setLogoutHold(false)
     if (!isHoldSaved) {
-      return this.set({ ...selected, status: 'error', detail: UI_TEXT.signOutHoldFailed })
+      return this.publishRefresh(ticket, {
+        ...selected,
+        status: 'error',
+        detail: UI_TEXT.signOutHoldFailed,
+      })
     }
     const current = await this.selectedSnapshot(isUserAction)
     const hasCurrentCredential =
@@ -925,9 +990,13 @@ export class AuthService {
     }
     if (hasCurrentCredential || current.status === 'signedIn') {
       await this.setLogoutHold(true)
-      return this.set({ ...current, status: 'error', detail: this.logoutDetail() })
+      return this.publishRefresh(ticket, {
+        ...current,
+        status: 'error',
+        detail: this.logoutDetail(),
+      })
     }
-    return this.set(current)
+    return this.publishRefresh(ticket, current)
   }
 
   public async signIn(method: SignInMethod): Promise<AuthSnapshot> {
@@ -991,7 +1060,9 @@ export class AuthService {
 
   /** The backend answered a turn with `authRequired`: the estimate was wrong. */
   public markAuthRequired(reason: string): AuthSnapshot {
-    this.deps.log.warn(`The backend reported authRequired: ${reason}`)
+    // The reason is the backend's own text: the panel shows it, and the log
+    // names it only in the shape of a protocol word (the review of PR #49).
+    this.deps.log.warn(`The backend reported authRequired: ${wireWordForLog(reason)}`)
     return this.set({ ...this.snapshot, status: 'signedOut', detail: reason })
   }
 

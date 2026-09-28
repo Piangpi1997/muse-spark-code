@@ -776,6 +776,41 @@ describe('AuthService: sign-in, sign-out and Cancel racing', () => {
     await signingIn
   })
 
+  // Two refreshes answer out of order: the older one's facts never replace
+  // what the newer one published (the review of PR #49).
+  it('never publishes an older refresh over a newer one', async () => {
+    const h = harness()
+    const older = Promise.withResolvers<CliSignIn>()
+    h.cliSignIn.mockImplementationOnce(() => older.promise)
+    const stale = h.service.refresh()
+    h.facts.cli = 'signedIn'
+    await expect(h.service.refresh()).resolves.toMatchObject({ status: 'signedIn' })
+    const published = h.broadcasts.length
+    older.resolve('signedOut')
+    await expect(stale).resolves.toMatchObject({ status: 'signedIn' })
+    expect(h.service.current.status).toBe('signedIn')
+    expect(h.broadcasts).toHaveLength(published)
+  })
+
+  // A refresh while the browser sign-in waits (a setting changed) leaves the
+  // code on screen; the flow publishes its own ending (the review of PR #49).
+  it('keeps the device code on screen through a refresh while the flow waits', async () => {
+    const h = harness()
+    const runner = Promise.withResolvers<DeviceSignInOutcome>()
+    h.runDeviceSignIn.mockImplementation((_signal, onCode) => {
+      onCode('https://auth.meta.com/oauth/device/', 'ABCD-EFGH')
+      return runner.promise
+    })
+    const signingIn = h.service.signIn('browser')
+    await vi.waitFor(() => {
+      expect(h.service.current.userCode).toBe('ABCD-EFGH')
+    })
+    await h.service.refresh()
+    expect(h.service.current).toMatchObject({ status: 'signingIn', userCode: 'ABCD-EFGH' })
+    runner.resolve('timedOut')
+    await expect(signingIn).resolves.toMatchObject({ status: 'signedOut', userCode: undefined })
+  })
+
   // The window closing: its host must be closed before the backends stop.
   it('cancels the browser sign-in and waits for it to end', async () => {
     const h = harness()
@@ -1324,6 +1359,20 @@ describe('AuthService.signOut and host reports', () => {
     expect(h.logoutHoldState.isHeld).toBe(false)
   })
 
+  // The reason is the backend's own text: the panel shows it, the log only
+  // in the shape of a protocol word (the review of PR #49).
+  it('logs an authRequired reason only in the shape of a protocol word', () => {
+    const log = new FakeLogOutputChannel()
+    const h = harness({ log })
+    const reason = String.raw`not signed in; see C:\Users\someone\.config\muse`
+    expect(h.service.markAuthRequired(reason)).toMatchObject({ detail: reason })
+    expect(log.warn).toHaveBeenCalledWith(
+      'The backend reported authRequired: an unrecognized value',
+    )
+    h.service.markAuthRequired('authRequired')
+    expect(log.warn).toHaveBeenLastCalledWith('The backend reported authRequired: authRequired')
+  })
+
   it('accepts the host verdict over its own estimate', async () => {
     const h = harness()
     h.facts.cli = 'signedIn'
@@ -1548,6 +1597,26 @@ describe('AuthService over the CLI’s real credential file', () => {
     // Once it has answered, the next press asks afresh.
     await t.service.checkAgain()
     expect(t.probe).toHaveBeenCalledTimes(2)
+  })
+
+  // A passive refresh's probe answers after Check again forgot it and got a
+  // newer answer: the old answer is never published (the review of PR #49).
+  it('publishes no answer from a probe Check again left behind', async () => {
+    const t = withFile(MALFORMED)
+    const stale = Promise.withResolvers<AccountState | undefined>()
+    t.probe.mockImplementationOnce(() => stale.promise).mockResolvedValue(LOGGED_OUT_ANSWER)
+    const passive = t.service.refresh()
+    await vi.waitFor(() => {
+      expect(t.probe).toHaveBeenCalledOnce()
+    })
+    await expect(t.service.checkAgain()).resolves.toMatchObject({ status: 'signedOut' })
+    const published = t.h.broadcasts.length
+    stale.resolve(SIGNED_IN_ANSWER)
+    await passive
+    expect(t.service.current.status).toBe('signedOut')
+    expect(t.h.broadcasts.slice(published)).not.toContainEqual(
+      expect.objectContaining({ type: 'authState', status: 'signedIn' }),
+    )
   })
 
   // A Keychain sign-in made elsewhere leaves the file as it was: the sign-out

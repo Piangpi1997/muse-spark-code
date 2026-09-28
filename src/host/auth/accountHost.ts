@@ -8,6 +8,7 @@
 
 import { spawnMspConnection, type Connection } from '@muse-code/sdk'
 import * as z from 'zod/mini'
+import { wireWordForLog } from '../../core/logging'
 import { unlessAborted, withDeadline } from '../../core/timeouts'
 import {
   MSP_CLIENT_NAME,
@@ -149,11 +150,13 @@ export async function logOutAccount(
     async (connection) => {
       const answer = await requestAccount(connection, MUSE_ACCOUNT_LOGOUT)
       const after = answer === undefined ? undefined : await readAccountState(connection)
+      // The state word only, and only in the shape of one: its vocabulary
+      // is open (the review of PR #49).
       if (after === undefined || !isCapturedSignedOut(after)) {
         log.warn(
           after?.state === MUSE_ACCOUNT_STATES.envKey
             ? 'Muse Code runs on META_API_KEY, which hides whether account/logout cleared the stored sign-in'
-            : `Muse Code did not confirm account/logout (${after?.state ?? 'no answer'})`,
+            : `Muse Code did not confirm account/logout (${after === undefined ? 'no answer' : wireWordForLog(after.state)})`,
         )
         return 'unconfirmed'
       }

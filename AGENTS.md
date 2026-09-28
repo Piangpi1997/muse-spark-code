@@ -63,9 +63,12 @@ them, the milestone plan, and the certification checklist.
    - **When the structure cannot say**, the CLI answers `account/read`
      (PLAN.md D26). Its `label` (an e-mail address) and `avatarUrl` are
      never kept, logged or shown.
-   - **A sign-in's ending.** Only `loginCompleted` messages captured as
-     naming nothing personal (`expired`, `denied`) reach the log; `failed`'s
-     names a path under the user's profile.
+   - **Text the CLI chose.** A `loginCompleted` message, `muse serve` or
+     `muse skills` stderr and an MSP error message never reach the log as
+     sent: they can name a path under the user's profile or an account,
+     and the redactor catches only keys. Log a protocol word through
+     `wireWordForLog`, an MSP failure through `failureForLog`, stderr
+     through `stderrForLog`, or fixed words.
    - **Logging.** Log through the `LogOutputChannel`; never `console.log`
      in the host.
 9. **Dependencies are deliberate.** Before adding one: check peer ranges

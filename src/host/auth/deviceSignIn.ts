@@ -23,10 +23,12 @@
 // Cancel, the host's ending and the host's exit are noticed at once, even
 // while an `account/read` is unanswered, and the `account/loginCancel` sent
 // on the way out is bounded: the host is closed either way, which ends its
-// flow. A host that exits after the credential file changed has signed in.
+// flow. A host that exits after the credential file changed has signed in,
+// unless an answered `account/read` said signed out about that same write:
+// that evidence stands for the exit and for a question left unanswered.
 
 import * as z from 'zod/mini'
-import { clipForLog } from '../../core/logging'
+import { wireWordForLog } from '../../core/logging'
 import { withDeadline } from '../../core/timeouts'
 import {
   CREDENTIAL_POLL_INTERVAL_MS,
@@ -51,11 +53,11 @@ const loginStartSchema = z.object({
 })
 // As captured: `expired` and `denied` carry a message ("login failed: the
 // request expired" / "… was denied"), `failed` one that names the credential
-// file's path, `cancelled` and `granted` none. Only what `loggedEnding`
-// allows reaches the log; the panel shows none of it.
+// file's path, `cancelled` and `granted` none. The message is free text the
+// CLI chose, so neither the log nor the panel shows it: the log names each
+// captured ending in fixed words (`loggedEnding`).
 const loginCompletedSchema = z.object({
   outcome: z.string().check(z.minLength(1)),
-  message: z.optional(z.string()),
 })
 const loginCancelSchema = z.object({ cancelled: z.boolean() })
 
@@ -99,23 +101,23 @@ const CAPTURED_ENDINGS: ReadonlyMap<string, CapturedSignInEnding> = new Map([
   [MUSE_LOGIN_OUTCOMES.failed, 'failed'],
 ])
 
-// The endings whose captured message is safe to log: it names no path and
-// no account (the review of PR #49). `failed`'s names the credential file's
-// path, under the user's profile, so a fixed line stands in for it; a word
-// no capture covers is logged without its message.
-const LOGGED_MESSAGES: ReadonlySet<string> = new Set([
-  MUSE_LOGIN_OUTCOMES.expired,
-  MUSE_LOGIN_OUTCOMES.denied,
+// How the log names each captured ending: fixed words, never the CLI's
+// message (the review of PR #49). `clipForLog` only shortens, and the
+// redactor catches keys, not a path or an e-mail address a message may hold.
+const LOGGED_ENDINGS: ReadonlyMap<string, string> = new Map([
+  [MUSE_LOGIN_OUTCOMES.granted, 'granted'],
+  [MUSE_LOGIN_OUTCOMES.cancelled, 'cancelled'],
+  [MUSE_LOGIN_OUTCOMES.expired, 'expired: the code expired before it was approved'],
+  [MUSE_LOGIN_OUTCOMES.denied, 'denied: the sign-in was denied in the browser'],
+  [MUSE_LOGIN_OUTCOMES.failed, 'failed: saving the credential failed'],
 ])
 
-/** How the log names an ending: the word, and only a message captured as safe. */
-function loggedEnding(outcome: string, message: string | undefined): string {
-  if (outcome === MUSE_LOGIN_OUTCOMES.failed) {
-    return `${outcome}: saving the credential failed`
-  }
-  const said =
-    message !== undefined && LOGGED_MESSAGES.has(outcome) ? `: ${clipForLog(message)}` : ''
-  return `${clipForLog(outcome)}${said}`
+/** How the log names an ending: fixed words, or an uncovered word in the shape of one. */
+function loggedEnding(outcome: string): string {
+  return (
+    LOGGED_ENDINGS.get(outcome) ??
+    `${wireWordForLog(outcome)} (an ending no capture covers; its message is not logged)`
+  )
 }
 
 /** How `outcome` ends the flow; undefined for `granted`, which `account/read` bears out. */
@@ -204,10 +206,15 @@ export async function runDeviceSignIn(deps: DeviceSignInDeps): Promise<DeviceSig
   let isEnded = false
   let isGranted = false
   let isHostGone = false
-  const isFileWritten = () => {
-    const modified = deps.credentialFileModifiedAt()
-    return modified !== undefined && modified !== before
-  }
+  // The file's modification time when an answered `account/read` said
+  // signed out: that write (another Muse process's sign-out) is no sign-in,
+  // whatever follows it, a host exit or a question left unanswered (the
+  // review of PR #49).
+  let refutedWrite: number | undefined
+  /** A write since the flow began that no answer contradicted. */
+  const isFreshWrite = (modified: number | undefined) =>
+    modified !== undefined && modified !== before && modified !== refutedWrite
+  const isFileWritten = () => isFreshWrite(deps.credentialFileModifiedAt())
   try {
     session.connection.onNotification((notification) => {
       if (isEnded || notification.method !== MUSE_ACCOUNT_LOGIN_COMPLETED) {
@@ -221,9 +228,7 @@ export async function runDeviceSignIn(deps: DeviceSignInDeps): Promise<DeviceSig
       isEnded = true
       isGranted = result.data.outcome === MUSE_LOGIN_OUTCOMES.granted
       hostEnding = endingOf(result.data.outcome)
-      deps.log.info(
-        `Muse Code sign-in ended: ${loggedEnding(result.data.outcome, result.data.message)}`,
-      )
+      deps.log.info(`Muse Code sign-in ended: ${loggedEnding(result.data.outcome)}`)
       if (hostEnding !== undefined) {
         stop()
       }
@@ -284,13 +289,18 @@ export async function runDeviceSignIn(deps: DeviceSignInDeps): Promise<DeviceSig
       }
     }
     const hasLanded = async () => {
-      const isWritten = isFileWritten()
+      // Read before the question, so an answer refutes only a write it saw.
+      const modified = deps.credentialFileModifiedAt()
       const current = await untilStopped(readAccountState(session.connection))
       // A stop (Cancel, an ending) decides the flow: a file change alone
       // must not turn it into a sign-in (the review of PR #49).
-      return (
-        current !== STOPPED && isSignedIn({ initial, current, isFileWritten: isWritten, isGranted })
-      )
+      if (current === STOPPED) {
+        return false
+      }
+      if (current?.state === MUSE_ACCOUNT_STATES.loggedOut) {
+        refutedWrite = modified
+      }
+      return isSignedIn({ initial, current, isFileWritten: isFreshWrite(modified), isGranted })
     }
     /** How a flow that has not landed ends now; undefined while it goes on. */
     const endedAs = async (): Promise<DeviceSignInOutcome | undefined> => {
@@ -303,7 +313,8 @@ export async function runDeviceSignIn(deps: DeviceSignInDeps): Promise<DeviceSig
       }
       if (isHostGone) {
         // An exit is no decision: a host that wrote the credential file
-        // before it went has signed in (the review of PR #49).
+        // before it went has signed in, unless an answer already said that
+        // write left it signed out (the review of PR #49).
         if (isFileWritten()) {
           deps.log.warn('The Muse Code sign-in host exited after writing the credential file')
           return 'signedIn'

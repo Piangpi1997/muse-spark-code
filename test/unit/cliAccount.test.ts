@@ -66,6 +66,19 @@ function linuxChecker(file: string, probe: () => Promise<AccountState | undefine
   })
 }
 
+/**
+ * An ambiguous file on Linux whose first CLI question waits until the test
+ * answers it (`stale`), and whose next is answered signed out.
+ */
+function staleThenLoggedOut() {
+  const home = configHome()
+  home.write(MALFORMED)
+  const stale = Promise.withResolvers<AccountState | undefined>()
+  const answers = [stale.promise, Promise.resolve(LOGGED_OUT)]
+  const probe = vi.fn(() => answers.shift() ?? Promise.resolve(undefined))
+  return { stale, probe, checker: linuxChecker(home.file, probe) }
+}
+
 /** An ambiguous file on Linux whose CLI question waits until the test answers it. */
 function heldQuestion() {
   const home = configHome()
@@ -250,22 +263,46 @@ describe('CliAccount', () => {
     await expect(pending).resolves.toBe('signedOut')
   })
 
-  it('asks afresh after an unanswered probe is abandoned, and forgets its late answer (the review of PR #49)', async () => {
-    const home = configHome()
-    home.write(MALFORMED)
-    const stale = Promise.withResolvers<AccountState | undefined>()
-    const answers = [stale.promise, Promise.resolve(LOGGED_OUT)]
-    const probe = vi.fn(() => answers.shift() ?? Promise.resolve(undefined))
-    const checker = linuxChecker(home.file, probe)
+  // The late answer reaches no caller: the one that waited on it looks again
+  // and gets the newer answer, so it cannot publish an older state over a
+  // newer one (the review of PR #49).
+  it('asks afresh after an unanswered probe is abandoned, and gives its late answer to no one (the review of PR #49)', async () => {
+    const { stale, probe, checker } = staleThenLoggedOut()
     const abandoned = checker.signIn(true)
     checker.abandonProbe()
     await expect(checker.signIn(true)).resolves.toBe('signedOut')
     expect(probe).toHaveBeenCalledTimes(2)
-    // The first probe answers late: it settles its own caller only.
     stale.resolve(SIGNED_IN)
-    await expect(abandoned).resolves.toBe('signedIn')
+    await expect(abandoned).resolves.toBe('signedOut')
     await expect(checker.signIn(false)).resolves.toBe('signedOut')
     expect(probe).toHaveBeenCalledTimes(2)
+  })
+
+  // Check again forgets a probe others are waiting on: every one of them
+  // gets the answer Check again got (the review of PR #49).
+  it('gives the callers of a forgotten probe the newer answer, the one that joined it too', async () => {
+    const { stale, probe, checker } = staleThenLoggedOut()
+    const started = checker.signIn(true)
+    const joined = checker.signIn(false)
+    checker.forgetAnswers()
+    await expect(checker.signIn(true)).resolves.toBe('signedOut')
+    stale.resolve(SIGNED_IN)
+    await expect(Promise.all([started, joined])).resolves.toEqual(['signedOut', 'signedOut'])
+    expect(probe).toHaveBeenCalledTimes(2)
+  })
+
+  // The state vocabulary is open: a state not shaped like a protocol word is
+  // not logged (the review of PR #49).
+  it('logs the CLI’s state only in the shape of a protocol word', async () => {
+    const home = configHome()
+    home.write(MALFORMED)
+    const t = account('linux', home.file, [
+      { state: 'someone@example.com', credentialRequired: true },
+    ])
+    await expect(t.checker.signIn(true)).resolves.toBe('unknown')
+    expect(t.log.info).toHaveBeenCalledWith(
+      'Muse Code sign-in confirmed by account/read: an unrecognized value (unknown)',
+    )
   })
 
   // Cancel abandons a probe but keeps what the CLI already said; a sign-out,

@@ -32,6 +32,7 @@ import {
   serveArguments,
   type ShellSandboxPosture,
 } from '../../core/backends/musecode/sandbox'
+import { failureForLog, stderrForLog } from '../../core/backends/musecode/logText'
 import { clipForLog } from '../../core/logging'
 import { withDeadline } from '../../core/timeouts'
 import {
@@ -201,8 +202,9 @@ export class MuseCodeBackendManager {
       ...(this.deps.workspaceRoot !== undefined && { cwd: this.deps.workspaceRoot }),
       env,
       onStderr: (chunk) => {
-        // A chatty or looping CLI must not flood the log (PLAN.md D24).
-        this.deps.log.warn(`muse serve stderr: ${clipForLog(chunk.trimEnd())}`)
+        // A chatty or looping CLI must not flood the log (PLAN.md D24), and
+        // its free text is named in fixed words (the review of PR #49).
+        this.deps.log.warn(`muse serve stderr: ${clipForLog(stderrForLog(chunk))}`)
       },
     })
     const timeoutMs = this.deps.handshakeTimeoutMs ?? MSP_HANDSHAKE_TIMEOUT_MS
@@ -227,7 +229,7 @@ export class MuseCodeBackendManager {
       try {
         await handshake.close()
       } catch (closeError: unknown) {
-        this.deps.log.warn(`Closing the unstarted muse serve failed: ${String(closeError)}`)
+        this.deps.log.warn(`Closing the unstarted muse serve failed: ${failureForLog(closeError)}`)
       }
       throw error
     }
@@ -418,7 +420,7 @@ export class MuseCodeBackendManager {
       const host = await pending
       await host.close()
     } catch (error: unknown) {
-      this.deps.log.warn(`Ignoring error while closing muse serve: ${String(error)}`)
+      this.deps.log.warn(`Ignoring error while closing muse serve: ${failureForLog(error)}`)
     }
   }
 }

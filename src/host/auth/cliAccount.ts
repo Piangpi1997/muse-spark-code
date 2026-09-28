@@ -18,6 +18,7 @@ import {
   type CredentialFileVerdict,
   credentialFileVerdict,
 } from '../../core/backends/musecode/credentialFile'
+import { wireWordForLog } from '../../core/logging'
 import {
   MUSE_CREDENTIAL_FILE_MAX_BYTES,
   MUSE_CREDENTIAL_READ_ATTEMPTS,
@@ -104,13 +105,25 @@ export interface CliAccountDeps {
   readonly log: Logger
 }
 
+/** One question to the CLI, which Cancel, a sign-out or Check again may leave behind. */
+interface Probe {
+  readonly key: string
+  readonly signIn: Promise<CliSignIn>
+  isAbandoned: boolean
+}
+
+// What an abandoned probe gives its callers instead of its answer: they look
+// again, so none of them publishes an answer older than what was asked since
+// (the review of PR #49).
+const OBSOLETE = Symbol('the answer of an abandoned probe')
+
 export class CliAccount {
   private answered: { readonly key: string; readonly signIn: CliSignIn } | undefined
-  private asking: { readonly key: string; readonly signIn: Promise<CliSignIn> } | undefined
+  private asking: Probe | undefined
 
   public constructor(private readonly deps: CliAccountDeps) {}
 
-  private async confirm(key: string, isUserAction: boolean): Promise<CliSignIn> {
+  private async confirm(key: string, isUserAction: boolean): Promise<CliSignIn | typeof OBSOLETE> {
     const answered = this.answered
     // A remembered "could not say" is asked again when the user acts.
     if (answered?.key === key && (!isUserAction || answered.signIn !== 'unknown')) {
@@ -120,16 +133,19 @@ export class CliAccount {
       return 'unknown'
     }
     if (this.asking?.key === key) {
-      return await this.asking.signIn
+      const joined = this.asking
+      const signIn = await joined.signIn
+      return joined.isAbandoned ? OBSOLETE : signIn
     }
-    const asking = { key, signIn: this.ask() }
+    const asking: Probe = { key, signIn: this.ask(), isAbandoned: false }
     this.asking = asking
     try {
       const signIn = await asking.signIn
-      // An abandoned probe's late answer is not remembered.
-      if (this.asking === asking) {
-        this.answered = { key, signIn }
+      // An abandoned probe's late answer is neither remembered nor given.
+      if (asking.isAbandoned) {
+        return OBSOLETE
       }
+      this.answered = { key, signIn }
       return signIn
     } finally {
       if (this.asking === asking) {
@@ -141,10 +157,10 @@ export class CliAccount {
   private async ask(): Promise<CliSignIn> {
     const account = await this.deps.probe()
     const signIn = cliSignInFromAccount(account)
-    // The state word only: the account's label is an e-mail address.
-    this.deps.log.info(
-      `Muse Code sign-in confirmed by account/read: ${account?.state ?? 'no answer'} (${signIn})`,
-    )
+    // The state word only, and only in the shape of one: the account's label
+    // is an e-mail address, and the state vocabulary is open.
+    const said = account === undefined ? 'no answer' : wireWordForLog(account.state)
+    this.deps.log.info(`Muse Code sign-in confirmed by account/read: ${said} (${signIn})`)
     return signIn
   }
 
@@ -160,10 +176,14 @@ export class CliAccount {
   /**
    * Leaves an unanswered probe behind (Cancel; the review of PR #49): the
    * next question asks afresh instead of joining it, and its late answer is
-   * not remembered. A remembered answer stands, so what Cancel shows next
-   * needs no new question.
+   * neither remembered nor given to the callers that waited on it, who look
+   * again. A remembered answer stands, so what Cancel shows next needs no
+   * new question.
    */
   public abandonProbe(): void {
+    if (this.asking !== undefined) {
+      this.asking.isAbandoned = true
+    }
     this.asking = undefined
   }
 
@@ -191,8 +211,9 @@ export class CliAccount {
       }
       const signIn = await this.confirm(look.key, isUserAction)
       // An answer about a file that has since been rewritten is not an
-      // answer about this one (the review of PR #49): look again.
-      if (this.look().key === look.key) {
+      // answer about this one, and an abandoned probe's is older than what
+      // was asked since (the review of PR #49): look again.
+      if (signIn !== OBSOLETE && this.look().key === look.key) {
         return signIn
       }
     }
