@@ -32,14 +32,16 @@ Only the latest release on the Visual Studio Marketplace receives fixes.
   child process, written to settings or logs, or shown in the panel. The
   extension reads only the structure of the Muse Code CLI's own credential
   file, never a token in it: the schema version, which providers it names
-  (only `meta` speaks for the sign-in), and whether that one points to the
-  macOS Keychain. When that is not enough, it asks the CLI
-  (`account/read`) and discards the account label and avatar address the
-  answer carries. It never reads the Keychain's secret. In-panel sign-in,
-  that question and sign-out (`account/logout`) run in a temporary
-  `muse serve` that owns no conversation and is closed on success, cancel,
-  timeout, error or when the window closes; a sign-in whose host exits
-  fails at once. The only page sign-in opens must be on
+  (only `meta` speaks for the sign-in), each one's storage lane (the macOS
+  Keychain), and whether `meta` has an `api_key` or `access_token` entry
+  (the parse keeps the fact, never the value). When that is not enough, it
+  asks the CLI (`account/read`) and discards the account label and avatar
+  address the answer carries. It never reads the Keychain's secret.
+  In-panel sign-in, that question and sign-out (`account/logout`) run in a
+  temporary `muse serve` that owns no conversation and is closed on
+  success, cancel, timeout, error or when the window closes, after which
+  no sign-in starts; a sign-in whose host exits fails at once unless the
+  credential file changed first. The only page sign-in opens must be on
   `https://auth.meta.com`. A failed sign-in's message, which names a
   folder in the user's profile, is not logged. The log channel redacts
   key-shaped strings, in Meta's current `LLM_…` form and the older

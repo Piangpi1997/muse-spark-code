@@ -1421,11 +1421,13 @@ export const MUSE_LOGIN_OUTCOME_SHOWN_MAX_CHARS = 40
 // anyway (captured: answered within 4 ms, after the `cancelled` ending).
 export const MUSE_LOGIN_CANCEL_TIMEOUT_MS = 2000
 // The CLI's credential file (`auth.json`), read for its structure only: its
-// schema version, whether it names the Muse provider, and whether that
-// provider's `storage` points to the macOS Keychain. Version 1 holds the
-// credential itself (Windows, Linux, and macOS with
-// TBH_CREDENTIAL_BACKEND=file); version 2 is macOS's token-free pointer,
-// which `muse serve` on Windows refuses whatever it holds.
+// schema version, whether it names the Muse provider, that provider's
+// `storage` lane, and whether it carries a captured credential key. Version
+// 1 holds the credential itself on Windows and Linux (captured); on macOS no
+// version-1 file holding one was captured (with TBH_CREDENTIAL_BACKEND=file
+// the Mac wrote no file, and read a pointer as signed out). Version 2 is
+// macOS's token-free pointer, which `muse serve` on Windows and Linux
+// refuses whatever it holds, unless META_API_KEY is set.
 export const MUSE_CREDENTIAL_INLINE_SCHEMA = 1
 export const MUSE_CREDENTIAL_POINTER_SCHEMA = 2
 export const MUSE_CREDENTIAL_KEYCHAIN_STORAGE = 'keychain'

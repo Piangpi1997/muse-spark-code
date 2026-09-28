@@ -1501,17 +1501,18 @@ stopped and the next message resumes the same session.
 - **The panel says Muse Code cannot start because its sign-in file is in
   the macOS format** — the `auth.json` it names came from a Mac: a
   version-2 file, or one whose sign-in lives in the Keychain. Muse Code
-  1.4.0 on Windows exits at startup with such a file, even an empty one,
-  and the extension treats Linux the same way. Move or rename the file,
-  then sign in again. With `META_API_KEY` set, Muse Code starts anyway and
-  uses the key.
+  1.4.0 on Windows and on Linux exits at startup with such a file, even an
+  empty one. Move or rename the file, then sign in again. With
+  `META_API_KEY` set, Muse Code starts anyway and uses the key.
 - **The panel shows signed in on macOS, but the first message asks you to
   sign in** — on a Mac the token is in the login Keychain, and the
   extension asks Muse Code about it only when you act: a click in the
   panel (sign-in, sign-out, **Check again**), or the **Sign Out** or
-  **Diagnostics** command. A Keychain prompt never appears just because
-  VS Code opened. Choose **Check again** to have Muse Code asked afresh
-  now. **Muse Spark: Diagnostics** says whether the Keychain item exists,
+  **Diagnostics** command. That goes for any `auth.json` on a Mac but the
+  empty one a sign-out leaves, since what Muse Code 1.4.0 does there with
+  another file has not been seen. A Keychain prompt never appears just
+  because VS Code opened. Choose **Check again** to have Muse Code asked
+  afresh now. **Muse Spark: Diagnostics** says whether the Keychain item exists,
   looked up without reading the secret; it also asks Muse Code for its
   sign-in, and Muse Code may read the Keychain to answer, which can show
   the Keychain's prompt.

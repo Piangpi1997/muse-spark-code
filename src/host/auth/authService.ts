@@ -127,14 +127,20 @@ export type AuthPort = Pick<
 
 /**
  * The sign-in story for the log (M39): the state, the backend it chose and,
- * for an error, why. Written when the state or the backend changes.
+ * for an error, why (`loggedDetail`, which may stand in for a detail that
+ * names a path). Written when the state or the backend changes.
  */
-function signInLine(snapshot: AuthSnapshot): string {
+function signInLine(snapshot: AuthSnapshot, loggedDetail: string | undefined): string {
   const backend = snapshot.backend === undefined ? '' : ` on the ${snapshot.backend} backend`
-  const why =
-    snapshot.status === 'error' && snapshot.detail !== undefined ? `: ${snapshot.detail}` : ''
+  const why = loggedDetail !== undefined && snapshot.status === 'error' ? `: ${loggedDetail}` : ''
   return `Sign-in state: ${snapshot.status}${backend}${why}`
 }
+
+// What the log says in place of the unsupported-file message, which names
+// the credential file's full path under the user's profile (the review of
+// PR #49); the panel still shows the path.
+const UNSUPPORTED_FILE_LOGGED =
+  'the Muse Code credential file is in a format Muse Code cannot start with on this system'
 
 /**
  * Why a device sign-in the host ended did not sign in (read when shown, D33):
@@ -193,9 +199,13 @@ export class AuthService {
   private admissionGenerationValue = 0
   /** Sign-out waits for accepted key writes and backend restarts before ending sessions. */
   private readonly keyActivations = new Set<Promise<AuthSnapshot>>()
+  /** Every Check again pressed while one runs joins it: one question to the CLI. */
+  private checkingAgain: Promise<AuthSnapshot> | undefined
   private isLogoutHeld: boolean
   private isSigningOut = false
   private isLogoutPersistenceFailed = false
+  /** The window is closing: no browser sign-in starts any more. */
+  private isStopped = false
 
   public constructor(private readonly deps: AuthServiceDeps) {
     this.isLogoutHeld = deps.logoutHold.get()
@@ -218,6 +228,14 @@ export class AuthService {
     return this.isLogoutPersistenceFailed ? UI_TEXT.signOutHoldFailed : UI_TEXT.signOutPending
   }
 
+  /**
+   * Whether a sign-out runs now: read afresh after an await, which the
+   * compiler's narrowing of `isSigningOut` does not see.
+   */
+  private isSignOutRunning(): boolean {
+    return this.isSigningOut
+  }
+
   private async stopBackendForSignOut(): Promise<boolean> {
     try {
       await this.deps.backend.restartBackend(true)
@@ -232,7 +250,11 @@ export class AuthService {
     const previous = this.snapshot
     this.snapshot = snapshot
     if (previous.status !== snapshot.status || previous.backend !== snapshot.backend) {
-      this.deps.log.info(signInLine(snapshot))
+      const isUnsupportedFile =
+        snapshot.detail !== undefined && snapshot.detail === this.unsupportedFileText()
+      this.deps.log.info(
+        signInLine(snapshot, isUnsupportedFile ? UNSUPPORTED_FILE_LOGGED : snapshot.detail),
+      )
     }
     this.deps.broadcast(this.toMessage())
     return this.snapshot
@@ -291,6 +313,11 @@ export class AuthService {
   private async joinDeviceSignIn(): Promise<AuthSnapshot> {
     if (this.deviceSignIn !== undefined) {
       return await this.deviceSignIn
+    }
+    // A click whose pre-flight questions outlived the window starts no host
+    // after the backends stopped (the review of PR #49).
+    if (this.isStopped) {
+      return this.snapshot
     }
     this.deviceSignIn = this.signInWithCli()
     try {
@@ -449,6 +476,15 @@ export class AuthService {
       return this.snapshot
     }
     const { initial } = flow
+    // The code leaves the panel at once, not after the refresh below, which
+    // may wait on the CLI (the review of PR #49).
+    const ended = this.set({
+      ...this.snapshot,
+      status,
+      detail,
+      verificationUrl: undefined,
+      userCode: undefined,
+    })
     if (this.isLogoutHeld || (initial.status === 'signedIn' && initial.backend === 'modelApi')) {
       // A sign-out that starts meanwhile publishes its own state, and does
       // not wait on the question this refresh may ask (the review of PR #49).
@@ -459,13 +495,7 @@ export class AuthService {
       this.deps.broadcast({ type: 'notice', level: noticeLevel, text: detail })
       return refreshed
     }
-    return this.set({
-      ...this.snapshot,
-      status,
-      detail,
-      verificationUrl: undefined,
-      userCode: undefined,
-    })
+    return ended
   }
 
   private async refreshAfterCliDiscovery(epoch: number): Promise<AuthSnapshot> {
@@ -679,6 +709,10 @@ export class AuthService {
       userCode: undefined,
     })
     this.cancelSignIn()
+    // Cancel keeps a remembered answer; a sign-out must not decide on it: a
+    // Keychain sign-in made since leaves the file as it was, and a stale
+    // `signedOut` would skip `account/logout` (the review of PR #49).
+    this.deps.backend.forgetCliAnswers()
     const hasPendingSignIn = this.deviceSignIn !== undefined || this.keyActivations.size > 0
     const stopping = this.stopBackendForSignOut()
     try {
@@ -752,10 +786,15 @@ export class AuthService {
 
   /**
    * The window is closing: the browser sign-in is cancelled and waited
-   * for, so its host is closed before the backends stop (the review of PR
-   * #49).
+   * for, so its host is closed before the backends stop, and none starts
+   * afterwards, not even from a click still in its pre-flight questions (the
+   * review of PR #49). A flag rather than the window's signal joined to the
+   * flow's connect: a stopped click then never publishes `signingIn`, asks
+   * its pre-check or opens a key prompt, where a signal would reach it only
+   * at the connect.
    */
   public async stopSignIn(): Promise<void> {
+    this.isStopped = true
     this.cancelSignIn()
     const signingIn = this.deviceSignIn
     if (signingIn !== undefined) {
@@ -766,11 +805,21 @@ export class AuthService {
   /**
    * Check again: the CLI is asked afresh, even about a sign-in it confirmed
    * before (a Keychain sign-in or sign-out leaves the file as it was; the
-   * review of PR #49).
+   * review of PR #49). Presses while one runs join it, so a second press does
+   * not forget the probe the first started and start another host.
    */
   public async checkAgain(): Promise<AuthSnapshot> {
+    if (this.checkingAgain !== undefined) {
+      return await this.checkingAgain
+    }
     this.deps.backend.forgetCliAnswers()
-    return await this.refresh(true)
+    const checking = this.refresh(true)
+    this.checkingAgain = checking
+    try {
+      return await checking
+    } finally {
+      this.checkingAgain = undefined
+    }
   }
 
   /** One visible installer terminal and one location watch per window. */
@@ -865,8 +914,13 @@ export class AuthService {
       (await this.hasCliCredential(isUserAction)) ||
       (await this.deps.credentials.getApiKey()) !== undefined
     if (this.signOutEpoch !== epoch) {
-      // A sign-out raced this release: its hold stands, its state is its own.
-      await this.setLogoutHold(true)
+      // A sign-out raced this release: its state is its own, and so is the
+      // hold. One still running holds it again; one that has ended decided
+      // it, and a late answer must not put back a hold it released (the
+      // review of PR #49).
+      if (this.isSignOutRunning()) {
+        await this.setLogoutHold(true)
+      }
       return this.snapshot
     }
     if (hasCurrentCredential || current.status === 'signedIn') {
@@ -877,7 +931,7 @@ export class AuthService {
   }
 
   public async signIn(method: SignInMethod): Promise<AuthSnapshot> {
-    if (this.isSigningOut) {
+    if (this.isSigningOut || this.isStopped) {
       return this.snapshot
     }
     const epoch = this.signOutEpoch

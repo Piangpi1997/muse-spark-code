@@ -3,10 +3,12 @@
 // deleting it, so the file being there says nothing on its own:
 // - No file: signed out on every OS, and no process is started.
 // - A file is read for its structure only (credentialFile.ts); a sign-out's
-//   empty file is signed out and a file holding the credential signed in.
-// - A macOS Keychain pointer or a file the structure cannot place is asked
-//   of the CLI itself (`account/read` on a short-lived host), and that answer
-//   is kept until the file's size or modification time changes.
+//   empty file is signed out, and off macOS a file holding the credential in
+//   a captured shape is signed in.
+// - A macOS Keychain pointer, any other file on macOS, and a file the
+//   structure cannot place are asked of the CLI itself (`account/read` on a
+//   short-lived host), and that answer is kept until the file's size or
+//   modification time changes.
 // - On macOS the question waits for a user action (a click in the panel), so
 //   a Keychain prompt never appears just because VS Code opened.
 

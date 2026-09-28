@@ -852,28 +852,39 @@ action that fails is worse than hiding one that would work.
   account `meta`), and the file is a token-free pointer
   (`schema_version: 2`, `storage: "keychain"`).
 - **The structural read (`src/core/backends/musecode/credentialFile.ts`).**
-  Only three facts are kept: the schema version, which providers are
-  named, and whether a provider's `storage` is the Keychain. The schema
-  parse drops every other field. Only `providers.meta` speaks for the
-  sign-in: 1.4.0-R4302.1's bundled Slack connector reads its own
+  Only four facts are kept: the schema version, which providers are
+  named, each provider's `storage` lane, and whether `meta` carries
+  `api_key` or `access_token` (the parse replaces a key's value with
+  `true`). The parse drops every other field. Only `providers.meta` speaks
+  for the sign-in: 1.4.0-R4302.1's bundled Slack connector reads its own
   `providers.slack_connector` from the same file (PR #49 review). It
   decides:
   - no file → signed out, with no process;
-  - an empty file → signed out;
-  - a `meta` entry holding the credential → signed in;
-  - other providers alone → asked of the CLI;
+  - the empty version-1 file a sign-out leaves → signed out, on every OS;
+  - off macOS, a `meta` entry in a captured inline shape (no `storage`,
+    and `api_key` or `access_token`) → signed in;
+  - a `meta` entry in any other shape (another `storage`, or no captured
+    key), or other providers alone → asked of the CLI;
+  - on macOS, a version-1 file holding the credential and an empty
+    version-2 file → asked of the CLI: nobody captured whether 1.4.0 reads
+    or migrates them there (review round 4);
   - off macOS, any version-2 file (the empty one included) or a `meta`
-    whose storage is the Keychain → a named error (`muse serve` exits 3 on
-    Windows: "unsupported auth schema version 2", captured 2026-09-27 for
-    an empty file and a pointer). With `META_API_KEY` set it starts and
-    answers `envKey` (captured the same day), so the key still wins.
-- **Asking the CLI.** A Keychain pointer on macOS, or a file the read cannot
-  place, is asked of the CLI: `account/read` on a short-lived
-  `experimentalApi` host.
+    whose storage is the Keychain → a named error. `muse serve` exits 3
+    at startup with each of the three on Windows and on Linux
+    ("unsupported auth schema version 2"; "keychain item for meta is
+    unreadable"), captured 2026-09-27 on 1.4.0-R4302.1 (Windows 11 and the
+    Kubuntu VM). With `META_API_KEY` set it starts with each of the three
+    and answers `envKey` on both, so the key wins over those files; macOS
+    was not probed with the key.
+- **Asking the CLI.** A Keychain pointer on macOS, any other file on macOS
+  but the sign-out's, or a file the read cannot place, is asked of the
+  CLI: `account/read` on a short-lived `experimentalApi` host.
   - The answer is kept until the file's size or modification time changes,
     or until a sign-out, a device sign-in or Check again forgets it. Cancel
     only leaves an unanswered probe behind, so what it shows next asks
-    nothing new.
+    nothing new; a sign-out that cancels a sign-in forgets the answer too,
+    so it never skips `account/logout` on a stale `signedOut`. Presses of
+    Check again while one runs join it: one host, one question.
   - On macOS the CLI is asked only on a user action (Check again, sign-in,
     sign-out, the Sign Out and Diagnostics commands), so a Keychain prompt
     follows a click.
@@ -886,7 +897,8 @@ action that fails is worse than hiding one that would work.
   only a sign-in still there opens the terminal `muse logout`, with
   `museSpark.environmentVariables`, confirmed later by the file or the CLI.
   A sign-out that keeps the hold is published as `error`, the state the
-  panel offers Check again in.
+  panel offers Check again in. A refresh that answers after a sign-out
+  ended leaves the hold as that sign-out left it.
 - **M55's device flow signs in on:**
   - `account/read` turning `accountLogin` on the open host;
   - or a new file that `account/read` does not contradict.
@@ -900,19 +912,25 @@ action that fails is worse than hiding one that would work.
   `expired`, 600 s after `loginStart`, with a message; `cancelled`;
   `granted`, `denied` and `failed`, from Approve and Deny clicked on the
   device page, and an approval whose file could not be written.
-  - **`granted`.** It came after the file was written and `account/read`
-    already said `accountLogin`; it neither ends the flow nor counts on
-    its own, and `account/read` or the file decides.
+  - **`granted`.** It came 205 ms after the file was written and
+    `account/read` said `accountLogin`; it never ends the flow or counts
+    on its own, and `account/read` or the file decides.
   - **`denied` and `failed`.** Each ends the flow with its own message.
     `failed`'s message names the credential file's path under the user's
     profile, so only `expired`'s and `denied`'s messages are logged.
   - **Every other word.** It ends the flow at once and is shown as Muse
     Code sent it (AGENTS.md rule 13), its message unlogged.
-  - **With no first `account/read`,** only a file written since the flow
-    began counts; a sign-in from before would pass for a new one.
+  - **With no first `account/read`,** a sign-in from before would pass for
+    a new one, so `accountLogin` alone does not count: a file written
+    since the flow began does, and so does the host's `granted` borne out
+    by `account/read` saying `accountLogin` (a Keychain sign-in may leave
+    the file as it was; review round 4).
   - **Cancel after approval.** When the file changed since the flow began,
-    its structure decides, not the click.
-  - **A host that exits** fails the flow at once (`connection.closed`).
+    its structure decides, not the click. With the hold on or a Model API
+    session, the code leaves the panel at once, before the refresh.
+  - **A host that exits** fails the flow at once (`connection.closed`),
+    unless the credential file changed since the flow began: then it
+    signed in.
 - **The backstop.** The extension waits 11 minutes, past the code's
   lifetime, so Muse Code's `expired` ends an unapproved code. The old
   5 minutes cancelled codes that were still live.
@@ -922,11 +940,16 @@ action that fails is worse than hiding one that would work.
   on a question a finished or failed sign-in asks, and a refresh begun
   before a sign-out ended cannot publish after it. The window closing
   cancels the sign-in, waits for it, and closes every short-lived account
-  host before the backends stop.
+  host before the backends stop; a click still in its pre-flight questions
+  then starts nothing (a flag `stopSignIn` sets, checked by `signIn` and
+  the device flow's join).
+- **The log.** The unsupported-file message names the credential file's
+  full path; the log says so in fixed words and the panel keeps the path.
 - **Where it is only as good as the schema.** `account/*` stays
   experimental.
 - **Owner steps.** A real sign-in remains an owner step on:
-  - macOS, for the pointer after a 1.4.0 login;
+  - macOS, for the pointer after a 1.4.0 login (and whether 1.4.0 reads a
+    version-1 file there);
   - Linux, for the device-login file.
 
   The Windows success sequence, a declined code, a failed save and the
@@ -5992,7 +6015,8 @@ SecretStorage and is never given to `muse serve`. (Amended 2026-09-27, D26:
 sign-in, with the file change as the second signal. The PR #49 captures
 added `expired`, 600 s after `loginStart`, then `granted`, `denied` and
 `failed` to the captured endings; `granted` came after both signals, so
-it is not one of its own.)
+it is not one of its own, except with no first `account/read`, where
+`granted` borne out by `account/read` counts.)
 
 **Acceptance:** no installer or login starts without its button; installer
 command is fixed, shown before confirmation, and runs in a visible terminal;

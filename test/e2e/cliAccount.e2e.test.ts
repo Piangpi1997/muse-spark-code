@@ -18,6 +18,7 @@ import { runDeviceSignIn } from '../../src/host/auth/deviceSignIn'
 import { MuseCodeBackendManager } from '../../src/host/backend/museCodeBackendManager'
 import { CAPTURES_FOLDER } from '../unit/helpers/accountLoginCapture'
 import {
+  AUTH_SET_FILE,
   DEVICE_LOGIN_FILE,
   LOGOUT_SHELL,
   SLACK_CONNECTOR_ONLY,
@@ -36,8 +37,16 @@ const TEST_TIMEOUT_MS = 30_000
 const ENDING_AFTER_MS = 300
 // "At once": well under the 30 s an unanswered account/read would take.
 const PROMPT_MS = 5000
-// Synthetic: a schema no build has written; only the CLI can say what it holds.
-const UNPLACEABLE = '{"schema_version": 9, "providers": {"meta": {}}}'
+// Synthetic: a `meta` entry in a `storage` lane no build was seen writing,
+// beside a captured credential key. The structure cannot place it; the fake
+// CLI, which starts with any version-1 file, answers from its key.
+const UNPLACEABLE = JSON.stringify({
+  schema_version: 1,
+  providers: { meta: { storage: 'elsewhere', access_token: '<placeholder>' } },
+})
+// Synthetic: a schema no build has written. Muse Code exits 3 at startup with
+// a schema it does not know, as captured for version 2 off macOS.
+const FUTURE_SCHEMA = '{"schema_version": 9, "providers": {"meta": {}}}'
 // A signal nothing aborts: the window stays open.
 const OPEN = new AbortController().signal
 
@@ -113,18 +122,47 @@ describe('The CLI’s sign-in against a real child process', { timeout: TEST_TIM
     expect(everythingLogged(t.log)).not.toContain('person@example.com')
   })
 
-  it('reads a stored sign-in from the file alone', async () => {
+  // Off macOS the captured shape settles it; on macOS, where no such file was
+  // captured, the CLI is asked (the review of PR #49).
+  it('reads a stored sign-in from the file alone off macOS', async () => {
     writeFakeCredential(configHome, DEVICE_LOGIN_FILE)
     const t = setup()
     await expect(t.account.signIn(true)).resolves.toBe('signedIn')
-    expect(t.probe).not.toHaveBeenCalled()
+    expect(t.probe).toHaveBeenCalledTimes(process.platform === 'darwin' ? 1 : 0)
+  })
+
+  // The host exits 3 before `initialize`, as Muse Code does with a schema it
+  // cannot read: the CLI could not say (the review of PR #49).
+  it('answers unknown when the host exits at startup', async () => {
+    writeFakeCredential(configHome, FUTURE_SCHEMA)
+    const t = setup()
+    await expect(t.account.signIn(true)).resolves.toBe('unknown')
+    expect(t.probe).toHaveBeenCalledOnce()
+    expect(t.log.warn).toHaveBeenCalledWith(
+      expect.stringMatching(/^The Muse Code account host could not start: /),
+    )
+  })
+
+  // What the fake answers is what the captures answered for each shape.
+  it.each([
+    ['the muse auth set file', AUTH_SET_FILE, 'apiKey'],
+    ['the browser sign-in file', DEVICE_LOGIN_FILE, 'accountLogin'],
+    ['the file a sign-out leaves', LOGOUT_SHELL, 'loggedOut'],
+  ])('answers account/read about %s as captured', async (_name, contents, state) => {
+    writeFakeCredential(configHome, contents)
+    const t = setup()
+    await expect(probeAccount(t.connect, t.log, OPEN)).resolves.toEqual({
+      state,
+      credentialRequired: true,
+    })
   })
 
   // Only `meta` speaks for the sign-in (the review of PR #49).
   it('asks the CLI about a file naming another provider alone', async () => {
     writeFakeCredential(configHome, SLACK_CONNECTOR_ONLY)
     const t = setup()
-    await expect(t.account.signIn(false)).resolves.toBe('signedOut')
+    // A user action, so the CLI is asked on every OS (macOS asks only then).
+    await expect(t.account.signIn(true)).resolves.toBe('signedOut')
     expect(t.probe).toHaveBeenCalledOnce()
   })
 })

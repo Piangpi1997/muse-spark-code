@@ -92,6 +92,39 @@ function unanswered(t: ReturnType<typeof session>, method: string): void {
   )
 }
 
+/** A wait that lets queued timers run, as a real poll interval does. */
+function nextTurn(): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, 0)
+  })
+}
+
+/**
+ * A host answering `account/read` with `before`, then the captured signed-in
+ * answer, and sending the captured `granted` just after the first signed-in
+ * answer: the captured order (undefined in `before`: a read refused).
+ */
+function capturedGrantedOrder(before: AccountAnswer[]) {
+  let reads = 0
+  let isGrantedSent = false
+  const t = session(() => {
+    reads += 1
+    return reads <= before.length ? before[reads - 1] : SIGNED_IN
+  })
+  const answer = t.request.getMockImplementation()
+  t.request.mockImplementation((method) => {
+    const answered = answer?.(method) ?? Promise.resolve({})
+    if (method === 'account/read' && reads === before.length + 1) {
+      setTimeout(() => {
+        isGrantedSent = true
+        t.complete(CAPTURED_GRANTED_ENDING)
+      }, 0)
+    }
+    return answered
+  })
+  return { ...t, reads: () => reads, isGrantedSent: () => isGrantedSent }
+}
+
 describe('Muse Code device sign-in', () => {
   it('accepts the captured code shape only from Meta auth', () => {
     expect(parseDeviceCode(CAPTURED_LOGIN_START)).toEqual({ url: DEVICE_URL, code: DEVICE_CODE })
@@ -350,9 +383,9 @@ describe('Muse Code device sign-in: how it ends', () => {
     expect(t.close).toHaveBeenCalledOnce()
   })
 
-  // Captured: `granted` came after `account/read` already said
-  // `accountLogin`, so its word neither ends the flow nor signs in.
-  it('decides on account/read, which the captured granted follows', async () => {
+  // Not the captured order: here `granted` comes before `account/read` shows
+  // the sign-in. Its word neither ends the flow nor signs in on its own.
+  it('waits for account/read after a granted that comes before it', async () => {
     const accounts: AccountAnswer[] = [
       CAPTURED_LOGGED_OUT,
       CAPTURED_LOGGED_OUT,
@@ -367,6 +400,44 @@ describe('Muse Code device sign-in: how it ends', () => {
     }
     await expect(run(t, { sleep })).resolves.toBe('signedIn')
     expect(polls).toBe(2)
+  })
+
+  // The captured order (account-login-granted.json): `account/read` says
+  // `accountLogin`, and `granted` follows 205 ms later. With a first answer
+  // to compare, the poll that sees the sign-in ends the flow.
+  it('signs in on the poll that sees the account, before the captured granted follows', async () => {
+    const t = capturedGrantedOrder([CAPTURED_LOGGED_OUT, CAPTURED_LOGGED_OUT])
+    await expect(run(t, { sleep: nextTurn })).resolves.toBe('signedIn')
+    expect(t.reads()).toBe(3)
+    expect(t.isGrantedSent()).toBe(false)
+  })
+
+  // With no first answer there is nothing to compare, and a Keychain sign-in
+  // may leave the file as it was: `granted`, borne out by `account/read`
+  // saying `accountLogin`, is the sign-in (the review of PR #49).
+  it('signs in on the captured granted and account/read when the first account/read went unanswered', async () => {
+    const t = capturedGrantedOrder([undefined])
+    await expect(run(t, { sleep: nextTurn, modified: () => 1, step: ONE_POLL })).resolves.toBe(
+      'signedIn',
+    )
+    expect(t.isGrantedSent()).toBe(true)
+    expect(t.request).not.toHaveBeenCalledWith('account/loginCancel', {})
+  })
+
+  // `granted` alone never signs in, with no first answer and the file as it
+  // was: not when `account/read` cannot say, nor when it names another lane
+  // (META_API_KEY's `envKey`).
+  it.each([
+    ['account/read cannot say', undefined],
+    ['account/read says envKey', { state: 'envKey', credentialRequired: true }],
+  ])('takes no sign-in from granted alone when %s', async (_name, later) => {
+    let reads = 0
+    const t = session(() => (++reads === 1 ? undefined : later))
+    const sleep = () => {
+      t.complete(CAPTURED_GRANTED_ENDING)
+      return Promise.resolve()
+    }
+    await expect(run(t, { sleep, modified: () => 1, step: ONE_POLL })).resolves.toBe('timedOut')
   })
 
   it('keeps waiting after a granted the account never shows', async () => {
@@ -551,6 +622,26 @@ describe('Muse Code device sign-in: a host that exits', () => {
     await expect(pending).rejects.toThrow('exited')
     expect(t.request).not.toHaveBeenCalledWith('account/loginCancel', {})
     expect(t.close).toHaveBeenCalledOnce()
+  })
+
+  // An exit is no decision: the host wrote the credential file, then went
+  // (the review of PR #49).
+  it('signs in when the host exits after the credential file changed', async () => {
+    const t = session(() => CAPTURED_LOGGED_OUT)
+    const logged = new FakeLogOutputChannel()
+    let modified = 1
+    const sleep = vi.fn(() => {
+      modified = 2
+      unanswered(t, 'account/read')
+      t.exit()
+      return never<undefined>()
+    })
+    await expect(run(t, { sleep, modified: () => modified, log: logged })).resolves.toBe('signedIn')
+    expect(t.request).not.toHaveBeenCalledWith('account/loginCancel', {})
+    expect(t.close).toHaveBeenCalledOnce()
+    expect(logged.warn).toHaveBeenCalledWith(
+      'The Muse Code sign-in host exited after writing the credential file',
+    )
   })
 
   it('fails at once when the host exits before loginStart answers', async () => {

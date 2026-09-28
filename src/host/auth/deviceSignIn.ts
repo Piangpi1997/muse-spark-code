@@ -11,15 +11,19 @@
 // outcome was captured live (docs/certification/sign-in-detection.md, "Live
 // capture"): `cancelled`, `expired`, `denied` and `failed` each have a
 // meaning of their own, and any other word is shown as the CLI named it
-// (AGENTS.md rule 13). `granted` came after the file was written and
-// `account/read` already said `accountLogin`, so those decide and `granted`
-// needs no handler. `account/changed` is not relied on: it fired neither for
-// a change made outside the host nor for an expired, denied or failed code.
+// (AGENTS.md rule 13). `granted` came 205 ms after the file was written and
+// `account/read` said `accountLogin`, so those decide. It is remembered for
+// one case only: with no first `account/read` there is no account to
+// compare, and `granted` with `account/read` saying `accountLogin` is then
+// the sign-in (a Keychain sign-in may leave the file as it was). `granted`
+// alone never signs in. `account/changed` is not relied on: it fired neither
+// for a change made outside the host nor for an expired, denied or failed
+// code.
 //
 // Cancel, the host's ending and the host's exit are noticed at once, even
 // while an `account/read` is unanswered, and the `account/loginCancel` sent
 // on the way out is bounded: the host is closed either way, which ends its
-// flow.
+// flow. A host that exits after the credential file changed has signed in.
 
 import * as z from 'zod/mini'
 import { clipForLog } from '../../core/logging'
@@ -147,10 +151,12 @@ interface SignInSignals {
   /** Undefined when the host did not answer, or the poll was cut short. */
   readonly current: AccountState | undefined
   readonly isFileWritten: boolean
+  /** The host sent `account/loginCompleted {outcome: "granted"}`. */
+  readonly isGranted: boolean
 }
 
 function isSignedIn(signals: SignInSignals): boolean {
-  const { initial, current, isFileWritten } = signals
+  const { initial, current, isFileWritten, isGranted } = signals
   if (current === undefined) {
     return isFileWritten
   }
@@ -160,15 +166,17 @@ function isSignedIn(signals: SignInSignals): boolean {
     return false
   }
   // `envKey` or a stored key may mask the new login, so a new file counts
-  // while the account is anything but signed out. A change of account
-  // counts only against an account read before the flow: with no first
-  // answer, a sign-in from before would pass for a new one (the review of
-  // PR #49).
-  const hasSignedIn =
-    initial !== undefined &&
-    initial.state !== MUSE_ACCOUNT_STATES.accountLogin &&
-    current.state === MUSE_ACCOUNT_STATES.accountLogin
-  return isFileWritten || hasSignedIn
+  // while the account is anything but signed out.
+  if (isFileWritten) {
+    return true
+  }
+  const isAccountLogin = current.state === MUSE_ACCOUNT_STATES.accountLogin
+  // With no first answer, a sign-in from before would pass for a new one:
+  // only the host's own `granted`, borne out by `account/read`, counts then
+  // (the review of PR #49). `granted` alone never does.
+  return initial === undefined
+    ? isGranted && isAccountLogin
+    : initial.state !== MUSE_ACCOUNT_STATES.accountLogin && isAccountLogin
 }
 
 export async function runDeviceSignIn(deps: DeviceSignInDeps): Promise<DeviceSignInOutcome> {
@@ -194,7 +202,12 @@ export async function runDeviceSignIn(deps: DeviceSignInDeps): Promise<DeviceSig
   }
   let hostEnding: HostEnding | undefined
   let isEnded = false
+  let isGranted = false
   let isHostGone = false
+  const isFileWritten = () => {
+    const modified = deps.credentialFileModifiedAt()
+    return modified !== undefined && modified !== before
+  }
   try {
     session.connection.onNotification((notification) => {
       if (isEnded || notification.method !== MUSE_ACCOUNT_LOGIN_COMPLETED) {
@@ -206,6 +219,7 @@ export async function runDeviceSignIn(deps: DeviceSignInDeps): Promise<DeviceSig
       }
       // The first ending counts; the host runs one flow.
       isEnded = true
+      isGranted = result.data.outcome === MUSE_LOGIN_OUTCOMES.granted
       hostEnding = endingOf(result.data.outcome)
       deps.log.info(
         `Muse Code sign-in ended: ${loggedEnding(result.data.outcome, result.data.message)}`,
@@ -270,21 +284,16 @@ export async function runDeviceSignIn(deps: DeviceSignInDeps): Promise<DeviceSig
       }
     }
     const hasLanded = async () => {
-      const modified = deps.credentialFileModifiedAt()
+      const isWritten = isFileWritten()
       const current = await untilStopped(readAccountState(session.connection))
       // A stop (Cancel, an ending) decides the flow: a file change alone
       // must not turn it into a sign-in (the review of PR #49).
-      if (current === STOPPED) {
-        return false
-      }
-      return isSignedIn({
-        initial,
-        current,
-        isFileWritten: modified !== undefined && modified !== before,
-      })
+      return (
+        current !== STOPPED && isSignedIn({ initial, current, isFileWritten: isWritten, isGranted })
+      )
     }
     /** How a flow that has not landed ends now; undefined while it goes on. */
-    const endedAs = async (): Promise<HostEnding | undefined> => {
+    const endedAs = async (): Promise<DeviceSignInOutcome | undefined> => {
       if (hostEnding !== undefined) {
         return hostEnding
       }
@@ -293,6 +302,12 @@ export async function runDeviceSignIn(deps: DeviceSignInDeps): Promise<DeviceSig
         return 'cancelled'
       }
       if (isHostGone) {
+        // An exit is no decision: a host that wrote the credential file
+        // before it went has signed in (the review of PR #49).
+        if (isFileWritten()) {
+          deps.log.warn('The Muse Code sign-in host exited after writing the credential file')
+          return 'signedIn'
+        }
         throw hostGone()
       }
       return undefined

@@ -200,14 +200,18 @@ fields, never raw configuration or failed-command output.
   `meta`), and `auth.json` only points to it.
 - To tell whether the CLI is signed in, the extension reads only the
   structure of `auth.json`: its schema version, which providers it names
-  (only Muse Code's own, `meta`, speaks for the sign-in), and whether that
-  one points to the Keychain.
-  - Every other value in the file, the token included, is dropped while the
-    file is parsed. Nothing from it is stored, logged or passed on.
+  (only Muse Code's own, `meta`, speaks for the sign-in), the storage lane
+  of each (whether one points to the Keychain), and whether `meta` has an
+  `api_key` or `access_token` entry, never what the entry holds.
+  - Every value in the file, the token included, is dropped while the file
+    is parsed. Nothing from it is stored, logged or passed on.
   - When that structure cannot say, the extension asks the CLI itself
     (`account/read` on a short-lived `muse serve` that owns no
-    conversation). It keeps the answer until the file changes, or until
+    conversation). On macOS that is every file but the empty one a
+    sign-out leaves. It keeps the answer until the file changes, or until
     you sign in, sign out or choose **Check again**.
+  - When the file is in a form Muse Code cannot start with here, the panel
+    names the file's path; the log says so without the path.
   - The CLI's answer carries your account's e-mail address as a label, and
     the address of your account picture. The extension discards both
     without logging or showing them.

@@ -146,6 +146,30 @@ describe('CliAccount', () => {
     expect(t.probe).not.toHaveBeenCalled()
   })
 
+  // Uncaptured on macOS: a version-1 file holding the credential, and an
+  // empty version-2 file. Asked like a pointer, on a user action only; the
+  // passive estimate is unknown (the review of PR #49).
+  it.each([
+    ['a browser sign-in file', DEVICE_LOGIN_FILE],
+    ['an empty version-2 file', '{"schema_version":2,"providers":{}}'],
+  ])('asks the CLI about %s on macOS, only on a user action', async (_name, contents) => {
+    const home = configHome()
+    home.write(contents)
+    const t = account('darwin', home.file, [LOGGED_OUT])
+    await expect(t.checker.signIn(false)).resolves.toBe('unknown')
+    expect(t.probe).not.toHaveBeenCalled()
+    await expect(t.checker.signIn(true)).resolves.toBe('signedOut')
+    expect(t.probe).toHaveBeenCalledOnce()
+  })
+
+  it('still reads the file a sign-out leaves as signed out on macOS, starting no process', async () => {
+    const home = configHome()
+    home.write(LOGOUT_SHELL)
+    const t = account('darwin', home.file, [])
+    await expect(t.checker.signIn(true)).resolves.toBe('signedOut')
+    expect(t.probe).not.toHaveBeenCalled()
+  })
+
   it('names a macOS pointer on Windows without starting a host that would exit', async () => {
     const home = configHome()
     home.write(MAC_POINTER)

@@ -25,11 +25,21 @@
 // never answer it, the wedged-CLI drill of PLAN.md D25). Node built-ins
 // only: the file is copied beside the executable the resolver spawns.
 //
+// The credential file under XDG_CONFIG_HOME (never the developer's own) is
+// checked at startup as 1.4.0-R4302.1 was captured checking it on Windows
+// and Linux (docs/certification/sign-in-detection.md): a schema version
+// other than 1 (1 or 2 on macOS) exits 3 before `initialize` with "unsupported
+// auth schema version …", and off macOS a version-1 `meta` whose storage is
+// the Keychain exits 3 with "keychain item for meta is unreadable". The
+// real CLI starts with each of these while META_API_KEY is set; the fake
+// does not model that key.
+//
 // Account methods (PLAN.md D26, shapes captured on 1.3.0 and 1.4.0,
 // 2026-09-27), for a client that asked for `experimentalApi` only:
-// `account/read` answers from the credential file under XDG_CONFIG_HOME
-// (`providers.meta` is a login, anything else signed out), and
-// `account/logout` rewrites that file as the empty one the CLI leaves.
+// `account/read` answers from that file as captured: `accountLogin` for a
+// `meta` holding `access_token` (a browser sign-in), `apiKey` for one holding
+// `api_key` alone (`muse auth set`), otherwise signed out; `account/logout`
+// rewrites the file as the empty one the CLI leaves.
 //
 // The device sign-in replays the frames captured live on 1.4.0-R4302.1
 // (test/fixtures/msp/account-login-*.json, 2026-09-27), read from the folder
@@ -47,7 +57,7 @@
 
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
-import { argv, env, exit, stderr, stdin, stdout } from 'node:process'
+import { argv, env, exit, platform, stderr, stdin, stdout } from 'node:process'
 import { createInterface } from 'node:readline'
 import { clearTimeout, setImmediate, setTimeout } from 'node:timers'
 
@@ -59,6 +69,19 @@ const LOGOUT_SHELL = '{\n  "schema_version": 1,\n  "providers": {}\n}'
 const ACCOUNT_LABEL = 'person@example.com'
 // The provider the CLI keeps its own sign-in under; others share the file.
 const MUSE_PROVIDER = 'meta'
+// The credential file's versions: 1 holds the credential, 2 is macOS's pointer.
+const INLINE_SCHEMA = 1
+const POINTER_SCHEMA = 2
+const KEYCHAIN_STORAGE = 'keychain'
+// What 1.4.0-R4302.1 wrote to stderr for a version-1 Keychain lane off macOS.
+const KEYCHAIN_UNREADABLE = 'keychain item for meta is unreadable (internal error -2147483648)'
+// The lane `account/read` named for the Muse entry's key, as captured: a
+// browser sign-in (`access_token`, with `api_key` beside it) is
+// `accountLogin`; `muse auth set` (`api_key` alone) is `apiKey`.
+const CAPTURED_LANES = [
+  ['access_token', 'accountLogin'],
+  ['api_key', 'apiKey'],
+]
 // A browser sign-in as the granted capture left the file (schema 1, `meta`
 // with these keys; placeholders for every secret or personal value).
 const DEVICE_LOGIN_FILE = JSON.stringify({
@@ -99,6 +122,8 @@ if (env['MUSE_FAKE_START'] === 'crash') {
   stderr.write('fake muse: refusing to start\n')
   exit(CRASH_EXIT_CODE)
 }
+
+refuseUnsupportedCredentialFile()
 
 const serveArgs = argv.slice(2).join(' ')
 const fingerprint = env['MUSE_FAKE_FINGERPRINT'] ?? 'sha256:fake'
@@ -413,23 +438,53 @@ function credentialFile() {
   return configHome === undefined ? undefined : path.join(configHome, 'muse', 'auth.json')
 }
 
-function hasStoredSignIn() {
+/** The credential file's JSON; an empty object when there is none or it is not JSON. */
+function credentialJson() {
   const file = credentialFile()
   if (file === undefined || !existsSync(file)) {
-    return false
+    return {}
   }
   try {
-    const providers = JSON.parse(readFileSync(file, 'utf8')).providers ?? {}
-    return Object.hasOwn(providers, MUSE_PROVIDER)
+    return JSON.parse(readFileSync(file, 'utf8')) ?? {}
   } catch {
-    return false
+    return {}
   }
 }
 
+/** The Muse provider's entry (other providers, a connector's, share the file); `{}` when absent. */
+function museEntry() {
+  const providers = credentialJson().providers ?? {}
+  const entry = Object.hasOwn(providers, MUSE_PROVIDER) ? providers[MUSE_PROVIDER] : {}
+  return typeof entry === 'object' && entry !== null ? entry : {}
+}
+
+/** Exits 3 before `initialize` on a file 1.4.0-R4302.1 was captured refusing. */
+function refuseUnsupportedCredentialFile() {
+  const version = credentialJson().schema_version
+  if (version === undefined) {
+    return
+  }
+  const isMacOs = platform === 'darwin'
+  const supported = isMacOs ? [INLINE_SCHEMA, POINTER_SCHEMA] : [INLINE_SCHEMA]
+  if (!supported.includes(version)) {
+    stderr.write(
+      `compose serve model client: unsupported auth schema version ${String(version)} at ${credentialFile()}\n`,
+    )
+    exit(CRASH_EXIT_CODE)
+  }
+  if (isMacOs || museEntry().storage !== KEYCHAIN_STORAGE) {
+    return
+  }
+  stderr.write(`compose serve model client: ${KEYCHAIN_UNREADABLE}\n`)
+  exit(CRASH_EXIT_CODE)
+}
+
 function accountState() {
-  return hasStoredSignIn()
-    ? { state: 'accountLogin', label: ACCOUNT_LABEL, credentialRequired: true }
-    : { state: 'loggedOut', credentialRequired: true }
+  const entry = museEntry()
+  const lane = CAPTURED_LANES.find(([key]) => Object.hasOwn(entry, key))?.[1]
+  return lane === undefined
+    ? { state: 'loggedOut', credentialRequired: true }
+    : { state: lane, label: ACCOUNT_LABEL, credentialRequired: true }
 }
 
 /** A live capture's frames, in the order they crossed the wire. */

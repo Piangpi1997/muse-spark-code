@@ -55,9 +55,11 @@ them, the milestone plan, and the certification checklist.
    any child process: the Muse Code CLI signs in on its own.
    - **The CLI's credential file.** The extension reads only its structure
      (`src/core/backends/musecode/credentialFile.ts`): the schema version,
-     which providers are named (only `meta` speaks for the sign-in), and a
-     Keychain `storage` lane. It also reads the file's size and
-     modification time. Never a token value.
+     which providers are named (only `meta` speaks for the sign-in), each
+     one's `storage` lane, and whether `meta` has an `api_key` or
+     `access_token` entry (the parse replaces the value with `true`). It
+     also reads the file's size and modification time. Never a token
+     value.
    - **When the structure cannot say**, the CLI answers `account/read`
      (PLAN.md D26). Its `label` (an e-mail address) and `avatarUrl` are
      never kept, logged or shown.

@@ -24,15 +24,20 @@ const MAC_POINTER = JSON.stringify({
     },
   },
 })
-// Synthetic, as the probe of 2026-09-27 wrote it: a version-1 `meta` whose
-// storage is the Keychain (`muse serve` exits 3 with it on Windows).
+// Synthetic, as the probes of 2026-09-27 wrote it: a version-1 `meta` whose
+// storage is the Keychain (`muse serve` exits 3 with it on Windows and Linux).
 const SCHEMA_1_POINTER = JSON.stringify({
   schema_version: 1,
   providers: { meta: { storage: 'keychain' } },
 })
-// Synthetic: the empty version-2 file the probe of 2026-09-27 gave `muse
-// serve`, which exits 3 with it on Windows.
+// Synthetic: the empty version-2 file the probes of 2026-09-27 gave `muse
+// serve`, which exits 3 with it on Windows and Linux.
 const EMPTY_V2 = '{"schema_version":2,"providers":{}}'
+
+/** Synthetic: a version-1 file whose `meta` entry is `meta`, as given. */
+function withMeta(meta: Record<string, string>): string {
+  return JSON.stringify({ schema_version: 1, providers: { meta } })
+}
 
 /** Synthetic: `meta` beside a connector whose own entry uses the Keychain. */
 function besideConnector(meta: Record<string, string>): string {
@@ -50,22 +55,55 @@ describe('credentialFileVerdict', () => {
     },
   )
 
-  it('reads a stored key or login as held in the file', () => {
-    expect(credentialFileVerdict(AUTH_SET_FILE, 'win32')).toBe('inline')
-    expect(credentialFileVerdict(DEVICE_LOGIN_FILE, 'win32')).toBe('inline')
-    expect(credentialFileVerdict(DEVICE_LOGIN_FILE, 'linux')).toBe('inline')
-    expect(credentialFileVerdict(DEVICE_LOGIN_FILE, 'darwin')).toBe('inline')
+  it.each(['win32', 'linux'] as const)(
+    'reads a stored key or login as held in the file on %s',
+    (platform) => {
+      expect(credentialFileVerdict(AUTH_SET_FILE, platform)).toBe('inline')
+      expect(credentialFileVerdict(DEVICE_LOGIN_FILE, platform)).toBe('inline')
+    },
+  )
+
+  // Whether macOS 1.4.0 reads or migrates a version-1 file holding the
+  // credential was never captured: the CLI says (the review of PR #49).
+  it('leaves a file holding the credential to the CLI on macOS', () => {
+    expect(credentialFileVerdict(AUTH_SET_FILE, 'darwin')).toBe('unrecognized')
+    expect(credentialFileVerdict(DEVICE_LOGIN_FILE, 'darwin')).toBe('unrecognized')
   })
 
+  // An empty version-2 file on macOS was never captured either.
   it('reads a macOS Keychain pointer as needing the CLI on macOS', () => {
     expect(credentialFileVerdict(MAC_POINTER, 'darwin')).toBe('keychain')
     expect(credentialFileVerdict(SCHEMA_1_POINTER, 'darwin')).toBe('keychain')
-    expect(credentialFileVerdict(EMPTY_V2, 'darwin')).toBe('empty')
+    expect(credentialFileVerdict(EMPTY_V2, 'darwin')).toBe('unrecognized')
   })
 
-  // Each made `muse serve` exit 3 on Windows 1.4.0 (isolated homes), the
-  // empty version-2 file included: "unsupported auth schema version 2" (the
-  // review of PR #49).
+  // Only the captured inline shapes are a sign-in: no `storage` lane, and
+  // `api_key` or `access_token` (the review of PR #49).
+  it.each(['win32', 'linux', 'darwin'] as const)(
+    'leaves a meta entry in any other shape to the CLI on %s',
+    (platform) => {
+      expect(credentialFileVerdict(withMeta({}), platform)).toBe('unrecognized')
+      expect(credentialFileVerdict(withMeta({ storage: 'file' }), platform)).toBe('unrecognized')
+      expect(
+        credentialFileVerdict(withMeta({ storage: 'file', api_key: '<placeholder>' }), platform),
+      ).toBe('unrecognized')
+      expect(credentialFileVerdict(withMeta({ api_base_url: '<placeholder>' }), platform)).toBe(
+        'unrecognized',
+      )
+    },
+  )
+
+  it('takes either captured credential key alone as the sign-in off macOS', () => {
+    expect(credentialFileVerdict(withMeta({ access_token: '<placeholder>' }), 'linux')).toBe(
+      'inline',
+    )
+    expect(credentialFileVerdict(withMeta({ api_key: '<placeholder>' }), 'linux')).toBe('inline')
+  })
+
+  // Each made `muse serve` exit 3 on 1.4.0-R4302.1, Windows and Linux
+  // (isolated homes), the empty version-2 file included: "unsupported auth
+  // schema version 2" (the review of PR #49; probe-v2-serve-win.json,
+  // probe-v2-serve-linux.json).
   it.each(['win32', 'linux'] as const)(
     'names a macOS file Muse Code cannot start with on %s',
     (platform) => {
@@ -83,7 +121,7 @@ describe('credentialFileVerdict', () => {
     },
   )
 
-  it('decides on meta beside another provider, and on meta’s storage only', () => {
+  it('decides on meta beside another provider, and on meta’s storage only, off macOS', () => {
     expect(credentialFileVerdict(besideConnector({ api_key: '<placeholder>' }), 'win32')).toBe(
       'inline',
     )
