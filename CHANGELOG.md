@@ -110,6 +110,12 @@ happened, not what was planned; superseded entries are kept.
     Muse Code could not say who was signed in before the flow, its own
     `granted`, borne out by `account/read`, counts too, so a Keychain
     sign-in that leaves the file as it was is seen.
+  - **A re-sign-in to the same account** after a sign-out Muse Code could
+    not finish is recognized from Muse Code's own `granted`, even when
+    only the macOS Keychain changed; before, it waited out the limit.
+  - **With `museSpark.backend` set to the Model API,** the panel no longer
+    asks Muse Code about its sign-in at all, so a slow answer cannot keep a
+    stored key waiting.
   - **A host that exits.** The sign-in fails at once instead of waiting
     out the eleven-minute limit, unless the credential file changed first:
     then the sign-in went through. A change Muse Code already called

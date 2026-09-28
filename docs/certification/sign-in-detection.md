@@ -581,6 +581,39 @@ pre-drill SHA-256 afterwards.
 | DJ    | A Cancel after the code refreshes on the CLI’s answer from before the flow                    | exit 1, 2 failed: the same two                                                                                                                                            |
 | DK    | A Cancel as the file changed reads it passively (estimated on macOS, not asked)               | exit 1, 1 failed: "asks the CLI about a file rewritten as Cancel was pressed, on macOS too"                                                                               |
 
+## Codex on `328efb52`: forced Model API, and a same-account re-sign-in
+
+- **P2, forced Model API.** With `museSpark.backend` set to `modelApi`,
+  both the gate's refresh and host admission still asked the CLI for its
+  sign-in. On an ambiguous file that can mean a probe and `account/read`,
+  keeping a user with a stored key in `checking` until the MSP deadline.
+  - Now `isCliSignInConsulted(setting)` in `src/core/backendSelection.ts`
+    says the choice needs no CLI answer. `AuthService.choose` and
+    `readBackendChoice`, which host admission in `extension.ts` now uses,
+    ask nothing; the snapshot reports `hasCliSession: false`.
+  - The logout hold's checks after a sign-out still look at the CLI, as a
+    sign-out ends every credential.
+  - Drills DN (the gate) and DO (host admission).
+- **P2, same-account re-sign-in.** With the logout hold keeping an
+  `accountLogin`, a macOS re-sign-in may replace only the Keychain item,
+  the pointer's mtime unchanged. The first and the later `account/read`
+  both said `accountLogin`, so after `granted` the flow waited until its
+  backstop and never lifted the hold.
+  - The captured success, `granted` borne out by `accountLogin`, now
+    counts whatever came before; `granted` alone still never does.
+  - Drill DP.
+- **Drills** from `scratchpad/cred-capture/drills11.mjs` (each target
+  matched its SHA-256 afterwards):
+  - DN: exit 1, 1 failed: "selects from the stored key without asking the
+    CLI".
+  - DO: exit 1, 1 failed: "never asks for the CLI’s sign-in when the
+    backend is forced to the Model API".
+  - DP: exit 1, 1 failed: "signs in on granted and accountLogin when the
+    account was already signed in".
+- **Checks.** `backendSelection`, `authService`, `deviceSignIn`,
+  `cliAccount` and the `cliAccount` e2e (207 tests), typecheck, lint,
+  l10n, jscpd and format; not the full gate (the machine was loaded).
+
 ## Codex on `2a324d48`: a user action on macOS asks afresh
 
 **P2.** On macOS a sign-in or sign-out made elsewhere may change only the
