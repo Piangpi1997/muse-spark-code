@@ -108,6 +108,23 @@ export class PaidUseConsent {
     }
   }
 
+  /**
+   * Keeps "always" for the feature. A store that cannot be written is
+   * logged and leaves this use allowed once, so the next one asks again
+   * instead of this one failing.
+   */
+  private async remember(feature: PaidFeature): Promise<boolean> {
+    try {
+      await this.deps.writeGrants(new Set([...this.deps.readGrants(), feature]))
+      return true
+    } catch (error: unknown) {
+      this.deps.log.warn(
+        `Paid use of ${feature}: "always" could not be kept, so it is allowed once: ${error instanceof Error ? error.message : String(error)}`,
+      )
+      return false
+    }
+  }
+
   public onDidChange(listener: () => void): () => void {
     this.listeners.add(listener)
     return () => {
@@ -150,8 +167,12 @@ export class PaidUseConsent {
       this.deps.log.info(`Paid use of ${feature}: turned off while the popup was open`)
       return false
     }
-    if (answer === 'always' && canRemember && this.deps.canRemember()) {
-      await this.deps.writeGrants(new Set([...this.deps.readGrants(), feature]))
+    if (
+      answer === 'always' &&
+      canRemember &&
+      this.deps.canRemember() &&
+      (await this.remember(feature))
+    ) {
       this.deps.log.info(`Paid use of ${feature}: allowed always in this workspace`)
       this.notify()
     } else {

@@ -76,6 +76,12 @@ export interface RuntimeBackend {
   readonly museCode: MuseCodeBackendManager
   /** The flagged paid features and their questions, shared with the agent (M63c, M58). */
   readonly paid: AcpPaidUse
+  /**
+   * At start: "always" lapses for a paid feature the Model API agent was
+   * started without. A Muse Code agent has no paid flags, so it leaves the
+   * grants to the Model API agent, which a user may run beside it.
+   */
+  readonly forgetUnflaggedGrants: () => Promise<void>
   readonly close: () => Promise<void>
 }
 
@@ -215,8 +221,10 @@ function modelApiManager(
     memory,
     bundlePath: path.join(deps.distDir, MODEL_API_BUNDLE_FILE),
     // VS Code's settings do not reach the agent: a failed request names its
-    // environment variables instead (PLAN.md D62, Q66).
+    // environment variables instead (PLAN.md D62, Q66), and a missing bundle
+    // the agent's package, not the extension.
     networkAdvice: 'agent',
+    bundleUnavailable: () => UI_TEXT.acpModelApiBundleUnavailable,
   })
 }
 
@@ -225,9 +233,13 @@ export function createRuntimeBackend(deps: RuntimeBackendDeps): RuntimeBackend {
   const museCode = museCodeManager(deps, undefined)
   const museCodeHosts = new Map<string, MuseCodeBackendManager>()
   const modelApiHosts = new Map<string, ModelApiBackendManager>()
-  const credentials = new CredentialStore(deps.secrets, (message) => {
-    deps.log.warn(message)
-  })
+  const credentials = new CredentialStore(
+    deps.secrets,
+    (message) => {
+      deps.log.warn(message)
+    },
+    "the operating system's credential store",
+  )
   const paid = new AcpPaidUse({
     flagged: deps.options.paidFeatures,
     canRemember: () => deps.options.trustWorkspace,
@@ -328,6 +340,8 @@ export function createRuntimeBackend(deps: RuntimeBackendDeps): RuntimeBackend {
     },
     museCode,
     paid,
+    forgetUnflaggedGrants: () =>
+      deps.options.backend === 'modelApi' ? paid.forgetUnflagged() : Promise.resolve(),
     close: async () => {
       // A probe still waiting on its short-lived host ends with the agent.
       accountHosts.close()

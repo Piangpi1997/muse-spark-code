@@ -126,7 +126,7 @@ async function serve(options: ServeOptions, log: Logger): Promise<number> {
     log.warn(proxyWarning)
   }
   // "Allow always" lapses for a paid feature started without its flag (M58).
-  await runtime.paid.forgetUnflagged()
+  await runtime.forgetUnflaggedGrants()
   const agent = createAcpAgent({
     backend: runtime.backend,
     version: packageVersion(),

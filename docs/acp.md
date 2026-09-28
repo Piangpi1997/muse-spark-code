@@ -10,8 +10,8 @@ endorsed by Meta.
 
 The configuration below names the command and its arguments. Where each
 editor keeps its agent settings is in that editor's documentation, linked
-from [the compatibility plan](ide-compatibility.md#32-ides-and-editors-reached-through-a-shared-acp-agent);
-[hosts.md](ide-compatibility/hosts.md) records which editors have been
+from [the compatibility plan](https://github.com/RandyNorthrup/muse-spark-code/blob/main/docs/ide-compatibility.md#32-ides-and-editors-reached-through-a-shared-acp-agent);
+[hosts.md](https://github.com/RandyNorthrup/muse-spark-code/blob/main/docs/ide-compatibility/hosts.md) records which editors have been
 tested, at which version, and what was found.
 
 ## Install
@@ -58,6 +58,12 @@ Editors that run sign-ins in a terminal offer the right one when the agent
 asks for it. Elsewhere, run it yourself once:
 
 - **Muse Code**: `muse-spark-code-acp login` runs Muse Code's own sign-in.
+  The agent tells whether Muse Code is signed in as the VS Code panel
+  does: from the structure of the CLI's credential file (the emptied file
+  `muse logout` leaves counts as signed out), asking the CLI itself where
+  only it can say (a macOS Keychain sign-in); `META_API_KEY` in the
+  agent's environment counts too. When the editor checks the sign-in
+  again after you sign in (ACP's `authenticate`), the agent asks afresh.
 - **Model API key**: `muse-spark-code-acp auth set` asks for the key without
   showing it and keeps it in the operating system's credential store:
   Windows Credential Manager, the macOS Keychain, or on Linux the Secret
@@ -280,7 +286,7 @@ installed in the store).
 
 **Muse Code** (`muse serve`, started by the agent) inherits the same
 environment and reads the proxy variables itself, as it does under VS Code
-([the extension's README](../README.md#proxies-and-certificates)):
+([the extension's README](https://github.com/RandyNorthrup/muse-spark-code/blob/main/README.md#proxies-and-certificates)):
 `HTTPS_PROXY`, `HTTP_PROXY`, `ALL_PROXY` and `NO_PROXY`, with loopback
 added to `NO_PROXY` whenever a proxy is set. It trusts the operating
 system's certificate store, which `SSL_CERT_FILE` or `SSL_CERT_DIR`

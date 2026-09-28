@@ -8,7 +8,7 @@ D62 amendments, M63.
 
 ## The merge
 
-Seven files conflicted, all prose or lists: `AGENTS.md`, `CHANGELOG.md`,
+Six files conflicted, all prose or lists: `AGENTS.md`, `CHANGELOG.md`,
 `PLAN.md`, `README.md`, `docs/certification/README.md`, `package.json`
 (the `cycles` entries). Both sides were kept:
 
@@ -325,8 +325,9 @@ main: three conflicts (the certification index, `report.ts`'s imports,
   behind, emptied. It counts as the panel's gate does: `META_API_KEY` in the
   CLI's environment, or PR #49's `CliAccount` over the file's structure
   (`empty` signed out, `inline` signed in), with `account/read` on a
-  short-lived host where only the CLI can say (a Keychain pointer, any file
-  on macOS, an unrecognized one; the editor asks only when the user acts).
+  short-lived host where only the CLI can say (a Keychain pointer, any
+  macOS file but the empty one, an unrecognized one; the editor asks only
+  when the user acts).
   `unsupportedHere` (a macOS file on Windows or Linux) is "cannot run" with
   the panel's `cliCredentialUnsupported` sentence. `authenticate`, after a
   sign-in in the terminal, forgets what the CLI said before (the panel's
@@ -339,3 +340,66 @@ CLI, the readiness for no file, the logout shell, a browser sign-in (asked
 of the CLI on macOS), an unplaceable file (asked once, remembered, asked
 again on `authenticate`), a macOS pointer off macOS, and `META_API_KEY`;
 the agent passes the recheck only from `authenticate`.
+
+## The review before pushing (2026-09-28)
+
+Three read-only reviews of the whole diff since `2559a9b`, one per class
+(concurrency and lifecycle; wire evidence and security, the keyring and
+the paid-use flow among them; failure paths and docs), then one round of
+fixes:
+
+- **Grants** (`paidGrants.ts`, `paid.ts`): "always" adds only the feature
+  it allows, merged into the file inside this process's write queue, so a
+  set read before another change is never written back (two sessions'
+  answers both kept; a feature another agent forgot not brought back). A
+  change fails, rather than writing over it, when the file is there but
+  cannot be read; a question still reads such a file as no grants.
+- **An "always" that cannot be kept** (`paidConsent.ts`, both hosts): the
+  use goes ahead as allowed once, logged as such, instead of failing.
+- **Grants lapse only on the Model API agent**: a Muse Code agent has no
+  paid flags, so starting one beside it no longer clears them
+  (`RuntimeBackend.forgetUnflaggedGrants`).
+- **Rule 7**: the client's answer to `session/request_permission` is parsed
+  with zod (`permissionResponse`), for approvals and paid uses alike;
+  anything else is a cancel.
+- **Rows**: a paid-use question's row id is a UUID, so a session loaded
+  again never reuses one still on screen.
+- **The busy window**: a prompt is busy, and a cancel ends it without a
+  turn, while the session's skills are first announced; a failed form
+  request is declined so the turn goes on.
+- **Words**: a missing `dist/modelApi.js` says to reinstall the agent
+  (`acpModelApiBundleUnavailable`, 15 languages); an unreadable key store
+  is named as the OS store in the agent's log.
+- **Docs**: D62's sign-in bullet (one method, the launched backend's), M63's
+  status, the command's name in the M60–M66 table, the conflict count
+  above, `docs/acp.md`'s absolute links (it is the npm README) and its
+  `authenticate` sentence, the host API counts in CHANGELOG, PRIVACY on the
+  agent's sign-in read, and a pointer in `m63.md` to the superseded price
+  question.
+
+| Drill | Break                                              | Result                                                                                      |
+| ----- | -------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| R1    | an add replaces the folder's set                   | exit 1: "adds to the file as it is when written, never a set read before another change"    |
+| R2    | a change reads an unreadable file as empty         | exit 1: "fails a change on a file it cannot read, rather than writing over it, …"           |
+| R3    | grants lapse whatever the backend                  | exit 1: "lets "always" lapse at start only for the Model API agent, which has the flags"    |
+| R4    | a malformed permission answer passed through       | exit 1: "reads a permission answer only in its schema, and anything else as a cancel"       |
+| R5    | no busy check while the skills are announced       | exit 1: "is busy while the skills are first announced, and a cancel then ends the prompt …" |
+| R6    | a failed form request not declined                 | exit 1: "declines a question the form was cancelled on, …"                                  |
+| R7    | an "always" write failure thrown                   | exit 1: "lets an "always" it cannot keep go ahead once, and says so"                        |
+| R8    | the agent's bundle sentence not passed             | exit 1: "loads the Model API backend from dist/modelApi.js beside the agent, …"             |
+| R9    | the store's name not used in the warning           | exit 1: "reads an unreadable secret store as no key and says so once (D25)"                 |
+| K1    | a failed grant write rethrown (before R7 moved it) | exit 1: "lets an "always" it cannot keep go ahead once, and asks again next time"           |
+
+Left as they are, with their reasons:
+
+- A paid-use question still on screen when its turn is stopped is not
+  withdrawn: ACP gives an agent no way to cancel its own request, and a
+  client that sends `session/cancel` answers it cancelled (the spec). A late
+  answer to it bills nothing; a late "always" is kept.
+- Two agent processes adding a grant in the same instant can keep only one
+  (no file lock); the lost one asks again. A grant that cannot be forgotten
+  at start (an unreadable or unwritable file) is logged and, while the flag
+  is off, never honoured.
+- The account host's own failure reasons reach the log as their error's
+  name, as PR #49 logs them everywhere (its rule: a CLI's text may name a
+  path or an account).

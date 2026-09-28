@@ -6,6 +6,7 @@
 import { Buffer } from 'node:buffer'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import * as z from 'zod/mini'
 import type {
   ContentBlock,
   McpServer,
@@ -448,6 +449,22 @@ export function decidedChoice(
   }
   const denials = choices.filter((choice) => !isApproval(choice))
   return denials.find((choice) => choice.scope === ONCE_SCOPE) ?? denials[0]
+}
+
+// The client's answer to `session/request_permission`, checked before use
+// (AGENTS.md rule 7): the ACP SDK checks what it receives, not what a
+// request of ours gets back.
+const permissionResponseSchema = z.object({
+  outcome: z.union([
+    z.object({ outcome: z.literal('cancelled') }),
+    z.object({ outcome: z.literal('selected'), optionId: z.string() }),
+  ]),
+})
+
+/** The answer as the agent reads it: anything that is not one is a cancel, so nothing runs by it. */
+export function permissionResponse(raw: unknown): RequestPermissionResponse {
+  const parsed = permissionResponseSchema.safeParse(raw)
+  return parsed.success ? parsed.data : { outcome: { outcome: 'cancelled' } }
 }
 
 /** What the approval is about, in one line: the command, the file, the host or the tool. */

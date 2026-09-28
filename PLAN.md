@@ -2945,10 +2945,14 @@ modelApi` (the key of D61). There is no "auto", so the bill is never a
 - **Prompts**: text, resource links (as @mentions), embedded text
   resources (as context), images (checked by their headers, as
   attachments are).
-- **Sign-in**: `initialize` offers two terminal methods, "Sign in to Muse
-  Code" (the agent's `login`, which runs `muse login`) and "Store a Meta
-  Model API key" (`auth set`, D61); `session/new` answers
-  `auth_required` until the chosen backend has its credential.
+- **Sign-in**: `initialize` offers the chosen backend's sign-in, "Sign in
+  to Muse Code" (the agent's `login`, which runs `muse login`) or "Store a
+  Meta Model API key" (`auth set`, D61), as a terminal method to a client
+  that runs them and as a command to run by hand to one that does not;
+  `session/new` answers `auth_required` until the chosen backend has its
+  credential. Muse Code's is read as the panel reads it (D26, PR #49): the
+  credential file's structure, and `account/read` where only the CLI can
+  say; `authenticate` asks afresh.
 - **Trust**: a folder's rules, skills and memory load only with
   `--trust-workspace`, the flag Muse Code itself takes (D13); ACP carries
   no workspace trust of its own.
@@ -7545,7 +7549,7 @@ plan's §8 (A–G); a phase that needs another editor installed waits for Q62.
 | M60       | A     | The host API inventory: every VS Code API, Node built-in, webview host call and theme variable the extension uses, recorded and gated; the `vscode` boundary |
 | M61       | B     | Shared boundaries: the webview's host bridge, the surface and controller free of VS Code types, theme tokens, the editor-services contract, a Node runtime   |
 | M62       | A, C  | The VS Code family: probes and qualification in VSCodium, Cursor, Kiro, Positron and Theia; code-server and Codespaces profiles; Open VSX (Q60)              |
-| M63       | D     | The ACP agent: `muse-spark-code acp` on ACP v1 (Q61); Zed, then one JetBrains IDE (Q64), then Xcode 27, Qt Creator, Neovim, Emacs, Sublime and Devin         |
+| M63       | D     | The ACP agent: `muse-spark-code-acp` on ACP v1 (Q61); Zed, then one JetBrains IDE (Q64), then Xcode 27, Qt Creator, Neovim, Emacs, Sublime and Devin         |
 | M64       | E     | Native full interfaces: the IntelliJ plugin on JCEF with Android Studio qualified separately; Visual Studio on VSSDK and WebView2                            |
 | M65       | F     | Eclipse, NetBeans, JupyterLab 4 and Notebook 7, then Spyder and RStudio                                                                                      |
 | M66       | G     | Conditional hosts: vscode.dev and github.dev, Xcode 26.3's external route, Vim, Kate, MATLAB, Replit, StackBlitz, CodeSandbox and Ona; the companion's media |
@@ -7689,8 +7693,11 @@ listing are M62b.
 
 ### M63 — The ACP agent (D62, phase D)
 
-**Status 2026-09-26: M63a built and certified**
-(`docs/certification/m63.md`); no ACP client has run it yet (M63b).
+**Status 2026-09-28: M63a built and certified**
+(`docs/certification/m63.md`); M63b run in Emacs, Neovim, Zed and
+JupyterLab, and in CI (below); M63c's MCP servers and paid features built,
+joined with M57, M58 and PR #49's sign-in
+(`docs/certification/pr32-integration.md`).
 
 - **Goal**: Muse Spark in every editor that hosts agents over ACP, on
   both backends, with the panel's approvals and none of its bills

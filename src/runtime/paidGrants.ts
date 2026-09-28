@@ -4,9 +4,11 @@
 // features allowed always there. Feature names only, no content. The file is
 // read at every question, so a grant another agent process made or dropped
 // counts at once, and replaced whole (host/fsAtomic.ts), so a reader never
-// sees half of it; this process writes one change at a time. A file that
-// cannot be read or parsed counts as no grants, so the question is asked
-// again rather than skipped.
+// sees half of it; this process writes one change at a time, each on the
+// file as it then is. A file that cannot be read or parsed counts as no
+// grants when a question reads it, so the question is asked again; a change
+// fails when the file is there but cannot be read, rather than writing over
+// it, and replaces one that does not parse.
 
 import { readFileSync } from 'node:fs'
 import * as z from 'zod/mini'
@@ -38,14 +40,28 @@ function isPaidFeature(name: string): name is PaidFeature {
 export function paidGrantFile(deps: PaidGrantFileDeps): PaidGrantStore {
   let writing: Promise<void> = Promise.resolve()
 
-  const readAll = (): Grants => {
+  /** The file's grants; `isChanging` makes a file that is there but unreadable an error. */
+  const readAll = (isChanging: boolean): Grants => {
+    let text: string
+    try {
+      text = readFileSync(deps.file, 'utf8')
+    } catch (error: unknown) {
+      if (storeErrorCode(error) === ENOENT) {
+        return new Map()
+      }
+      if (isChanging) {
+        throw new Error(`${deps.file} could not be read: ${describeStoreError(error)}`, {
+          cause: error,
+        })
+      }
+      deps.log.warn(`Paid-use grants in ${deps.file} ignored: ${describeStoreError(error)}`)
+      return new Map()
+    }
     let raw: unknown
     try {
-      raw = JSON.parse(readFileSync(deps.file, 'utf8'))
+      raw = JSON.parse(text)
     } catch (error: unknown) {
-      if (storeErrorCode(error) !== ENOENT) {
-        deps.log.warn(`Paid-use grants in ${deps.file} ignored: ${describeStoreError(error)}`)
-      }
+      deps.log.warn(`Paid-use grants in ${deps.file} ignored: ${describeStoreError(error)}`)
       return new Map()
     }
     const parsed = grantsSchema.safeParse(raw)
@@ -79,7 +95,7 @@ export function paidGrantFile(deps: PaidGrantFileDeps): PaidGrantStore {
     } catch {
       // That change already failed its own caller; this one starts afresh.
     }
-    const grants = readAll()
+    const grants = readAll(true)
     if (hasChanged(grants)) {
       await writeAll(grants)
     }
@@ -92,10 +108,16 @@ export function paidGrantFile(deps: PaidGrantFileDeps): PaidGrantStore {
   }
 
   return {
-    read: (workspaceRoot) => readAll().get(workspaceKey(workspaceRoot)) ?? new Set(),
-    write: (workspaceRoot, features) =>
+    read: (workspaceRoot) => readAll(false).get(workspaceKey(workspaceRoot)) ?? new Set(),
+    add: (workspaceRoot, features) =>
       change((grants) => {
-        grants.set(workspaceKey(workspaceRoot), new Set(features))
+        const key = workspaceKey(workspaceRoot)
+        const held = grants.get(key) ?? new Set()
+        const added = features.filter((feature) => !held.has(feature))
+        if (added.length === 0) {
+          return false
+        }
+        grants.set(key, new Set([...held, ...added]))
         return true
       }),
     forget: (features) =>

@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events'
-import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { PassThrough } from 'node:stream'
@@ -11,6 +11,7 @@ import { parseCommandLine, type ServeOptions } from '../../src/runtime/cliArgs'
 import {
   agentDataFolder,
   paidGrantsFile,
+  workspaceKey,
   workspaceSessionsFolder,
 } from '../../src/runtime/dataFolder'
 import { walkFiles } from '../../src/runtime/fileWalk'
@@ -521,11 +522,39 @@ describe('createRuntimeBackend', () => {
     const empty = folder()
     const runtime = backend({ backend: 'modelApi' }, secrets, {}, empty)
     await expect(runtime.backend.hostFor(folder())).rejects.toThrow(
-      UI_TEXT.modelApiBundleUnavailable,
+      UI_TEXT.acpModelApiBundleUnavailable,
     )
     expect(log.error).toHaveBeenCalledWith(
       expect.stringContaining(`The Model API bundle ${path.join(empty, 'modelApi.js')}`),
     )
+  })
+
+  it('lets "always" lapse at start only for the Model API agent, which has the flags (M58)', async () => {
+    const home = folder()
+    const env = { XDG_DATA_HOME: home, LOCALAPPDATA: home }
+    const file = paidGrantsFile({ platform: process.platform, env, homeDir: home })
+    const grants = { [workspaceKey(path.resolve('work'))]: ['webSearch'] }
+    mkdirSync(path.dirname(file), { recursive: true })
+    writeFileSync(file, JSON.stringify(grants))
+    const runtimeOn = (backend: ServeOptions['backend']) =>
+      createRuntimeBackend({
+        options: { ...DEFAULTS, backend },
+        version: '0.0.0-test',
+        distDir: dist.folder,
+        platform: process.platform,
+        env,
+        homeDir: home,
+        secrets: memorySecrets(),
+        runGit: () => Promise.reject(new Error('no git')),
+        fetch: fakeModelApi().fetch,
+        sleep: () => Promise.resolve(),
+        log,
+      })
+    // A Muse Code agent beside it leaves the Model API agent's grants alone.
+    await runtimeOn('museCode').forgetUnflaggedGrants()
+    expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual(grants)
+    await runtimeOn('modelApi').forgetUnflaggedGrants()
+    expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual({})
   })
 
   it('keeps paid-use grants in the agent’s data folder (M58)', () => {

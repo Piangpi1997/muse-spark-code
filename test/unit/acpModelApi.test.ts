@@ -321,7 +321,7 @@ describe('the ACP agent on the Model API backend (M63)', () => {
 
     // Started again with the flag, the folder still asks nothing.
     const again = setup(answerPaid('paid-deny'), ['webSearch'], true, first)
-    await again.runtime.paid.forgetUnflagged()
+    await again.runtime.forgetUnflaggedGrants()
     again.api.script({ text: 'Three.' })
     await again.run((client) => promptOnce(client, again.workspace))
     expect(again.permissions).toEqual([])
@@ -330,11 +330,11 @@ describe('the ACP agent on the Model API backend (M63)', () => {
 
     // Started without it, the grant lapses, so with it again the folder asks again.
     const without = setup(answerPaid('paid-deny'), [], true, first)
-    await without.runtime.paid.forgetUnflagged()
+    await without.runtime.forgetUnflaggedGrants()
     expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual({})
     await without.runtime.close()
     const flaggedAgain = setup(answerPaid('paid-deny'), ['webSearch'], true, first)
-    await flaggedAgain.runtime.paid.forgetUnflagged()
+    await flaggedAgain.runtime.forgetUnflaggedGrants()
     flaggedAgain.api.script({ text: 'Four.' })
     await flaggedAgain.run((client) => promptOnce(client, flaggedAgain.workspace))
     expect(flaggedAgain.permissions).toHaveLength(1)

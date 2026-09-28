@@ -7,6 +7,7 @@ import {
   decidedChoice,
   mcpServersFrom,
   permissionOptions,
+  permissionResponse,
   promptParts,
   toolKind,
   toolName,
@@ -326,6 +327,23 @@ describe('approvals', () => {
     { choiceId: 'd2', label: 'Never', decision: 'abort', scope: 'session' },
     { choiceId: 'd1', label: 'Reject', decision: 'abort', scope: 'once' },
   ]
+
+  it('reads a permission answer only in its schema, and anything else as a cancel (rule 7)', () => {
+    const cancelled = { outcome: { outcome: 'cancelled' } }
+    expect(permissionResponse({ outcome: { outcome: 'selected', optionId: 'a1' } })).toEqual({
+      outcome: { outcome: 'selected', optionId: 'a1' },
+    })
+    expect(permissionResponse(cancelled)).toEqual(cancelled)
+    for (const odd of [
+      undefined,
+      null,
+      'allow',
+      { outcome: 'yes' },
+      { outcome: { outcome: 'selected' } },
+    ]) {
+      expect(permissionResponse(odd)).toEqual(cancelled)
+    }
+  })
 
   it('offers each choice under its own id, label and kind', () => {
     expect(permissionOptions(choices)).toEqual([

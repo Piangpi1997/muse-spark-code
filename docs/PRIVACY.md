@@ -290,6 +290,9 @@ hands it, the same way the extension does, and nothing else:
   URLs and headers) are handed to the Muse Code CLI for the session, which
   starts or calls them; the agent logs only their names. The Model API
   backend runs none.
+- **Muse Code's sign-in** is read as the extension reads it (above): the
+  structure of `auth.json` only, and `account/read` on a short-lived
+  `muse serve` where only the CLI can say.
 - **The key** is kept by `auth set` in the operating system's credential
   store under "Muse Spark Code (Unofficial)" (Windows Credential Manager,
   the macOS Keychain, the Secret Service on Linux), never in a file, and

@@ -47,6 +47,8 @@ interface HarnessOptions {
   readonly readiness?: BackendReadiness
   readonly answer?: PermissionAnswer
   readonly elicitation?: acp.CreateElicitationResponse
+  /** The client's form request fails instead of answering. */
+  readonly isElicitationBroken?: boolean
   readonly canBypass?: boolean
   readonly allowsContributorModels?: boolean
   readonly kind?: 'museCode' | 'modelApi'
@@ -111,6 +113,9 @@ function harness(options: HarnessOptions = {}): Harness {
     })
     .onRequest('elicitation/create', (context) => {
       elicitations.push(context.params)
+      if (options.isElicitationBroken === true) {
+        throw new Error('the form could not be shown')
+      }
       return options.elicitation ?? { action: 'cancel' }
     })
   return {
@@ -622,6 +627,8 @@ describe('the ACP agent (M63)', () => {
   it('declines a question the form was cancelled on, and shows it as text where there are no forms', async () => {
     const withForms = harness({ elicitation: { action: 'decline' } })
     const withoutForms = harness()
+    // A form request that fails is declined too, so the turn goes on.
+    const brokenForms = harness({ isElicitationBroken: true })
     const question: AgentEvent = {
       type: 'questionRequested',
       userInputId: 'input-1',
@@ -639,6 +646,7 @@ describe('the ACP agent (M63)', () => {
     for (const [h, capabilities] of [
       [withForms, { elicitation: { form: {} } }],
       [withoutForms, {}],
+      [brokenForms, { elicitation: { form: {} } }],
     ] as const) {
       await h.run(async (client) => {
         const { sessionId } = await start(client, capabilities)
@@ -652,6 +660,41 @@ describe('the ACP agent (M63)', () => {
       sessionUpdate: 'agent_message_chunk',
       content: { type: 'text', text: `${UI_TEXT.acpQuestionAsked}\nProceed?\n- Yes` },
     })
+  })
+
+  it('is busy while the skills are first announced, and a cancel then ends the prompt without a turn', async () => {
+    const h = harness()
+    const stop = await h.run(async (client) => {
+      const { sessionId } = await start(client)
+      const session = h.host.sessions[0]!
+      // The skills answer only once the gate opens.
+      const gate = new AbortController()
+      session.listSkills.mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            gate.signal.addEventListener(
+              'abort',
+              () => {
+                resolve([])
+              },
+              { once: true },
+            )
+          }),
+      )
+      const first = prompt(client, sessionId)
+      await until(() => session.listSkills.mock.calls.length === 1)
+      await expect(prompt(client, sessionId, 'again')).rejects.toMatchObject({
+        message: expect.stringContaining(UI_TEXT.acpPromptBusy),
+      })
+      await client.notify('session/cancel', { sessionId })
+      await until(() =>
+        h.log.info.mock.calls.some(([line]) => String(line).includes('cancelled before its turn')),
+      )
+      gate.abort()
+      return await first
+    })
+    expect(stop).toEqual({ stopReason: 'cancelled' })
+    expect(h.host.sessions[0]?.sendTurn).not.toHaveBeenCalled()
   })
 
   it('switches the model and the effort, and refuses what the session does not offer', async () => {
@@ -847,24 +890,24 @@ describe('paid features in the agent (M63c, M58)', () => {
     expect(await answersInOneSession(h, [WEB_SEARCH, WEB_SEARCH])).toEqual([true, true])
     expect(h.permissions).toHaveLength(2)
     const [asked] = h.permissions
-    expect(asked?.toolCall).toMatchObject({
-      toolCallId: 'paid-use-1',
-      title: 'Let Muse search the web for this prompt?',
-    })
+    const id = asked?.toolCall.toolCallId
+    expect(id).toMatch(/^paid-use-[\da-f-]{36}$/)
+    expect(asked?.toolCall.title).toBe('Let Muse search the web for this prompt?')
     expect(JSON.stringify(asked?.toolCall.content)).toContain('$2.50 per 1,000 searches')
     // Not trusted: "Allow always" is neither offered nor kept.
     expect(asked?.options).toEqual([
       { optionId: 'paid-allow-once', name: 'Allow once', kind: 'allow_once' },
       { optionId: 'paid-deny', name: 'Deny', kind: 'reject_once' },
     ])
-    expect(h.permissions[1]?.toolCall.toolCallId).toBe('paid-use-2')
+    // Each question its own row, however the session came to be held.
+    expect(h.permissions[1]?.toolCall.toolCallId).not.toBe(id)
     const row = h.updates.find(
-      (update) => update.sessionUpdate === 'tool_call' && update.toolCallId === 'paid-use-1',
+      (update) => update.sessionUpdate === 'tool_call' && update.toolCallId === id,
     )
     expect(JSON.stringify(row)).toContain('$2.50 per 1,000 searches')
     expect(h.updates).toContainEqual({
       sessionUpdate: 'tool_call_update',
-      toolCallId: 'paid-use-1',
+      toolCallId: id,
       status: 'completed',
     })
     expect(h.grants.byFolder.size).toBe(0)
@@ -904,7 +947,7 @@ describe('paid features in the agent (M63c, M58)', () => {
     expect(h.permissions).toHaveLength(1)
     expect(h.updates).toContainEqual({
       sessionUpdate: 'tool_call_update',
-      toolCallId: 'paid-use-1',
+      toolCallId: h.permissions[0]?.toolCall.toolCallId,
       status: 'failed',
     })
     expect(h.grants.byFolder.size).toBe(0)

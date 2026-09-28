@@ -11,8 +11,8 @@ export function memoryPaidGrants(): PaidGrantStore & {
   return {
     byFolder,
     read: (workspaceRoot) => byFolder.get(workspaceRoot) ?? new Set(),
-    write: (workspaceRoot, grants) => {
-      byFolder.set(workspaceRoot, new Set(grants))
+    add: (workspaceRoot, features) => {
+      byFolder.set(workspaceRoot, new Set([...(byFolder.get(workspaceRoot) ?? []), ...features]))
       return Promise.resolve()
     },
     forget: (features) => {

@@ -10,6 +10,7 @@
 // its flag, and each use asks in the editor first, naming its price (M58,
 // paid.ts). Every update of a turn goes out before the turn's response.
 
+import { randomUUID } from 'node:crypto'
 import path from 'node:path'
 import {
   agent as acpAgent,
@@ -74,6 +75,7 @@ import {
   decidedChoice,
   mcpServersFrom,
   permissionOptions,
+  permissionResponse,
   planEntries,
   promptParts,
   UpdateTranslator,
@@ -175,8 +177,11 @@ class AcpSession {
   private readonly earlyFinishes = new Map<string, TurnCompleted>()
   private outbox: Promise<void> = Promise.resolve()
   private pending: PendingPrompt | undefined
-  /** Paid-use questions asked in this session, which number their rows (M58). */
-  private paidQuestions = 0
+  /**
+   * A prompt before its turn starts, while the session's skills are first
+   * announced: the session is busy, and a cancel ends the prompt there.
+   */
+  private preparing: { isCancelled: boolean } | undefined
   private skills: readonly SkillSummary[] = []
   private areCommandsAnnounced = false
   private effort: EffortLevel = DEFAULT_EFFORT
@@ -369,11 +374,13 @@ class AcpSession {
       try {
         // The tool call the request names has gone out first.
         await this.outbox
-        response = await this.client.request('session/request_permission', {
-          sessionId: this.sessionId,
-          toolCall: approvalToolCall(event, this.cwd),
-          options: permissionOptions(event.availableChoices),
-        })
+        response = permissionResponse(
+          await this.client.request('session/request_permission', {
+            sessionId: this.sessionId,
+            toolCall: approvalToolCall(event, this.cwd),
+            options: permissionOptions(event.availableChoices),
+          }),
+        )
       } catch (error: unknown) {
         this.deps.log.warn(
           `ACP session ${this.sessionId}: permission request failed, denying: ${describe(error)}`,
@@ -428,6 +435,18 @@ class AcpSession {
       this.deps.log.warn(
         `ACP session ${this.sessionId}: question ${event.userInputId}: ${describe(error)}`,
       )
+      // A form that failed is declined, so the turn goes on without the answer.
+      await this.declineQuestions(event.userInputId)
+    }
+  }
+
+  private async declineQuestions(userInputId: string): Promise<void> {
+    try {
+      await this.session.cancelQuestions(userInputId)
+    } catch (error: unknown) {
+      this.deps.log.warn(
+        `ACP session ${this.sessionId}: question ${userInputId} not declined: ${describe(error)}`,
+      )
     }
   }
 
@@ -437,8 +456,8 @@ class AcpSession {
    * popup's answers. Anything but Allow once or Allow always is Deny.
    */
   public async askPaidUse(request: PaidUseRequest, canRemember: boolean): Promise<PaidUseAnswer> {
-    this.paidQuestions += 1
-    const toolCallId = `${ACP_PAID_TOOL_CALL_PREFIX}${String(this.paidQuestions)}`
+    // Unique for the client's lifetime: a session loaded again starts afresh.
+    const toolCallId = `${ACP_PAID_TOOL_CALL_PREFIX}${randomUUID()}`
     const { title, detail } = paidUseQuestion(request)
     const content = [{ type: 'content' as const, content: { type: 'text' as const, text: detail } }]
     this.send({
@@ -458,7 +477,7 @@ class AcpSession {
         options: paidUseOptions(canRemember),
       }
       const response = await this.client.request('session/request_permission', params)
-      answer = paidUseAnswer(response, canRemember)
+      answer = paidUseAnswer(permissionResponse(response), canRemember)
     } catch (error: unknown) {
       this.deps.log.warn(
         `ACP session ${this.sessionId}: the paid-use question failed, denying: ${describe(error)}`,
@@ -565,14 +584,24 @@ class AcpSession {
   }
 
   public async prompt(blocks: readonly ContentBlock[]): Promise<StopReason> {
-    if (this.pending !== undefined) {
+    if (this.pending !== undefined || this.preparing !== undefined) {
       throw RequestError.invalidRequest(undefined, UI_TEXT.acpPromptBusy)
     }
     const parsed = promptParts(blocks, this.cwd)
     if (!parsed.ok) {
       throw RequestError.invalidParams(undefined, parsed.reason)
     }
-    await this.announceCommands()
+    const preparing = { isCancelled: false }
+    this.preparing = preparing
+    try {
+      await this.announceCommands()
+    } finally {
+      this.preparing = undefined
+    }
+    if (preparing.isCancelled) {
+      await this.outbox
+      return 'cancelled'
+    }
     const finished = new Promise<StopReason>((resolve, reject) => {
       this.pending = { resolve, reject, turnId: undefined, isCancelled: false }
     })
@@ -592,6 +621,11 @@ class AcpSession {
   }
 
   public async cancel(): Promise<void> {
+    if (this.preparing !== undefined) {
+      this.preparing.isCancelled = true
+      this.deps.log.info(`ACP session ${this.sessionId}: cancelled before its turn started`)
+      return
+    }
     if (this.pending === undefined) {
       return
     }

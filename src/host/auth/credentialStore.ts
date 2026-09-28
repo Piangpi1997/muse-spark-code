@@ -22,6 +22,8 @@ export class CredentialStore {
     private readonly secrets: SecretStore,
     /** Where an unreadable secret store is reported, once. */
     private readonly warn: (message: string) => void,
+    /** The store's name in that report: the ACP agent's is the OS store (D61). */
+    private readonly storeName = "VS Code's secret storage",
   ) {}
 
   /**
@@ -37,7 +39,7 @@ export class CredentialStore {
       if (!this.hasReportedFailure) {
         this.hasReportedFailure = true
         this.warn(
-          `VS Code's secret storage could not be read, so no Model API key is available: ${String(error)}`,
+          `${this.storeName} could not be read, so no Model API key is available: ${String(error)}`,
         )
       }
       return undefined

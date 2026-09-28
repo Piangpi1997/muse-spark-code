@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterAll, describe, expect, it, vi } from 'vitest'
@@ -115,6 +115,22 @@ describe('AcpPaidUse', () => {
     expect(paid.isRemembered(FOLDER, 'webSearch')).toBe(false)
   })
 
+  it('lets an "always" it cannot keep go ahead once, and asks again next time', async () => {
+    const grants = memoryPaidGrants()
+    vi.spyOn(grants, 'add').mockRejectedValue(new Error('read-only data folder'))
+    const log = logger()
+    const paid = new AcpPaidUse({ flagged: ['webSearch'], canRemember: () => true, grants, log })
+    const asker = vi.fn(() => Promise.resolve('always' as const))
+    paid.attach(asker)
+    expect(await paid.allows(FOLDER, 's1', WEB_SEARCH, false)).toBe(true)
+    expect(log.warn).toHaveBeenCalledWith(
+      'Paid use of webSearch: "always" could not be kept, so it is allowed once: read-only data folder',
+    )
+    expect(log.info).toHaveBeenLastCalledWith('Paid use of webSearch: allowed once')
+    expect(await paid.allows(FOLDER, 's1', WEB_SEARCH, false)).toBe(true)
+    expect(asker).toHaveBeenCalledTimes(2)
+  })
+
   it('leaves the grants alone when every feature is flagged', async () => {
     const grants = memoryPaidGrants()
     const forget = vi.spyOn(grants, 'forget')
@@ -171,8 +187,8 @@ describe('the grants file (runtime/paidGrants.ts)', () => {
     const file = grantsFile()
     const store = fileStore(file)
     expect(store.read(FOLDER)).toEqual(new Set())
-    await store.write(FOLDER, new Set(['webSearch']))
-    await store.write(OTHER, new Set(['imageGeneration']))
+    await store.add(FOLDER, ['webSearch'])
+    await store.add(OTHER, ['imageGeneration'])
     // Another process's store over the same file sees them at once.
     const other = fileStore(file)
     expect(other.read(FOLDER)).toEqual(new Set(['webSearch']))
@@ -186,13 +202,35 @@ describe('the grants file (runtime/paidGrants.ts)', () => {
     expect(JSON.stringify(saved)).not.toContain('work')
   })
 
+  it('adds to the file as it is when written, never a set read before another change', async () => {
+    const file = grantsFile()
+    const store = fileStore(file)
+    const other = fileStore(file)
+    // Two sessions of one agent, each answering "always" for a different feature.
+    await Promise.all([store.add(FOLDER, ['webSearch']), store.add(FOLDER, ['imageGeneration'])])
+    expect(store.read(FOLDER)).toEqual(new Set(['webSearch', 'imageGeneration']))
+    // A feature another agent forgot is not written back by a later add.
+    await other.forget(['webSearch'])
+    await store.add(FOLDER, ['imageGeneration'])
+    expect(store.read(FOLDER)).toEqual(new Set(['imageGeneration']))
+  })
+
+  it('fails a change on a file it cannot read, rather than writing over it, and reads it as none', async () => {
+    const file = grantsFile()
+    const log = logger()
+    const store = fileStore(file, log)
+    // A folder where the file should be: there, and unreadable as a file.
+    mkdirSync(file, { recursive: true })
+    expect(store.read(FOLDER)).toEqual(new Set())
+    expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('Paid-use grants in'))
+    await expect(store.add(FOLDER, ['webSearch'])).rejects.toThrow('could not be read')
+    await expect(store.forget(['webSearch'])).rejects.toThrow('could not be read')
+  })
+
   it('writes one change at a time, each on the file as it then is', async () => {
     const file = grantsFile()
     const store = fileStore(file)
-    await Promise.all([
-      store.write(FOLDER, new Set(['webSearch'])),
-      store.write(OTHER, new Set(['webSearch'])),
-    ])
+    await Promise.all([store.add(FOLDER, ['webSearch']), store.add(OTHER, ['webSearch'])])
     expect(store.read(FOLDER)).toEqual(new Set(['webSearch']))
     expect(store.read(OTHER)).toEqual(new Set(['webSearch']))
   })
@@ -200,8 +238,8 @@ describe('the grants file (runtime/paidGrants.ts)', () => {
   it('forgets features in every folder, drops emptied folders, and writes nothing when none had them', async () => {
     const file = grantsFile()
     const store = fileStore(file)
-    await store.write(FOLDER, new Set(['webSearch', 'imageGeneration']))
-    await store.write(OTHER, new Set(['webSearch']))
+    await store.add(FOLDER, ['webSearch', 'imageGeneration'])
+    await store.add(OTHER, ['webSearch'])
     await store.forget(['webSearch'])
     expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual({
       [workspaceKey(FOLDER)]: ['imageGeneration'],
@@ -215,7 +253,7 @@ describe('the grants file (runtime/paidGrants.ts)', () => {
     const file = grantsFile()
     const log = logger()
     const store = fileStore(file, log)
-    await store.write(FOLDER, new Set(['webSearch']))
+    await store.add(FOLDER, ['webSearch'])
     writeFileSync(file, JSON.stringify({ [workspaceKey(FOLDER)]: ['webSearch', 'everything'] }))
     expect(store.read(FOLDER)).toEqual(new Set(['webSearch']))
     writeFileSync(file, '{"half":')
@@ -227,7 +265,7 @@ describe('the grants file (runtime/paidGrants.ts)', () => {
       `Paid-use grants in ${file} ignored: not a map of folders to features`,
     )
     // The next grant replaces what could not be read.
-    await store.write(FOLDER, new Set(['imageGeneration']))
+    await store.add(FOLDER, ['imageGeneration'])
     expect(store.read(FOLDER)).toEqual(new Set(['imageGeneration']))
   })
 })

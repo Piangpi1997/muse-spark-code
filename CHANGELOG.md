@@ -13,7 +13,7 @@ happened, not what was planned; superseded entries are kept.
   The owner's IDE compatibility plan is filed in `docs/ide-compatibility.md`.
   A new gate, `npm run check:host-api`, keeps a record of what the
   extension asks of its host (`docs/ide-compatibility/host-api.md`): the
-  198 VS Code APIs it uses and where, the 11 files that import `vscode`,
+  200 VS Code APIs it uses and where, the 13 files that import `vscode`,
   the Node built-ins, and what the webview needs (`acquireVsCodeApi` and 57
   theme variables); it fails when the record goes stale, and when the
   engine, the protocol, the webview, the conversation controller, either
@@ -58,6 +58,13 @@ happened, not what was planned; superseded entries are kept.
   never reaches Meta now names the variables to set in the agent's
   environment instead of VS Code's `http.*` settings, in all 15 languages.
   `docs/acp.md` has a new "Networks and proxies" section.
+- **The ACP agent's Muse Code sign-in is read as the panel reads it**
+  (PR #49): from the credential file's structure, and the CLI's
+  `account/read` where only it can say, so an agent after `muse logout`
+  asks for sign-in instead of failing its first turn. A Muse Code agent no
+  longer clears the Model API agent's "Allow always" when it starts, and a
+  Model API agent whose `dist/modelApi.js` is missing says to reinstall the
+  agent, not the extension.
 - **The key outside VS Code, in the rules** (AGENTS.md rule 8, PLAN.md
   D61). Outside VS Code the operating system's credential store stands in
   for SecretStorage: the ACP agent's key goes in only through `auth set`'s

@@ -27,7 +27,8 @@ import type { PaidUseRequest } from '../shared/paid'
 /** Where "Allow always in this workspace" is kept, per folder. */
 export interface PaidGrantStore {
   readonly read: (workspaceRoot: string) => ReadonlySet<PaidFeature>
-  readonly write: (workspaceRoot: string, grants: ReadonlySet<PaidFeature>) => Promise<void>
+  /** Adds these features to the folder's grants, merged with the store as it then is. */
+  readonly add: (workspaceRoot: string, features: readonly PaidFeature[]) => Promise<void>
   /** Takes these features out of every folder's grants. */
   readonly forget: (features: readonly PaidFeature[]) => Promise<void>
 }
@@ -110,6 +111,19 @@ export class AcpPaidUse {
     }
   }
 
+  /**
+   * "Allow always" for the folder: only what this answer adds, merged into
+   * the file as it is when written, so a set read before another agent's
+   * change is never written back over it.
+   */
+  private async keep(workspaceRoot: string, grants: ReadonlySet<PaidFeature>): Promise<void> {
+    const held = this.deps.grants.read(workspaceRoot)
+    await this.deps.grants.add(
+      workspaceRoot,
+      [...grants].filter((feature) => !held.has(feature)),
+    )
+  }
+
   /** Whether the backend may use the feature at all: its flag given. */
   public isOn(feature: PaidFeature): boolean {
     const flagged: readonly PaidFeature[] = this.deps.flagged
@@ -132,7 +146,7 @@ export class AcpPaidUse {
       isOn: (feature) => this.isOn(feature),
       canRemember: this.deps.canRemember,
       readGrants: () => this.deps.grants.read(workspaceRoot),
-      writeGrants: (grants) => this.deps.grants.write(workspaceRoot, grants),
+      writeGrants: (grants) => this.keep(workspaceRoot, grants),
       ask: (asked, canRemember) => this.ask(sessionId, asked, canRemember),
       log: this.deps.log,
     })
