@@ -68,19 +68,23 @@ export function credentialFileVerdict(
   }
   const version = parsed.data.schema_version
   const providers = Object.values(parsed.data.providers)
+  const isKnownVersion =
+    version === MUSE_CREDENTIAL_INLINE_SCHEMA || version === MUSE_CREDENTIAL_POINTER_SCHEMA
+  if (!isKnownVersion) {
+    return 'unrecognized'
+  }
+  // No provider points anywhere, whatever the version or OS: signed out (the
+  // review of PR #49; a signed-out macOS file copied elsewhere is no pointer).
+  if (providers.length === 0) {
+    return 'empty'
+  }
   const isKeychainStyle =
     version === MUSE_CREDENTIAL_POINTER_SCHEMA ||
     providers.some((provider) => provider.storage === MUSE_CREDENTIAL_KEYCHAIN_STORAGE)
-  if (isKeychainStyle && platform !== 'darwin') {
-    return 'keychainElsewhere'
-  }
   if (isKeychainStyle) {
-    return providers.length === 0 ? 'empty' : 'keychain'
+    return platform === 'darwin' ? 'keychain' : 'keychainElsewhere'
   }
-  if (version !== MUSE_CREDENTIAL_INLINE_SCHEMA) {
-    return 'unrecognized'
-  }
-  return providers.length === 0 ? 'empty' : 'inline'
+  return 'inline'
 }
 
 /** `security find-generic-password` without `-g`/`-w`: 0 found, 44 not found. */

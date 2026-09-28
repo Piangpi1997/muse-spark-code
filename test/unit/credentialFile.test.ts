@@ -64,6 +64,14 @@ describe('credentialFileVerdict', () => {
     expect(credentialFileVerdict(SCHEMA_1_POINTER, platform)).toBe('keychainElsewhere')
   })
 
+  // A signed-out macOS file copied elsewhere names no provider, so points nowhere (the review of PR #49).
+  it.each(['win32', 'linux'] as const)(
+    'reads an empty version-2 file as signed out on %s',
+    (platform) => {
+      expect(credentialFileVerdict('{"schema_version":2,"providers":{}}', platform)).toBe('empty')
+    },
+  )
+
   it.each([
     ['not JSON', '{"schema_version": 1, "providers": '],
     ['a future schema', '{"schema_version": 3, "providers": {"meta": {}}}'],
