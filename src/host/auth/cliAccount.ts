@@ -22,6 +22,7 @@ import { wireWordForLog } from '../../core/logging'
 import {
   MUSE_CREDENTIAL_FILE_MAX_BYTES,
   MUSE_CREDENTIAL_READ_ATTEMPTS,
+  MUSE_USER_ACTION_ANSWER_REUSE_MS,
 } from '../../shared/constants'
 import type { Logger } from '../logger'
 import { type AccountState, isCapturedSignedOut, isStoredSignIn } from './accountHost'
@@ -103,6 +104,8 @@ export interface CliAccountDeps {
   /** `account/read` on a short-lived host; undefined when it could not say. */
   readonly probe: () => Promise<AccountState | undefined>
   readonly log: Logger
+  /** The clock an answer's age is read on; `Date.now` unless a test gives one. */
+  readonly now?: () => number
 }
 
 /** One question to the CLI, which Cancel, a sign-out or Check again may leave behind. */
@@ -118,15 +121,35 @@ interface Probe {
 const OBSOLETE = Symbol('the answer of an abandoned probe')
 
 export class CliAccount {
-  private answered: { readonly key: string; readonly signIn: CliSignIn } | undefined
+  private answered:
+    { readonly key: string; readonly signIn: CliSignIn; readonly at: number } | undefined
   private asking: Probe | undefined
 
   public constructor(private readonly deps: CliAccountDeps) {}
 
+  private now(): number {
+    return (this.deps.now ?? Date.now)()
+  }
+
+  /**
+   * Whether a remembered answer stands for this question. A passive look
+   * takes it. A user action asks again after "could not say", and on macOS
+   * after any answer older than the click: a sign-in or sign-out made
+   * elsewhere may change only the Keychain, the file as it was (Codex on
+   * 2a324d48).
+   */
+  private mayReuse(answered: NonNullable<CliAccount['answered']>, isUserAction: boolean): boolean {
+    return (
+      !isUserAction ||
+      (answered.signIn !== 'unknown' &&
+        (this.deps.platform !== 'darwin' ||
+          this.now() - answered.at < MUSE_USER_ACTION_ANSWER_REUSE_MS))
+    )
+  }
+
   private async confirm(key: string, isUserAction: boolean): Promise<CliSignIn | typeof OBSOLETE> {
     const answered = this.answered
-    // A remembered "could not say" is asked again when the user acts.
-    if (answered?.key === key && (!isUserAction || answered.signIn !== 'unknown')) {
+    if (answered?.key === key && this.mayReuse(answered, isUserAction)) {
       return answered.signIn
     }
     if (!isUserAction && this.deps.platform === 'darwin') {
@@ -151,7 +174,7 @@ export class CliAccount {
       if (asking.isAbandoned) {
         return OBSOLETE
       }
-      this.answered = { key, signIn }
+      this.answered = { key, signIn, at: this.now() }
       return signIn
     } finally {
       if (this.asking === asking) {

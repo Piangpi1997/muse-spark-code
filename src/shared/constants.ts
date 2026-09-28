@@ -1442,6 +1442,12 @@ export const MUSE_CREDENTIAL_FILE_MAX_BYTES = 64 * 1024
 // again, or probes abandoned again and again, end as `unknown` (the review of
 // PR #49).
 export const MUSE_CREDENTIAL_READ_ATTEMPTS = 3
+// On macOS a sign-in or sign-out made elsewhere may change only the
+// Keychain, the file as it was, so a user action asks the CLI afresh. An
+// answer this young is from the same click (a sign-out asks up to three
+// times, a refresh with the hold on four) and is reused, so one click is
+// one question and at most one Keychain prompt (Codex on 2a324d48).
+export const MUSE_USER_ACTION_ANSWER_REUSE_MS = 5000
 // The macOS login Keychain item the CLI keeps a sign-in in. Diagnostics looks
 // it up by attribute only (no `-g`/`-w`, so no secret and no prompt): exit 0
 // found, 44 not found.
