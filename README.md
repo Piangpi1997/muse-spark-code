@@ -1754,18 +1754,18 @@ M44 took a response shape from Meta's documentation).
   agents. On the pull request, **Codex** reviews again. A finding is fixed
   with every sibling of its class in one commit, and a change that reaches
   a third review round is redesigned instead of patched.
-- **Gates.** AGENTS.md requires `npm run quality` to pass before a commit.
-  Its parts other than the accessibility suite (`quality:gates`, the secret
-  scan and semgrep) run on a dedicated test machine, Linux or macOS, so they
-  never compete with the owner's workstation. Headless Chrome does not yet
-  run reliably on those machines, so for now the accessibility suite runs
-  in CI (Ubuntu and Windows) on every pull request, and locally for the
-  screens a change touches. The PowerShell lint runs only on Windows. CI
-  also runs `quality:gates` on Ubuntu, Windows and macOS, and the other
-  gates as the jobs listed above. A milestone's new guards get red drills:
-  each guard is broken on purpose, its test must fail, and the file is
-  restored byte for byte; the record lists the drills and anything not
-  drilled.
+- **Gates.** AGENTS.md requires `npm run quality` to exit 0 before a
+  commit is proposed. Every commit is gated before it is pushed: one
+  complete `npm run quality` run (formatting, lint, types, tests with
+  coverage, the accessibility suite, the secret scan and semgrep) on one of
+  three dedicated test machines (a Windows 11 virtual machine, a Kubuntu
+  virtual machine and a Mac mini), so it never competes with the owner's
+  workstation. The PowerShell lint runs only on Windows, so a change to a
+  PowerShell script gets its run there. CI then runs `quality:gates` on
+  Ubuntu, Windows and macOS, and the other gates as the jobs listed above.
+  A milestone's new guards get red drills: each guard is broken on purpose,
+  its test must fail, and the file is restored byte for byte; the record
+  lists the drills and anything not drilled.
 - **Evidence.** Under AGENTS.md rule 13, a shape parsed from Muse Code or
   the Model API is written from a live capture, and the record names it or
   says it did not have one. Live checks run on the contributor model in
