@@ -134,6 +134,17 @@ suite('code intelligence over TypeScript (M67)', () => {
       ),
       /Says hello to someone\./,
     )
+    // Defined in TypeScript's bundled library, under VS Code's installation:
+    // a library root, so the hover is shown, not held back.
+    assert.match(
+      await answerOnce(
+        deps,
+        'hover',
+        { path: `${FIXTURE}/main.ts`, symbol: 'toUpperCase' },
+        (text) => text.includes('toUpperCase'),
+      ),
+      /toUpperCase\(\): string/,
+    )
     assert.match(
       await answerOnce(deps, 'workspaceSymbols', { query: 'greet' }, (text) =>
         text.includes('greet.ts'),

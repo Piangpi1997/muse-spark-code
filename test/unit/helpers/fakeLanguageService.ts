@@ -38,6 +38,8 @@ export interface FakeServiceOptions {
     direction: CallDirection,
   ) => CallHierarchyAnswer | undefined
   readonly rename?: (path: string, at: CodePosition, newName: string) => Promise<RenameEdits>
+  /** Folders a hover may describe outside the workspace; none unless given. */
+  readonly libraryRoots?: readonly string[]
 }
 
 export interface FakeLanguageService extends LanguageServiceHost {
@@ -147,7 +149,8 @@ export function fakeLanguageService(options: FakeServiceOptions): FakeLanguageSe
     rename: async (path, at, newName) => {
       asked.push(`rename ${describeAt(path, at)} ${newName}`)
       return await (options.rename?.(path, at, newName) ??
-        Promise.resolve({ files: [], hasFileOperations: false }))
+        Promise.resolve({ files: [], fileOperations: 'none' }))
     },
+    libraryRoots: () => options.libraryRoots ?? [],
   }
 }

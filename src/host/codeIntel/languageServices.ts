@@ -16,6 +16,7 @@ import type {
   CodePosition,
   CodeRange,
   CodeSymbol,
+  FileOperations,
   LanguageServiceHost,
   RenameEdits,
 } from '../../core/codeIntel/languageService'
@@ -157,20 +158,42 @@ async function rename(uri: vscode.Uri, at: CodePosition, newName: string): Promi
     newName,
   )
   if (edit === undefined) {
-    return { files: [], hasFileOperations: false }
+    return { files: [], fileOperations: 'none' }
   }
-  const entries = edit.entries()
   return {
-    files: entries.map(([target, edits]) => ({
+    files: edit.entries().map(([target, edits]) => ({
       path: pathOf(target),
       edits: edits.map((textEdit) => ({
         range: fromRange(textEdit.range),
         newText: textEdit.newText,
       })),
     })),
-    // `size` counts every resource the edit touches, file operations included.
-    hasFileOperations: edit.size !== entries.length,
+    fileOperations: fileOperationsOf(edit),
   }
+}
+
+// What `WorkspaceEdit` holds beyond its text edits. Its API shows only
+// those: `entries()` lists text edits and `size` counts them (read from
+// VS Code 1.125.0's and 1.139.0's extensionHostProcess.js), so a rename that
+// also creates, moves or deletes files looks like a plain one. Only the
+// internal `_allEntries()` lists everything, each entry with a `_type` (1 a
+// file operation, 2 a text edit, others cells and snippets). It is read as
+// untyped data: when it is missing or its shape changes, the answer is
+// `unknown`, and the rename is refused rather than half applied.
+const ALL_ENTRIES = '_allEntries'
+const TEXT_EDIT_TYPE = 2
+const allEntriesSchema = z.array(z.object({ _type: z.number() }))
+
+function fileOperationsOf(edit: vscode.WorkspaceEdit): FileOperations {
+  const allEntries: unknown = Reflect.get(edit, ALL_ENTRIES)
+  if (typeof allEntries !== 'function') {
+    return 'unknown'
+  }
+  const parsed = allEntriesSchema.safeParse(Reflect.apply(allEntries, edit, []))
+  if (!parsed.success) {
+    return 'unknown'
+  }
+  return parsed.data.every((entry) => entry._type === TEXT_EDIT_TYPE) ? 'none' : 'present'
 }
 
 /** The language services behind the code intelligence tools. */
@@ -229,5 +252,12 @@ export function vscodeLanguageServices(): LanguageServiceHost {
     callHierarchy: async (path, at, direction) =>
       await callHierarchy(vscode.Uri.file(path), at, direction),
     rename: async (path, at, newName) => await rename(vscode.Uri.file(path), at, newName),
+    // VS Code's installation holds the built-in languages' libraries (the
+    // TypeScript extension's `lib.*.d.ts`); an installed extension holds
+    // its own (Python's typeshed). Read at each call: extensions come and go.
+    libraryRoots: () => [
+      vscode.env.appRoot,
+      ...vscode.extensions.all.map((extension) => extension.extensionPath),
+    ],
   }
 }

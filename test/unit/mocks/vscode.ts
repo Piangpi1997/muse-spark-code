@@ -115,6 +115,13 @@ export class Position {
 
 export const env = {
   openExternal: vi.fn<typeof vscode.env.openExternal>(),
+  // Where VS Code is installed (M67: the built-in languages' libraries).
+  appRoot: '/vscode/resources/app',
+}
+
+/** The installed extensions, by folder (M67): a test sets the list it needs. */
+export const extensions: { all: readonly Pick<vscode.Extension<unknown>, 'extensionPath'>[] } = {
+  all: [],
 }
 
 export const commands = {

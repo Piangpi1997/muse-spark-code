@@ -972,6 +972,13 @@ const CODE_SYMBOL = 'greet'
 const CODE_SYMBOL_USE = /\bgreet\b/g
 // VS Code's `SymbolKind.Function`.
 const FUNCTION_KIND = 11
+// A quote that opens or closes a string literal in the case's files.
+const QUOTE = /['"`]/g
+
+/** Whether a column of a line is inside a string literal (the module path `'./greet'`). */
+function isInString(line: string, column: number): boolean {
+  return (line.slice(0, column).match(QUOTE)?.length ?? 0) % 2 === 1
+}
 
 /**
  * VS Code's language services live only in the extension host. A stand-in
@@ -985,15 +992,22 @@ function textLanguageService(workspace: string): LanguageServiceHost {
     Object.keys(CODE_FILES).flatMap((name) =>
       readFileSync(fileOf(name), 'utf8')
         .split('\n')
-        .flatMap((line, index) =>
-          Array.from(line.matchAll(CODE_SYMBOL_USE), (match) => ({
-            path: fileOf(name),
-            range: {
-              start: { line: index, character: match.index },
-              end: { line: index, character: match.index + CODE_SYMBOL.length },
-            },
-          })),
-        ),
+        .flatMap((line, index) => {
+          const found: CodeLocation[] = []
+          for (const match of line.matchAll(CODE_SYMBOL_USE)) {
+            // As TypeScript's service does, a name inside a string is no use of it.
+            if (!isInString(line, match.index)) {
+              found.push({
+                path: fileOf(name),
+                range: {
+                  start: { line: index, character: match.index },
+                  end: { line: index, character: match.index + CODE_SYMBOL.length },
+                },
+              })
+            }
+          }
+          return found
+        }),
     )
   const declaration = (): readonly CodeSymbol[] =>
     uses()
@@ -1021,6 +1035,7 @@ function textLanguageService(workspace: string): LanguageServiceHost {
       Promise.resolve(file === fileOf('src/greet.ts') ? declaration() : []),
     workspaceSymbols: (query) => Promise.resolve(CODE_SYMBOL.includes(query) ? declaration() : []),
     callHierarchy: () => Promise.resolve(undefined),
+    libraryRoots: () => [],
     rename: (_file, _at, newName) =>
       Promise.resolve({
         files: Object.keys(CODE_FILES).map((name) => ({
@@ -1029,7 +1044,7 @@ function textLanguageService(workspace: string): LanguageServiceHost {
             .filter((use) => use.path === fileOf(name))
             .map((use) => ({ range: use.range, newText: newName })),
         })),
-        hasFileOperations: false,
+        fileOperations: 'none',
       }),
   }
 }
@@ -1868,8 +1883,9 @@ describe.skipIf(!IS_ENABLED)('live Model API sweep (MUSE_LIVE_MODEL_API=1)', () 
         expect(rows).toContain('find_references:completed')
         expect(rows).toContain('rename_symbol:completed')
         expect(driver.watch.approved).toContain('rename_symbol')
-        expect(readFileSync(path.join(rig.workspace, 'src', 'main.ts'), 'utf8')).toContain(
-          "[welcome('Ada'), welcome('Grace')]",
+        // The import names the new function; its module path is unchanged.
+        expect(readFileSync(path.join(rig.workspace, 'src', 'main.ts'), 'utf8')).toBe(
+          "import { welcome } from './greet'\n\nexport const pair = [welcome('Ada'), welcome('Grace')]\n",
         )
         rig.notes.push(`rows ${rows.join(' ')}`, `reply ${JSON.stringify(finished.reply)}`)
       })

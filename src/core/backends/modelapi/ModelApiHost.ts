@@ -55,6 +55,7 @@ import {
   MODEL_API_VERSION,
   MODEL_API_WEB_SEARCH_TOOL,
   MODEL_TEXT,
+  REPO_MAP_PROMPT_TRIES,
   OUTPUT_REF_PREFIX,
   SCHEDULE_LIFETIME_MS,
   SCHEDULE_MAX_INTERVAL_MS,
@@ -145,8 +146,10 @@ import type { LanguageServiceHost } from '../../codeIntel/languageService'
 import { repoMapSection } from '../../codeIntel/repoMap'
 import {
   applyRename,
+  isProtectedRename,
   planRenameCall,
   renameCardPath,
+  renameHookFiles,
   renameRefused,
   runCodeIntelRead,
 } from './codeIntelCalls'
@@ -173,6 +176,7 @@ import type { GoalRecord } from './goalRecord'
 import { type EnvironmentFacts, instructionsFor } from './instructions'
 import {
   dispatchHooks,
+  matchingHooks,
   type HookDefinition,
   type HookDispatch,
   type HookEvent,
@@ -1170,11 +1174,13 @@ export class ModelApiSession implements AgentSession {
   /** The git facts of the prompt's environment section (D15), read on the first turn. */
   private environment: EnvironmentFacts | undefined
   /**
-   * The repo map of the prompt (M67), made on the first turn that has it on
-   * and kept for the session, so the prompt's prefix stays the same; the
-   * text is undefined when the map came out empty or could not be made.
+   * The repo map of the prompt (M67), made on a turn that has it on and kept
+   * for the session once it has text, so the prompt's prefix stays the same.
+   * A try that failed or came out empty is not kept; a few are made, on
+   * later turns, before the session goes without.
    */
-  private repoMap: { readonly text: string | undefined } | undefined
+  private repoMapText: string | undefined
+  private repoMapTries = 0
   private readonly pendingApprovals = new Map<string, Pending<ApprovalDecision>>()
   /** Live cards for a second surface joining while a decision is still pending. */
   private readonly pendingApprovalEvents = new Map<
@@ -1362,6 +1368,41 @@ export class ModelApiSession implements AgentSession {
     }
   }
 
+  /** The hooks that run for this session: none in a side chat or with the opt-in off (M51). */
+  private enabledHooks(): readonly HookDefinition[] {
+    return this.isSideChat || this.deps.isHooksEnabled?.() === false ? [] : this.hooks
+  }
+
+  /**
+   * A call's arguments as its PreToolUse hooks see them. A rename also names
+   * the files it would write (M67), planned for the hooks alone, and only
+   * when one would run and the mode allows the edit at all.
+   */
+  private async preToolInput(
+    call: FunctionCallItem,
+    signal: AbortSignal,
+  ): Promise<Readonly<Record<string, unknown>>> {
+    const args = argumentsOf(call)
+    const deps = this.codeIntelDeps()
+    if (
+      deps === undefined ||
+      call.name !== CODE_INTEL_TOOLS.renameSymbol ||
+      matchingHooks(this.enabledHooks(), 'PreToolUse', toolMatcherNames(call.name)).length === 0 ||
+      this.verdictWithHook({ toolName: call.name, toolClass: 'edit' }, false) === 'deny'
+    ) {
+      return toolHookInput(args)
+    }
+    try {
+      const planned = await unlessStopped(planRenameCall(call.arguments, deps), signal)
+      return toolHookInput(planned.ok ? { ...args, files: renameHookFiles(planned.plan) } : args)
+    } catch {
+      // A Stop, or the provider's own refusal: the call itself then ends with
+      // its row and its output (a Stop's included), which a throw from here,
+      // before the row exists, would leave without one (D26).
+      return toolHookInput(args)
+    }
+  }
+
   private async runHooks(
     event: HookEvent,
     turnId: string | undefined,
@@ -1371,9 +1412,8 @@ export class ModelApiSession implements AgentSession {
     shouldReplayContext = true,
     shouldShowMessages = true,
   ): Promise<HookDispatch> {
-    const enabledHooks = this.isSideChat || this.deps.isHooksEnabled?.() === false ? [] : this.hooks
     const result = await dispatchHooks(
-      enabledHooks,
+      this.enabledHooks(),
       event,
       this.hookPayload(event, turnId, fields),
       matcher,
@@ -1457,29 +1497,55 @@ export class ModelApiSession implements AgentSession {
         }
   }
 
-  /** Whether this request's prompt carries the repo map: the setting on, now (M67). */
+  /**
+   * Whether this request's prompt carries the repo map (M67): the setting
+   * on, now, in a trusted workspace only, since the map repeats the
+   * workspace's file paths and names in every request's instructions.
+   */
   private isRepoMapOn(): boolean {
-    return this.deps.codeIntel !== undefined && this.deps.isRepoMapInPrompt?.() === true
+    return (
+      this.deps.codeIntel !== undefined &&
+      this.deps.isWorkspaceTrusted() &&
+      this.deps.isRepoMapInPrompt?.() === true
+    )
+  }
+
+  /** The map this session's prompt carries: a child's is its parent's, never one of its own. */
+  private promptRepoMap(): string | undefined {
+    if (!this.isRepoMapOn()) {
+      return undefined
+    }
+    return this.isSubagent ? this.parentSession?.promptRepoMap() : this.repoMapText
   }
 
   /**
-   * The repo map for the prompt (M67), once per session while the setting
-   * is on. Never throws: a map that cannot be made is logged and the
-   * session's prompt goes without it. A Stop ends the lookups at once, and a
-   * map cut short that way is not kept: the next turn makes it again.
+   * The repo map for the prompt (M67) while the setting is on. Never throws:
+   * a map that cannot be made is logged and the prompt goes without it. Only
+   * a map with text is kept; a try that failed or came out empty counts, and
+   * after `REPO_MAP_PROMPT_TRIES` the session stops trying. A Stop ends the
+   * lookups at once and does not count. A child task never builds one.
    */
   private async loadRepoMap(signal: AbortSignal): Promise<void> {
     const deps = this.codeIntelDeps()
-    if (deps === undefined || this.repoMap !== undefined || !this.isRepoMapOn()) {
+    if (
+      deps === undefined ||
+      this.isSubagent ||
+      this.repoMapText !== undefined ||
+      this.repoMapTries >= REPO_MAP_PROMPT_TRIES ||
+      !this.isRepoMapOn()
+    ) {
       return
     }
     try {
       const text = await repoMapSection(deps, signal)
       if (!signal.aborted) {
-        this.repoMap = { text }
+        this.repoMapTries += 1
+        this.repoMapText = text
       }
     } catch (error: unknown) {
-      this.repoMap = { text: undefined }
+      if (!signal.aborted) {
+        this.repoMapTries += 1
+      }
       this.deps.log.warn(`The repo map for the prompt could not be made: ${describe(error)}`)
     }
   }
@@ -1524,6 +1590,7 @@ export class ModelApiSession implements AgentSession {
     const hasMemory = hasShell && this.deps.memory !== undefined
     const context = this.context.sections()
     const goalSection = goalInstructions(this.goal, this.goalSteps)
+    const repoMap = this.promptRepoMap()
     const input = this.budget.fit(this.replay.map((entry) => entry.item))
     if (this.budget.omitted && !this.mediaNoticeSent) {
       this.emit({ type: 'backendNotice', level: 'warning', text: UI_TEXT.olderMediaOmitted })
@@ -1543,8 +1610,7 @@ export class ModelApiSession implements AgentSession {
         today: new Date(this.deps.now()).toISOString().slice(0, ISO_DATE_LENGTH),
         environment: this.environment ?? NO_ENVIRONMENT,
         context,
-        ...(this.isRepoMapOn() &&
-          this.repoMap?.text !== undefined && { repoMap: this.repoMap.text }),
+        ...(repoMap !== undefined && { repoMap }),
         // Pinned while the goal is active (M45, PLAN.md D38).
         ...(goalSection !== undefined && { goalSection }),
       }),
@@ -3727,11 +3793,7 @@ export class ModelApiSession implements AgentSession {
       itemId,
       call,
       signal,
-      {
-        toolName: call.name,
-        toolClass: 'edit',
-        isProtected: plan.files.some((file) => isProtectedPath(file.canonical)),
-      },
+      { toolName: call.name, toolClass: 'edit', isProtected: isProtectedRename(plan) },
       { kind: 'fileWrite', path: renameCardPath(plan), toolName: call.name },
       shouldForceApproval,
     )
@@ -3743,6 +3805,7 @@ export class ModelApiSession implements AgentSession {
       platform: this.deps.platform,
       io: this.deps.io,
       seen: this.seenFiles,
+      signal,
     })
     return { outcome, isRejected: false }
   }
@@ -3953,7 +4016,11 @@ export class ModelApiSession implements AgentSession {
     const pre = await this.runHooks(
       'PreToolUse',
       turnId,
-      { tool_name: call.name, tool_input: toolHookInput(argumentsOf(call)), tool_use_id: itemId },
+      {
+        tool_name: call.name,
+        tool_input: await this.preToolInput(call, signal),
+        tool_use_id: itemId,
+      },
       toolMatcherNames(call.name),
       signal,
       false,
@@ -5810,6 +5877,9 @@ export class ModelApiSession implements AgentSession {
     // The goal as it stands goes with the fork (M45): a goal has no history
     // to cut, so a fork from an earlier turn gets today's goal too.
     target.goal = target.isSideChat ? undefined : this.goal
+    // The prompt's repo map goes with the fork (M67), so it is not made again.
+    target.repoMapText = this.repoMapText
+    target.repoMapTries = this.repoMapTries
     for (const child of this.children.values()) {
       if (!kept.has(child.parentTurnId)) {
         continue

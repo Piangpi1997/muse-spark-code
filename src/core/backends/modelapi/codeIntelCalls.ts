@@ -1,11 +1,13 @@
 // The code intelligence tools on the Model API backend (M67, PLAN.md D49):
 // the read tools' answers as tool outcomes, and `rename_symbol` written
 // through the edit path. A rename's plan (src/core/codeIntel/rename.ts) is
-// made before its card; once approved, every file is confined, checked for
+// made before its card. Once approved, every file is confined, checked for
 // unsaved changes and read again, and nothing is written unless each is
-// still exactly as planned. The files are then written one by one with the
-// tools' atomic write, and the row carries one patch across them, so Edit
-// Review and rewind cover the rename as they cover `edit_file`.
+// still exactly as planned; a Stop until then writes nothing. The files are
+// then written one by one with the tools' atomic write, each checked once
+// more right before its own write, and the row carries one patch across
+// what was written, so Edit Review and rewind cover the rename as they cover
+// `edit_file`, a rename stopped partway included.
 
 import { MODEL_TEXT, RENAME_CARD_FILES_SHOWN, UI_TEXT } from '../../../shared/constants'
 import { fill, plural } from '../../../shared/l10n/text'
@@ -18,6 +20,7 @@ import {
   type RenamePlan,
   type RenamePlanResult,
 } from '../../codeIntel/rename'
+import { isProtectedPath } from '../../protectedPaths'
 import { confineWorkspacePath } from '../../workspacePath'
 import { fingerprint, type ToolIo, type ToolOutcome } from './tools'
 
@@ -69,12 +72,28 @@ export function renameRefused(result: Extract<RenamePlanResult, { ok: false }>):
   return failed(result.reason, result.visibleReason)
 }
 
-/** What the rename's card names: a few of the files, and how many more. */
+/** Whether any file the rename writes is a protected write (D24). */
+export function isProtectedRename(plan: RenamePlan): boolean {
+  return plan.files.some((file) => isProtectedPath(file.canonical))
+}
+
+/**
+ * What the rename's card names: a few of the files, protected ones first so
+ * the card never hides the one that makes it ask, and how many more.
+ */
 export function renameCardPath(plan: RenamePlan): string {
-  const shown = plan.files.slice(0, RENAME_CARD_FILES_SHOWN).map((file) => file.relative)
+  const ordered = plan.files.toSorted(
+    (a, b) => Number(isProtectedPath(b.canonical)) - Number(isProtectedPath(a.canonical)),
+  )
+  const shown = ordered.slice(0, RENAME_CARD_FILES_SHOWN).map((file) => file.relative)
   const hidden = plan.files.length - shown.length
   const files = shown.join(', ')
   return hidden > 0 ? plural(UI_TEXT.renameCardMore, hidden, { files }) : files
+}
+
+/** The rename's files for a hook's payload: workspace-relative, in plan order. */
+export function renameHookFiles(plan: RenamePlan): readonly string[] {
+  return plan.files.map((file) => file.relative)
 }
 
 export interface RenameWriteContext {
@@ -83,17 +102,20 @@ export interface RenameWriteContext {
   readonly io: ToolIo
   /** The session's fingerprints of what the model last read or wrote (D27). */
   readonly seen: Map<string, string>
+  /** The turn's: a Stop before the first write writes nothing. */
+  readonly signal: AbortSignal
 }
 
+type Recheck =
+  | { readonly ok: true; readonly key: string }
+  | { readonly ok: false; readonly outcome: ToolOutcome; readonly changedPath?: string }
+
 /**
- * The file with the key its fingerprint is kept under (the path the file
- * tools resolve), or the refusal when it no longer leads where the plan
- * found it, has unsaved changes, or changed on disk.
+ * Whether the file is still exactly as the plan read it: confined to the
+ * same real path, with no unsaved changes, the same text on disk. The key
+ * is the path its fingerprint is kept under (as the file tools resolve it).
  */
-async function recheck(
-  file: RenameFile,
-  context: RenameWriteContext,
-): Promise<ToolOutcome | { readonly file: RenameFile; readonly key: string }> {
+async function recheck(file: RenameFile, context: RenameWriteContext): Promise<Recheck> {
   const { io } = context
   const resolved = await confineWorkspacePath(
     context.workspaceRoot,
@@ -102,15 +124,19 @@ async function recheck(
     io,
   )
   if (!resolved.ok || resolved.checkedAbsolute !== file.checkedAbsolute) {
-    return failed(MODEL_TEXT.pathChangedAfterApproval)
+    return { ok: false, outcome: failed(MODEL_TEXT.pathChangedAfterApproval) }
   }
   if (io.hasUnsavedChanges(file.absolute) || io.hasUnsavedChanges(file.checkedAbsolute)) {
-    return failed(`${file.relative} ${MODEL_TEXT.fileHasUnsavedChanges}`)
+    return { ok: false, outcome: failed(`${file.relative} ${MODEL_TEXT.fileHasUnsavedChanges}`) }
   }
   const current = await io.readFile(file.checkedAbsolute, file.checkedAbsolute)
   return current === file.before
-    ? { file, key: resolved.absolute }
-    : failed(fill(MODEL_TEXT.renameChanged, { path: file.relative }))
+    ? { ok: true, key: resolved.absolute }
+    : {
+        ok: false,
+        outcome: failed(fill(MODEL_TEXT.renameChanged, { path: file.relative })),
+        changedPath: file.relative,
+      }
 }
 
 /** The patch across the files written, for the row, Edit Review and rewind. */
@@ -131,40 +157,64 @@ function renamePatch(files: readonly RenameFile[]): NonNullable<ToolOutcome['pat
   }
 }
 
+/** A rename stopped partway: what stopped it, what was written, and its revertable patch. */
+function partial(
+  template: string,
+  values: Readonly<Record<string, string>>,
+  plan: RenamePlan,
+  written: readonly RenameFile[],
+): ToolOutcome {
+  const reason = fill(template, {
+    ...values,
+    written: String(written.length),
+    total: String(plan.files.length),
+    paths: written.map((done) => done.relative).join(', '),
+  })
+  return { ...failed(reason), ...(written.length > 0 && { patch: renamePatch(written) }) }
+}
+
 /**
- * Writes an approved rename: every file checked again first (nothing is
- * written if one moved, changed or gained unsaved changes while the card
- * was open), then each written in turn. A write that fails stops the rest
- * and says which files were written, and the row can revert them.
+ * Writes an approved rename. Every file is checked again first: nothing is
+ * written if one moved, changed or gained unsaved changes after the plan,
+ * or if the turn was stopped meanwhile. Each file is then checked once more
+ * right before its own write, so a change made while the others were being
+ * written is never overwritten; that, or a write that fails, stops the rest
+ * and says which files were written, and the row can revert them. Once the
+ * first file is written the rest follow even if Stop comes, so the rename is
+ * not left half done by the button.
  */
 export async function applyRename(
   plan: RenamePlan,
   context: RenameWriteContext,
 ): Promise<ToolOutcome> {
-  const checked: { readonly file: RenameFile; readonly key: string }[] = []
   for (const file of plan.files) {
     const result = await recheck(file, context)
-    if (!('key' in result)) {
-      return result
+    if (!result.ok) {
+      return result.outcome
     }
-    checked.push(result)
   }
+  context.signal.throwIfAborted()
   const written: RenameFile[] = []
-  for (const { file, key } of checked) {
+  for (const file of plan.files) {
+    const result = await recheck(file, context)
+    if (!result.ok) {
+      return written.length === 0
+        ? result.outcome
+        : partial(
+            MODEL_TEXT.renameChangedPartway,
+            { path: result.changedPath ?? file.relative },
+            plan,
+            written,
+          )
+    }
     try {
       await context.io.writeFile(file.checkedAbsolute, file.after, file.checkedAbsolute)
     } catch (error: unknown) {
-      const reason = fill(MODEL_TEXT.renamePartial, {
-        path: file.relative,
-        reason: error instanceof Error ? error.message : String(error),
-        written: String(written.length),
-        total: String(plan.files.length),
-        paths: written.map((done) => done.relative).join(', '),
-      })
-      return { ...failed(reason), ...(written.length > 0 && { patch: renamePatch(written) }) }
+      const reason = error instanceof Error ? error.message : String(error)
+      return partial(MODEL_TEXT.renamePartial, { path: file.relative, reason }, plan, written)
     }
     written.push(file)
-    context.seen.set(key, fingerprint(file.after))
+    context.seen.set(result.key, fingerprint(file.after))
   }
   const output = fill(MODEL_TEXT.renameDone, {
     from: plan.from,

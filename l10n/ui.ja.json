@@ -996,7 +996,7 @@
   "renameCardMore": {
     "other": "{files} ほか {count} 個のファイル"
   },
-  "codeIntelNoService": "{path} に応答した言語サービスはありません。",
+  "codeIntelNoService": "{path} に応答した言語サービスがないか、このファイルがシンボルを宣言していません。",
   "codeIntelTimedOut": "言語サービスが {seconds} 秒以内に応答しませんでした。",
   "repoMapNoService": "ワークスペースのシンボルに応答した言語サービスはありません。",
   "imageBuyTitle": "Muse が画像 {path} の作成を求めています",

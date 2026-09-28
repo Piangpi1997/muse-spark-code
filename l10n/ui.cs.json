@@ -1080,7 +1080,7 @@
     "many": "{files} a {count} dalšího souboru",
     "other": "{files} a {count} dalších souborů"
   },
-  "codeIntelNoService": "Pro {path} neodpověděla žádná jazyková služba.",
+  "codeIntelNoService": "Pro {path} neodpověděla žádná jazyková služba, nebo soubor nedeklaruje žádné symboly.",
   "codeIntelTimedOut": "Jazyková služba neodpověděla do {seconds} s.",
   "repoMapNoService": "Pro symboly pracovního prostoru neodpověděla žádná jazyková služba.",
   "imageBuyTitle": "Muse chce vytvořit obrázek {path}",

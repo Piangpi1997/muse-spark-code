@@ -44,6 +44,8 @@ export interface RepoMapOptions {
 const NAME = /[\p{L}_$][\p{L}\p{N}_$]*/gu
 const INDENT = '  '
 const BUDGET_SPENT = 'the repo map time budget is spent'
+// What `Limits.within` settles with when the turn is stopped.
+const STOPPED = Symbol('stopped')
 
 interface Definition {
   readonly name: string
@@ -69,55 +71,89 @@ function countNames(text: string): ReadonlyMap<string, number> {
   return counts
 }
 
-/** The time budget and the Stop that end the map's work early. */
-interface Limits {
-  readonly isOver: () => boolean
-  readonly remainingMs: () => number
-  /** Settles when the turn is stopped; never when there is no turn. */
-  readonly stopped: Promise<void>
+/**
+ * The time budget and the Stop that end the map's work early. It listens
+ * for the Stop once, and `close` takes the listener off again, so a turn
+ * that asks for many maps collects none.
+ */
+class Limits {
+  private readonly stopped: Promise<typeof STOPPED>
+  /** Takes the Stop listener off when the map is done. */
+  private readonly listening = new AbortController()
+
+  public constructor(
+    private readonly now: () => number,
+    private readonly deadline: number,
+    private readonly signal: AbortSignal | undefined,
+  ) {
+    // Not `Promise.withResolvers`, which Node 20 (VS Code 1.99's host) lacks.
+    this.stopped = new Promise<typeof STOPPED>((resolve) => {
+      signal?.addEventListener(
+        'abort',
+        () => {
+          resolve(STOPPED)
+        },
+        { once: true, signal: this.listening.signal },
+      )
+    })
+  }
+
+  public isOver(): boolean {
+    return this.signal?.aborted === true || this.now() >= this.deadline
+  }
+
+  /**
+   * The value of the work `start` begins, or `undefined` once the time is up
+   * or the turn is stopped: when that is so already the work is not begun,
+   * and otherwise it is left to finish on its own.
+   */
+  public async within<T>(start: () => Promise<T>): Promise<T | undefined> {
+    if (this.isOver()) {
+      return undefined
+    }
+    const remainingMs = Math.max(this.deadline - this.now(), 1)
+    const boxed = async () => ({ value: await start() })
+    try {
+      const settled = await Promise.race([
+        withDeadline(boxed(), remainingMs, BUDGET_SPENT),
+        this.stopped,
+      ])
+      return settled === STOPPED ? undefined : settled.value
+    } catch (error: unknown) {
+      if (error instanceof Error && error.name === 'DeadlineError') {
+        return undefined
+      }
+      throw error
+    }
+  }
+
+  public close(): void {
+    this.listening.abort()
+  }
 }
 
 /**
  * Runs `work` over `items`, a few at a time, until the limits say stop;
- * returns how many ran. A batch still running when the time is up or the
- * turn is stopped is left to finish on its own.
+ * returns how many ran.
  */
 async function inBatches<T>(
   items: readonly T[],
   limits: Limits,
   work: (item: T) => Promise<void>,
 ): Promise<number> {
-  const { isOver, remainingMs, stopped } = limits
   let done = 0
-  while (done < items.length && !isOver()) {
+  while (done < items.length) {
     const batch = items.slice(done, done + REPO_MAP_CONCURRENCY)
-    try {
-      const running = withDeadline(
-        Promise.all(
+    const finished = await limits.within(
+      async () =>
+        await Promise.all(
           batch.map(async (item) => {
             await work(item)
           }),
         ),
-        Math.max(remainingMs(), 1),
-        BUDGET_SPENT,
-      )
-      const didFinish = async () => {
-        await running
-        return true
-      }
-      const wasStopped = async () => {
-        await stopped
-        return false
-      }
-      const isFinished = await Promise.race([didFinish(), wasStopped()])
-      if (!isFinished) {
-        return done
-      }
-    } catch (error: unknown) {
-      if (error instanceof Error && error.name === 'DeadlineError') {
-        return done
-      }
-      throw error
+    )
+    if (finished === undefined) {
+      return done
     }
     done += batch.length
   }
@@ -129,9 +165,12 @@ async function readUses(
   query: CodeIntelQuery,
   files: readonly string[],
   limits: Limits,
-): Promise<ReadonlyMap<string, ReadonlyMap<string, number>>> {
+): Promise<{
+  readonly uses: ReadonlyMap<string, ReadonlyMap<string, number>>
+  readonly read: number
+}> {
   const uses = new Map<string, Map<string, number>>()
-  await inBatches(files, limits, async (relative) => {
+  const read = await inBatches(files, limits, async (relative) => {
     let text: string | undefined
     try {
       const file = await query.confine(relative)
@@ -150,7 +189,7 @@ async function readUses(
       uses.set(name, perFile)
     }
   })
-  return uses
+  return { uses, read }
 }
 
 /** The names used by two files or more, the most widely used first. */
@@ -252,25 +291,22 @@ interface BuiltMap {
  */
 async function buildMap(query: CodeIntelQuery, options: RepoMapOptions): Promise<BuiltMap> {
   const { now } = query.deps
-  const deadline = now() + options.timeBudgetMs
-  const { signal } = options
-  const limits: Limits = {
-    isOver: () => signal?.aborted === true || now() >= deadline,
-    remainingMs: () => deadline - now(),
-    stopped: new Promise((resolve) => {
-      signal?.addEventListener(
-        'abort',
-        () => {
-          resolve()
-        },
-        { once: true },
-      )
-    }),
+  const limits = new Limits(now, now() + options.timeBudgetMs, options.signal)
+  try {
+    return await buildWithin(query, limits)
+  } finally {
+    limits.close()
   }
-  const found = await query.deps.io.listFiles()
+}
+
+async function buildWithin(query: CodeIntelQuery, limits: Limits): Promise<BuiltMap> {
+  const found = await limits.within(async () => await query.deps.io.listFiles())
+  if (found === undefined) {
+    return { ranked: [], notes: [MODEL_TEXT.repoMapNoFiles] }
+  }
   const listed = found.toSorted((a, b) => compareText(a, b))
   const files = listed.slice(0, REPO_MAP_MAX_FILES)
-  const uses = await readUses(query, files, limits)
+  const { uses, read } = await readUses(query, files, limits)
   const names = candidates(uses)
   const definitions = new Map<string, { relative: string; symbol: CodeSymbol }[]>()
   let answered = 0
@@ -293,6 +329,9 @@ async function buildMap(query: CodeIntelQuery, options: RepoMapOptions): Promise
     throw new CodeIntelRefusal(MODEL_TEXT.repoMapNoService, UI_TEXT.repoMapNoService)
   }
   const notes = [
+    ...(read < files.length
+      ? [fill(MODEL_TEXT.repoMapFilesRead, { done: String(read), total: String(files.length) })]
+      : []),
     ...(looked < names.length
       ? [fill(MODEL_TEXT.repoMapPartial, { done: String(looked), total: String(names.length) })]
       : []),

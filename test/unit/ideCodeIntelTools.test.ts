@@ -35,7 +35,7 @@ function tools() {
               ],
             },
           ],
-          hasFileOperations: false,
+          fileOperations: 'none' as const,
         }),
     }),
     workspaceRoot: ROOT,

@@ -119,8 +119,9 @@ security notes for contributors are in `PLAN.md` §9.
   contents or diffs); in Restricted Mode git is not run and none of this is
   sent. The Muse Code CLI assembles its own context under Meta's terms.
 - **The repo map (Model API backend, off by default).** With
-  `museSpark.modelApiRepoMap` on, the instructions sent with every request
-  of a conversation carry a map of the workspace made when it began: file
+  `museSpark.modelApiRepoMap` on, in a trusted workspace, the instructions
+  sent with every request of a conversation (its child tasks' included)
+  carry a map of the workspace made on its first turns: file
   paths, and the names, kinds and lines of the definitions other files use
   most. To make it the extension counts names in your files on your machine
   (their text is not sent) and asks VS Code's language services where each

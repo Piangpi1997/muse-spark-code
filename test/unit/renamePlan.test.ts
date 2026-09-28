@@ -40,7 +40,7 @@ function renameIn(path: string | undefined, line: number, character: number): Fi
 
 const EDITS: RenameEdits = {
   files: [renameIn(B, 0, 9), renameIn(A, 0, 16), { path: B, edits: [renameIn(B, 1, 0).edits[0]!] }],
-  hasFileOperations: false,
+  fileOperations: 'none' as const,
 }
 
 function setup(options: Omit<FakeServiceOptions, 'files'> = {}) {
@@ -103,14 +103,19 @@ describe('planRename', () => {
           files: [...EDITS.files, renameIn('/lib/x.d.ts', 0, 0), renameIn(undefined, 0, 0)],
         }),
     })
-    const moves = setup({ rename: () => Promise.resolve({ ...EDITS, hasFileOperations: true }) })
+    const moves = setup({
+      rename: () => Promise.resolve({ ...EDITS, fileOperations: 'present' as const }),
+    })
+    const unknown = setup({
+      rename: () => Promise.resolve({ ...EDITS, fileOperations: 'unknown' as const }),
+    })
     const many = setup({
       rename: () =>
         Promise.resolve({
           files: Array.from({ length: RENAME_MAX_FILES + 1 }, (_, index) =>
             renameIn(`${ROOT}/f${String(index)}.ts`, 0, 0),
           ),
-          hasFileOperations: false,
+          fileOperations: 'none' as const,
         }),
     })
     const unsaved = setup()
@@ -118,31 +123,34 @@ describe('planRename', () => {
     const stale = setup({ buffers: { [B]: 'an older text\n' } })
     const dirty = setup({ dirty: new Set([B]) })
     const broken = setup({
-      rename: () => Promise.resolve({ files: [renameIn(B, 9, 0)], hasFileOperations: false }),
+      rename: () =>
+        Promise.resolve({
+          files: [renameIn(A, 0, 16), renameIn(B, 9, 0)],
+          fileOperations: 'none' as const,
+        }),
     })
     expect(await reasonOf(outside.plan(ARGS))).toBe(
       'this rename would also change 2 files outside the workspace; nothing was changed',
     )
     expect(await reasonOf(moves.plan(ARGS))).toContain('would also create, move or delete files')
+    expect(await reasonOf(unknown.plan(ARGS))).toBe(
+      'VS Code did not say whether this rename also creates, moves or deletes files, so rename_symbol does not apply it; nothing was changed',
+    )
     expect(await reasonOf(many.plan(ARGS))).toBe(
       `this rename would change ${String(RENAME_MAX_FILES + 1)} files, more than ${String(RENAME_MAX_FILES)}; nothing was changed`,
     )
     expect(await reasonOf(unsaved.plan(ARGS))).toContain('src/b.ts has unsaved changes')
-    expect(await reasonOf(stale.plan(ARGS))).toContain(
-      'src/b.ts differs between VS Code and the disk',
-    )
-    expect(await reasonOf(dirty.plan(ARGS))).toContain(
-      'src/b.ts differs between VS Code and the disk',
-    )
-    expect(await reasonOf(broken.plan(ARGS))).toContain(
-      'src/b.ts differs between VS Code and the disk',
-    )
+    for (const t of [stale, dirty, broken]) {
+      expect(await reasonOf(t.plan(ARGS))).toContain(
+        "the language service's rename does not match src/b.ts as it is now",
+      )
+    }
     expect(await reasonOf(setup().plan({ ...ARGS, new_name: '' }))).toContain('new_name must be')
     expect(await reasonOf(setup().plan('not an object'))).toContain('invalid arguments')
   })
 
   it('says whether nothing can be renamed there, or no language service answers', async () => {
-    const none = { rename: () => Promise.resolve({ files: [], hasFileOperations: false }) }
+    const none = { rename: () => Promise.resolve({ files: [], fileOperations: 'none' as const }) }
     const withSymbols = setup({
       ...none,
       symbols: { [A]: [sym('greet', KIND.function, A, 0, 16)] },
@@ -155,12 +163,40 @@ describe('planRename', () => {
       rename: () =>
         Promise.resolve({
           files: [{ path: A, edits: [{ ...renameIn(A, 0, 16).edits[0]!, newText: 'greet' }] }],
-          hasFileOperations: false,
+          fileOperations: 'none' as const,
         }),
     })
     expect(await reasonOf(same.plan({ ...ARGS, new_name: 'greet' }))).toBe(
-      'nothing to rename at src/a.ts:1:17',
+      'the new name `greet` is already the name there; nothing to rename',
     )
+  })
+
+  it('refuses edits the service computed on another version of a file (C1-1)', async () => {
+    // b.ts gained a first line; the service's ranges are for the old text.
+    const newer = setup()
+    newer.io.files.set(B, "// a new first line\nimport { greet } from './a'\ngreet()\n")
+    expect(await reasonOf(newer.plan(ARGS))).toContain(
+      "the language service's rename does not match src/b.ts as it is now",
+    )
+    expect(newer.io.files.get(B)).toContain('import { greet }')
+    // The file the position was read from changed while the service
+    // answered (both on disk and in VS Code), though its ranges still land
+    // on the name: its text is not the one the position came from.
+    const moved = setup({
+      rename: () => {
+        moved.io.files.set(A, `${BOM}export function greet() {}\r\n// appended\r\n`)
+        return Promise.resolve(EDITS)
+      },
+    })
+    expect(await reasonOf(moved.plan(ARGS))).toContain(
+      "the language service's rename does not match src/a.ts as it is now",
+    )
+    // An edit that does not cover the position asked about has no old name.
+    const elsewhere = setup({
+      rename: () =>
+        Promise.resolve({ files: [renameIn(B, 1, 0)], fileOperations: 'none' as const }),
+    })
+    expect(await reasonOf(elsewhere.plan(ARGS))).toContain('does not match src/a.ts')
   })
 
   it("passes the provider's refusal on", async () => {

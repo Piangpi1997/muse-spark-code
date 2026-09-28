@@ -2,6 +2,7 @@
 // use the names they define, within a token budget and a time budget, as
 // a tool and as the opt-in section of the Model API's system prompt.
 
+import { getEventListeners } from 'node:events'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { CodeIntelDeps } from '../../src/core/codeIntel/codeIntelQuery'
 import { answerCodeIntel } from '../../src/core/codeIntel/codeIntelTools'
@@ -92,7 +93,9 @@ describe('repo map', () => {
     expect(await none.map()).toContain(`refused: no language service answered workspace symbols`)
     expect(await none.map()).toContain(UI_TEXT.repoMapNoService)
     const alone = setup({ io: memoryToolIo({ 'solo.ts': 'const lonely = 1\n' }, ROOT) })
-    expect(await alone.map()).toBe('No file defines a name that other files use.')
+    expect(await alone.map()).toBe(
+      'No workspace file defines a name that other files use, as far as the workspace symbols show.',
+    )
     expect(await repoMapSection(alone.deps, new AbortController().signal)).toBeUndefined()
   })
 
@@ -116,6 +119,38 @@ describe('repo map', () => {
     const pending = stuck.map()
     await vi.advanceTimersByTimeAsync(10_000)
     expect(await pending).toContain('[partial: looked up 0 of 8 names within the time budget]')
+  })
+
+  it('says how many files it read when the reading runs out of time, or the listing does', async () => {
+    const files = Object.fromEntries(
+      Array.from({ length: 20 }, (_, index) => [`f${String(index).padStart(2, '0')}.ts`, 'shared']),
+    )
+    const io = memoryToolIo(files, ROOT)
+    let clock = 0
+    const readFile = io.readFile
+    io.readFile = async (path, expected) => {
+      clock += 1000
+      return await readFile(path, expected)
+    }
+    const slow = setup({ io, now: () => clock })
+    expect(await slow.map()).toContain('[partial: read 16 of 20 files within the time budget]')
+    vi.useFakeTimers()
+    const unlisted = memoryToolIo(FILES, ROOT)
+    unlisted.listFiles = () => new Promise(() => undefined)
+    const pending = setup({ io: unlisted }).map()
+    await vi.advanceTimersByTimeAsync(10_000)
+    expect(await pending).toContain(
+      "[partial: the workspace's files were not listed within the time budget]",
+    )
+  })
+
+  it('leaves no listener on the turn signal, however many maps it makes', async () => {
+    const turn = new AbortController()
+    const t = setup()
+    for (let index = 0; index < 12; index += 1) {
+      await repoMapSection(t.deps, turn.signal)
+    }
+    expect(getEventListeners(turn.signal, 'abort')).toHaveLength(0)
   })
 
   it('reads confined UTF-8 files only, up to its caps', async () => {

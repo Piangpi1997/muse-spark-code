@@ -17,7 +17,7 @@ import {
 } from '../../shared/constants'
 import { fill } from '../../shared/l10n/text'
 import { withDeadline } from '../timeouts'
-import { confineWorkspacePath, type RealPathIo } from '../workspacePath'
+import { confineWorkspacePath, isBelow, type RealPathIo } from '../workspacePath'
 import { pathModule } from '../workspaceRoot'
 import { findName, withoutBom } from './codeText'
 import type { LocateArgs } from './definitions'
@@ -64,7 +64,6 @@ export class CodeIntelRefusal extends Error {
 const TIMEOUT_SECONDS = CODE_INTEL_TIMEOUT_MS / MILLISECONDS_PER_SECOND
 const LINE_BREAK = /[\r\n]/
 const ELLIPSIS = '…'
-const PARENT_SEGMENT = '..'
 const CALL_PARENTHESES = '()'
 const HIGH_SURROGATE = /[\uD800-\uDBFF]$/
 const DOCUMENT_LINE_BREAK = /\r\n|\r|\n/
@@ -189,6 +188,8 @@ export function byPlace<T extends { readonly relative: string; readonly at: Code
 
 /** One call's view of the workspace: confinement and file reads, each done once. */
 export class CodeIntelQuery {
+  /** Files whose lines this call took from an editor with unsaved changes. */
+  private readonly unsaved = new Set<string>()
   private readonly realPaths = new Map<string, Promise<string>>()
   private readonly placed = new Map<string, Promise<PlacedFile | undefined>>()
   private readonly texts = new Map<string, Promise<readonly string[] | undefined>>()
@@ -224,31 +225,55 @@ export class CodeIntelQuery {
     }
     const p = pathModule(platform)
     const relative = p.relative(realRoot, realTarget)
-    if (
-      relative === '' ||
-      relative === PARENT_SEGMENT ||
-      relative.startsWith(`${PARENT_SEGMENT}${p.sep}`) ||
-      p.isAbsolute(relative)
-    ) {
+    if (!isBelow(relative, p)) {
       return undefined
     }
     const forward = relative.split(p.sep).join('/')
     return { absolute: path, relative: forward, canonical: forward, checkedAbsolute: realTarget }
   }
 
-  /** The file's lines on disk; undefined when it is missing or not UTF-8 text. */
+  /**
+   * The file's lines as the language service read them: the editor's when
+   * it holds unsaved changes (the answer then says so), else the disk's;
+   * undefined when it is missing or not UTF-8 text.
+   */
   private async readLines(file: PlacedFile): Promise<readonly string[] | undefined> {
+    const { io } = this.deps
     let text: string | undefined
     try {
-      text = await this.deps.io.readFile(file.checkedAbsolute, file.checkedAbsolute)
+      if (io.hasUnsavedChanges(file.absolute) || io.hasUnsavedChanges(file.checkedAbsolute)) {
+        const document = await ask(this.service.open(file.absolute))
+        this.noteDocument(file, document)
+        text = document.text
+      } else {
+        text = await io.readFile(file.checkedAbsolute, file.checkedAbsolute)
+      }
     } catch {
-      // A file that is not UTF-8 text keeps its locations, without their lines.
+      // A file that cannot be read as text keeps its locations, without their lines.
       return
     }
     return text === undefined ? undefined : withoutBom(text).split(DOCUMENT_LINE_BREAK)
   }
 
-  /** The file's lines on disk, read once per call. */
+  /** Whether a path is under one of the languages' library folders (`LanguageServiceHost.libraryRoots`). */
+  private async isInLibrary(path: string): Promise<boolean> {
+    const roots = this.service.libraryRoots()
+    const p = pathModule(this.deps.platform)
+    const isUnder = (root: string, target: string) => isBelow(p.relative(root, target), p)
+    if (roots.some((root) => isUnder(root, path))) {
+      return true
+    }
+    try {
+      const real = await this.io.realPath(path)
+      const realRoots = await Promise.all(roots.map(async (root) => await this.io.realPath(root)))
+      return realRoots.some((root) => isUnder(root, real))
+    } catch {
+      // A path the file system will not resolve is not taken as a library's.
+      return false
+    }
+  }
+
+  /** The file's lines, read once per call. */
   private async linesOf(file: PlacedFile): Promise<readonly string[] | undefined> {
     let lines = this.texts.get(file.checkedAbsolute)
     if (lines === undefined) {
@@ -320,6 +345,7 @@ export class CodeIntelQuery {
       throw new CodeIntelRefusal(fill(MODEL_TEXT.codeIntelNoSymbolNamed, { symbol }))
     }
     const document = await ask(this.service.open(first.file.absolute))
+    this.noteDocument(first.file, document)
     const { selection } = first.symbol
     // The provider's range may start before the name (`export class Foo`).
     const at =
@@ -403,6 +429,35 @@ export class CodeIntelQuery {
     return start
   }
 
+  /** Remembers a document the answer read with unsaved changes, for `unsavedNotes`. */
+  public noteDocument(file: PlacedFile, document: OpenedDocument): void {
+    if (document.isDirty) {
+      this.unsaved.add(file.relative)
+    }
+  }
+
+  /** What the answer adds when its lines came from editors with unsaved changes. */
+  public unsavedNotes(): readonly string[] {
+    return this.unsaved.size === 0
+      ? []
+      : [
+          fill(MODEL_TEXT.codeIntelUnsavedNote, {
+            paths: [...this.unsaved].toSorted((a, b) => compareText(a, b)).join(', '),
+          }),
+        ]
+  }
+
+  /**
+   * Whether an answer may show what a result says about its file: a file in
+   * the workspace, or one under a language's library folder.
+   */
+  public async isDescribable(path: string | undefined): Promise<boolean> {
+    return (
+      path !== undefined &&
+      ((await this.place(path)) !== undefined || (await this.isInLibrary(path)))
+    )
+  }
+
   /** The refusal for a file no language service answers for (M67: never an empty answer). */
   public noService(file: PlacedFile, document: OpenedDocument): CodeIntelRefusal {
     return new CodeIntelRefusal(
@@ -436,6 +491,14 @@ export class CodeIntelQuery {
     if (args.path !== undefined) {
       const file = await this.confine(args.path)
       const document = await ask(this.service.open(file.absolute))
+      // The model's lines come from read_file, which reads the disk; the
+      // service reads the editor's text, and the two differ here.
+      if (document.isDirty && args.line !== undefined) {
+        throw new CodeIntelRefusal(
+          fill(MODEL_TEXT.codeIntelUnsavedPosition, { path: file.relative }),
+        )
+      }
+      this.noteDocument(file, document)
       return this.inFile(file, document, args, symbol)
     }
     if (symbol !== undefined) {

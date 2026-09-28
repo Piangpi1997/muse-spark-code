@@ -78,14 +78,29 @@ Only the latest release on the Visual Studio Marketplace receives fixes.
   is asked about is confined the same way, and a result VS Code's language
   service returns from outside the workspace (a library's declarations,
   another folder, a file reached through a link that leaves it) is left out
-  and counted, never shown. `rename_symbol` refuses a rename that would touch
-  any file outside the workspace, create or move files, or change a file
-  with unsaved changes or one VS Code holds differently from the disk. On the
-  Model API backend it asks as an edit (a protected write when any of its
-  files is one), and every file is confined and read again after the card,
-  so nothing is written if one changed while it was open. On the Muse Code
-  backend the `ide` server's tools change nothing and declare themselves
-  read-only; its rename returns the edits for Muse Code's own edit tool.
+  and counted: its location and lines are never shown. A hover shows what a
+  declaration says, so a hover for a symbol defined only outside the
+  workspace is held back, unless the definition is in a language's library
+  inside VS Code's installation or an extension's folder. What a language
+  service infers still flows through: a symbol defined in the workspace
+  whose type comes from a file outside it (an import from `../`, a
+  `tsconfig` path) shows that type in its hover and its diagnostics, as it
+  does in the editor. `rename_symbol` refuses a rename that would touch any
+  file outside the workspace, create, move or delete files (seen through
+  the edit's internal entry list, since VS Code's API lists only text
+  edits; an edit that does not show its list is refused too), or change a
+  file with unsaved changes, one VS Code holds differently from the disk,
+  or one whose edit ranges no longer cover the old name (an edit the service
+  made from an older version of the file). On the Model API backend it asks
+  as an edit (a protected write when any of its files is one, named first on
+  the card), and every file is confined and read again after the card and
+  once more right before its own write, so nothing a formatter, a hook or
+  the user wrote meanwhile is overwritten; a Stop before the first write
+  writes nothing. On the Muse Code backend the `ide` server's tools change
+  nothing and declare themselves read-only; its rename returns the edits for
+  Muse Code's own edit tool, and Muse Code 1.4.0 asks its own card for these
+  tools in its on-request mode. The repo map reaches the Model API's
+  instructions only in a trusted workspace.
 - **Protected writes (Model API backend).** Writing `.git/**`, `.husky/**`,
   `.vscode/**`, `.idea/**`, `.devcontainer/**`, `.github/workflows/**`,
   `.agents/**`, `.muse/**`, `AGENTS.md`, `CLAUDE.md`, `.envrc` or

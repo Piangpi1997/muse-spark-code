@@ -134,6 +134,13 @@ async function findLocations(
     : joinLines([target.lead, ...(await locationListing(query, locations))])
 }
 
+/**
+ * The hover, unless the symbol is defined only in files outside the
+ * workspace that are no language's library: a hover shows what its
+ * declaration says (its documentation, a constant's literal type), and the
+ * tools show nothing of such files. A symbol with no definition to judge
+ * (a keyword, a literal) keeps its hover.
+ */
 async function hover(query: CodeIntelQuery, raw: unknown): Promise<string> {
   const target = await query.target(parseArgs(locateArgs, raw))
   const parts = await ask(query.service.hover(target.file.absolute, target.at))
@@ -141,9 +148,20 @@ async function hover(query: CodeIntelQuery, raw: unknown): Promise<string> {
     .map((part) => part.trim())
     .filter((part) => part !== '')
     .join('\n\n')
-  return text === ''
-    ? await query.nothingAt('hover information', target)
-    : joinLines([target.lead, clipText(text, CODE_INTEL_HOVER_MAX_CHARS)])
+  if (text === '') {
+    return await query.nothingAt('hover information', target)
+  }
+  const definitions = await ask(query.service.definitions(target.file.absolute, target.at))
+  const describable = await Promise.all(
+    definitions.map(async (definition) => await query.isDescribable(definition.path)),
+  )
+  const isHeldBack = definitions.length > 0 && describable.every((isShown) => !isShown)
+  return joinLines([
+    target.lead,
+    isHeldBack
+      ? fill(MODEL_TEXT.codeIntelHoverHeldBack, { count: String(definitions.length) })
+      : clipText(text, CODE_INTEL_HOVER_MAX_CHARS),
+  ])
 }
 
 function symbolLabel(symbol: CodeSymbol): string {
@@ -192,6 +210,7 @@ async function documentSymbols(query: CodeIntelQuery, raw: unknown): Promise<str
   const { path } = parseArgs(documentSymbolsArgs, raw)
   const file = await query.confine(path)
   const document = await ask(query.service.open(file.absolute))
+  query.noteDocument(file, document)
   const symbols = await ask(query.service.documentSymbols(file.absolute))
   if (symbols.length === 0) {
     throw query.noService(file, document)
@@ -360,8 +379,10 @@ export async function answerCodeIntel(
   deps: CodeIntelDeps,
   signal?: AbortSignal,
 ): Promise<CodeIntelAnswer> {
+  const query = new CodeIntelQuery(deps)
   try {
-    return { ok: true, text: await answerText(tool, new CodeIntelQuery(deps), raw, signal) }
+    const text = await answerText(tool, query, raw, signal)
+    return { ok: true, text: joinLines([text, ...query.unsavedNotes()]) }
   } catch (error: unknown) {
     if (error instanceof CodeIntelRefusal) {
       return { ok: false, reason: error.message, visibleReason: error.visibleReason }

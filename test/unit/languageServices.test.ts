@@ -7,6 +7,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import * as vscode from 'vscode'
 import { vscodeLanguageServices } from '../../src/host/codeIntel/languageServices'
 import { VSCODE_COMMANDS } from '../../src/shared/constants'
+import { extensions as mockExtensions } from './mocks/vscode'
 
 const FILE = '/ws/a.ts'
 const AT = { line: 1, character: 2 }
@@ -17,6 +18,38 @@ function range(line: number, from: number, to: number) {
 }
 
 const fileUri = vscode.Uri.file(FILE)
+
+/**
+ * A `WorkspaceEdit` as VS Code's extension host builds one (1.125.0 and
+ * 1.139.0): `entries()` lists only the text edits and `size` counts them;
+ * `_allEntries()` lists everything, file operations (`_type` 1) included.
+ */
+function vsCodeWorkspaceEdit(allEntries: readonly Record<string, unknown>[]) {
+  const entries = () => {
+    const byUri = new Map<unknown, [unknown, unknown[]]>()
+    const listed: [unknown, unknown[]][] = []
+    for (const entry of allEntries) {
+      if (entry['_type'] !== 2) {
+        continue
+      }
+      let known = byUri.get(entry['uri'])
+      if (known === undefined) {
+        known = [entry['uri'], []]
+        byUri.set(entry['uri'], known)
+        listed.push(known)
+      }
+      known[1].push(entry['edit'])
+    }
+    return listed
+  }
+  return {
+    entries,
+    get size() {
+      return entries().length
+    },
+    _allEntries: () => allEntries,
+  }
+}
 const virtualUri = { scheme: 'untitled', fsPath: 'Untitled-1' }
 
 beforeEach(() => {
@@ -129,6 +162,11 @@ describe('vscodeLanguageServices', () => {
     ])
   })
 
+  it("names VS Code's installation and every extension's folder as library roots", () => {
+    mockExtensions.all = [{ extensionPath: '/ext/ms-python.python' }]
+    expect(services.libraryRoots()).toEqual(['/vscode/resources/app', '/ext/ms-python.python'])
+  })
+
   it('prepares a call hierarchy and reads its calls either way', async () => {
     const item = {
       name: 'greet',
@@ -162,21 +200,33 @@ describe('vscodeLanguageServices', () => {
 
   it("reads a rename's edits, notices file operations, and passes a refusal on", async () => {
     const edits = [{ range: range(0, 16, 21), newText: 'welcome' }]
-    let size = 1
+    let workspaceEdit: unknown = vsCodeWorkspaceEdit([{ _type: 2, uri: fileUri, edit: edits[0] }])
     answers.set(VSCODE_COMMANDS.executeDocumentRenameProvider, (_uri, _position, newName) => {
       expect(newName).toBe('welcome')
-      return { size, entries: () => [[fileUri, edits]] }
+      return workspaceEdit
     })
     expect(await services.rename(FILE, AT, 'welcome')).toEqual({
       files: [{ path: FILE, edits: [{ range: range(0, 16, 21), newText: 'welcome' }] }],
-      hasFileOperations: false,
+      fileOperations: 'none',
     })
-    size = 2
-    expect(await services.rename(FILE, AT, 'welcome')).toMatchObject({ hasFileOperations: true })
+    // A file moved by the rename: VS Code's `entries()` and `size` do not show it.
+    workspaceEdit = vsCodeWorkspaceEdit([
+      { _type: 2, uri: fileUri, edit: edits[0] },
+      { _type: 1, from: fileUri, to: virtualUri },
+    ])
+    expect(await services.rename(FILE, AT, 'welcome')).toMatchObject({
+      files: [{ path: FILE }],
+      fileOperations: 'present',
+    })
+    // A VS Code whose edit no longer says: the rename is refused as unknown.
+    workspaceEdit = { size: 1, entries: () => [[fileUri, edits]] }
+    expect(await services.rename(FILE, AT, 'welcome')).toMatchObject({ fileOperations: 'unknown' })
+    workspaceEdit = { entries: () => [[fileUri, edits]], _allEntries: () => [{ kind: 'text' }] }
+    expect(await services.rename(FILE, AT, 'welcome')).toMatchObject({ fileOperations: 'unknown' })
     answers.delete(VSCODE_COMMANDS.executeDocumentRenameProvider)
     expect(await services.rename(FILE, AT, 'welcome')).toEqual({
       files: [],
-      hasFileOperations: false,
+      fileOperations: 'none',
     })
     vi.mocked(vscode.commands.executeCommand).mockImplementation(((command: string) =>
       command === VSCODE_COMMANDS.prepareRename

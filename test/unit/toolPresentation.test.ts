@@ -278,11 +278,15 @@ describe('code intelligence rows (M67)', () => {
       summary: 'src/a.ts',
     })
     expect(describeTool('workspace_symbols', '{"query":"Parser"}').summary).toBe('Parser')
+    // An edit row's summary is the file it opens: a rename named by symbol alone has none.
     expect(describeTool('rename_symbol', '{"symbol":"greet","new_name":"welcome"}')).toMatchObject({
       label: 'Rename',
-      summary: 'greet',
+      summary: '',
       body: 'edit',
     })
+    expect(describeTool('rename_symbol', '{"path":"src/a.ts","symbol":"greet"}').summary).toBe(
+      'src/a.ts',
+    )
     expect(describeTool('mcp__ide__renameSymbol', '{}')).toMatchObject({
       label: 'Rename',
       body: 'generic',

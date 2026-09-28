@@ -7,7 +7,8 @@
 import { describe, expect, it, vi } from 'vitest'
 import { ModelApiHost } from '../../src/core/backends/modelapi/ModelApiHost'
 import type { AgentEvent } from '../../src/shared/agentEvents'
-import { MODEL_TEXT } from '../../src/shared/constants'
+import { type HookDefinition, parseHookConfig } from '../../src/core/backends/modelapi/hooks'
+import { MODEL_TEXT, type PaidFeature } from '../../src/shared/constants'
 import { memoryContextIo } from './helpers/fakeContextIo'
 import {
   type FakeServiceOptions,
@@ -50,6 +51,11 @@ const RENAME: ScriptedCall = {
   arguments: JSON.stringify({ path: 'src/a.ts', symbol: 'greet', new_name: 'welcome' }),
 }
 
+/** A rename of `greet` at the start of a file's first line. */
+function renamedFile(path: string) {
+  return renamed(path, 0, 0)
+}
+
 function renamed(path: string, line: number, character: number) {
   return {
     path,
@@ -68,11 +74,29 @@ interface StartOptions {
   /** The language services' answers; null runs the host without them. */
   readonly service?: Omit<FakeServiceOptions, 'files'> | null
   readonly isRepoMapOn?: () => boolean
+  /** Paid child tasks on, their popup allowing each (M48), for the child's prompt. */
+  readonly hasSubagents?: boolean
+  /** Hooks from Muse Code's settings (M51), and what each one received on its stdin. */
+  readonly hooks?: readonly HookDefinition[]
+  readonly hookPayloads?: unknown[]
 }
 
 async function start(options: StartOptions = {}) {
   const api = fakeModelApi()
   const io = memoryToolIo(FILES, ROOT)
+  const payloads = options.hookPayloads
+  if (payloads !== undefined) {
+    io.runHook = (_command, payload) => {
+      payloads.push(JSON.parse(payload))
+      return Promise.resolve({
+        stdout: '{}',
+        stderr: '',
+        exitCode: 0,
+        isTimedOut: false,
+        isCancelled: false,
+      })
+    }
+  }
   const service =
     options.service === null
       ? undefined
@@ -82,6 +106,10 @@ async function start(options: StartOptions = {}) {
   // Built directly on POSIX paths: the manager would take this machine's platform.
   const host = new ModelApiHost({
     ...disabledPaidFeatures,
+    ...(options.hasSubagents === true && {
+      isPaidFeatureOn: (feature: PaidFeature) => feature === 'subagents',
+      allowsPaidUse: () => Promise.resolve(true),
+    }),
     client: fakeModelApiClient(api, log),
     log,
     workspaceRoot: ROOT,
@@ -101,6 +129,7 @@ async function start(options: StartOptions = {}) {
     memory: undefined,
     codeIntel: service,
     isRepoMapInPrompt: options.isRepoMapOn,
+    loadHooks: () => Promise.resolve(options.hooks ?? []),
   })
   const session = await host.startSession({
     workspaceRoot: ROOT,
@@ -124,7 +153,7 @@ async function start(options: StartOptions = {}) {
       })
     }
   }
-  return { api, io, service, session, events, turn }
+  return { api, io, service, session, events, turn, host }
 }
 
 type Started = Awaited<ReturnType<typeof start>>
@@ -174,11 +203,22 @@ async function allowAndFinish(t: Started, card: Awaited<ReturnType<typeof cardFo
   })
 }
 
+/** Presses Stop once `provider` has been asked, and waits for the turn to end as the `turns`th. */
+async function stopOnceAsked(t: Started, provider: string, turns = 1) {
+  await vi.waitFor(() => {
+    expect(t.service?.asked.some((call) => call.startsWith(provider))).toBe(true)
+  })
+  await t.session.cancel()
+  await vi.waitFor(() => {
+    expect(t.events.filter((event) => event.type === 'turnCompleted')).toHaveLength(turns)
+  })
+}
+
 const GREET_EVERYWHERE = {
   rename: () =>
     Promise.resolve({
       files: [renamed(A, 0, 16), renamed(B, 0, 9), renamed(B, 1, 0)],
-      hasFileOperations: false,
+      fileOperations: 'none' as const,
     }),
 }
 
@@ -214,7 +254,9 @@ describe('code intelligence on the Model API backend', () => {
     expect(definition).toContain('Error: no language service answered for src/a.ts')
     expect(hover).toBe('Error: arguments are not valid JSON')
     expect(finished(t.events).map((item) => item.status)).toEqual(['completed', 'failed', 'failed'])
-    expect(finished(t.events)[1]?.failureReason).toBe('No language service answered for src/a.ts.')
+    expect(finished(t.events)[1]?.failureReason).toBe(
+      'No language service answered for src/a.ts, or it declares no symbols.',
+    )
   })
 
   it('renames through the edit path: a card naming the files, then one patch across them', async () => {
@@ -253,7 +295,7 @@ describe('code intelligence on the Model API backend', () => {
       rename: () =>
         Promise.resolve({
           files: [renamed(A, 0, 16), renamed(TASKS, 0, 0)],
-          hasFileOperations: false,
+          fileOperations: 'none' as const,
         }),
     }
     const auto = await start({ approvalMode: 'onRequest', service: protectedRename })
@@ -273,7 +315,7 @@ describe('code intelligence on the Model API backend', () => {
       (t: Started) => {
         t.io.files.set(B, 'someone else wrote this\n')
       },
-      'src/b.ts changed while the rename waited for approval',
+      'src/b.ts changed after the rename was planned; nothing was changed',
     ],
     [
       'gained unsaved changes',
@@ -300,6 +342,125 @@ describe('code intelligence on the Model API backend', () => {
     expect(t.io.files.get(A)).toBe(FILES['src/a.ts'])
   })
 
+  it('stops writing, and says so, when a file changes while the others are written', async () => {
+    const t = await start({ approvalMode: 'onRequest', service: GREET_EVERYWHERE })
+    const write = t.io.writeFile
+    t.io.writeFile = async (path, content, expected) => {
+      await write(path, content, expected)
+      if (path === A) {
+        // A formatter or the user saves b.ts between the two writes.
+        t.io.files.set(B, 'someone else wrote this\n')
+      }
+    }
+    await t.turn([RENAME])
+    expect(outputs(t.api)[0]).toBe(
+      'Error: src/b.ts changed after the rename was planned, so it was not written. The rename was written to 1 of 2 files (src/a.ts); the rest are unchanged, and the row can revert what was written',
+    )
+    expect(t.io.files.get(B)).toBe('someone else wrote this\n')
+    expect(finished(t.events)[0]).toMatchObject({
+      status: 'failed',
+      patchSummary: { files: 1, added: 1, removed: 1 },
+    })
+  })
+
+  it('writes nothing when Stop comes after the card is allowed', async () => {
+    const t = await start({ service: GREET_EVERYWHERE })
+    await t.turn([RENAME], true)
+    const card = await cardFor(t.events)
+    const read = t.io.readFile
+    const held = Promise.withResolvers<undefined>()
+    t.io.readFile = async (path, expected) => {
+      await held.promise
+      return await read(path, expected)
+    }
+    await t.session.decideApproval({
+      approvalId: card.approvalId,
+      choiceId: 'allow_once',
+      requirementId: card.requirementId,
+    })
+    await t.session.cancel()
+    held.resolve(undefined)
+    await vi.waitFor(() => {
+      expect(t.events.some((event) => event.type === 'turnCompleted')).toBe(true)
+    })
+    expect(t.events.find((event) => event.type === 'turnCompleted')).toMatchObject({
+      terminal: 'cancelled',
+    })
+    expect(t.io.files.get(A)).toBe(FILES['src/a.ts'])
+    expect(t.io.files.get(B)).toBe(FILES['src/b.ts'])
+  })
+
+  it('names the protected file first on the card', async () => {
+    // A git hook that sorts last among the files: without the order, the
+    // card would name five others and count it among the rest.
+    const hook = `${ROOT}/src/zz/.husky/pre-commit.ts`
+    const many = {
+      rename: () =>
+        Promise.resolve({
+          files: [
+            renamed(A, 0, 16),
+            renamed(B, 0, 9),
+            ...['c', 'd', 'e', 'f'].map((name) => renamedFile(`${ROOT}/src/${name}.ts`)),
+            renamedFile(hook),
+          ],
+          fileOperations: 'none' as const,
+        }),
+    }
+    const t = await start({ approvalMode: 'onRequest', service: many })
+    for (const file of [...['c', 'd', 'e', 'f'].map((name) => `${ROOT}/src/${name}.ts`), hook]) {
+      t.io.files.set(file, 'greet\n')
+    }
+    await t.turn([RENAME], true)
+    const card = await cardFor(t.events)
+    expect(card).toMatchObject({ isProtectedWrite: true })
+    expect(card.subject.path).toBe(
+      'src/zz/.husky/pre-commit.ts, src/a.ts, src/b.ts, src/c.ts, src/d.ts and 2 more files',
+    )
+  })
+
+  it('runs an Edit hook for a rename, with the files it would write', async () => {
+    const payloads: unknown[] = []
+    const hooks = parseHookConfig(
+      JSON.stringify({
+        hooks: {
+          PreToolUse: [{ matcher: 'Edit', hooks: [{ type: 'command', command: 'guard' }] }],
+        },
+      }),
+      'project',
+      'linux',
+    ).hooks
+    const t = await start({
+      approvalMode: 'onRequest',
+      service: GREET_EVERYWHERE,
+      hooks,
+      hookPayloads: payloads,
+    })
+    await t.turn([RENAME])
+    expect(payloads).toMatchObject([
+      {
+        hook_event_name: 'PreToolUse',
+        tool_name: 'rename_symbol',
+        tool_input: {
+          path: 'src/a.ts',
+          symbol: 'greet',
+          new_name: 'welcome',
+          files: ['src/a.ts', 'src/b.ts'],
+        },
+      },
+    ])
+    expect(t.io.files.get(A)).toBe('export function welcome() {}\n')
+    // A Stop while the hook's files are planned still ends the call with its row.
+    const stopped = await start({
+      approvalMode: 'onRequest',
+      service: { rename: () => new Promise(() => undefined) },
+      hooks,
+      hookPayloads: [],
+    })
+    await stopped.turn([RENAME], true)
+    await stopOnceAsked(stopped, 'rename')
+    expect(finished(stopped.events).map((item) => item.tool)).toEqual(['rename_symbol'])
+  })
+
   it('says which files a failed write left renamed, and the row can revert them', async () => {
     const t = await start({ approvalMode: 'onRequest', service: GREET_EVERYWHERE })
     const write = t.io.writeFile
@@ -324,13 +485,7 @@ describe('code intelligence on the Model API backend', () => {
       calls: [{ name: 'find_definition', arguments: '{"symbol":"greet","path":"src/b.ts"}' }],
     })
     await t.session.sendTurn([{ type: 'text', text: 'hang' }])
-    await vi.waitFor(() => {
-      expect(t.service?.asked.some((call) => call.startsWith('definitions'))).toBe(true)
-    })
-    await t.session.cancel()
-    await vi.waitFor(() => {
-      expect(t.events.filter((event) => event.type === 'turnCompleted')).toHaveLength(2)
-    })
+    await stopOnceAsked(t, 'definitions', 2)
     expect(t.events.findLast((event) => event.type === 'turnCompleted')).toMatchObject({
       terminal: 'cancelled',
     })
@@ -367,13 +522,7 @@ describe('code intelligence on the Model API backend', () => {
       },
     })
     await stopped.session.sendTurn([{ type: 'text', text: 'go' }])
-    await vi.waitFor(() => {
-      expect(stopped.service?.asked.some((call) => call.startsWith('workspace'))).toBe(true)
-    })
-    await stopped.session.cancel()
-    await vi.waitFor(() => {
-      expect(stopped.events.some((event) => event.type === 'turnCompleted')).toBe(true)
-    })
+    await stopOnceAsked(stopped, 'workspace')
     isStuck = false
     stopped.api.script({ text: 'done' })
     await stopped.session.sendTurn([{ type: 'text', text: 'again' }])
@@ -384,11 +533,71 @@ describe('code intelligence on the Model API backend', () => {
       terminal: 'cancelled',
     })
     expect(String(stopped.api.responseBodies().at(-1)?.['instructions'])).toContain('# Repo map')
+    // No language service: tried on three turns at most, never pinned empty.
     const quiet = await start({
       isRepoMapOn: () => true,
       service: { workspace: () => Promise.resolve([]) },
     })
-    await quiet.turn([])
+    for (let index = 0; index < 4; index += 1) {
+      await quiet.turn([])
+    }
     expect(String(quiet.api.responseBodies()[0]?.['instructions'])).not.toContain('# Repo map')
+    expect(quiet.service?.asked.filter((call) => call.startsWith('workspace'))).toHaveLength(3)
+  })
+
+  it('makes the map again after a try that found nothing, and never in Restricted Mode', async () => {
+    let isReady = false
+    const t = await start({
+      isRepoMapOn: () => true,
+      service: {
+        workspace: (query) =>
+          Promise.resolve(
+            isReady && query === 'greet' ? [sym('greet', KIND.function, A, 0, 16)] : [],
+          ),
+      },
+    })
+    // The first turn finds no workspace symbols (TypeScript's project not loaded yet).
+    await t.turn([])
+    isReady = true
+    await t.turn([])
+    const [first, second] = t.api.responseBodies().map((body) => String(body['instructions']))
+    expect(first).not.toContain('# Repo map')
+    expect(second).toContain('# Repo map')
+    const restricted = await start({ isRepoMapOn: () => true, isTrusted: false })
+    await restricted.turn([])
+    expect(String(restricted.api.responseBodies()[0]?.['instructions'])).not.toContain('# Repo map')
+    expect(restricted.service?.asked.some((call) => call.startsWith('workspace'))).toBe(false)
+  })
+
+  it("gives a child task its parent's map and never makes one of its own", async () => {
+    const t = await start({
+      isRepoMapOn: () => true,
+      hasSubagents: true,
+      service: {
+        workspace: (query) =>
+          Promise.resolve(query === 'greet' ? [sym('greet', KIND.function, A, 0, 16)] : []),
+      },
+    })
+    t.api.script(
+      {
+        calls: [
+          { name: 'subagent_spawn', arguments: '{"role":"explorer","objective":"Map files"}' },
+        ],
+      },
+      { text: 'done' },
+    )
+    await t.session.sendTurn([{ type: 'text', text: 'delegate' }])
+    await vi.waitFor(() => {
+      expect(
+        t.api
+          .responseBodies()
+          .some((body) => JSON.stringify(body['input']).includes(MODEL_TEXT.subagentObjective)),
+      ).toBe(true)
+    })
+    const child = t.api
+      .responseBodies()
+      .find((body) => JSON.stringify(body['input']).includes(MODEL_TEXT.subagentObjective))
+    expect(String(child?.['instructions'])).toContain('src/a.ts\n  1: function greet')
+    expect(t.service?.asked.filter((call) => call === 'workspace greet')).toHaveLength(1)
   })
 })

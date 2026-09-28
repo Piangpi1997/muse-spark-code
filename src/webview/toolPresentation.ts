@@ -222,13 +222,8 @@ export function describeTool(tool: string, args: string): ToolPresentation {
     }
   }
   if (FILE_EDIT_TOOLS.has(tool)) {
-    return {
-      label,
-      summary: parsed.path ?? parsed.symbol ?? '',
-      body: 'edit',
-      command: undefined,
-      imagePath,
-    }
+    // Only a path: an edit row's summary is the file it opens.
+    return { label, summary: parsed.path ?? '', body: 'edit', command: undefined, imagePath }
   }
   return FILE_READ_TOOLS.has(tool)
     ? { label, summary: parsed.path ?? '', body: 'read', command: undefined, imagePath }

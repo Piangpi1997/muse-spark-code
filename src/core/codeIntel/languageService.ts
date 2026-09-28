@@ -65,10 +65,15 @@ export interface FileEdits {
   readonly edits: readonly TextEdit[]
 }
 
+/**
+ * Whether the edit also creates, renames or deletes files, which the tool
+ * refuses; `unknown` when VS Code does not say, which it refuses too.
+ */
+export type FileOperations = 'none' | 'present' | 'unknown'
+
 export interface RenameEdits {
   readonly files: readonly FileEdits[]
-  /** The edit also creates, renames or deletes files, which the tool refuses. */
-  readonly hasFileOperations: boolean
+  readonly fileOperations: FileOperations
 }
 
 /** A document as the language services see it (an open editor's text, unsaved changes included). */
@@ -96,4 +101,10 @@ export interface LanguageServiceHost {
   ): Promise<CallHierarchyAnswer | undefined>
   /** Rejects with the provider's own reason when the position cannot be renamed. */
   rename(path: string, at: CodePosition, newName: string): Promise<RenameEdits>
+  /**
+   * Folders outside the workspace whose declarations a hover may still
+   * describe: the editor's own installation and its extensions, where the
+   * languages' bundled libraries live (`lib.dom.d.ts`, typeshed).
+   */
+  libraryRoots(): readonly string[]
 }

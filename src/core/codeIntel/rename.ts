@@ -2,11 +2,13 @@
 // for the edit, which is checked before anything asks or writes. Every file
 // it touches must be in the workspace (confined as the file tools confine a
 // path, D24), have no unsaved changes, and read on disk exactly as VS Code
-// holds it, so the edit lands where the language service meant it; an edit
-// that also creates, moves or deletes files is refused. The Model API then
-// writes the files through its edit path (src/core/backends/modelapi/
-// renameTool.ts); the `ide` tool returns the diff for Muse Code's own edit
-// tool and writes nothing.
+// holds it; and every range of the edit must cover exactly the old name in
+// that text, so an edit the service computed on an older version of a file
+// is refused, never applied to the newer one. An edit that also creates,
+// moves or deletes files (or one VS Code does not say that of) is refused.
+// The Model API then writes the files through its edit path
+// (src/core/backends/modelapi/codeIntelCalls.ts); the `ide` tool returns the
+// diff for Muse Code's own edit tool and writes nothing.
 
 import { CODE_INTEL_NAME_MAX_CHARS, MODEL_TEXT, RENAME_MAX_FILES } from '../../shared/constants'
 import { fill } from '../../shared/l10n/text'
@@ -23,9 +25,10 @@ import {
   parseArgs,
   type PlacedFile,
   placeText,
+  type Target,
 } from './codeIntelQuery'
 import { renameArgs } from './definitions'
-import type { FileEdits, TextEdit } from './languageService'
+import type { FileEdits, RenameEdits, TextEdit } from './languageService'
 
 export interface RenameFile extends PlacedFile {
   /** The file on disk as the plan read it, BOM included. */
@@ -48,32 +51,49 @@ export type RenamePlanResult =
   | { readonly ok: true; readonly plan: RenamePlan }
   | { readonly ok: false; readonly reason: string; readonly visibleReason: string }
 
-/** The file's text with the edits applied, or why the plan cannot use it. */
+function staleRefusal(file: PlacedFile): CodeIntelRefusal {
+  return new CodeIntelRefusal(fill(MODEL_TEXT.renameStale, { path: file.relative }))
+}
+
+/**
+ * The file's text with the edits applied, or why the plan cannot use it.
+ * `expected` is the text the rename's position was read from, for the file
+ * that holds it: the document must still be that text.
+ */
 async function plannedFile(
   query: CodeIntelQuery,
-  file: PlacedFile,
-  edits: readonly TextEdit[],
+  planned: { readonly file: PlacedFile; readonly edits: readonly TextEdit[] },
+  from: string,
+  expected: string | undefined,
 ): Promise<RenameFile> {
+  const { file, edits } = planned
   const { io } = query.deps
   if (io.hasUnsavedChanges(file.absolute) || io.hasUnsavedChanges(file.checkedAbsolute)) {
     throw new CodeIntelRefusal(`${file.relative} ${MODEL_TEXT.fileHasUnsavedChanges}`)
   }
   const before = await io.readFile(file.checkedAbsolute, file.checkedAbsolute)
   const document = await ask(query.service.open(file.absolute))
-  const stale = new CodeIntelRefusal(fill(MODEL_TEXT.renameStale, { path: file.relative }))
-  if (before === undefined || document.isDirty || document.text !== withoutBom(before)) {
-    throw stale
+  const { text } = document
+  if (
+    before === undefined ||
+    document.isDirty ||
+    text !== withoutBom(before) ||
+    (expected !== undefined && text !== expected) ||
+    // An edit made on another version of the file lands on other text.
+    edits.some((edit) => textIn(text, edit.range.start, edit.range.end) !== from)
+  ) {
+    throw staleRefusal(file)
   }
-  const changed = applyTextEdits(document.text, edits)
+  const changed = applyTextEdits(text, edits)
   if (changed === undefined) {
-    throw stale
+    throw staleRefusal(file)
   }
   return {
     ...file,
     before,
     after: before.startsWith(BOM) ? `${BOM}${changed}` : changed,
     edits: edits.length,
-    hunks: patchHunks(document.text, changed),
+    hunks: patchHunks(text, changed),
   }
 }
 
@@ -117,27 +137,24 @@ async function placedFiles(
   return merged
 }
 
-async function plan(query: CodeIntelQuery, raw: unknown): Promise<RenamePlan> {
-  const args = parseArgs(renameArgs, raw)
-  const to = checkName('new_name', args.new_name)
-  const target = await query.target(args)
-  const place = placeText(target.file.relative, target.at)
-  const edit = await ask(query.service.rename(target.file.absolute, target.at, to))
-  if (edit.hasFileOperations) {
+/** Refuses an edit that also changes files, or one VS Code does not say that of. */
+function checkFileOperations(edit: RenameEdits): void {
+  if (edit.fileOperations === 'present') {
     throw new CodeIntelRefusal(MODEL_TEXT.renameFileOperations)
   }
-  if (edit.files.every((entry) => entry.edits.length === 0)) {
-    const symbols = await ask(query.service.documentSymbols(target.file.absolute))
-    throw symbols.length === 0
-      ? query.noService(target.file, target.document)
-      : new CodeIntelRefusal(fill(MODEL_TEXT.renameNothing, { place }))
+  if (edit.fileOperations === 'unknown') {
+    throw new CodeIntelRefusal(MODEL_TEXT.renameFileOperationsUnknown)
   }
-  const placed = await placedFiles(query, edit.files)
-  const files: RenameFile[] = []
-  for (const { file, edits } of placed) {
-    files.push(await plannedFile(query, file, edits))
-  }
-  // The old name is what the edit at the position replaces.
+}
+
+/**
+ * The old name: what the edit at the position replaces, in the text the
+ * position was read from. Every other range of the edit must cover it too.
+ */
+function oldName(
+  target: Target,
+  placed: readonly { file: PlacedFile; edits: readonly TextEdit[] }[],
+): string {
   const own = placed
     .find((entry) => entry.file.checkedAbsolute === target.file.checkedAbsolute)
     ?.edits.find(
@@ -147,16 +164,42 @@ async function plan(query: CodeIntelQuery, raw: unknown): Promise<RenamePlan> {
         candidate.range.end.character >= target.at.character,
     )
   const from =
-    (own === undefined
-      ? undefined
-      : textIn(target.document.text, own.range.start, own.range.end)) ??
-    args.symbol ??
-    place
+    own === undefined ? undefined : textIn(target.document.text, own.range.start, own.range.end)
+  if (from === undefined || from === '') {
+    throw staleRefusal(target.file)
+  }
+  return from
+}
+
+async function plan(query: CodeIntelQuery, raw: unknown): Promise<RenamePlan> {
+  const args = parseArgs(renameArgs, raw)
+  const to = checkName('new_name', args.new_name)
+  const target = await query.target(args)
+  const place = placeText(target.file.relative, target.at)
+  const edit = await ask(query.service.rename(target.file.absolute, target.at, to))
+  checkFileOperations(edit)
+  if (edit.files.every((entry) => entry.edits.length === 0)) {
+    const symbols = await ask(query.service.documentSymbols(target.file.absolute))
+    throw symbols.length === 0
+      ? query.noService(target.file, target.document)
+      : new CodeIntelRefusal(fill(MODEL_TEXT.renameNothing, { place }))
+  }
+  const placed = await placedFiles(query, edit.files)
+  const from = oldName(target, placed)
+  if (from === to) {
+    throw new CodeIntelRefusal(fill(MODEL_TEXT.renameSameName, { name: to }))
+  }
+  const files: RenameFile[] = []
+  for (const entry of placed) {
+    const isTargetFile = entry.file.checkedAbsolute === target.file.checkedAbsolute
+    files.push(
+      await plannedFile(query, entry, from, isTargetFile ? target.document.text : undefined),
+    )
+  }
   const changed = files
     .filter((file) => file.after !== file.before)
     .toSorted((a, b) => compareText(a.relative, b.relative))
   if (changed.length === 0) {
-    // The new name is the old one: an edit that changes nothing.
     throw new CodeIntelRefusal(fill(MODEL_TEXT.renameNothing, { place }))
   }
   return {

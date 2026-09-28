@@ -53,6 +53,7 @@ function setup(options: Options = {}) {
     now: () => 0,
   }
   return {
+    io,
     service,
     ask: async (tool: CodeIntelReadTool, args: unknown) => await answerCodeIntel(tool, args, deps),
   }
@@ -173,8 +174,9 @@ describe('find_definition and find_references', () => {
       'no language service answered for notes.txt (language plaintext)',
     )
     expect(refused.visibleReason).toBe(fill(UI_TEXT.codeIntelNoService, { path: 'notes.txt' }))
+    // The file's service answers (it lists symbols), but may not provide this.
     expect(await textOf(t.ask('findReferences', { path: 'src/b.ts', line: 1, column: 1 }))).toBe(
-      'No references at src/b.ts:1:1.',
+      "No references at src/b.ts:1:1: the file's language service found none there. Not every language's service provides references, so use search to be sure.",
     )
   })
 
@@ -298,8 +300,70 @@ describe('hover', () => {
     expect(long).toHaveLength(CODE_INTEL_HOVER_MAX_CHARS)
     expect(long.endsWith('…')).toBe(true)
     const none = setup({ symbols: { [B]: [GREET] }, hover: () => ['  '] })
-    expect(await textOf(none.ask('hover', { path: 'src/b.ts', line: 1, column: 1 }))).toBe(
-      'No hover information at src/b.ts:1:1.',
+    expect(await textOf(none.ask('hover', { path: 'src/b.ts', line: 1, column: 1 }))).toContain(
+      'No hover information at src/b.ts:1:1:',
+    )
+  })
+
+  it('holds back the hover of a symbol defined only outside the workspace and its libraries', async () => {
+    const secret = ['```ts\nconst TOKEN: "sk-live-123"\n```']
+    const outside = setup({ hover: () => secret, definitions: () => [loc(OTHER, 0, 13)] })
+    const heldBack = await textOf(outside.ask('hover', { path: 'src/b.ts', line: 2, column: 1 }))
+    expect(heldBack).toBe(
+      'The hover is held back: this symbol is defined only outside the workspace (1 definitions), in files the tools do not show.',
+    )
+    expect(heldBack).not.toContain('sk-live')
+    // A language's bundled library, a workspace file among the definitions,
+    // or no definition at all keep the hover.
+    const library = setup({
+      hover: () => secret,
+      definitions: () => [loc(LIB, 0, 0)],
+      libraryRoots: ['/lib'],
+    })
+    const mixed = setup({
+      hover: () => secret,
+      definitions: () => [loc(OTHER, 0, 0), loc(A, 0, 16)],
+    })
+    const bare = setup({ hover: () => secret })
+    for (const t of [library, mixed, bare]) {
+      expect(await textOf(t.ask('hover', { path: 'src/b.ts', line: 2, column: 1 }))).toContain(
+        'sk-live',
+      )
+    }
+    const unresolvable = setup({
+      hover: () => secret,
+      definitions: () => [loc('/elsewhere/x.ts', 0, 0)],
+      libraryRoots: ['/lib'],
+      realPath: (path) =>
+        path === '/elsewhere/x.ts' ? Promise.reject(new Error('EACCES')) : Promise.resolve(path),
+    })
+    expect(
+      await textOf(unresolvable.ask('hover', { path: 'src/b.ts', line: 2, column: 1 })),
+    ).toContain('held back')
+  })
+})
+
+describe('files with unsaved changes', () => {
+  it("refuses a position there, and answers from the editor's lines with a note", async () => {
+    const edited = "import { greet } from './a'\n// a new line\ngreet('x')\n"
+    const t = setup({
+      dirty: new Set([B]),
+      buffers: { [B]: edited },
+      references: () => [loc(B, 2, 0), loc(A, 0, 16)],
+    })
+    t.io.unsaved.add(B)
+    expect(await reasonOf(t.ask('findReferences', { path: 'src/b.ts', line: 2, column: 1 }))).toBe(
+      'src/b.ts has unsaved changes in an editor, so its lines differ from what read_file shows; name the symbol without a line, or ask the user to save the file',
+    )
+    // By name, the editor's text is where the name is found, and the lines
+    // shown are the editor's, said so.
+    expect(await textOf(t.ask('findReferences', { path: 'src/b.ts', symbol: 'greet' }))).toBe(
+      [
+        'Using `greet` at src/b.ts:1:10.',
+        'src/a.ts:1:17: export function greet(name: string): string {',
+        "src/b.ts:3:1: greet('x')",
+        "[unsaved changes in an editor: src/b.ts; their lines here are the editor's, not what read_file shows]",
+      ].join('\n'),
     )
   })
 })

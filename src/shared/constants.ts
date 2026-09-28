@@ -732,6 +732,14 @@ export const REPO_MAP_CHARS_PER_TOKEN = 4
 // The lookups stop here, and the map says it is partial.
 export const REPO_MAP_TIME_BUDGET_MS = 10_000
 export const REPO_MAP_PROMPT_TIME_BUDGET_MS = 5000
+// The prompt's map is tried on this many turns of a session at most: a try
+// that fails or comes out empty (TypeScript's workspace symbols stay empty
+// until one of the project's files is open) is not kept, and the next turn
+// tries again.
+export const REPO_MAP_PROMPT_TRIES = 3
+// The edit tools whose failed row may still carry the patch of what they
+// wrote (M67: a rename stopped partway), so its review and rewind stay on.
+export const PARTIAL_EDIT_TOOLS: ReadonlySet<string> = new Set(['rename_symbol'])
 
 // --- Meta Model API backend (M7, PLAN.md D1 / D2 / §5.1) ---
 
@@ -1850,7 +1858,14 @@ export const MODEL_TEXT = {
     "For code, find_definition, find_references, workspace_symbols, document_symbols, hover, call_hierarchy and repo_map answer from VS Code's language services, as an IDE does: prefer them to search when you look for where a symbol is defined or used. rename_symbol renames a symbol everywhere it is used.",
   codeIntelNoService:
     'no language service answered for {path} (language {language}): VS Code has no provider of this kind for it here, or the file declares no symbols; use search and read_file instead',
-  codeIntelNothingAt: 'No {what} at {place}.',
+  codeIntelNothingAt:
+    "No {what} at {place}: the file's language service found none there. Not every language's service provides {what}, so use search to be sure.",
+  codeIntelUnsavedPosition:
+    '{path} has unsaved changes in an editor, so its lines differ from what read_file shows; name the symbol without a line, or ask the user to save the file',
+  codeIntelUnsavedNote:
+    "[unsaved changes in an editor: {paths}; their lines here are the editor's, not what read_file shows]",
+  codeIntelHoverHeldBack:
+    'The hover is held back: this symbol is defined only outside the workspace ({count} definitions), in files the tools do not show.',
   codeIntelTimedOut:
     'the language service did not answer within {seconds} seconds; it may still be loading the project, so try again shortly or use search',
   codeIntelOutside:
@@ -1877,14 +1892,19 @@ export const MODEL_TEXT = {
   codeIntelNoCalls: 'No calls found.',
   renameFileOperations:
     'this rename would also create, move or delete files, which rename_symbol does not do; nothing was changed',
+  renameFileOperationsUnknown:
+    'VS Code did not say whether this rename also creates, moves or deletes files, so rename_symbol does not apply it; nothing was changed',
+  renameSameName: 'the new name `{name}` is already the name there; nothing to rename',
   renameOutside:
     'this rename would also change {count} files outside the workspace; nothing was changed',
   renameTooMany: 'this rename would change {count} files, more than {max}; nothing was changed',
   renameStale:
-    '{path} differs between VS Code and the disk (unsaved changes, mixed line breaks, or a change VS Code has not loaded yet); nothing was changed',
+    "the language service's rename does not match {path} as it is now (it differs between VS Code and the disk, has unsaved changes, or changed after the service last read it); nothing was changed, so call rename_symbol again shortly",
   renameNothing: 'nothing to rename at {place}',
   renameChanged:
-    '{path} changed while the rename waited for approval; nothing was changed, so call rename_symbol again',
+    '{path} changed after the rename was planned; nothing was changed, so call rename_symbol again',
+  renameChangedPartway:
+    '{path} changed after the rename was planned, so it was not written. The rename was written to {written} of {total} files ({paths}); the rest are unchanged, and the row can revert what was written',
   renameDone:
     'Renamed `{from}` to `{to}`: {edits} edits in {files} files ({paths}). Read a file again before replacing it with write_file.',
   renamePartial:
@@ -1895,9 +1915,12 @@ export const MODEL_TEXT = {
     'Files ranked by how often other files use the names they define (names counted in the text, definitions from workspace symbols), each with its most used definitions:',
   repoMapPartial: '[partial: looked up {done} of {total} names within the time budget]',
   repoMapFilesCapped: '[ranked the first {count} of {total} files]',
+  repoMapFilesRead: '[partial: read {done} of {total} files within the time budget]',
+  repoMapNoFiles: "[partial: the workspace's files were not listed within the time budget]",
   repoMapNoService:
     "no language service answered workspace symbols here (TypeScript's needs one of the project's files open); use list_files and search instead",
-  repoMapEmpty: 'No file defines a name that other files use.',
+  repoMapEmpty:
+    'No workspace file defines a name that other files use, as far as the workspace symbols show.',
   repoMapSection: '# Repo map',
   repoMapSectionLead: 'The workspace as this session began (repo_map gives a fresh one):',
   // The user said no in the price confirmation (M44): nothing was bought.
