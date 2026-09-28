@@ -1896,6 +1896,8 @@ export const MODEL_TEXT = {
   imagePathTaken: 'something already exists at that path; choose a new file name',
   imageAccountChanged: 'the Model API key changed; ask again before buying an image',
   pathChangedAfterApproval: 'path changed after approval; request a new approval',
+  // A conditional write found the file changed since it was read (M68): nothing was written.
+  fileChangedBeforeWrite: 'the file changed before it could be written; nothing was written',
   // The user said no in the price confirmation (M44): nothing was bought.
   imageDeclined: 'the user declined to buy this image; nothing was bought or written',
   // M45 (PLAN.md D38): the goal loop on the Model API backend, in Muse Code's

@@ -160,6 +160,17 @@ export interface ToolIo {
   ): Promise<Uint8Array | undefined>
   /** Replaces the file whole (a temporary file renamed into place), folders created. */
   writeFile(absolutePath: string, content: string, expectedCanonicalPath?: string): Promise<void>
+  /**
+   * `writeFile`, only while the file still holds the text whose fingerprint
+   * is `expectedFingerprint`, compared immediately before the rename (M68,
+   * `fsAtomic.writeFileIfUnchanged`): `changed`, and nothing written, when not.
+   */
+  writeFileIfUnchanged(
+    absolutePath: string,
+    expectedFingerprint: string,
+    content: string,
+    expectedCanonicalPath?: string,
+  ): Promise<ConditionalWrite>
   /** Whether anything (a file, a folder, a link) is at the path. */
   pathExists(absolutePath: string): Promise<boolean>
   /**
@@ -249,6 +260,9 @@ export interface EditFormatter {
   /** A formatted text that could not be written back, for the log. */
   readonly warn: (message: string) => void
 }
+
+/** What a conditional write did (M68): wrote the file, or found it changed and left it. */
+export type ConditionalWrite = 'written' | 'changed'
 
 /** A PDF or an image `read_file` read whole for the model to see (M54, PLAN.md D47). */
 export interface VisibleFile {
@@ -676,26 +690,23 @@ async function formatWritten(
   if (formatter === undefined || formatted === undefined || formatted === written) {
     return written
   }
-  // Only over what the edit wrote, at the real path the edit wrote it: a
-  // change made while the formatter ran stands (the Codex review of PR #54).
-  // The write itself refuses a path whose real form moved.
-  let current: string | undefined
+  // Only over what the edit wrote, at the real path the edit wrote it, by the
+  // one conditional write (the Codex review of PR #54): a change made while
+  // the formatter ran stands. The write also refuses a path whose real form
+  // moved.
   try {
-    current = await context.io.readFile(target.checkedAbsolute, target.checkedAbsolute)
-  } catch (error: unknown) {
-    formatter.warn(
-      `Format on edit could not read ${target.relative} again; the edit stays as written: ${error instanceof Error ? error.message : String(error)}`,
+    const wrote = await context.io.writeFileIfUnchanged(
+      target.checkedAbsolute,
+      fingerprint(written),
+      formatted,
+      target.checkedAbsolute,
     )
-    return written
-  }
-  if (current !== written) {
-    formatter.warn(
-      `Format on edit skipped ${target.relative}: the file changed while the formatter ran`,
-    )
-    return written
-  }
-  try {
-    await context.io.writeFile(target.checkedAbsolute, formatted, target.checkedAbsolute)
+    if (wrote === 'changed') {
+      formatter.warn(
+        `Format on edit skipped ${target.relative}: the file changed while the formatter ran`,
+      )
+      return written
+    }
   } catch (error: unknown) {
     formatter.warn(
       `Format on edit could not write ${target.relative}; the edit stays as written: ${error instanceof Error ? error.message : String(error)}`,

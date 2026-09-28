@@ -1,8 +1,19 @@
-import { chmod, lstat, mkdtemp, readdir, readFile, rename, stat, symlink } from 'node:fs/promises'
+import {
+  chmod,
+  lstat,
+  mkdtemp,
+  readdir,
+  readFile,
+  rename,
+  stat,
+  symlink,
+  writeFile,
+} from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
-import { writeFileAtomically } from '../../src/host/fsAtomic'
+import { writeFileAtomically, writeFileIfUnchanged } from '../../src/host/fsAtomic'
+import { fingerprint } from '../../src/core/verify/fingerprint'
 import { isSamePath } from '../../src/core/paths'
 import { removeFolder } from './helpers/temporaryFolders'
 
@@ -108,6 +119,51 @@ describe('writeFileAtomically (D27)', () => {
     } finally {
       await chmod(target, 0o644)
     }
+  })
+})
+
+// The one conditional write (M68; the Codex review of PR #54, third round).
+describe('writeFileIfUnchanged', () => {
+  it('replaces the file only while it holds the expected text', async () => {
+    const target = path.join(paths.root, 'conditional', 'c.txt')
+    await writeFileAtomically(target, 'as edited', { sleep: noWait })
+    await expect(
+      writeFileIfUnchanged(target, fingerprint('as edited'), 'formatted', { sleep: noWait }),
+    ).resolves.toBe('written')
+    await expect(readFile(target, 'utf8')).resolves.toBe('formatted')
+    await expect(
+      writeFileIfUnchanged(target, fingerprint('as edited'), 'again', { sleep: noWait }),
+    ).resolves.toBe('changed')
+    await expect(readFile(target, 'utf8')).resolves.toBe('formatted')
+    // A file that is gone is not what was expected either.
+    await expect(
+      writeFileIfUnchanged(path.join(paths.root, 'conditional', 'gone.txt'), fingerprint(''), 'x', {
+        sleep: noWait,
+      }),
+    ).resolves.toBe('changed')
+    expect(await readdir(path.dirname(target))).toEqual(['c.txt'])
+  })
+
+  it('compares immediately before each rename, so a change during the write stands', async () => {
+    const target = path.join(paths.root, 'conditional', 'd.txt')
+    await writeFileAtomically(target, 'as edited', { sleep: noWait })
+    let refusals = 1
+    const wrote = await writeFileIfUnchanged(target, fingerprint('as edited'), 'formatted', {
+      sleep: noWait,
+      rename: async (from, to) => {
+        if (refusals > 0) {
+          // The first attempt is refused, and meanwhile someone writes the file.
+          refusals -= 1
+          await writeFile(target, 'someone else')
+          throw coded('EBUSY')
+        }
+        await rename(from, to)
+      },
+    })
+    expect(wrote).toBe('changed')
+    await expect(readFile(target, 'utf8')).resolves.toBe('someone else')
+    const names = await readdir(path.dirname(target))
+    expect(names.toSorted((a, b) => a.localeCompare(b))).toEqual(['c.txt', 'd.txt'])
   })
 })
 

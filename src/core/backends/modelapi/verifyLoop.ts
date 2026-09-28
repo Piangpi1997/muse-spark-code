@@ -1,9 +1,9 @@
 // The verify loop's pieces the Model API session puts together (M68, PLAN.md
 // D49): what the host lends it (the settings, read at each use, and the
-// editor's diagnostics and formatter), how a finished check reads for the
-// model and its row, the fix loop's rule, and the state a user's message
-// resets. The session itself asks the permission engine, runs the hooks and
-// runs the commands. Pure.
+// editor's diagnostics and formatter), and how a finished check reads for
+// the model and its row. The fix loop's rule and the state a user's input
+// resets are the ledger's (verifyLedger.ts). The session itself asks the
+// permission engine, runs the hooks and runs the commands. Pure.
 
 import type { CheckSummary } from '../../../shared/agentEvents'
 import {
@@ -31,34 +31,6 @@ export interface VerifyHooks {
   ) => Promise<readonly FileDiagnostics[]>
   /** The text the file's formatter makes of what an edit wrote, or undefined. */
   readonly formatAfterEdit: (absolutePath: string, text: string) => Promise<string | undefined>
-}
-
-/**
- * What a user's message resets and a goal's wake keeps (the M68 review): the
- * fix loop's count of failing rounds in a row, whether it stopped the
- * checks, the checks the user rejected, the files the edit tools wrote (by
- * absolute path; `run_checks`'s default), their names as given and after
- * links (which files decide what a command runs), and the first file written
- * that the editor's tools run as code.
- */
-export interface VerifyState {
-  failedRounds: number
-  isStopped: boolean
-  readonly rejected: Set<string>
-  readonly edited: Map<string, EditedFile>
-  readonly writtenNames: Set<string>
-  codeFile: string | undefined
-}
-
-export function newVerifyState(): VerifyState {
-  return {
-    failedRounds: 0,
-    isStopped: false,
-    rejected: new Set(),
-    edited: new Map(),
-    writtenNames: new Set(),
-    codeFile: undefined,
-  }
 }
 
 /** One check, finished or not run. */
@@ -148,20 +120,4 @@ export function skippedCheck(
 /** The checks' part of a message: a heading and each check. */
 export function checksSection(runs: readonly CheckRun[]): string {
   return [MODEL_TEXT.verifyChecksHeading, ...runs.map((run) => run.text)].join('\n\n')
-}
-
-/**
- * The fix loop's reading of a round (M68): `failed` when a check that ran
- * failed or ran out of time, `passed` when every check that ran passed, and
- * undefined when none ran (not run, or stopped by the user), which leaves the
- * count as it was.
- */
-export function roundVerdict(runs: readonly CheckRun[]): 'failed' | 'passed' | undefined {
-  const ran = runs.filter(
-    (run) => run.summary.outcome !== 'notRun' && run.summary.outcome !== 'cancelled',
-  )
-  if (ran.length === 0) {
-    return undefined
-  }
-  return ran.some((run) => run.summary.outcome !== 'passed') ? 'failed' : 'passed'
 }

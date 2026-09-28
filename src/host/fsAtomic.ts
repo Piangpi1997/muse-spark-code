@@ -11,12 +11,21 @@
 // names of a hard-linked file keep the old content (which is what keeps a
 // package manager's shared store intact), the owner is the writer, and
 // Windows' hidden and system attributes are not copied.
+//
+// `writeFileIfUnchanged` is the one conditional write (the Codex review of
+// PR #54, third round): the same steps, and immediately before each rename
+// attempt the target's current bytes are read and hashed, and a target that
+// no longer holds the expected text is left alone. A file system offers no
+// compare-and-swap for a rename, so a change landing between that read and
+// the rename itself (microseconds) would still be replaced: that window is
+// the residual, recorded in PLAN.md §9.
 
 import { randomUUID } from 'node:crypto'
 import { constants } from 'node:fs'
-import { access, mkdir, open, realpath, rename, rm, stat } from 'node:fs/promises'
+import { access, mkdir, open, readFile, realpath, rename, rm, stat } from 'node:fs/promises'
 import path from 'node:path'
 import { isSamePath } from '../core/paths'
+import { bytesFingerprint } from '../core/verify/fingerprint'
 import {
   ATOMIC_RENAME_ATTEMPTS,
   ATOMIC_RENAME_DELAY_MS,
@@ -24,6 +33,7 @@ import {
   MODEL_TEXT,
 } from '../shared/constants'
 import { canonicalPath } from './canonicalPath'
+import type { ConditionalWrite } from '../core/backends/modelapi/tools'
 
 export interface AtomicWriteOptions {
   /** Waits between rename attempts; injectable so tests do not sleep. */
@@ -117,6 +127,25 @@ async function destinationOf(target: string, options: AtomicWriteOptions): Promi
   return { path: real, mode: mode & PERMISSION_BITS }
 }
 
+/** The target no longer holds what a conditional write expected: nothing was written. */
+class ChangedBeforeWriteError extends Error {}
+
+/** Refuses a destination whose current text is not the expected text. */
+async function assertUnchanged(destination: string, expectedFingerprint: string): Promise<void> {
+  let bytes: Uint8Array
+  try {
+    bytes = await readFile(destination)
+  } catch (error: unknown) {
+    if (errorCode(error) === 'ENOENT') {
+      throw new ChangedBeforeWriteError(MODEL_TEXT.fileChangedBeforeWrite)
+    }
+    throw error
+  }
+  if (bytesFingerprint(bytes) !== expectedFingerprint) {
+    throw new ChangedBeforeWriteError(MODEL_TEXT.fileChangedBeforeWrite)
+  }
+}
+
 /**
  * Replaces `target` with `content` (UTF-8) in one step, its folder created.
  * The temporary file's name is unique, so two windows writing the same
@@ -126,6 +155,38 @@ export async function writeFileAtomically(
   target: string,
   content: string,
   options: AtomicWriteOptions,
+): Promise<void> {
+  await writeAtomically(target, content, options, undefined)
+}
+
+/**
+ * `writeFileAtomically`, only while `target` still holds the text whose
+ * fingerprint is `expectedFingerprint` (`core/verify/fingerprint`): checked
+ * immediately before each rename attempt. `changed`, and nothing written,
+ * when it does not.
+ */
+export async function writeFileIfUnchanged(
+  target: string,
+  expectedFingerprint: string,
+  content: string,
+  options: AtomicWriteOptions,
+): Promise<ConditionalWrite> {
+  try {
+    await writeAtomically(target, content, options, expectedFingerprint)
+    return 'written'
+  } catch (error: unknown) {
+    if (error instanceof ChangedBeforeWriteError) {
+      return 'changed'
+    }
+    throw error
+  }
+}
+
+async function writeAtomically(
+  target: string,
+  content: string,
+  options: AtomicWriteOptions,
+  expectedFingerprint: string | undefined,
 ): Promise<void> {
   await assertBoundPath(target, options.expectedCanonicalPath ?? target, options)
   await mkdir(path.dirname(target), { recursive: true })
@@ -165,6 +226,10 @@ export async function writeFileAtomically(
       }
       await assertBoundPath(temporary, temporary, options)
       await assertBoundPath(destination.path, options.expectedCanonicalPath ?? target, options)
+      // Last, so nothing but the rename itself follows the comparison.
+      if (expectedFingerprint !== undefined) {
+        await assertUnchanged(destination.path, expectedFingerprint)
+      }
     })
   } catch (error: unknown) {
     // A retargeted directory must not make cleanup delete a different file.

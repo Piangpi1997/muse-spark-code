@@ -54,6 +54,7 @@ const LAZY_ONLY = [
   'toolHookPayload.ts',
   'tools.ts',
   // The verify loop's session side and its tool surface (M68).
+  'verifyLedger.ts',
   'verifyLoop.ts',
   'verifyTools.ts',
   'mcp/connection.ts',

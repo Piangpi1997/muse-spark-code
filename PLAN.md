@@ -6747,7 +6747,12 @@ timeoutSeconds? }`, at most 8, names unique, 300 s unless set, 600 s at
     a file after an await uses the confined real path and canonical name
     and checks the file (its real path, and what the edit left) just
     before; a reused background tab keeps its preview state and the tab
-    that was in front comes back (drills R47 to R56).
+    that was in front comes back (drills R47 to R56). Its third round
+    (four findings) was answered by a redesign: one conditional write in
+    `fsAtomic` for every verify-loop writer, and one `VerifyLedger` per
+    session that records each check against the file state it ran on,
+    judges a round only by runs on the latest state, and resets on any
+    admitted user input, queued or steered (drills R57 to R68).
   - **Open for the owner**: the side editor group, the upstream MSP ask, and
     the `diagnosticsAfterEdits` default (on).
 
@@ -7516,7 +7521,11 @@ Every lint or scanner suppression (`eslint-disable`, `@ts-expect-error`, `nosemg
   Residual risk: a moment remains between that check and the act (no
   compare-and-swap on the file system; an atomic rename cannot be
   conditional), and a folder on the real path swapped for a link in that
-  moment is not caught.
+  moment is not caught. Format on edit's write-back goes through the one
+  conditional write (`fsAtomic.writeFileIfUnchanged`, PR #54's third
+  review), which compares the target's bytes immediately before each
+  rename attempt; a change landing between that read and the rename itself
+  is still replaced.
 
 - M50's Windows stdio server inherits the extension's three binary pipes
   unchanged. A hidden helper creates it suspended, assigns it to a fresh

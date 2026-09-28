@@ -52,7 +52,7 @@ import {
   WINDOWS_POWERSHELL_UTF8_PREAMBLE,
 } from '../../shared/constants'
 import { canonicalPath } from '../canonicalPath'
-import { writeFileAtomically } from '../fsAtomic'
+import { writeFileAtomically, writeFileIfUnchanged } from '../fsAtomic'
 import { killTree, type ProcessTreeDeps, type ShellJob, treeSpawnOptions } from '../processTree'
 import { joinStatement, newShellJob } from './shellJob'
 
@@ -532,6 +532,13 @@ export function createToolIo(deps: ToolIoDeps): ToolIo {
       // missing folder failed); the caller confined the whole path first.
       // The write is atomic (D27): an interrupted one leaves the old file.
       await writeFileAtomically(absolutePath, content, {
+        sleep: pause,
+        ...(expectedCanonicalPath !== undefined && { expectedCanonicalPath }),
+        platform: deps.platform,
+      })
+    },
+    async writeFileIfUnchanged(absolutePath, expectedFingerprint, content, expectedCanonicalPath) {
+      return await writeFileIfUnchanged(absolutePath, expectedFingerprint, content, {
         sleep: pause,
         ...(expectedCanonicalPath !== undefined && { expectedCanonicalPath }),
         platform: deps.platform,

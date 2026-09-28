@@ -1461,15 +1461,9 @@ describe('what reaches a check and the editor (the M68 review)', () => {
 
   it('keeps the edit as written when the formatted text cannot be written back', async () => {
     const io = memoryToolIo({ 'src/a.ts': 'const a = 1\n' }, ROOT)
-    let writes = 0
     const t = setup({
-      io: {
-        ...io,
-        writeFile: (...args) => {
-          writes += 1
-          return writes === 2 ? Promise.reject(new Error('disk full')) : io.writeFile(...args)
-        },
-      },
+      // The write-back goes through the one conditional write, which fails here.
+      io: { ...io, writeFileIfUnchanged: () => Promise.reject(new Error('disk full')) },
       isDiagnosticsOn: false,
       isFormatOnEdit: true,
       format: (_path, text) => Promise.resolve(`${text}// formatted\n`),
@@ -1559,5 +1553,84 @@ describe('acts on the file the edit wrote, as it left it', () => {
     expect(completedRows(events, 'verify_edits')[0]?.verifySummary?.checks).toEqual([
       { name: 'lint', outcome: 'notRun', skip: 'changed' },
     ])
+  })
+})
+
+// The Codex review of PR #54, third round: one ledger records every check
+// against the state it ran on, judges rounds by the latest state, and starts
+// afresh on any admitted user input.
+describe('the verify ledger in the loop', () => {
+  it('counts a failing then_run of a check’s own command, and does not run the check again', async () => {
+    const t = setup({
+      files: {},
+      checks: [TEST],
+      isDiagnosticsOn: false,
+      shell: (command) => failed(`${command} failed`),
+    })
+    const { events, turn } = await start(t, 'allowAll')
+    t.api.script(
+      ...Array.from({ length: CHECK_FIX_MAX_ROUNDS }, (_, index): ScriptedReply => ({
+        calls: [writeCall(`src/f${String(index)}.ts`, 'x\n', TEST.command)],
+      })),
+      { text: 'gave up' },
+    )
+    await turn()
+    // Only the then_run commands ran: each already ran the check on the latest state.
+    expect(t.io.shellCalls.map((call) => call.command)).toEqual(
+      Array.from({ length: CHECK_FIX_MAX_ROUNDS }, () => TEST.command),
+    )
+    expect(events.filter((event) => event.type === 'backendNotice')).toHaveLength(1)
+  })
+
+  it('judges a round by its latest state: a failure before the round’s edit does not count', async () => {
+    let scoped = 0
+    const t = setup({
+      checks: [LINT],
+      isDiagnosticsOn: false,
+      shell: (command) => {
+        if (command === LINT.command) {
+          return failed('the whole project fails')
+        }
+        scoped += 1
+        return scoped === 1 ? passed() : failed('src/a.ts still fails')
+      },
+    })
+    const { turn } = await start(t, 'allowAll')
+    t.api.script(
+      { calls: [{ name: 'run_checks', arguments: '{}' }, editCall('1', '2')] },
+      { calls: [editCall('2', '3')] },
+      { calls: [editCall('3', '4')] },
+      { calls: [editCall('4', '5')] },
+      { text: 'ok' },
+    )
+    await turn()
+    const stopNote = fill(MODEL_TEXT.checksStopped, { count: String(CHECK_FIX_MAX_ROUNDS) })
+    // The first round passed on its latest state; three failing rounds follow it.
+    expect(userText(t.api.responseBodies()[CHECK_FIX_MAX_ROUNDS])).not.toContain(stopNote)
+    expect(userText(t.api.responseBodies()[CHECK_FIX_MAX_ROUNDS + 1])).toContain(stopNote)
+  })
+
+  it('starts afresh on a steered message: a check rejected before it asks again', async () => {
+    const t = setup({ checks: [LINT], isDiagnosticsOn: false })
+    let asked = 0
+    const steering: { now?: () => void } = {}
+    const { session, events, cards, turn } = await start(t, 'onRequest', () => {
+      asked += 1
+      if (asked === 1) {
+        steering.now?.()
+        return 'abort'
+      }
+      return 'allow_once'
+    })
+    steering.now = () => {
+      const started = events.find((event) => event.type === 'turnStarted')
+      if (started?.type === 'turnStarted') {
+        void session.steer(started.turnId, [{ type: 'text', text: 'try the lint again' }])
+      }
+    }
+    t.api.script({ calls: [editCall('1', '2')] }, { calls: [editCall('2', '3')] }, { text: 'ok' })
+    await turn()
+    expect(cards).toHaveLength(2)
+    expect(t.io.shellCalls.map((call) => call.command)).toEqual(["npm run lint -- 'src/a.ts'"])
   })
 })

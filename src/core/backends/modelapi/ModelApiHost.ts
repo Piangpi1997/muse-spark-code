@@ -143,6 +143,7 @@ import { textFileInput } from '../../textAttachment'
 import { isProtectedPath } from '../../protectedPaths'
 import { confineWorkspacePath } from '../../workspacePath'
 import { pathModule } from '../../workspaceRoot'
+import { type CheckScope, VerifyLedger } from './verifyLedger'
 import { fingerprint } from '../../verify/fingerprint'
 import type { McpTool } from '../../mcp'
 import type { MemoryStore } from '../../memory/memoryStore'
@@ -252,17 +253,14 @@ import {
   type CheckRun,
   checksSection,
   finishedCheck,
-  newVerifyState,
-  roundVerdict,
   skippedCheck,
   skipReason,
   type VerifyHooks,
-  type VerifyState,
   outcomeOf,
 } from './verifyLoop'
 import { parseRunChecks, thenRunOf } from './verifyTools'
 import { checkCommandLine, checkTimeoutMs } from '../../verify/checkCommands'
-import { canChangeWhatRuns, isCodeLoading } from '../../verify/codeFiles'
+import { isCodeLoading } from '../../verify/codeFiles'
 import {
   DiagnosticsHistory,
   type EditedFile,
@@ -476,9 +474,6 @@ interface ActiveTurn {
    * own command), which the automatic step does not run again; and the runs
    * of run_checks in this round, which the fix loop counts (the M68 review).
    */
-  readonly editedInRound: Map<string, EditedFile>
-  readonly checksSinceEdit: Set<string>
-  readonly roundCheckRuns: CheckRun[]
 }
 
 interface HookToolResult {
@@ -515,6 +510,11 @@ interface Performed {
    * M68) add: replayed after the call's output, a stop ending the turn.
    */
   readonly hookEffects?: HookEffects
+}
+
+/** What a check covers: the files passed to it, or the whole project (M68). */
+function checkScope(check: CheckCommandSetting, files: readonly EditedFile[]): CheckScope {
+  return check.changedFiles === true && files.length > 0 ? files : 'project'
 }
 
 /** What the user's tool hooks said about the commands a step ran (M68). */
@@ -1293,7 +1293,8 @@ export class ModelApiSession implements AgentSession {
   /** Each edited file's diagnostics at its last check, to say what changed (M68). */
   private readonly diagnosticsHistory = new DiagnosticsHistory()
   /** The verify loop's state since the user's last message (M68, the M68 review). */
-  private verifyState: VerifyState = newVerifyState()
+  /** The verify loop's record since the user's last input (M68; PR #54's third review). */
+  private readonly ledger = new VerifyLedger()
   /** Keeps each request within the page and encoded-media budgets (M54, PLAN.md D47). */
   private readonly budget: MediaBudget
   private mediaNoticeSent = false
@@ -3634,7 +3635,7 @@ export class ModelApiSession implements AgentSession {
     return {
       format: async (target, text) => {
         if (
-          this.verifyState.codeFile !== undefined ||
+          this.ledger.codeFile !== undefined ||
           isCodeLoading(target.relative) ||
           isCodeLoading(target.canonical)
         ) {
@@ -3653,7 +3654,7 @@ export class ModelApiSession implements AgentSession {
 
   /** Whether the conversation edited, since the user's message, a file that decides what `command` runs. */
   private changesWhatRunsNow(command: string): boolean {
-    return [...this.verifyState.writtenNames].some((name) => canChangeWhatRuns(name, command))
+    return this.ledger.changesWhatRuns(command)
   }
 
   /**
@@ -3821,11 +3822,10 @@ export class ModelApiSession implements AgentSession {
     effects: HookEffects,
     maxChars: number,
   ): Promise<CheckRun> {
-    const state = this.verifyState
-    if (state.isStopped) {
+    if (this.ledger.isStopped) {
       return skippedCheck(check, 'stopped')
     }
-    if (state.rejected.has(check.name)) {
+    if (this.ledger.isRejected(check.name)) {
       return skippedCheck(check, 'rejected')
     }
     const built = checkCommandLine(
@@ -3854,11 +3854,13 @@ export class ModelApiSession implements AgentSession {
     )
     if (outcome.kind === 'skipped') {
       if (outcome.skip === 'rejected') {
-        state.rejected.add(check.name)
+        this.ledger.reject(check.name)
       }
       return skippedCheck(check, outcome.skip, outcome.detail)
     }
-    return finishedCheck(check, outcome.line, outcome.result, timeoutMs, maxChars)
+    const run = finishedCheck(check, outcome.line, outcome.result, timeoutMs, maxChars)
+    this.ledger.record(check.name, run.summary.outcome, checkScope(check, files))
+    return run
   }
 
   /**
@@ -3981,8 +3983,7 @@ export class ModelApiSession implements AgentSession {
     const isEditedScope = parsed.args.paths === undefined
     const files: EditedFile[] = []
     if (isEditedScope) {
-      const edited = Array.from(this.verifyState.edited, ([, file]) => file)
-      files.push(...(await this.existingFiles(edited)))
+      files.push(...(await this.existingFiles(this.ledger.editedFiles())))
     } else {
       const named = parsed.args.paths ?? []
       for (const given of named) {
@@ -4009,17 +4010,6 @@ export class ModelApiSession implements AgentSession {
     const effects = newHookEffects()
     const share = Math.floor(VERIFY_NOTE_MAX_CHARS / Math.max(selected.length, 1))
     const runs = await this.runChecks(itemId, selected, files, signal, effects, share)
-    const turn = this.active
-    if (turn !== undefined) {
-      turn.roundCheckRuns.push(...runs)
-      for (const [index, run] of runs.entries()) {
-        const check = selected[index]
-        const hasRun = run.summary.outcome !== 'notRun' && run.summary.outcome !== 'cancelled'
-        if (hasRun && check !== undefined && (isEditedScope || check.changedFiles !== true)) {
-          turn.checksSinceEdit.add(check.name)
-        }
-      }
-    }
     const section = checksSection(runs)
     return {
       outcome: {
@@ -4306,9 +4296,9 @@ export class ModelApiSession implements AgentSession {
   }
 
   /**
-   * A file an edit tool wrote (M68): checked after this round, the checks
-   * already run no longer covering it, and remembered since the user's
-   * message, with the first file that the editor's tools run as code.
+   * A file an edit tool wrote (M68): a new state of it in the ledger, checked
+   * after this round, the runs on its earlier state no longer counting, and
+   * remembered since the user's input.
    */
   private noteEdited(target: {
     readonly relative: string
@@ -4326,25 +4316,18 @@ export class ModelApiSession implements AgentSession {
       absolute: target.checkedAbsolute,
       ...(fingerprint !== undefined && { fingerprint }),
     }
-    this.active?.editedInRound.set(target.checkedAbsolute, file)
-    this.active?.checksSinceEdit.clear()
-    const state = this.verifyState
-    state.edited.set(target.checkedAbsolute, file)
-    state.writtenNames.add(target.relative)
-    state.writtenNames.add(target.canonical)
-    if (
-      state.codeFile === undefined &&
-      (isCodeLoading(target.relative) || isCodeLoading(target.canonical))
-    ) {
-      state.codeFile = target.relative
-    }
+    this.ledger.noteEdit(file, [target.relative, target.canonical])
   }
 
-  /** A then_run that ran a check's own command covers that check for this round (M68). */
-  private noteCheckCommandRun(line: string): void {
+  /**
+   * A then_run that ran a configured check's own command is a run of that
+   * check on the state the edit left (M68; PR #54's third review): it counts
+   * for the fix loop, and the round does not run the check again.
+   */
+  private noteCheckCommandRun(line: string, result: ShellResult): void {
     for (const check of this.checkCommands()) {
       if (check.command === line.trim()) {
-        this.active?.checksSinceEdit.add(check.name)
+        this.ledger.record(check.name, outcomeOf(result), 'project')
       }
     }
   }
@@ -4413,7 +4396,7 @@ export class ModelApiSession implements AgentSession {
       }
     }
     const { line, result } = ran
-    this.noteCheckCommandRun(line)
+    this.noteCheckCommandRun(line, result)
     const finished = shellOutcome(result, SHELL_DEFAULT_TIMEOUT_MS)
     return {
       outcome: {
@@ -4800,6 +4783,8 @@ export class ModelApiSession implements AgentSession {
     // What ended or ran meanwhile first (M46), then what the user added.
     this.settleNotes(turn.turnId)
     for (const { parts, userMessageId: itemId } of turn.steered.splice(0)) {
+      // Admitted user input: the verify loop starts afresh (PR #54's third review).
+      this.ledger.reset()
       const text = typedText(parts)
       this.replay.push({
         turnId: turn.turnId,
@@ -4866,34 +4851,35 @@ export class ModelApiSession implements AgentSession {
    * returned.
    */
   private async verifyRound(turn: ActiveTurn, isLastRound: boolean): Promise<string | undefined> {
-    const edited = Array.from(turn.editedInRound, ([, file]) => file)
-    turn.editedInRound.clear()
-    const earlierRuns = turn.roundCheckRuns.splice(0)
-    const alreadyRun = new Set(turn.checksSinceEdit)
+    const edited = this.ledger.takeRoundEdits()
     const { verify } = this.deps
     const { signal } = turn.abort
     if (verify === undefined || isAbortRequested(signal)) {
       return undefined
     }
     if (isLastRound || edited.length === 0) {
-      // The round's run_checks still count for the fix loop, edits or not
-      // (the Codex review of PR #54).
-      if (this.countFixRound(earlierRuns)) {
+      // The round's runs are judged, edits or not (the Codex review of PR #54).
+      if (this.ledger.judgeRound()) {
         this.noteFixLoopStopped(turn.turnId, [])
       }
       return undefined
     }
-    const state = this.verifyState
     const isDiagnosticsOn = verify.isDiagnosticsOn()
-    // Restricted Mode runs no shell (D13): the checks are left out, not refused one by one.
+    // Restricted Mode runs no shell (D13): the checks are left out, not refused
+    // one by one. A check already run on the latest state of what it covers
+    // (by run_checks, or an edit's then_run of its command) is not run again.
     const checks =
-      state.isStopped || !this.deps.isWorkspaceTrusted()
+      this.ledger.isStopped || !this.deps.isWorkspaceTrusted()
         ? []
         : verify
             .checkCommands()
-            .filter((check) => !state.rejected.has(check.name) && !alreadyRun.has(check.name))
+            .filter(
+              (check) =>
+                !this.ledger.isRejected(check.name) &&
+                !this.ledger.hasCurrentRun(check.name, checkScope(check, edited)),
+            )
     if (!isDiagnosticsOn && checks.length === 0) {
-      if (this.countFixRound(earlierRuns)) {
+      if (this.ledger.judgeRound()) {
         this.noteFixLoopStopped(turn.turnId, [])
       }
       return undefined
@@ -4954,7 +4940,7 @@ export class ModelApiSession implements AgentSession {
     }
     this.emit({ type: 'itemCompleted', item: completed })
     this.rerecordTranscript(completed)
-    if (this.countFixRound([...earlierRuns, ...runs])) {
+    if (this.ledger.judgeRound()) {
       this.noteFixLoopStopped(turn.turnId, sections)
     } else {
       this.replay.push({
@@ -5003,7 +4989,7 @@ export class ModelApiSession implements AgentSession {
     signal: AbortSignal,
     maxChars: number,
   ): Promise<PendingReport> {
-    const { codeFile } = this.verifyState
+    const { codeFile } = this.ledger
     const shown = codeFile === undefined ? edited.slice(0, VERIFY_SHOWN_FILES_MAX) : []
     const skipped: FileDiagnostics[] = edited.slice(shown.length).map((file) => ({
       file,
@@ -5032,29 +5018,6 @@ export class ModelApiSession implements AgentSession {
       maxChars,
       ...(codeFile !== undefined && { codeFile }),
     })
-  }
-
-  /**
-   * The bounded fix loop (M68): a round whose checks failed counts, one that
-   * passed resets the count, one where none ran leaves it. At the limit the
-   * checks stop until the user's next message, a goal's wake included (the
-   * M68 review); true when this round reached it.
-   */
-  private countFixRound(runs: readonly CheckRun[]): boolean {
-    const state = this.verifyState
-    const verdict = roundVerdict(runs)
-    if (verdict === 'passed') {
-      state.failedRounds = 0
-    }
-    if (verdict !== 'failed' || state.isStopped) {
-      return false
-    }
-    state.failedRounds += 1
-    if (state.failedRounds < CHECK_FIX_MAX_ROUNDS) {
-      return false
-    }
-    state.isStopped = true
-    return true
   }
 
   private async loop(turn: ActiveTurn): Promise<void> {
@@ -5251,16 +5214,15 @@ export class ModelApiSession implements AgentSession {
       modelFailure: undefined,
       goalWakePending: false,
       isWebSearchAllowed: false,
-      editedInRound: new Map(),
-      checksSinceEdit: new Set(),
-      roundCheckRuns: [],
       ...(queued.confirmedRequest !== undefined && {
         confirmedRequest: queued.confirmedRequest,
       }),
     }
-    // A user's message starts the verify loop afresh; a goal's wake carries on (M68).
+    // A user's message starts the verify loop afresh; a goal's wake carries on
+    // (M68). A steered message resets it too, where it is admitted.
+    this.ledger.beginTurn()
     if (!queued.isGoalWake) {
-      this.verifyState = newVerifyState()
+      this.ledger.reset()
     }
     this.active = turn
     this.status = RUNNING

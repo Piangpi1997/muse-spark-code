@@ -127,7 +127,10 @@ Only the latest release on the Visual Studio Marketplace receives fixes.
   the diagnostics' show and read, a check's file arguments) uses the real
   path and canonical name confinement found at the edit and checks, just
   before, that the file is still there and still holds what the edit left
-  (a check's arguments: still there).
+  (a check's arguments: still there). Format on edit's write-back is a
+  conditional write: the file's bytes are compared with what the edit wrote
+  immediately before the rename, and a changed file is left alone; a change
+  landing between that comparison and the rename itself is the residual.
   Muse Code's own edits are not seen by the extension, so after Muse Code
   writes such a config, a later `getDiagnostics` request for an ordinary
   file can still open that file and let the extension load the config.
