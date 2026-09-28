@@ -63,6 +63,14 @@ happened, not what was planned; superseded entries are kept.
     sign in, sign out or choose **Check again**, which always asks afresh;
     pressing it twice asks once. On macOS it asks only when you act: a
     click in the panel, or the **Sign Out** or **Diagnostics** command.
+  - **Switching backends.** Whenever the panel moves conversations to the
+    other backend (Muse Code signed in after all, a pasted key while Muse
+    Code is signed out, an install that found Muse Code signed in, a
+    changed `museSpark.backend`), the
+    conversation running on the old backend ends first, as a completed
+    browser sign-in already did. Before, a Cancel pressed just after the
+    browser approved could switch to Muse Code while a Model API
+    conversation kept running.
   - **Old answers.** An answer Muse Code gives to a question the extension
     had already dropped (after Cancel, a sign-out or **Check again**)
     reaches no one, and a slower, older check never replaces what a newer

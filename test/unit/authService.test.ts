@@ -4,7 +4,11 @@ import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { CliSignIn } from '../../src/core/backends/musecode/credentialFile'
 import type { AccountState } from '../../src/host/auth/accountHost'
-import { AuthService, type AuthServiceDeps } from '../../src/host/auth/authService'
+import {
+  AuthService,
+  type AuthServiceDeps,
+  type AuthSnapshot,
+} from '../../src/host/auth/authService'
 import { CliAccount } from '../../src/host/auth/cliAccount'
 import { CredentialStore } from '../../src/host/auth/credentialStore'
 import type { DeviceSignInOutcome } from '../../src/host/auth/deviceSignIn'
@@ -595,6 +599,25 @@ function aborted(signal: AbortSignal): Promise<void> {
   })
 }
 
+/**
+ * A browser sign-in whose Cancel is pressed just after the browser
+ * approved: the credential file changed and the CLI reads signed in.
+ */
+async function cancelAfterApproval(h: Harness): Promise<AuthSnapshot> {
+  h.runDeviceSignIn.mockImplementation(async (signal) => {
+    h.facts.fileModifiedAt = 2
+    h.facts.cli = 'signedIn'
+    await aborted(signal)
+    return 'cancelled'
+  })
+  const pending = h.service.signIn('browser')
+  await vi.waitFor(() => {
+    expect(h.runDeviceSignIn).toHaveBeenCalled()
+  })
+  h.service.cancelSignIn()
+  return await pending
+}
+
 // The review of PR #49: what a sign-out, Cancel or the window closing must
 // not wait on, and what they must not overwrite.
 describe('AuthService: sign-in, sign-out and Cancel racing', () => {
@@ -651,18 +674,10 @@ describe('AuthService: sign-in, sign-out and Cancel racing', () => {
   // flow began, so its structure decides, not the click.
   it('lets the credential file decide a Cancel pressed just after the browser approved', async () => {
     const h = harness()
-    h.runDeviceSignIn.mockImplementation(async (signal) => {
-      h.facts.fileModifiedAt = 2
-      h.facts.cli = 'signedIn'
-      await aborted(signal)
-      return 'cancelled'
+    await expect(cancelAfterApproval(h)).resolves.toMatchObject({
+      status: 'signedIn',
+      backend: 'museCode',
     })
-    const pending = h.service.signIn('browser')
-    await vi.waitFor(() => {
-      expect(h.runDeviceSignIn).toHaveBeenCalled()
-    })
-    h.service.cancelSignIn()
-    await expect(pending).resolves.toMatchObject({ status: 'signedIn', backend: 'museCode' })
   })
 
   // `account/logout` cleared the file, but META_API_KEY made `account/read`
@@ -826,6 +841,82 @@ describe('AuthService: sign-in, sign-out and Cancel racing', () => {
     await h.service.stopSignIn()
     expect(h.service.current.status).toBe('signedOut')
     await pending
+  })
+})
+
+// Every path that can publish a sign-in on another backend than
+// conversations run on ends those conversations first, through one helper
+// (Codex on 1ae3604f).
+describe('AuthService: a switch of backends ends the running one’s conversations first', () => {
+  it('ends the Model API conversation when a Cancel still lands a CLI sign-in', async () => {
+    const h = await signedInModelApi()
+    const generation = h.service.admissionGeneration
+    await expect(cancelAfterApproval(h)).resolves.toMatchObject({
+      status: 'signedIn',
+      backend: 'museCode',
+    })
+    expect(h.restartBackend.mock.calls).toEqual([[true]])
+    expect(h.service.admissionGeneration).toBeGreaterThan(generation)
+  })
+
+  it('ends the Model API conversation when Check again finds the CLI signed in', async () => {
+    const h = await signedInModelApi()
+    h.facts.cli = 'signedIn'
+    await expect(h.service.checkAgain()).resolves.toMatchObject({
+      status: 'signedIn',
+      backend: 'museCode',
+    })
+    expect(h.restartBackend.mock.calls).toEqual([[true]])
+  })
+
+  it('ends the Model API conversation when a failed sign-in’s refresh finds the CLI signed in', async () => {
+    const h = await signedInModelApi()
+    h.runDeviceSignIn.mockImplementation(() => {
+      h.facts.cli = 'signedIn'
+      return Promise.resolve('timedOut')
+    })
+    await expect(h.service.signIn('browser')).resolves.toMatchObject({ backend: 'museCode' })
+    expect(h.restartBackend.mock.calls).toEqual([[true]])
+  })
+
+  it('ends the Muse Code conversation when a pasted key moves conversations to the Model API', async () => {
+    const h = harness()
+    h.facts.cli = 'signedIn'
+    await h.service.refresh()
+    // The CLI turned out signed out mid-conversation.
+    h.service.markAuthRequired('authRequired')
+    h.facts.cli = 'signedOut'
+    await expect(h.service.signIn('apiKey')).resolves.toMatchObject({
+      status: 'signedIn',
+      backend: 'modelApi',
+    })
+    expect(h.restartBackend.mock.calls).toEqual([[false], [true]])
+  })
+
+  it('ends the Model API conversation when a failed install finds the CLI signed in', async () => {
+    const h = await signedInModelApi()
+    h.facts.cliPresent = false
+    h.runInstallerInTerminal.mockImplementation(() => {
+      h.facts.cliPresent = true
+      h.facts.cli = 'signedIn'
+      throw new Error('terminal unavailable')
+    })
+    await expect(h.service.installMuseCode()).resolves.toMatchObject({
+      status: 'signedIn',
+      backend: 'museCode',
+    })
+    expect(h.restartBackend.mock.calls).toEqual([[true]])
+  })
+
+  // A sign-out already ended every conversation: the next sign-in on the
+  // other backend has none to end.
+  it('ends conversations once: a sign-out leaves none for the next sign-in to end', async () => {
+    const h = harness()
+    h.facts.cli = 'signedIn'
+    await h.service.refresh()
+    await h.service.signOut()
+    await expect(h.service.signIn('apiKey')).resolves.toMatchObject({ backend: 'modelApi' })
+    expect(h.restartBackend.mock.calls).toEqual([[true], [false]])
   })
 })
 

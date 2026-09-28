@@ -947,6 +947,16 @@ action that fails is worse than hiding one that would work.
   host before the backends stop; a click still in its pre-flight questions
   then starts nothing (a flag `stopSignIn` sets, checked by `signIn` and
   the device flow's join).
+- **Switching backends (Codex on `1ae3604f`).** Every state that could
+  sign in on another backend than conversations run on is published
+  through one helper, `AuthService.publishSelection`: every refresh (Check
+  again, a Cancel that still landed a sign-in, a failed sign-in's refresh,
+  a device sign-in's confirmation, CLI discovery after an install), a
+  pasted key, and a failed install. It opens a new admission generation,
+  shows `checking`, ends the running backend's conversations
+  (`restartBackend(true)`) and only then publishes. `liveBackend` is the
+  backend of the last signed-in state, cleared by any restart that ended
+  the conversations (a sign-out included), so none is ended twice.
 - **Stale answers (Codex on `886af682`).** A probe that Cancel, a sign-out
   or Check again left behind gives its late answer to no caller, the ones
   that joined it included: they look again and get the newer answer. Every

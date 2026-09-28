@@ -219,6 +219,13 @@ export class AuthService {
   private publishedTicket = 0
   /** The browser sign-in's code is on screen: a refresh leaves the panel to that flow. */
   private isDeviceFlowWaiting = false
+  /**
+   * The backend conversations were last admitted on: the backend of the
+   * last signed-in state published, until a restart ends its conversations.
+   * The panel may show another state meanwhile (a sign-in's code) while a
+   * conversation still runs there.
+   */
+  private liveBackend: BackendKind | undefined
 
   public constructor(private readonly deps: AuthServiceDeps) {
     this.isLogoutHeld = deps.logoutHold.get()
@@ -249,14 +256,79 @@ export class AuthService {
     return this.isSigningOut
   }
 
+  /**
+   * Stops the running hosts; with `isConversationEnding` their conversations
+   * end too, so none runs on any backend any more. Rejects as the restart
+   * does.
+   */
+  private async restartHosts(isConversationEnding: boolean): Promise<void> {
+    await this.deps.backend.restartBackend(isConversationEnding)
+    if (isConversationEnding) {
+      this.liveBackend = undefined
+    }
+  }
+
   private async stopBackendForSignOut(): Promise<boolean> {
     try {
-      await this.deps.backend.restartBackend(true)
+      await this.restartHosts(true)
       return true
     } catch {
       this.deps.log.warn('Muse Code backend could not stop during sign-out')
       return false
     }
+  }
+
+  /** Whether publishing `next` moves signed-in conversations to another backend. */
+  private isBackendSwitch(next: AuthSnapshot): boolean {
+    return (
+      next.status === 'signedIn' &&
+      this.liveBackend !== undefined &&
+      next.backend !== this.liveBackend
+    )
+  }
+
+  /**
+   * The one way a state is published that may sign in on another backend
+   * than conversations run on (the review of PR #49): new hosts are gated
+   * and that backend's conversations end first, as a device sign-in's
+   * success does, then `next` is published if it still may be (`isCurrent`,
+   * and no newer publication meanwhile).
+   */
+  private async publishSelection(
+    next: AuthSnapshot,
+    ticket: number = this.nextTicket(),
+    isCurrent: () => boolean = () => true,
+  ): Promise<AuthSnapshot> {
+    if (!this.isBackendSwitch(next)) {
+      return this.set(next, ticket)
+    }
+    this.deps.log.info(
+      `Conversations move from the ${String(this.liveBackend)} backend to the ${String(next.backend)} backend: ending them first`,
+    )
+    this.admissionGenerationValue += 1
+    this.set(
+      {
+        ...this.snapshot,
+        status: 'checking',
+        detail: undefined,
+        verificationUrl: undefined,
+        userCode: undefined,
+      },
+      ticket,
+    )
+    try {
+      await this.restartHosts(true)
+    } catch {
+      this.deps.log.warn('The running backend could not stop before switching backends')
+      return this.set({
+        ...this.snapshot,
+        status: 'error',
+        detail: UI_TEXT.signOutStopFailed,
+        installState:
+          this.snapshot.installState === 'running' ? 'failed' : this.snapshot.installState,
+      })
+    }
+    return ticket < this.publishedTicket || !isCurrent() ? this.snapshot : this.set(next, ticket)
   }
 
   private nextTicket(): number {
@@ -269,16 +341,23 @@ export class AuthService {
    * asked, or a browser sign-in's code is on screen: its facts may be older
    * than what the panel shows (the review of PR #49).
    */
-  private publishRefresh(ticket: number, snapshot: AuthSnapshot): AuthSnapshot {
+  private async publishRefresh(
+    ticket: number,
+    epoch: number,
+    snapshot: AuthSnapshot,
+  ): Promise<AuthSnapshot> {
     return ticket < this.publishedTicket || this.isDeviceFlowWaiting
       ? this.snapshot
-      : this.set(snapshot, ticket)
+      : await this.publishSelection(snapshot, ticket, () => epoch === this.signOutEpoch)
   }
 
   private set(snapshot: AuthSnapshot, ticket = this.nextTicket()): AuthSnapshot {
     const previous = this.snapshot
     this.snapshot = snapshot
     this.publishedTicket = ticket
+    if (snapshot.status === 'signedIn') {
+      this.liveBackend = snapshot.backend
+    }
     if (previous.status !== snapshot.status || previous.backend !== snapshot.backend) {
       const isUnsupportedFile =
         snapshot.detail !== undefined && snapshot.detail === this.unsupportedFileText()
@@ -477,7 +556,7 @@ export class AuthService {
       }
     }
     this.admissionGenerationValue += 1
-    await this.deps.backend.restartBackend(flow.initial.status === 'signedIn')
+    await this.restartHosts(flow.initial.status === 'signedIn')
     if (abort.signal.aborted) {
       return await this.finishCancelledCliSignIn(flow)
     }
@@ -549,36 +628,9 @@ export class AuthService {
   }
 
   private async refreshAfterCliDiscovery(epoch: number): Promise<AuthSnapshot> {
-    const selected = await this.selectedSnapshot(true)
-    if (epoch !== this.signOutEpoch) {
-      return this.snapshot
-    }
-    if (
-      this.snapshot.status === 'signedIn' &&
-      this.snapshot.backend === 'modelApi' &&
-      selected.status === 'signedIn' &&
-      selected.backend === 'museCode'
-    ) {
-      // Auto selection crossed backends. Gate new hosts and retire the Model
-      // API conversation before reporting a signed-in CLI host.
-      this.admissionGenerationValue += 1
-      this.set({ ...this.snapshot, status: 'checking', detail: undefined })
-      try {
-        await this.deps.backend.restartBackend(true)
-      } catch {
-        this.deps.log.warn('The Model API host could not stop after Muse Code installation')
-        return this.set({
-          ...this.snapshot,
-          status: 'error',
-          detail: UI_TEXT.signOutStopFailed,
-          installState: 'failed',
-        })
-      }
-      if (epoch !== this.signOutEpoch) {
-        return this.snapshot
-      }
-    }
-    return await this.refresh(true)
+    // Auto selection may cross backends: the refresh publishes through
+    // `publishSelection`, which retires the Model API conversation first.
+    return epoch === this.signOutEpoch ? await this.refresh(true) : this.snapshot
   }
 
   private async installWithCli(): Promise<AuthSnapshot> {
@@ -639,10 +691,11 @@ export class AuthService {
         installState: 'failed',
       })
     }
+    // Either may sign in on another backend than conversations run on.
     if (selected.hasCli === true) {
-      return this.set(selected)
+      return await this.publishSelection(selected)
     }
-    const failed = this.set({
+    const failed = await this.publishSelection({
       ...selected,
       detail,
       installState: 'failed',
@@ -692,7 +745,7 @@ export class AuthService {
     // Stop old turns while they still read the old key. A tool round must not
     // resume after SecretStorage begins returning the replacement key.
     if (isReplacingActiveAccount) {
-      await this.deps.backend.restartBackend(true)
+      await this.restartHosts(true)
     }
     if (epoch !== this.signOutEpoch) {
       return this.snapshot
@@ -705,10 +758,13 @@ export class AuthService {
       !isReplacingActiveAccount &&
       (this.snapshot.status !== 'signedIn' || this.snapshot.backend !== 'museCode')
     ) {
-      await this.deps.backend.restartBackend(false)
+      await this.restartHosts(false)
     }
     const selected = await this.selectedSnapshot(true)
-    return epoch === this.signOutEpoch ? this.set(selected) : this.snapshot
+    // A key can move conversations off Muse Code (a CLI no longer signed in).
+    return epoch === this.signOutEpoch
+      ? await this.publishSelection(selected, undefined, () => epoch === this.signOutEpoch)
+      : this.snapshot
   }
 
   /**
@@ -945,14 +1001,14 @@ export class AuthService {
       return this.snapshot
     }
     if (this.isSigningOut) {
-      return this.publishRefresh(ticket, {
+      return await this.publishRefresh(ticket, epoch, {
         ...selected,
         status: 'error',
         detail: this.logoutDetail(),
       })
     }
     if (!this.isLogoutHeld) {
-      return this.publishRefresh(ticket, selected)
+      return await this.publishRefresh(ticket, epoch, selected)
     }
     const hasCliCredential = await this.hasCliCredential(isUserAction)
     const hasStoredKey = (await this.deps.credentials.getApiKey()) !== undefined
@@ -960,7 +1016,7 @@ export class AuthService {
       return this.snapshot
     }
     if (hasCliCredential || hasStoredKey) {
-      return this.publishRefresh(ticket, {
+      return await this.publishRefresh(ticket, epoch, {
         ...selected,
         status: 'error',
         detail: this.logoutDetail(),
@@ -968,7 +1024,7 @@ export class AuthService {
     }
     const isHoldSaved = await this.setLogoutHold(false)
     if (!isHoldSaved) {
-      return this.publishRefresh(ticket, {
+      return await this.publishRefresh(ticket, epoch, {
         ...selected,
         status: 'error',
         detail: UI_TEXT.signOutHoldFailed,
@@ -990,13 +1046,13 @@ export class AuthService {
     }
     if (hasCurrentCredential || current.status === 'signedIn') {
       await this.setLogoutHold(true)
-      return this.publishRefresh(ticket, {
+      return await this.publishRefresh(ticket, epoch, {
         ...current,
         status: 'error',
         detail: this.logoutDetail(),
       })
     }
-    return this.publishRefresh(ticket, current)
+    return await this.publishRefresh(ticket, epoch, current)
   }
 
   public async signIn(method: SignInMethod): Promise<AuthSnapshot> {

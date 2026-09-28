@@ -523,6 +523,61 @@ pre-drill value after every drill and after all eighteen:
 | CQ    | P2-3 sibling: a failed `muse skills` command logs its stderr as written                  | `skillsCommands.test.ts`                                                    | exit 1, 1 failed: "says so when the CLI is missing, the list fails or cannot be read"                                                             |
 | CR    | P2-3 sibling: a retried MSP refusal logs the CLI’s message                               | `MuseCodeHost.test.ts`                                                      | exit 1, 1 failed: "logs a retried refusal and traces how long each command took"                                                                  |
 
+Drills CS to CY cover Codex's review of `1ae3604f` (below). They ran the
+same way, on the final tree, from `scratchpad/cred-capture/drills5.mjs`
+(`drills5-result.json`, `drills5.log`), all in `authService.test.ts`;
+`authService.ts` matched its pre-drill SHA-256 after every drill.
+
+| Drill | What was broken                                                                      | Result                                                                                                     |
+| ----- | ------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------- |
+| CS    | The one helper publishes a switch without ending the running backend first           | exit 1, 8 failed; first "ends the Model API conversation when a Cancel still lands a CLI sign-in"          |
+| CT    | A refresh (Cancel, a failed sign-in, Check again, install) publishes past the helper | exit 1, 6 failed; first the same                                                                           |
+| CU    | Key activation publishes past the helper                                             | exit 1, 1 failed: "ends the Muse Code conversation when a pasted key moves conversations to the Model API" |
+| CV    | A failed install publishes past the helper                                           | exit 1, 1 failed: "ends the Model API conversation when a failed install finds the CLI signed in"          |
+| CW    | A restart that ended every conversation leaves the old backend recorded as running   | exit 1, 1 failed: "ends conversations once: a sign-out leaves none for the next sign-in to end"            |
+| CX    | A switch opens no new admission generation                                           | exit 1, 1 failed: "ends the Model API conversation when a Cancel still lands a CLI sign-in"                |
+| CY    | The backend conversations run on is not recorded as states publish                   | exit 1, 8 failed; first "ends the Model API conversation when a Cancel still lands a CLI sign-in"          |
+
+## Codex on `1ae3604f`: one way to switch backends
+
+**P2.** With the Model API signed in, a Cancel pressed just after the
+browser approved let the file decide: its refresh published Muse Code
+signed in without a new admission generation or a restart, so the Model
+API conversation kept running after the panel switched.
+
+- **Fixed.** One helper publishes every state that could sign in on
+  another backend than conversations run on:
+  `AuthService.publishSelection`. It opens a new admission generation,
+  shows `checking`, ends the running backend's conversations
+  (`restartBackend(true)`) and then publishes, if nothing newer has. A
+  stop that fails is `error` (`signOutStopFailed`).
+- **Where it runs.** Every refresh goes through it (via `publishRefresh`),
+  and so do the paths that publish through a refresh:
+  - Check again;
+  - a Cancel that still landed a sign-in;
+  - a failed or timed-out sign-in with the hold on or a Model API session;
+  - a device sign-in's confirmation;
+  - CLI discovery after an install. Its own copy of this logic is gone;
+  - a changed `museSpark.backend`, whose refresh (after the extension's
+    own restart that keeps conversations) now ends the old backend's
+    conversations when the backend changes.
+
+  So do the two paths that published a selection directly: key activation
+  and a failed install.
+
+- **Which backend is running.** `liveBackend` is the backend of the last
+  signed-in state published, and any restart that ends conversations
+  clears it (`restartHosts`). That covers a sign-out and a device
+  sign-in's own restart, so no conversation is ended twice.
+- **Checked, left as they were.** These never publish a signed-in state,
+  so they cannot switch backends: the sign-out and a refresh during it
+  (`error`), Cancel's own state, the window closing, `markAuthRequired`,
+  `markBackendError`, and the device flow's code. The installer's
+  "keep the Model API signed in" state keeps the same backend.
+- **Tests.** `authService.test.ts` "a switch of backends ends the running
+  one’s conversations first" (six cases), and the installer auto-switch
+  tests that already existed.
+
 ## Codex on `886af682`, and the sibling sweep
 
 Codex reviewed `886af682` on PR #49 and raised three P2s. Each was fixed,
@@ -754,3 +809,16 @@ tree (Windows 11, 2026-09-28, after drills CA to CR, before the commit):
 
 `logText.ts` and `logText.test.ts` were untracked during that run; they
 hold no secret (synthetic paths and addresses only).
+
+With the backend switch settled (Codex on `1ae3604f`), `npm run quality`
+on the working tree (Windows 11, 2026-09-28, after drills CS to CY, before
+the commit) exited 0 on its first run:
+
+- format, lint (PSScriptAnalyzer 0 findings), all five typechecks;
+  `check:l10n` 14 tables, 0 problems; knip and dpdm clean; jscpd 0 clones;
+- vitest: 180 files passed and 2 skipped; 2,710 tests passed and 23
+  skipped; statements 94.56 %;
+- build: `dist/extension.js` 442.6 KiB of 600, `dist/modelApi.js`
+  297.2 KiB of 400, the bundle-split check passed;
+- a11y: 336 pages, 0 rules violated; audit 0 advisories;
+- gitleaks: no leaks; Semgrep: 287 rules on 417 files, 0 findings.
