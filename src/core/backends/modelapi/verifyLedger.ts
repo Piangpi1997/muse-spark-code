@@ -1,16 +1,27 @@
 // The verify loop's record since the user's last input (M68, PLAN.md D49;
-// the Codex review of PR #54, third round): one ledger per session in place
-// of the counters that were spread over the session and the turn.
+// the Codex review of PR #54, third round, and the review of its redesign):
+// one ledger per session in place of the counters that were spread over the
+// session and the turn.
 //
-// It keeps the files the edit tools wrote, each at a version that every edit
-// advances, and every check that ran (automatic, `run_checks`, or an edit's
-// `then_run` of a configured check's own command) against the versions of
-// what it covered. A round's verdict reads only the runs since the previous
-// verdict that are still on the latest version of everything they covered;
-// the fix loop counts failing verdicts in a row and stops the checks at
-// CHECK_FIX_MAX_ROUNDS. `reset` clears it all, and every path that admits
-// user input (a message, queued or steered) calls it; a goal's wake is not
-// user input and carries on. Pure.
+// It keeps every file's version (advanced by each edit this session makes,
+// and by each edit its subagents make in the same workspace) and every check
+// that ran (automatic, `run_checks`, or an edit's `then_run` of a configured
+// check's own command) against the versions of what it covered. A round is
+// judged only when a run since the previous verdict is still on the latest
+// state; it passes only when no current run of any check failed (the latest
+// run of each check over the same files counts). The fix loop counts failing
+// verdicts in a row and stops the checks at CHECK_FIX_MAX_ROUNDS.
+//
+// Two resets, one per kind of admitted user input: a user's message clears
+// everything; a steered message clears the fix loop, the rejections and the
+// runs, but not what the conversation wrote (the names that decide what a
+// command runs, the code the editor runs), which stays until the next
+// message. A goal's wake, and a parent model's message to a subagent, are
+// not user input and reset nothing.
+//
+// Files are known by their real path (links and junctions resolved). Two
+// hard links to one file are two paths here: an edit through one does not
+// make runs over the other stale (PLAN.md §9). Pure.
 
 import { CHECK_FIX_MAX_ROUNDS, type CheckOutcome } from '../../../shared/constants'
 import { canChangeWhatRuns, isCodeLoading } from '../../verify/codeFiles'
@@ -25,29 +36,54 @@ type Coverage =
   | { readonly kind: 'files'; readonly versions: ReadonlyMap<string, number> }
 
 interface RecordedRun {
+  /** The check and what it covered: a later run with the same key supersedes this one. */
+  readonly key: string
   readonly name: string
   /** Only runs that finished: passed, failed or timed out. */
   readonly outcome: CheckOutcome
   readonly coverage: Coverage
 }
 
+const KEY_SEPARATOR = '\u{0}'
+const PATH_SEPARATOR = '\u{1}'
+const PROJECT_KEY = 'project'
+
 /** Outcomes that say something about the code: not run, or stopped by the user, say nothing. */
 function isJudged(outcome: CheckOutcome): boolean {
   return outcome !== 'notRun' && outcome !== 'cancelled'
+}
+
+/** A check's key over a scope: its name and what it covered, in a fixed order. */
+function runKey(name: string, scope: CheckScope): string {
+  const covered =
+    scope === 'project'
+      ? PROJECT_KEY
+      : scope
+          .map((file) => file.absolute)
+          .toSorted((a, b) => a.localeCompare(b))
+          .join(PATH_SEPARATOR)
+  return `${name}${KEY_SEPARATOR}${covered}`
+}
+
+/** Whether a run over `coverage` answers for `scope`: the whole project answers for any. */
+function isCovering(coverage: Coverage, scope: CheckScope): boolean {
+  return (
+    coverage.kind === 'project' ||
+    (scope !== 'project' && scope.every((file) => coverage.versions.has(file.absolute)))
+  )
 }
 
 export class VerifyLedger {
   private failedRounds = 0
   private stopped = false
   private readonly rejectedChecks = new Set<string>()
-  /** The files written since the user's input, by real path, at their latest version. */
-  private readonly files = new Map<
-    string,
-    { readonly file: EditedFile; readonly version: number }
-  >()
+  /** The files this session's edit tools wrote since the user's message, by real path. */
+  private readonly files = new Map<string, EditedFile>()
+  /** Each file's version, by real path: the project's version at the file's last known edit. */
+  private readonly versions = new Map<string, number>()
   private readonly writtenNames = new Set<string>()
   private firstCodeFile: string | undefined
-  /** Advanced by every edit; a file's version is the project's at its last edit. */
+  /** Advanced by every edit this session knows of. */
   private projectVersion = 0
   private readonly roundFiles = new Map<string, EditedFile>()
   private runs: RecordedRun[] = []
@@ -55,7 +91,7 @@ export class VerifyLedger {
   private judgedUpTo = 0
 
   private versionOf(absolute: string): number {
-    return this.files.get(absolute)?.version ?? 0
+    return this.versions.get(absolute) ?? 0
   }
 
   private isCurrent(run: RecordedRun): boolean {
@@ -65,15 +101,27 @@ export class VerifyLedger {
       : [...coverage.versions].every(([absolute, version]) => this.versionOf(absolute) === version)
   }
 
-  /** Any admitted user input, queued or steered: the loop starts afresh. */
-  public reset(): void {
-    this.failedRounds = 0
-    this.stopped = false
-    this.rejectedChecks.clear()
+  /** A user's message, admitted: the loop starts afresh. */
+  public resetForMessage(): void {
+    this.resetForSteer()
     this.files.clear()
     this.writtenNames.clear()
     this.firstCodeFile = undefined
     this.roundFiles.clear()
+  }
+
+  /**
+   * A user's steered message, admitted mid-turn: the fix loop, the user's
+   * rejections and the recorded runs start afresh. What the conversation
+   * wrote stays until the next message, so a steer (even "stop") never lets
+   * a session rule answer again for a check whose script the model rewrote,
+   * nor the editor show or format again after the model wrote a config it
+   * runs (the review of e4b035a3).
+   */
+  public resetForSteer(): void {
+    this.failedRounds = 0
+    this.stopped = false
+    this.rejectedChecks.clear()
     this.runs = []
     this.judgedUpTo = 0
   }
@@ -85,12 +133,12 @@ export class VerifyLedger {
   }
 
   /**
-   * A file an edit tool wrote, with the names it was written under (as given
-   * and after links): a new version of it and of the project.
+   * A file this session's edit tools wrote, with the names it was written
+   * under (as given and after links): a new version of it and of the project.
    */
   public noteEdit(file: EditedFile, names: readonly string[]): void {
-    this.projectVersion += 1
-    this.files.set(file.absolute, { file, version: this.projectVersion })
+    this.noteOutsideEdit(file.absolute)
+    this.files.set(file.absolute, file)
     this.roundFiles.set(file.absolute, file)
     for (const name of names) {
       this.writtenNames.add(name)
@@ -98,6 +146,16 @@ export class VerifyLedger {
     if (this.firstCodeFile === undefined && names.some((name) => isCodeLoading(name))) {
       this.firstCodeFile = file.relative
     }
+  }
+
+  /**
+   * A file written in this workspace by someone this session answers for (a
+   * subagent): runs over it, and over the whole project, are no longer on the
+   * latest state.
+   */
+  public noteOutsideEdit(absolute: string): void {
+    this.projectVersion += 1
+    this.versions.set(absolute, this.projectVersion)
   }
 
   /** The first file written that the editor's tools run as code, if any. */
@@ -118,14 +176,14 @@ export class VerifyLedger {
     this.rejectedChecks.add(name)
   }
 
-  /** Whether a file written since the user's input decides what `command` runs. */
+  /** Whether a file written since the user's message decides what `command` runs. */
   public changesWhatRuns(command: string): boolean {
     return [...this.writtenNames].some((name) => canChangeWhatRuns(name, command))
   }
 
-  /** The files written since the user's input: `run_checks`'s default. */
+  /** The files written since the user's message: `run_checks`'s default. */
   public editedFiles(): readonly EditedFile[] {
-    return Array.from(this.files.values(), ({ file }) => file)
+    return Array.from(this.files, ([, file]) => file)
   }
 
   /** The files written in the round that just ended, taken for its checks. */
@@ -147,7 +205,7 @@ export class VerifyLedger {
             kind: 'files',
             versions: new Map(scope.map((file) => [file.absolute, this.versionOf(file.absolute)])),
           }
-    this.runs.push({ name, outcome, coverage })
+    this.runs.push({ key: runKey(name, scope), name, outcome, coverage })
   }
 
   /** Whether `name` already ran on the latest state of everything `scope` holds. */
@@ -158,19 +216,22 @@ export class VerifyLedger {
   }
 
   /**
-   * The verdict on the runs since the previous one, read only from those
-   * still on the latest state of what they covered: failed when one of them
-   * failed or timed out, passed when all passed, nothing when none. The fix
-   * loop advances on a failed verdict and resets on a passed one; true when
-   * this verdict stopped the checks.
+   * The round's verdict, when a run since the previous one is still on the
+   * latest state: passed only when no current run of any check failed or
+   * timed out (the latest run of each check over the same files counts, so a
+   * failure no edit has touched still counts), else failed; nothing when no
+   * such run. The fix loop advances on a failed verdict and resets on a
+   * passed one; true when this verdict stopped the checks.
    */
   public judgeRound(): boolean {
-    const judged = this.runs.slice(this.judgedUpTo).filter((run) => this.isCurrent(run))
+    const isFresh = this.runs.slice(this.judgedUpTo).some((run) => this.isCurrent(run))
     this.judgedUpTo = this.runs.length
-    if (judged.length === 0) {
+    if (!isFresh) {
       return false
     }
-    if (judged.every((run) => run.outcome === 'passed')) {
+    const latest = new Map(this.runs.map((run) => [run.key, run]))
+    const current = Array.from(latest, ([, run]) => run).filter((run) => this.isCurrent(run))
+    if (current.every((run) => run.outcome === 'passed')) {
       this.failedRounds = 0
       return false
     }
@@ -184,12 +245,4 @@ export class VerifyLedger {
     this.stopped = true
     return true
   }
-}
-
-/** Whether a run over `coverage` answers for `scope`: the whole project answers for any. */
-function isCovering(coverage: Coverage, scope: CheckScope): boolean {
-  return (
-    coverage.kind === 'project' ||
-    (scope !== 'project' && scope.every((file) => coverage.versions.has(file.absolute)))
-  )
 }

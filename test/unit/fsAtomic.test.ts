@@ -142,6 +142,12 @@ describe('writeFileIfUnchanged', () => {
       }),
     ).resolves.toBe('changed')
     expect(await readdir(path.dirname(target))).toEqual(['c.txt'])
+    // Nor is a file whose folder is gone, and the folder is not made again.
+    const removed = path.join(paths.root, 'conditional', 'removed')
+    await expect(
+      writeFileIfUnchanged(path.join(removed, 'e.txt'), fingerprint(''), 'x', { sleep: noWait }),
+    ).resolves.toBe('changed')
+    await expect(stat(removed)).rejects.toThrow('ENOENT')
   })
 
   it('compares immediately before each rename, so a change during the write stands', async () => {

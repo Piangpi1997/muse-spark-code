@@ -13,12 +13,21 @@
 // Windows' hidden and system attributes are not copied.
 //
 // `writeFileIfUnchanged` is the one conditional write (the Codex review of
-// PR #54, third round): the same steps, and immediately before each rename
-// attempt the target's current bytes are read and hashed, and a target that
-// no longer holds the expected text is left alone. A file system offers no
-// compare-and-swap for a rename, so a change landing between that read and
-// the rename itself (microseconds) would still be replaced: that window is
-// the residual, recorded in PLAN.md §9.
+// PR #54, third round): the target's bytes are compared with the expected
+// text first (a target that is gone is not recreated, nor its folder), then
+// the same steps, and again immediately before each rename attempt; a target
+// that no longer holds the expected text is left alone. No file system
+// offers a conditional rename, so what remains differs by platform
+// (PLAN.md §9):
+// - POSIX: the rename replaces the name at once, whoever has the file open.
+//   A change saved between the last comparison and the rename is replaced,
+//   and a program that still holds the old file open and writes after the
+//   rename writes into a file that no longer has a name: its change is lost.
+// - Windows: the rename is refused while another program holds the target
+//   open without sharing delete; the refusal is retried, comparing again
+//   before each attempt, so a change written while the file was held is
+//   seen. A change saved and closed between the last comparison and the
+//   rename is still replaced.
 
 import { randomUUID } from 'node:crypto'
 import { constants } from 'node:fs'
@@ -130,6 +139,11 @@ async function destinationOf(target: string, options: AtomicWriteOptions): Promi
 /** The target no longer holds what a conditional write expected: nothing was written. */
 class ChangedBeforeWriteError extends Error {}
 
+/** The one outcome that is not an error: a conditional write that found the file changed. */
+function changedBeforeWrite(): ChangedBeforeWriteError {
+  return new ChangedBeforeWriteError()
+}
+
 /** Refuses a destination whose current text is not the expected text. */
 async function assertUnchanged(destination: string, expectedFingerprint: string): Promise<void> {
   let bytes: Uint8Array
@@ -137,12 +151,12 @@ async function assertUnchanged(destination: string, expectedFingerprint: string)
     bytes = await readFile(destination)
   } catch (error: unknown) {
     if (errorCode(error) === 'ENOENT') {
-      throw new ChangedBeforeWriteError(MODEL_TEXT.fileChangedBeforeWrite)
+      throw changedBeforeWrite()
     }
     throw error
   }
   if (bytesFingerprint(bytes) !== expectedFingerprint) {
-    throw new ChangedBeforeWriteError(MODEL_TEXT.fileChangedBeforeWrite)
+    throw changedBeforeWrite()
   }
 }
 
@@ -189,7 +203,13 @@ async function writeAtomically(
   expectedFingerprint: string | undefined,
 ): Promise<void> {
   await assertBoundPath(target, options.expectedCanonicalPath ?? target, options)
-  await mkdir(path.dirname(target), { recursive: true })
+  if (expectedFingerprint === undefined) {
+    await mkdir(path.dirname(target), { recursive: true })
+  } else {
+    // A conditional write replaces only the expected text: a target that is
+    // gone, with its folder or not, stays gone.
+    await assertUnchanged(target, expectedFingerprint)
+  }
   await assertBoundPath(target, options.expectedCanonicalPath ?? target, options)
   const destination = await destinationOf(target, options)
   await assertBoundPath(destination.path, options.expectedCanonicalPath ?? target, options)

@@ -693,7 +693,12 @@ async function formatWritten(
   // Only over what the edit wrote, at the real path the edit wrote it, by the
   // one conditional write (the Codex review of PR #54): a change made while
   // the formatter ran stands. The write also refuses a path whose real form
-  // moved.
+  // moved. Text the user typed into an editor since stands too (the review
+  // of e4b035a3): the editor would save it over the formatted file.
+  if (context.io.hasUnsavedChanges(target.checkedAbsolute)) {
+    formatter.warn(`Format on edit skipped ${target.relative}: it has unsaved changes in an editor`)
+    return written
+  }
   try {
     const wrote = await context.io.writeFileIfUnchanged(
       target.checkedAbsolute,
@@ -703,7 +708,7 @@ async function formatWritten(
     )
     if (wrote === 'changed') {
       formatter.warn(
-        `Format on edit skipped ${target.relative}: the file changed while the formatter ran`,
+        `Format on edit skipped ${target.relative}: it no longer holds what the edit wrote (changed, replaced or removed while the formatter ran)`,
       )
       return written
     }

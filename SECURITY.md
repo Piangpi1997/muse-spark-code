@@ -129,8 +129,14 @@ Only the latest release on the Visual Studio Marketplace receives fixes.
   before, that the file is still there and still holds what the edit left
   (a check's arguments: still there). Format on edit's write-back is a
   conditional write: the file's bytes are compared with what the edit wrote
-  immediately before the rename, and a changed file is left alone; a change
-  landing between that comparison and the rename itself is the residual.
+  before the write and again immediately before the rename, and a changed
+  or removed file is left alone (its folder is not made again). What
+  remains is the moment between the last comparison and the rename: on
+  POSIX a change saved in it is replaced, and a program still writing
+  through a handle it held on the old file writes into a file that no
+  longer has a name; on Windows a program holding the file open makes the
+  rename wait and compare again, but a change saved and closed in that
+  moment is replaced.
   Muse Code's own edits are not seen by the extension, so after Muse Code
   writes such a config, a later `getDiagnostics` request for an ordinary
   file can still open that file and let the extension load the config.

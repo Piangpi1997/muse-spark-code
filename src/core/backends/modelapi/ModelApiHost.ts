@@ -467,13 +467,6 @@ interface ActiveTurn {
   goalWakePending: boolean
   /** The prompt's answer to the web search popup (M58); false until it is asked. */
   isWebSearchAllowed: boolean
-  /**
-   * The verify loop (M68): the files the edit tools wrote in this round (by
-   * absolute path), checked before the next request; the checks already run
-   * since the round's last edit (by run_checks, or a then_run of a check's
-   * own command), which the automatic step does not run again; and the runs
-   * of run_checks in this round, which the fix loop counts (the M68 review).
-   */
 }
 
 interface HookToolResult {
@@ -1292,8 +1285,7 @@ export class ModelApiSession implements AgentSession {
   private readonly seenFiles = new Map<string, string>()
   /** Each edited file's diagnostics at its last check, to say what changed (M68). */
   private readonly diagnosticsHistory = new DiagnosticsHistory()
-  /** The verify loop's state since the user's last message (M68, the M68 review). */
-  /** The verify loop's record since the user's last input (M68; PR #54's third review). */
+  /** The verify loop's record since the user's last input (M68; `verifyLedger.ts`). */
   private readonly ledger = new VerifyLedger()
   /** Keeps each request within the page and encoded-media budgets (M54, PLAN.md D47). */
   private readonly budget: MediaBudget
@@ -3950,10 +3942,10 @@ export class ModelApiSession implements AgentSession {
   /**
    * `run_checks` (M68): the checks the model names (all of them by default)
    * over the files it names (each must exist in the workspace), or those
-   * edited since the user's message, with the same state as the automatic
+   * edited since the user's message, with the same ledger as the automatic
    * step: the fix loop's stop and the user's rejections hold, a Reject is
-   * remembered, and a check run over the edited files is not run again
-   * automatically after this round (the M68 review).
+   * remembered, and each run is recorded against the state it ran on, so
+   * the round judges it and does not run it again while it is current.
    */
   private async runChecksCall(
     itemId: string,
@@ -4317,17 +4309,28 @@ export class ModelApiSession implements AgentSession {
       ...(fingerprint !== undefined && { fingerprint }),
     }
     this.ledger.noteEdit(file, [target.relative, target.canonical])
+    // A subagent writes in its parent's workspace: the parent's runs over the
+    // file, and over the whole project, are no longer on the latest state.
+    this.parentSession?.ledger.noteOutsideEdit(file.absolute)
   }
 
   /**
-   * A then_run that ran a configured check's own command is a run of that
-   * check on the state the edit left (M68; PR #54's third review): it counts
-   * for the fix loop, and the round does not run the check again.
+   * A then_run that ran a configured check's own command, as the check itself
+   * would run it, is a run of that check on the state the edit left (M68;
+   * PR #54's reviews): it counts for the fix loop, and the round does not run
+   * the check again. Not for a check that takes the changed files (the
+   * then_run passed none), nor a time-out under the shell's cap when the
+   * check has its own.
    */
   private noteCheckCommandRun(line: string, result: ShellResult): void {
+    const outcome = outcomeOf(result)
     for (const check of this.checkCommands()) {
-      if (check.command === line.trim()) {
-        this.ledger.record(check.name, outcomeOf(result), 'project')
+      const isSameRun =
+        check.command === line.trim() &&
+        check.changedFiles !== true &&
+        (outcome !== 'timedOut' || checkTimeoutMs(check) === SHELL_DEFAULT_TIMEOUT_MS)
+      if (isSameRun) {
+        this.ledger.record(check.name, outcome, 'project')
       }
     }
   }
@@ -4783,8 +4786,12 @@ export class ModelApiSession implements AgentSession {
     // What ended or ran meanwhile first (M46), then what the user added.
     this.settleNotes(turn.turnId)
     for (const { parts, userMessageId: itemId } of turn.steered.splice(0)) {
-      // Admitted user input: the verify loop starts afresh (PR #54's third review).
-      this.ledger.reset()
+      // Admitted user input (M68): the fix loop, rejections and runs start
+      // afresh; what the conversation wrote stays until the next message. A
+      // subagent's steers come from its parent model, not the user.
+      if (!this.isSubagent) {
+        this.ledger.resetForSteer()
+      }
       const text = typedText(parts)
       this.replay.push({
         turnId: turn.turnId,
@@ -5218,12 +5225,8 @@ export class ModelApiSession implements AgentSession {
         confirmedRequest: queued.confirmedRequest,
       }),
     }
-    // A user's message starts the verify loop afresh; a goal's wake carries on
-    // (M68). A steered message resets it too, where it is admitted.
+    // What a stopped turn left for its round is not checked in this one (M68).
     this.ledger.beginTurn()
-    if (!queued.isGoalWake) {
-      this.ledger.reset()
-    }
     this.active = turn
     this.status = RUNNING
     this.turnIds.push(turn.turnId)
@@ -5297,6 +5300,12 @@ export class ModelApiSession implements AgentSession {
             this.replay.splice(userIndex, 1)
           }
           throw new HookStoppedError(submitted.blockedReason)
+        }
+        // Admitted: a user's message starts the verify loop afresh (M68). A
+        // goal's wake carries on, and a parent model's message to a subagent
+        // is not user input.
+        if (!this.isSubagent) {
+          this.ledger.resetForMessage()
         }
       }
       await this.prepareMcp(turn.abort.signal)

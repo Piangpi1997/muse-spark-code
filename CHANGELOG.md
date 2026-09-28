@@ -32,8 +32,12 @@ happened, not what was planned; superseded entries are kept.
   or `@`, or on Windows holds `"`, `&`, `|`, `<`, `>`, `^`, `%` or `!`;
   `timeoutSeconds` caps each run. A rejected check is not asked again, and
   after three failing rounds in a row the checks stop, until your next
-  message; the model and the panel say so. No check runs twice for the same
-  edit, or after the turn's last round.
+  message (a message you add while the agent works starts them again too);
+  the model and the panel say so. A round counts as failing only by checks
+  run on the files as they now are, and passes only when none of those
+  fails; an edit's `then_run` of a check's own command counts as that check.
+  No check runs twice for the same state of the files, or after the turn's
+  last round.
 - **`run_checks`**, the model's own call of the checks (on files that exist
   in the workspace, or those edited since your message), and **`then_run`**
   on `write_file` and `edit_file`: one command run right after the edit,
@@ -42,8 +46,10 @@ happened, not what was planned; superseded entries are kept.
   (SoL-Pi's Action Fusion, reimplemented from its description).
 - **Format on edit** (`museSpark.formatOnEdit`, off by default): the file's
   formatter runs on each file the Model API backend's edit tools write,
-  before anything checks it. An edit whose formatted text cannot be written
-  stays as written, and the log says why.
+  before anything checks it. The formatted text is written only while the
+  file still holds what the edit wrote and has no unsaved changes in an
+  editor; otherwise, or when it cannot be written, the edit stays as
+  written and the log says why.
 - **Code the editor runs is never opened or formatted by the loop**
   (`eslint.config.js`, `.prettierrc.cjs`, `package.json`, `node_modules`),
   and once the agent writes such a file nothing more is opened or formatted

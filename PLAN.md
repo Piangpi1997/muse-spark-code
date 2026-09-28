@@ -6695,13 +6695,18 @@ timeoutSeconds? }`, at most 8, names unique, 300 s unless set, 600 s at
     `run_checks` result. A check the model ran since the round's last edit
     (`run_checks` over the edits, or a `then_run` of its own command) is not
     run again after the round, and nothing runs after the turn's last round.
-  - **The fix loop**: `CHECK_FIX_MAX_ROUNDS` (3) rounds in a row whose
-    checks failed or ran out of time stop the checks until the user's next
-    message (a goal's wake keeps the count; `VerifyState` is per session and
-    reset only by a user's message); a round that passed resets the count,
-    one where none ran leaves it. `run_checks` honours the stop and the
-    rejections too. The model is told to stop fixing and say what still
-    fails; the panel shows a warning. The diagnostics go on.
+  - **The fix loop**: `CHECK_FIX_MAX_ROUNDS` (3) failing verdicts in a row
+    stop the checks until the user's next message. Since PR #54's third
+    review the state is one `VerifyLedger` per session: every check that
+    ran is recorded against the file state it ran on, a round is judged
+    when a run since the previous verdict is current, and it passes only
+    when no current run of any check failed. A user's message, once
+    admitted, resets it all; a steered message resets the count, the
+    rejections and the runs, but not what the conversation wrote; a goal's
+    wake, and a parent model's message to a subagent, reset nothing.
+    `run_checks` honours the stop and the rejections too. The model is told
+    to stop fixing and say what still fails; the panel shows a warning. The
+    diagnostics go on.
   - **`then_run`** (SoL-Pi's Action Fusion, reimplemented from its public
     description, no code ported, so the notices generator is unchanged and
     M73 stays the first milestone that may port): after the edit (and its
@@ -7523,9 +7528,17 @@ Every lint or scanner suppression (`eslint-disable`, `@ts-expect-error`, `nosemg
   conditional), and a folder on the real path swapped for a link in that
   moment is not caught. Format on edit's write-back goes through the one
   conditional write (`fsAtomic.writeFileIfUnchanged`, PR #54's third
-  review), which compares the target's bytes immediately before each
-  rename attempt; a change landing between that read and the rename itself
-  is still replaced.
+  review), which compares the target's bytes first and again immediately
+  before each rename attempt. No file system offers a conditional rename.
+  On POSIX the rename replaces the name whoever has the file open: a change
+  saved between the last comparison and the rename is replaced, and a
+  program still writing through its open handle to the old file writes
+  into a file that no longer has a name. On Windows the rename is refused
+  while another program holds the file without sharing delete, and each
+  retry compares again; a change saved and closed between the last
+  comparison and the rename is still replaced. The verify ledger knows a
+  file by its real path: two hard links to one file are two files there,
+  so an edit through one does not make a run over the other stale.
 
 - M50's Windows stdio server inherits the extension's three binary pipes
   unchanged. A hidden helper creates it suspended, assigns it to a fresh

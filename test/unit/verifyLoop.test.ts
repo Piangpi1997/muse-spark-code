@@ -338,6 +338,23 @@ async function editThenTest(t: Setup): Promise<Awaited<ReturnType<typeof start>>
   return started
 }
 
+/** The card of the lint check over these files (POSIX quoting). */
+function lintCard(...paths: readonly string[]): {
+  readonly kind: 'shell'
+  readonly command: string
+} {
+  return {
+    kind: 'shell',
+    command: `${LINT.command} -- ${paths.map((path) => `'${path}'`).join(' ')}`,
+  }
+}
+
+/** An edit of package.json, which decides what `npm run lint` runs. */
+const MANIFEST_EDIT: ScriptedCall = {
+  name: 'edit_file',
+  arguments: JSON.stringify({ path: 'package.json', find: '{}', replace: '{"x":1}' }),
+}
+
 /** A PreToolUse hook's denial, with its words. */
 function deny(reason: string): Record<string, unknown> {
   return {
@@ -479,8 +496,10 @@ describe('the verify loop after a round of edits (Model API)', () => {
 
   it('counts only rounds in a row: a passing round resets the fix loop', async () => {
     let lintRun = 0
+    // A whole-project check: each round's edit leaves the earlier runs behind,
+    // so each round is judged by its own run.
     const t = setup({
-      checks: [LINT],
+      checks: [TEST],
       shell: (command) => {
         lintRun += 1
         // fail, pass, then fail every time.
@@ -1157,21 +1176,17 @@ describe('the checks’ state since the user’s message', () => {
       isDiagnosticsOn: false,
     })
     const { cards, turn } = await start(t, 'onRequest', () => 'allow_session')
-    const manifestEdit: ScriptedCall = {
-      name: 'edit_file',
-      arguments: JSON.stringify({ path: 'package.json', find: '{}', replace: '{"x":1}' }),
-    }
     // The second round's lint would be allowed by the rule (see "Always
     // allow in this session" above), but that round also edits the manifest.
     t.api.script(
       { calls: [editCall('1', '2')] },
-      { calls: [editCall('2', '3'), manifestEdit] },
+      { calls: [editCall('2', '3'), MANIFEST_EDIT] },
       { text: 'ok' },
     )
     await turn()
     expect(cards.map((card) => card.subject)).toEqual([
-      { kind: 'shell', command: "npm run lint -- 'src/a.ts'" },
-      { kind: 'shell', command: "npm run lint -- 'src/a.ts' 'package.json'" },
+      lintCard('src/a.ts'),
+      lintCard('src/a.ts', 'package.json'),
     ])
     // The user's next message trusts the session's rule again.
     t.api.script({ calls: [editCall('3', '4')] }, { text: 'ok' })
@@ -1499,7 +1514,7 @@ describe('acts on the file the edit wrote, as it left it', () => {
     const { events } = await editThenTest(t)
     expect(io.files.get(`${ROOT}/src/a.ts`)).toBe('someone else\n')
     expect(logLines(t.log).join('\n')).toContain(
-      'Format on edit skipped src/a.ts: the file changed while the formatter ran',
+      'Format on edit skipped src/a.ts: it no longer holds what the edit wrote',
     )
     // then_run's guard sees the change too, just before the command.
     expect(t.io.shellCalls).toEqual([])
@@ -1632,5 +1647,76 @@ describe('the verify ledger in the loop', () => {
     await turn()
     expect(cards).toHaveLength(2)
     expect(t.io.shellCalls.map((call) => call.command)).toEqual(["npm run lint -- 'src/a.ts'"])
+  })
+})
+
+// The review of e4b035a3: a steer resets the fix loop, rejections and runs,
+// never what the model wrote.
+describe('a steer after the model rewrote what a check runs', () => {
+  it('does not let the session’s rule answer again for the rewritten check', async () => {
+    const t = setup({
+      files: { 'src/a.ts': 'const a = 1\n', 'package.json': '{}\n' },
+      checks: [LINT],
+      isDiagnosticsOn: false,
+    })
+    const steering: { now?: () => void } = {}
+    let asked = 0
+    const { session, events, cards, turn } = await start(t, 'onRequest', () => {
+      asked += 1
+      if (asked === 2) {
+        steering.now?.()
+      }
+      return 'allow_session'
+    })
+    steering.now = () => {
+      const started = events.find((event) => event.type === 'turnStarted')
+      if (started?.type === 'turnStarted') {
+        void session.steer(started.turnId, [{ type: 'text', text: 'stop' }])
+      }
+    }
+    t.api.script(
+      { calls: [editCall('1', '2')] },
+      { calls: [MANIFEST_EDIT] },
+      { calls: [editCall('2', '3')] },
+      { text: 'ok' },
+    )
+    await turn()
+    // The third round's check still asks: package.json was rewritten since the message.
+    expect(cards.map((card) => card.subject)).toEqual([
+      lintCard('src/a.ts'),
+      lintCard('package.json'),
+      lintCard('src/a.ts'),
+    ])
+  })
+})
+
+describe('what counts as a check’s run, and what the write-back leaves alone', () => {
+  it('does not take a then_run as a run of a check that takes the changed files', async () => {
+    const t = setup({ checks: [LINT], isDiagnosticsOn: false })
+    const { turn } = await start(t, 'allowAll')
+    t.api.script({ calls: [editCall('1', '2', LINT.command)] }, { text: 'ok' })
+    await turn()
+    expect(t.io.shellCalls.map((call) => call.command)).toEqual([
+      LINT.command,
+      "npm run lint -- 'src/a.ts'",
+    ])
+  })
+
+  it('does not write the formatted text over what the user typed into an editor meanwhile', async () => {
+    const io = memoryToolIo({ 'src/a.ts': 'const a = 1\n' }, ROOT)
+    const t = setup({
+      io,
+      isDiagnosticsOn: false,
+      isFormatOnEdit: true,
+      format: (_path, text) => {
+        io.unsaved.add(`${ROOT}/src/a.ts`)
+        return Promise.resolve(`${text}// formatted\n`)
+      },
+    })
+    await editOnce(t)
+    expect(io.files.get(`${ROOT}/src/a.ts`)).toBe('const a = 2\n')
+    expect(logLines(t.log).join('\n')).toContain(
+      'Format on edit skipped src/a.ts: it has unsaved changes in an editor',
+    )
   })
 })
