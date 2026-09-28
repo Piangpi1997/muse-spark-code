@@ -257,14 +257,21 @@ hands it, the same way the extension does, and nothing else:
   `%LOCALAPPDATA%\Muse Spark Code` on Windows,
   `~/Library/Application Support/Muse Spark Code` on macOS and
   `$XDG_DATA_HOME/muse-spark-code` elsewhere. Muse Code conversations stay
-  in the CLI's own store.
+  in the CLI's own store. The paid features you allowed always in a folder
+  are kept beside them in `acp/paid-uses.json`: each folder's hash and the
+  features' names, nothing else.
+- **The network**: the agent's own requests go to `api.meta.ai` through
+  Node's `fetch`, and through a proxy only when its environment asks for
+  one (`docs/acp.md`, "Networks and proxies"); VS Code's proxy and
+  certificate settings do not apply to it.
 - **The log** goes to stderr, which the editor shows or keeps as its agent
   log; keys and tokens are redacted.
 - The folder's rules, skills and memory are read only with
   `--trust-workspace`; contributor-tier models are listed only with
   `--allow-contributor-models`; web search and image generation only with
-  `--web-search` or `--image-generation` and once you accept their price
-  in the editor (see the paid features above).
+  `--web-search` or `--image-generation`, and each use only once you allow
+  it in the editor's prompt, which names the price (Allow once, Allow
+  always in this workspace with `--trust-workspace`, or Deny).
   It has no telemetry either.
 
 ## Your choices
