@@ -636,6 +636,7 @@
   },
   "plansNone": "Zatím žádné uložené plány. Uložte některý z odpovědi v režimu plánování.",
   "plansFailed": "Plány se nepodařilo vypsat",
+  "planOpenFailed": "Plán se nepodařilo otevřít",
   "sideChatSessionOnly": "Tento vedlejší chat může otevřít pouze vedlejší chaty.",
   "renameFailed": "Konverzaci se nepodařilo přejmenovat",
   "sandboxOffProfileNotice": "Tento pracovní prostor je ve vašem uživatelském profilu, kde sandbox Muse Code pro Windows nemůže spouštět příkazy, takže toto okno spouští příkazy shellu bez sandboxu, přímo pod vaším účtem. Výzvy ke schválení stále platí. Nastavení: museSpark.shellSandbox.",

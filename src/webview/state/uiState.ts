@@ -983,8 +983,12 @@ function settleAll(entries: readonly TranscriptEntry[], at: number): readonly Tr
   return settled.every((entry, index) => entry === entries[index]) ? entries : settled
 }
 
-/** A user card rebuilt from a stored `userMessage` item (M6 replay). */
-function replayedUserEntry(item: ItemSnapshot, seq: number): TranscriptEntry {
+/**
+ * A user card rebuilt from a stored `userMessage` item (M6 replay); sent
+ * in Plan mode when the host says its turn was (M79), which the item does
+ * not record.
+ */
+function replayedUserEntry(item: ItemSnapshot, seq: number, isPlanTurn = false): TranscriptEntry {
   return {
     kind: 'user',
     id: item.itemId,
@@ -999,6 +1003,7 @@ function replayedUserEntry(item: ItemSnapshot, seq: number): TranscriptEntry {
       ...(attachment.height !== undefined && { height: attachment.height }),
     })),
     ...(item.turnId !== undefined && { turnId: item.turnId }),
+    ...(isPlanTurn && { isPlanTurn: true }),
   }
 }
 
@@ -1012,6 +1017,7 @@ function replayHistory(
   at: number,
   sequence: number,
   previous: readonly TranscriptEntry[],
+  planTurnIds: ReadonlySet<string>,
 ): { readonly entries: readonly TranscriptEntry[]; readonly sequence: number } {
   const entries: TranscriptEntry[] = []
   const knownWorkflows = new Map<string, WorkflowEntry>()
@@ -1024,7 +1030,9 @@ function replayHistory(
   for (const item of items) {
     if (item.kind === USER_MESSAGE_KIND) {
       next += 1
-      entries.push(replayedUserEntry(item, next))
+      entries.push(
+        replayedUserEntry(item, next, item.turnId !== undefined && planTurnIds.has(item.turnId)),
+      )
     } else if (!HIDDEN_ITEM_KINDS.has(item.kind)) {
       next += 1
       const before = item.kind === WORKFLOW_KIND ? knownWorkflows.get(item.itemId) : undefined
@@ -1953,6 +1961,7 @@ function applyHostMessage(state: UiState, message: HostToWebviewMessage, at: num
         at,
         state.sequence,
         isSameSession ? state.transcript : [],
+        new Set(message.planTurnIds),
       )
       const goal = loadedGoal(state, message)
       const editor =

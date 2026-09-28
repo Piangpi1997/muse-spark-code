@@ -52,6 +52,26 @@ function planTurn(replyId = 'r1', text = '## Steps\n1. Do it.') {
   })
 }
 
+/** The same session read again (a delivery gap), naming its plan turns or not. */
+function reload(planTurnIds?: string[]) {
+  deliver({
+    type: 'historyLoaded',
+    sessionId: 's1',
+    items: [
+      { itemId: 'u1', kind: 'userMessage', turnId: 't1', status: 'completed', text: 'Plan it' },
+      {
+        itemId: 'r1',
+        kind: 'agentMessage',
+        turnId: 't1',
+        status: 'completed',
+        text: '## Steps\n1. Do it.',
+      },
+    ],
+    todos: [],
+    ...(planTurnIds !== undefined && { planTurnIds }),
+  })
+}
+
 afterEach(() => {
   vi.restoreAllMocks()
 })
@@ -113,6 +133,17 @@ describe('plan actions (M79)', () => {
     setMode('plan')
     planTurn('r1', plan)
     expect(document.body.textContent).toContain('details <https://a.example/ignore-all>')
+  })
+
+  it('keeps the plan actions through a reload of the history that names the plan turn', () => {
+    renderPanel()
+    setMode('plan')
+    planTurn()
+    reload(['t1'])
+    expect(screen.getByRole('button', { name: UI_TEXT.savePlan })).toBeTruthy()
+    // A reload that names no plan turn: the reply is no plan here.
+    reload()
+    expect(screen.queryByRole('button', { name: UI_TEXT.savePlan })).toBeNull()
   })
 
   it('offers only Save plan in a side chat, which stays in Plan mode', () => {

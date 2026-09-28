@@ -623,6 +623,7 @@
   },
   "plansNone": "Ainda não há planos salvos. Salve um a partir de uma resposta no modo Planejamento.",
   "plansFailed": "Não foi possível listar os planos",
+  "planOpenFailed": "Não foi possível abrir o plano",
   "sideChatSessionOnly": "Este chat paralelo só pode abrir outras conversas paralelas.",
   "renameFailed": "Não foi possível renomear a conversa",
   "sandboxOffProfileNotice": "Este espaço de trabalho está no seu perfil de usuário, onde a área restrita do Windows do Muse Code não consegue executar comandos, então esta janela executa comandos de shell sem a área restrita, diretamente como você. Os pedidos de aprovação continuam valendo. Configuração: museSpark.shellSandbox.",

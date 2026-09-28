@@ -636,6 +636,7 @@
   },
   "plansNone": "Nie ma jeszcze zapisanych planów. Zapisz plan z odpowiedzi w trybie planowania.",
   "plansFailed": "Nie udało się wyświetlić listy planów",
+  "planOpenFailed": "Nie udało się otworzyć planu",
   "sideChatSessionOnly": "Ten czat poboczny może otwierać tylko inne czaty poboczne.",
   "renameFailed": "Nie można zmienić nazwy rozmowy",
   "sandboxOffProfileNotice": "Ten obszar roboczy znajduje się w Twoim profilu użytkownika, gdzie piaskownica Windows Muse Code nie może uruchamiać poleceń, więc to okno uruchamia polecenia powłoki bez piaskownicy, bezpośrednio jako Ty. Monity o zatwierdzenie nadal obowiązują. Ustawienie: museSpark.shellSandbox.",

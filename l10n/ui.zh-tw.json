@@ -597,6 +597,7 @@
   },
   "plansNone": "尚無已儲存的計畫。可從規劃模式下的回覆中儲存。",
   "plansFailed": "無法列出計畫",
+  "planOpenFailed": "無法開啟計畫",
   "sideChatSessionOnly": "此旁聊只能開啟其他旁聊對話。",
   "renameFailed": "無法重新命名對話",
   "sandboxOffProfileNotice": "此工作區位於您的使用者設定檔資料夾下，Muse Code 的 Windows 沙箱無法在此執行命令，因此此視窗不使用沙箱，直接以您的身分執行 shell 命令。核准提示仍然適用。設定：museSpark.shellSandbox。",

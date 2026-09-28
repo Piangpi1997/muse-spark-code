@@ -610,6 +610,7 @@
   },
   "plansNone": "Henüz kayıtlı plan yok. Plan modundaki bir yanıttan bir plan kaydedin.",
   "plansFailed": "Planlar listelenemedi",
+  "planOpenFailed": "Plan açılamadı",
   "sideChatSessionOnly": "Bu yan sohbet yalnızca diğer yan sohbetleri açabilir.",
   "renameFailed": "Konuşma yeniden adlandırılamadı",
   "sandboxOffProfileNotice": "Bu çalışma alanı kullanıcı profilinizin altında; burada Muse Code'un Windows korumalı alanı komut çalıştıramaz, bu nedenle bu pencere kabuk komutlarını korumalı alan olmadan, doğrudan sizin hesabınızla çalıştırır. Onay istemleri yine geçerlidir. Ayar: museSpark.shellSandbox.",

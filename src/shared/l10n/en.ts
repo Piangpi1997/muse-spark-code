@@ -724,6 +724,7 @@ export const EN = {
   plansCount: forms({ one: '{count} saved plan', other: '{count} saved plans' }),
   plansNone: 'No saved plans yet. Save one from a reply in Plan mode.',
   plansFailed: 'Could not list the plans',
+  planOpenFailed: 'Could not open the plan',
   sideChatSessionOnly: 'This side chat can open only side-chat conversations.',
   renameFailed: 'Could not rename the conversation',
   sandboxOffProfileNotice:

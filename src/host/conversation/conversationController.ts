@@ -2262,6 +2262,17 @@ export class ConversationController {
       this.noteFileCard(item)
     }
     this.restoreForegroundShells(history.items, activeTurnId)
+    // The turns of this history this panel sent in Plan mode (M79), finished
+    // or still running: a reload keeps the plan actions where they were.
+    const planTurns = new Set(
+      history.items.flatMap((item) =>
+        item.kind === USER_MESSAGE_KIND &&
+        item.turnId !== undefined &&
+        (this.planTurnIds.has(item.turnId) || this.pendingPlanTurnIds.has(item.turnId))
+          ? [item.turnId]
+          : [],
+      ),
+    )
     this.post({
       type: 'historyLoaded',
       sessionId,
@@ -2273,6 +2284,7 @@ export class ConversationController {
       ...(shouldIncludeGoal && history.goal !== undefined && { goal: history.goal }),
       // A turn still running keeps its Stop and its steering (D26).
       ...(activeTurnId !== undefined && { activeTurnId }),
+      ...(planTurns.size > 0 && { planTurnIds: [...planTurns] }),
     })
   }
 
@@ -3052,7 +3064,12 @@ export class ConversationController {
       return
     }
     if (choice?.action === 'open') {
-      await this.deps.openFile(choice.plan.relativePath, undefined)
+      try {
+        await this.deps.openFile(choice.plan.relativePath, undefined)
+      } catch (error: unknown) {
+        // Deleted after the pick, say: the reason in the panel, only its kind in the log (M39).
+        this.planFailed(UI_TEXT.planOpenFailed, error)
+      }
     } else if (choice?.action === 'implement') {
       await this.implementPlan({ kind: 'file', fileName: choice.plan.fileName })
     }

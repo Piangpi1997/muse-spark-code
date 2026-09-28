@@ -610,6 +610,7 @@
   },
   "plansNone": "Még nincs mentett terv. Mentsen egyet egy Tervezés módban adott válaszból.",
   "plansFailed": "A terveket nem sikerült listázni",
+  "planOpenFailed": "Nem sikerült megnyitni a tervet",
   "sideChatSessionOnly": "Ez a mellékbeszélgetés csak más mellékbeszélgetéseket nyithat meg.",
   "renameFailed": "A beszélgetést nem sikerült átnevezni",
   "sandboxOffProfileNotice": "Ez a munkaterület a felhasználói profilja alatt van, ahol a Muse Code Windows-homokozója nem tud parancsokat futtatni, ezért ez az ablak homokozó nélkül, közvetlenül az Ön nevében futtatja a shell-parancsokat. A jóváhagyási kérések továbbra is érvényesek. Beállítás: museSpark.shellSandbox.",

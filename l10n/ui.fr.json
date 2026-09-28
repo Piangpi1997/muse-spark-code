@@ -623,6 +623,7 @@
   },
   "plansNone": "Aucun plan enregistré pour l’instant. Enregistrez-en un depuis une réponse en mode Plan.",
   "plansFailed": "Impossible de lister les plans",
+  "planOpenFailed": "Impossible d’ouvrir le plan",
   "sideChatSessionOnly": "Cette discussion parallèle ne peut ouvrir que d’autres discussions parallèles.",
   "renameFailed": "Impossible de renommer la conversation",
   "sandboxOffProfileNotice": "Cet espace de travail se trouve dans votre profil utilisateur, où le bac à sable Windows de Muse Code ne peut pas exécuter de commandes ; cette fenêtre exécute donc les commandes shell sans bac à sable, directement sous votre identité. Les demandes d’approbation s’appliquent toujours. Paramètre : museSpark.shellSandbox.",

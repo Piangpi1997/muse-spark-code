@@ -623,6 +623,7 @@
   },
   "plansNone": "Nessun piano salvato per ora. Salvane uno da una risposta in modalità Piano.",
   "plansFailed": "Impossibile elencare i piani",
+  "planOpenFailed": "Impossibile aprire il piano",
   "sideChatSessionOnly": "Questa chat laterale può aprire solo altre chat laterali.",
   "renameFailed": "Non è stato possibile rinominare la conversazione",
   "sandboxOffProfileNotice": "Questa area di lavoro si trova nel tuo profilo utente, dove la sandbox di Windows di Muse Code non può eseguire comandi, quindi questa finestra esegue i comandi della shell senza sandbox, direttamente con il tuo utente. Le richieste di approvazione restano valide. Impostazione: museSpark.shellSandbox.",

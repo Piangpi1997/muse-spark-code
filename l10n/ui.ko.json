@@ -597,6 +597,7 @@
   },
   "plansNone": "저장된 계획이 아직 없습니다. 계획 모드의 응답에서 저장하세요.",
   "plansFailed": "계획 목록을 가져올 수 없습니다",
+  "planOpenFailed": "계획을 열 수 없습니다",
   "sideChatSessionOnly": "이 사이드 채팅에서는 사이드 채팅 대화만 열 수 있습니다.",
   "renameFailed": "대화 이름을 바꿀 수 없습니다",
   "sandboxOffProfileNotice": "이 작업 영역은 사용자 프로필 아래에 있으며, 여기서는 Muse Code의 Windows 샌드박스가 명령을 실행할 수 없습니다. 따라서 이 창은 샌드박스 없이 사용자 권한으로 셸 명령을 직접 실행합니다. 승인 프롬프트는 계속 적용됩니다. 설정: museSpark.shellSandbox.",

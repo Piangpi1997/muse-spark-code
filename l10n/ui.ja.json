@@ -597,6 +597,7 @@
   },
   "plansNone": "保存済みのプランはまだありません。プランモードの応答から保存してください。",
   "plansFailed": "プランを一覧表示できませんでした",
+  "planOpenFailed": "プランを開けませんでした",
   "sideChatSessionOnly": "このサイドチャットではサイドチャットの会話のみ開けます。",
   "renameFailed": "会話の名前を変更できませんでした",
   "sandboxOffProfileNotice": "このワークスペースはユーザー プロファイルの下にあり、そこでは Muse Code の Windows サンドボックスでコマンドを実行できません。そのため、このウィンドウではシェル コマンドをサンドボックスなしで、あなたとして直接実行します。承認のプロンプトは引き続き適用されます。設定: museSpark.shellSandbox。",

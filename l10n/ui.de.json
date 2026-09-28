@@ -610,6 +610,7 @@
   },
   "plansNone": "Noch keine gespeicherten Pläne. Speichern Sie einen aus einer Antwort im Planungsmodus.",
   "plansFailed": "Die Pläne konnten nicht aufgelistet werden",
+  "planOpenFailed": "Der Plan konnte nicht geöffnet werden",
   "sideChatSessionOnly": "Dieser Nebenchat kann nur Nebenchat-Unterhaltungen öffnen.",
   "renameFailed": "Die Unterhaltung konnte nicht umbenannt werden",
   "sandboxOffProfileNotice": "Dieser Arbeitsbereich liegt unter Ihrem Benutzerprofil, wo die Windows-Sandbox von Muse Code keine Befehle ausführen kann; daher führt dieses Fenster Shellbefehle ohne Sandbox direkt als Sie aus. Genehmigungsanfragen gelten weiterhin. Einstellung: museSpark.shellSandbox.",

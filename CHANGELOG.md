@@ -46,6 +46,9 @@ happened, not what was planned; superseded entries are kept.
     `dist/planMarkdown.js` (budget 150 KiB), loaded on the first Save plan,
     Implement or Plans…, so the activation bundle does not carry it. If it
     cannot load, those actions are refused with the reason.
+  - A reload of the conversation (a delivery gap) keeps Save plan and
+    Implement under a plan reply. A plan that cannot open from Plans… says
+    why in the panel and logs only the kind of failure.
   - Leaving Plan mode when the backend refuses the change keeps a running
     Plan-mode turn a plan turn. A reasoning effort the session refuses is
     no longer shown as applied.

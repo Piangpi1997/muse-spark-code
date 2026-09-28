@@ -523,6 +523,9 @@ const hostToWebviewMessageSchema = z.discriminatedUnion('type', [
     goal: z.optional(z.nullable(sessionGoalSchema)),
     // The turn still running in the session (D26): Stop and steering stay.
     activeTurnId: z.optional(z.string()),
+    // The turns of these items this panel sent in Plan mode (M79): their user
+    // cards keep `isPlanTurn`, so a reload keeps Save plan and Implement.
+    planTurnIds: z.optional(z.array(z.string())),
   }),
   // Account & usage (M8): the backend this window runs on and the
   // subscription window the CLI last observed (absent on a key, or before

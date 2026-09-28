@@ -2526,6 +2526,15 @@ async function waitForHeldSessionRead(t: ReturnType<typeof setup>) {
   return read
 }
 
+/** A delivery gap on session s1 (D26): the view is read again and the transcript reloaded. */
+async function afterViewGap(t: ReturnType<typeof setup>): Promise<void> {
+  t.server.handle('view/page', () => ({ events: [], nextCursor: null }))
+  t.surface.posted.length = 0
+  t.server.notify('view/gap', { sessionId: 's1', after: 'v1', next: 'v2' })
+  await settle()
+  await settle()
+}
+
 function gapHistory(text: string) {
   const base = envelope({ ...storedSession, sessionId: 's1' })
   return {
@@ -5619,11 +5628,7 @@ describe('ConversationController: protocol semantics (D26)', () => {
         pendingRequests: [],
       }
     })
-    t.server.handle('view/page', () => ({ events: [], nextCursor: null }))
-    t.surface.posted.length = 0
-    t.server.notify('view/gap', { sessionId: 's1', after: 'v1', next: 'v2' })
-    await settle()
-    await settle()
+    await afterViewGap(t)
     expect(reads).toBe(2)
     const reloads = t.surface.posted.filter((message) => message.type === 'historyLoaded')
     expect(reloads).toHaveLength(2)
@@ -7300,6 +7305,47 @@ describe('ConversationController: plans as files (M79)', () => {
     expect(t.planFiles.files.size).toBe(1)
     expect(t.server.requestsFor('session/start')).toHaveLength(1)
     expect(t.surface.posted.some((message) => message.type === 'briefSubmitted')).toBe(false)
+  })
+
+  it('keeps the plan turn through a reload of the history, and names no other turn', async () => {
+    const t = await museCodePlan()
+    await afterViewGap(t)
+    expect(t.surface.posted.find((message) => message.type === 'historyLoaded')).toMatchObject({
+      planTurnIds: [CAPTURED_PLAN_TURN_ID],
+    })
+    // A turn sent in Manual: its reload names none.
+    const manual = await museCodePlan({}, PLAN_HISTORY_ITEMS, async (m) => {
+      await m.controller.handle({ type: 'setPermissionMode', mode: 'manual' })
+    })
+    await afterViewGap(manual)
+    const reload = manual.surface.posted.find((message) => message.type === 'historyLoaded')
+    expect(reload).toBeDefined()
+    expect(reload).not.toHaveProperty('planTurnIds')
+    // A Plan-mode turn still running at the reload: its card stays a plan turn's.
+    const running = setup({ initialPermissionMode: 'plan', hasApprovalUi: true })
+    startsTurn(running, CAPTURED_PLAN_TURN_ID)
+    await running.send('l1', CAPTURED_PLAN_PROMPT)
+    running.server.handle('session/read', () => planHistory([PLAN_USER_ITEM]))
+    await afterViewGap(running)
+    expect(
+      running.surface.posted.find((message) => message.type === 'historyLoaded'),
+    ).toMatchObject({ planTurnIds: [CAPTURED_PLAN_TURN_ID] })
+  })
+
+  it('says why a plan picked in Plans… cannot open, and logs only the kind of failure', async () => {
+    const t = setup()
+    t.planFiles.files.set(`/ws/${FILE_PATH}`, '# A\n\n1. One.')
+    chooses(t, 'open')
+    const missing = Object.assign(
+      new Error(`ENOENT: no such file or directory, open '/ws/${FILE_PATH}'`),
+      { code: 'ENOENT' },
+    )
+    vi.spyOn(t.deps, 'openFile').mockRejectedValueOnce(missing)
+    expect(await lastNoticeText(t, { type: 'showPlans' })).toBe(
+      `${UI_TEXT.planOpenFailed}: ${missing.message}`,
+    )
+    expect(logLines(t.log).some((line) => line.includes('2026-09-01-a'))).toBe(false)
+    expect(logLines(t.log)).toContain('A plan action failed (ENOENT)')
   })
 
   it('saves after a restart by resuming the conversation, and says so when the panel lost it', async () => {
