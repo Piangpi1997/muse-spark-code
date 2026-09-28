@@ -71,6 +71,10 @@ happened, not what was planned; superseded entries are kept.
   seconds for its report, and closes the tab again; a file outside the
   workspace by its real path, or code the editor runs, is not opened, and a
   file no report arrived for is "not checked", never clean.
+- **README: How this extension is built** (Development): the owner, Claude
+  Code as lead, up to four headless Muse Code builders on the contributor
+  model, Grok Build and Codex as reviewers, and the gates on dedicated test
+  machines and CI.
 - **Every paid use asks first, in a popup** (M58, PLAN.md D48): **Allow
   once**, **Allow always in this workspace**, or **Deny**, in every
   permission mode, Bypass included. It covers each image (on either
