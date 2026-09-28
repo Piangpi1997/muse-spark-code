@@ -16,7 +16,10 @@ import {
   type CredentialFileVerdict,
   credentialFileVerdict,
 } from '../../core/backends/musecode/credentialFile'
-import { MUSE_CREDENTIAL_FILE_MAX_BYTES } from '../../shared/constants'
+import {
+  MUSE_CREDENTIAL_FILE_MAX_BYTES,
+  MUSE_CREDENTIAL_READ_ATTEMPTS,
+} from '../../shared/constants'
 import type { Logger } from '../logger'
 import { type AccountState, isCapturedSignedOut, isStoredSignIn } from './accountHost'
 
@@ -143,6 +146,15 @@ export class CliAccount {
     return signIn
   }
 
+  /** What the file settles alone, or the key the CLI's answer about it is kept under. */
+  private look(): { readonly settled: CliSignIn | undefined; readonly key: string } {
+    const filePath = this.deps.credentialFilePath()
+    const reading = readCredentialFile(filePath, this.deps.platform)
+    return reading === undefined
+      ? { settled: 'signedOut', key: filePath }
+      : { settled: FILE_SIGN_IN[reading.verdict], key: `${filePath}\n${reading.signature}` }
+  }
+
   /**
    * Leaves an unanswered probe behind (Cancel, sign-out; the review of PR
    * #49): later questions start a fresh one instead of waiting on it.
@@ -156,11 +168,18 @@ export class CliAccount {
    * read the Keychain); elsewhere an ambiguous file is asked about at once.
    */
   public async signIn(isUserAction: boolean): Promise<CliSignIn> {
-    const filePath = this.deps.credentialFilePath()
-    const reading = readCredentialFile(filePath, this.deps.platform)
-    return reading === undefined
-      ? 'signedOut'
-      : (FILE_SIGN_IN[reading.verdict] ??
-          (await this.confirm(`${filePath}\n${reading.signature}`, isUserAction)))
+    for (let attempt = 0; attempt < MUSE_CREDENTIAL_READ_ATTEMPTS; attempt += 1) {
+      const look = this.look()
+      if (look.settled !== undefined) {
+        return look.settled
+      }
+      const signIn = await this.confirm(look.key, isUserAction)
+      // An answer about a file that has since been rewritten is not an
+      // answer about this one (the review of PR #49): look again.
+      if (this.look().key === look.key) {
+        return signIn
+      }
+    }
+    return 'unknown'
   }
 }

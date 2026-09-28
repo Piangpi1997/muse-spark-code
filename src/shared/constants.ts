@@ -1427,6 +1427,9 @@ export const MUSE_CREDENTIAL_POINTER_SCHEMA = 2
 export const MUSE_CREDENTIAL_KEYCHAIN_STORAGE = 'keychain'
 /** A larger file is not read (the CLI's own is under 1 KiB). */
 export const MUSE_CREDENTIAL_FILE_MAX_BYTES = 64 * 1024
+// Looks at the credential file when it changes while the CLI answers about it:
+// a file rewritten again and again ends as `unknown` (the review of PR #49).
+export const MUSE_CREDENTIAL_READ_ATTEMPTS = 3
 // The macOS login Keychain item the CLI keeps a sign-in in. Diagnostics looks
 // it up by attribute only (no `-g`/`-w`, so no secret and no prompt): exit 0
 // found, 44 not found.

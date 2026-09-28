@@ -208,6 +208,24 @@ describe('CliAccount', () => {
     expect(probe).toHaveBeenCalledOnce()
   })
 
+  it('looks again when the file is rewritten while the CLI answers (the review of PR #49)', async () => {
+    const home = configHome()
+    home.write(MALFORMED)
+    const answer = Promise.withResolvers<AccountState | undefined>()
+    const probe = vi.fn(() => answer.promise)
+    const checker = new CliAccount({
+      platform: 'linux',
+      credentialFilePath: () => home.file,
+      probe,
+      log: new FakeLogOutputChannel(),
+    })
+    const pending = checker.signIn(true)
+    // A sign-out rewrites the file while the old question is out.
+    home.write(LOGOUT_SHELL)
+    answer.resolve(SIGNED_IN)
+    await expect(pending).resolves.toBe('signedOut')
+  })
+
   it('asks afresh after an unanswered probe is abandoned, and forgets its late answer (the review of PR #49)', async () => {
     const home = configHome()
     home.write(MALFORMED)
