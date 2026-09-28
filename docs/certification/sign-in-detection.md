@@ -559,6 +559,63 @@ Drills DC to DE cover Codex's review of `19e74b07` (below), from
 | DD    | An older logout-hold write that fails late marks the hold unsaved                             | `authService.test.ts` | exit 1, 1 failed: "keeps the latest logout-hold write’s outcome when an older one fails late" |
 | DE    | A probe about an older file version stays current when a newer one starts                     | `cliAccount.test.ts`  | exit 1, 1 failed: "keeps the newer file version’s answer when an older probe answers late"    |
 
+Drills DF to DH cover Codex's review of `86d63652` (below), from
+`scratchpad/cred-capture/drills8.mjs` (`drills8-result.json`,
+`drills8.log`), all in `authService.test.ts`; `authService.ts` matched its
+pre-drill SHA-256 afterwards.
+
+| Drill | What was broken                                                                      | Result                                                                                                              |
+| ----- | ------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------- |
+| DF    | A switch whose restart fails late publishes its failure over a newer state           | exit 1, 2 failed: "lets a newer refresh stand when an older switch’s restart fails late", "lets a sign-out stand …" |
+| DG    | A finished sign-in whose restart fails late publishes its failure over a newer state | exit 1, 1 failed: "lets a newer refresh stand when a finished sign-in’s restart fails late"                         |
+| DH    | A failed install publishes what it asked over a newer state                          | exit 1, 1 failed: "lets a newer state stand when a failed install’s question answers late"                          |
+
+## Codex on `86d63652`: error paths after an await
+
+**P2.** When `publishSelection`'s restart rejected late, its catch branch
+published `signOutStopFailed` with a new ticket. That skipped the
+`ticket < publishedTicket` and `isCurrent()` guards the success path uses,
+so a stale attempt overwrote a newer state (a newer refresh, or a
+sign-out) and closed admission. The previous sweep had covered success
+paths only.
+
+- **Fixed.** The failure is published under the same guards, with the
+  refresh's own ticket (DF: a newer refresh and a sign-out).
+- **Re-sweep: every catch, finally and error path after an await in
+  `AuthService`, `CliAccount`, `runDeviceSignIn` and `accountHost`.**
+  - **`confirmCliSignIn`.** A finished sign-in's restart that rejected
+    reached `finishFailedCliSignIn` and published `signInFailed` with a
+    fresh ticket, over a refresh published meanwhile. The restart is now
+    guarded: if anything was published after the flow's last own
+    publication, the newer state stands (DG).
+  - **`installFailed`**, the install's error path. It published the
+    selection it awaited even when a newer state was published while it
+    asked. It now takes a ticket before asking (DH).
+- **Checked, left as they were.**
+  - `setLogoutHold`'s catch is guarded (DD).
+  - `stopBackendForSignOut`, `performSignOut`'s key-clear catch and
+    `logOutCli`'s terminal catch publish nothing; the one sign-out that
+    owns them publishes its own result.
+  - The `finally` blocks (`joinDeviceSignIn`, `awaitDeviceRunner`,
+    `signInWithCli`, `checkAgain`, `installMuseCode`, `signOut`,
+    `performSignOut`) reset single-writer or identity-guarded fields.
+  - `signInWithCli`'s catch for a failure before `confirmCliSignIn` runs
+    while the flow owns the panel, where no refresh publishes; a sign-out
+    is guarded by `isSigningOut`.
+  - `CliAccount.confirm`'s `finally` is identity-guarded, and a rejected
+    probe writes nothing.
+  - `runDeviceSignIn`'s error paths (`connect`, `cancelLogin`, `hostGone`,
+    `finally` closing its own session) touch only its own locals.
+  - `accountHost`'s catches (`onAccountHost`, `requestAccount`,
+    `connectAccountSession`) log and return a fallback, and share no
+    state.
+- **Checks run, and not the full gate.** The machine was still loaded by
+  other worktrees' gates, so, as the coordinator asked, only the touched
+  suite (`authService.test.ts`, 103 tests), `npm run typecheck`,
+  `npm run lint`, `npm run check:l10n` (0 problems),
+  `npm run duplication` (0 clones) and `npm run format:check` ran. All
+  passed. The full gate is CI's three-OS run on the pushed commit.
+
 ## Codex on `19e74b07`: shared state written after an await
 
 **P2.** `restartHosts(true)` cleared `liveBackend` after awaiting the

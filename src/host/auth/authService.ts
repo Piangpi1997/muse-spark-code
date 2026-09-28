@@ -338,13 +338,21 @@ export class AuthService {
       await this.restartHosts(true)
     } catch {
       this.deps.log.warn('The running backend could not stop before switching backends')
-      return this.set({
-        ...this.snapshot,
-        status: 'error',
-        detail: UI_TEXT.signOutStopFailed,
-        installState:
-          this.snapshot.installState === 'running' ? 'failed' : this.snapshot.installState,
-      })
+      // The failure is published under the same guards as the success: a
+      // newer state, or a sign-out, published meanwhile stands (Codex on
+      // 86d63652).
+      return ticket < this.publishedTicket || !isCurrent()
+        ? this.snapshot
+        : this.set(
+            {
+              ...this.snapshot,
+              status: 'error',
+              detail: UI_TEXT.signOutStopFailed,
+              installState:
+                this.snapshot.installState === 'running' ? 'failed' : this.snapshot.installState,
+            },
+            ticket,
+          )
     }
     return ticket < this.publishedTicket || !isCurrent() ? this.snapshot : this.set(next, ticket)
   }
@@ -575,7 +583,19 @@ export class AuthService {
       }
     }
     this.admissionGenerationValue += 1
-    await this.restartHosts(flow.initial.status === 'signedIn')
+    // A restart that fails after a newer state was published (a refresh
+    // meanwhile) leaves that state standing, rather than the flow's failure
+    // (Codex on 86d63652).
+    const published = this.publishedTicket
+    try {
+      await this.restartHosts(flow.initial.status === 'signedIn')
+    } catch (error: unknown) {
+      if (this.publishedTicket !== published) {
+        this.deps.log.warn('The backend did not restart after sign-in; a newer state stands')
+        return this.snapshot
+      }
+      throw error
+    }
     if (abort.signal.aborted) {
       return await this.finishCancelledCliSignIn(flow)
     }
@@ -697,8 +717,11 @@ export class AuthService {
   }
 
   private async installFailed(detail: string, epoch: number): Promise<AuthSnapshot> {
+    // The install's error path publishes what it asks here only if nothing
+    // newer was published while it asked (Codex on 86d63652).
+    const ticket = this.nextTicket()
     const selected = await this.selectedSnapshot(true)
-    if (epoch !== this.signOutEpoch || this.isSigningOut) {
+    if (epoch !== this.signOutEpoch || this.isSigningOut || ticket < this.publishedTicket) {
       return this.snapshot
     }
     if (this.isLogoutHeld) {

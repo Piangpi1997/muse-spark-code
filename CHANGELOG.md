@@ -73,7 +73,8 @@ happened, not what was planned; superseded entries are kept.
     conversation kept running. A restart that finishes late no longer
     forgets a backend signed in on meanwhile, and a save of the sign-out
     state that fails late no longer keeps conversations shut after a later
-    save succeeded.
+    save succeeded. A restart that fails late, or an install's error
+    report, no longer replaces a newer state with its error.
   - **Old answers.** An answer Muse Code gives to a question the extension
     had already dropped (after Cancel, a sign-out or **Check again**)
     reaches no one, and a slower, older check never replaces what a newer

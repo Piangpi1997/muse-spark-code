@@ -618,6 +618,23 @@ async function cancelAfterApproval(h: Harness): Promise<AuthSnapshot> {
   return await pending
 }
 
+/**
+ * A Model API session switching to a CLI now signed in (Check again), held
+ * in the restart that ends the Model API conversation until the test
+ * settles `stopping`.
+ */
+async function switchHeldInRestart() {
+  const h = await signedInModelApi()
+  const stopping = Promise.withResolvers<undefined>()
+  h.restartBackend.mockImplementationOnce(() => stopping.promise)
+  h.facts.cli = 'signedIn'
+  const switching = h.service.checkAgain()
+  await vi.waitFor(() => {
+    expect(h.restartBackend).toHaveBeenCalledOnce()
+  })
+  return { h, stopping, switching }
+}
+
 // The review of PR #49: what a sign-out, Cancel or the window closing must
 // not wait on, and what they must not overwrite.
 describe('AuthService: sign-in, sign-out and Cancel racing', () => {
@@ -912,20 +929,71 @@ describe('AuthService: a switch of backends ends the running one’s conversatio
   // way: that restart's late end leaves the newer record, so the next switch
   // still ends its conversations (Codex on 19e74b07).
   it('keeps the backend a newer refresh signed in on when an older restart ends', async () => {
-    const h = await signedInModelApi()
-    const stopping = Promise.withResolvers<undefined>()
-    h.restartBackend.mockImplementationOnce(() => stopping.promise)
-    h.facts.cli = 'signedIn'
-    const switching = h.service.checkAgain()
-    await vi.waitFor(() => {
-      expect(h.restartBackend).toHaveBeenCalledOnce()
-    })
+    const { h, stopping, switching } = await switchHeldInRestart()
     await expect(h.service.refresh()).resolves.toMatchObject({ backend: 'museCode' })
     stopping.resolve(undefined)
     await switching
     h.facts.cli = 'signedOut'
     await expect(h.service.refresh()).resolves.toMatchObject({ backend: 'modelApi' })
     expect(h.restartBackend.mock.calls).toEqual([[true], [true], [true]])
+  })
+
+  // An older switch's restart fails after a newer refresh, or a sign-out,
+  // published: the failure does not replace the newer state (Codex on
+  // 86d63652).
+  it.each([
+    ['a newer refresh', 'signedIn'],
+    ['a sign-out', 'signedOut'],
+  ] as const)('lets %s stand when an older switch’s restart fails late', async (newer, status) => {
+    const { h, stopping, switching } = await switchHeldInRestart()
+    await (newer === 'a sign-out' ? h.service.signOut() : h.service.refresh())
+    stopping.reject(new Error('the host would not stop'))
+    await switching
+    expect(h.service.current.status).toBe(status)
+  })
+
+  // A finished sign-in's restart fails after a newer refresh published: the
+  // flow's failure does not replace it (Codex on 86d63652).
+  it('lets a newer refresh stand when a finished sign-in’s restart fails late', async () => {
+    const h = harness()
+    const stopping = Promise.withResolvers<undefined>()
+    h.restartBackend.mockImplementationOnce(() => stopping.promise)
+    h.runDeviceSignIn.mockImplementation(() => {
+      h.facts.cli = 'signedIn'
+      return Promise.resolve('signedIn')
+    })
+    const signingIn = h.service.signIn('browser')
+    await vi.waitFor(() => {
+      expect(h.restartBackend).toHaveBeenCalledOnce()
+    })
+    await expect(h.service.refresh()).resolves.toMatchObject({ status: 'signedIn' })
+    stopping.reject(new Error('the host would not stop'))
+    await signingIn
+    expect(h.service.current).toMatchObject({ status: 'signedIn', backend: 'museCode' })
+  })
+
+  // A failed install asks for the selection; a newer state published while
+  // it asked stands (Codex on 86d63652).
+  it('lets a newer state stand when a failed install’s question answers late', async () => {
+    const h = await signedInModelApi()
+    h.facts.cliPresent = false
+    const late = Promise.withResolvers<CliSignIn>()
+    let isAsking = false
+    h.runInstallerInTerminal.mockImplementation(() => {
+      h.cliSignIn.mockImplementationOnce(() => {
+        isAsking = true
+        return late.promise
+      })
+      throw new Error('terminal unavailable')
+    })
+    const installing = h.service.installMuseCode()
+    await vi.waitFor(() => {
+      expect(isAsking).toBe(true)
+    })
+    h.service.markAuthRequired('authRequired')
+    late.resolve('signedOut')
+    await installing
+    expect(h.service.current).toMatchObject({ status: 'signedOut', detail: 'authRequired' })
   })
 
   // An older logout-hold write fails after newer ones were saved: the hold
