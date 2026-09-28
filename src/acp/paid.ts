@@ -14,6 +14,7 @@
 
 import type { PermissionOption, RequestPermissionResponse } from '@agentclientprotocol/sdk'
 import { PaidUseConsent, type PaidUseAnswer } from '../core/paid/paidConsent'
+import { failureForLog } from '../core/backends/musecode/logText'
 import type { CoreLogger } from '../core/logging'
 import {
   ACP_PAID_FEATURES,
@@ -49,6 +50,7 @@ export interface AcpPaidUseDeps {
   readonly log: CoreLogger
 }
 
+/** The agent's own store's failure: its code and our own data folder's path, never a CLI's text. */
 function describe(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
@@ -105,7 +107,7 @@ export class AcpPaidUse {
       return await asker(sessionId, request, canRemember)
     } catch (error: unknown) {
       this.deps.log.warn(
-        `Paid use of ${request.feature}: the editor could not be asked, so it is denied: ${describe(error)}`,
+        `Paid use of ${request.feature}: the editor could not be asked, so it is denied: ${failureForLog(error)}`,
       )
       return 'deny'
     }

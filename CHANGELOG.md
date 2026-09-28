@@ -65,6 +65,14 @@ happened, not what was planned; superseded entries are kept.
   longer clears the Model API agent's "Allow always" when it starts, and a
   Model API agent whose `dist/modelApi.js` is missing says to reinstall the
   agent, not the extension.
+- **The ACP agent keeps credential variables to Muse Code.** A
+  `META_API_KEY` in the agent's environment still reaches Muse Code and
+  counts as its sign-in, as with the extension, but no shell command, hook
+  or git the agent runs sees it or any other `*_API_KEY` variable. A
+  loaded or resumed session now runs in the mode, model and effort the
+  editor shows (or fails to load); a question's form answer is used only
+  when it is one of the form's own options, in the allowed number; and the
+  agent's log names a backend failure by its kind, never its message.
 - **The key outside VS Code, in the rules** (AGENTS.md rule 8, PLAN.md
   D61). Outside VS Code the operating system's credential store stands in
   for SecretStorage: the ACP agent's key goes in only through `auth set`'s

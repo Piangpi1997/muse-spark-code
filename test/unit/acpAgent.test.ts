@@ -874,6 +874,42 @@ describe('the ACP agent (M63)', () => {
     expect(h.updates).toEqual([])
   })
 
+  it('runs a loaded session as it is shown: the mode, a model it lists, the effort (Codex on a209130)', async () => {
+    const h = harness()
+    const resume = h.host.resumeSession.getMockImplementation()!
+    // Stored on a contributor model, which this agent does not list.
+    h.host.resumeSession.mockImplementationOnce((sessionId, _modelId, mcp) =>
+      resume(sessionId, 'muse-spark-1.3-contributor', mcp),
+    )
+    const loaded = await h.run(async (client) => {
+      await client.request('initialize', { protocolVersion: acp.PROTOCOL_VERSION })
+      return await client.request('session/load', { sessionId: 'old-1', cwd: CWD, mcpServers: [] })
+    })
+    const session = h.host.sessions[0]!
+    expect(loaded.modes?.currentModeId).toBe('manual')
+    expect(session.setApprovalMode).toHaveBeenCalledWith('promptUnmatched')
+    expect(session.setModel).toHaveBeenCalledWith('muse-spark-1.3')
+    expect(loaded.configOptions?.find((option) => option.id === 'model')?.currentValue).toBe(
+      'muse-spark-1.3',
+    )
+    expect(session.setReasoningEffort).toHaveBeenCalledTimes(1)
+  })
+
+  it('logs a backend failure by its kind, never its message (Codex on a209130)', async () => {
+    const h = harness()
+    await h.run(async (client) => {
+      const { sessionId } = await start(client)
+      const session = h.host.sessions[0]!
+      session.listSkills.mockRejectedValue(
+        new Error(String.raw`cannot read C:\Users\person\secret.json for person@example.com`),
+      )
+      await turn(h, client, sessionId, () => undefined)
+    })
+    const logged = JSON.stringify(h.log.warn.mock.calls)
+    expect(logged).toContain('skills unavailable: Error')
+    expect(logged).not.toContain('person')
+  })
+
   it('lists the folder’s sessions, the agent’s own folder when none is named', async () => {
     const h = harness()
     h.host.page = {

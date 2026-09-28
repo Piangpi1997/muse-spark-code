@@ -411,3 +411,65 @@ Left as they are, with their reasons:
 - The account host's own failure reasons reach the log as their error's
   name, as PR #49 logs them everywhere (its rule: a CLI's text may name a
   path or an account).
+
+## Codex on `a209130`: four P1s, closed by class (2026-09-28)
+
+- **Credential variables.** The extension's `muse serve` inherits the
+  user's own `META_API_KEY` on purpose (PLAN.md D1's amendment,
+  `launch.ts`), and counts it as the CLI's credential; its hooks already
+  get no `*_API_KEY`. The agent now matches that for Muse Code and goes
+  further for everything else: `takeCredentials` (in `main.ts`, before any
+  process starts) takes every credential variable (`isCredentialVariable`:
+  `*_API_KEY` and the names hooks never get) out of the agent's own
+  environment and hands them to Muse Code's processes only (`muse serve`,
+  its account hosts, `muse login`, through `getEnvironmentVariables`, as
+  the extension's `museSpark.environmentVariables` are). The sweep of every
+  spawn the agent can reach: the shell tool and hooks (`toolIo`, also given
+  `withoutCredentials`), git (`processGitRunner`, `process.env`), the
+  Windows job helpers and tree kills (`windowsPowerShell`, `process.env`)
+  all inherit the stripped environment; the Model API backend runs no MCP
+  servers; the editor's MCP servers are started by Muse Code with its own
+  allowlist. AGENTS.md rule 8, D61 and `docs/acp.md` say so.
+- **Logs.** Every backend, CLI or client failure in `src/acp` goes through
+  PR #49's `failureForLog` (its kind and code, never its message). What
+  stays as it was: the agent's own grants store (our data folder's path
+  and its code), the keyring's reason in a sign-in message to the user,
+  and the host's exit description (our own table sentence).
+- **Client answers.** The elicitation answer is parsed whole with zod, and
+  each answer against its question: a single choice one of its options,
+  free text (non-blank) only where it has none, a multiple choice distinct
+  options within its bounds (1 when unset, as the panel's card). Anything
+  else declines the questions. With the permission answers, those are all
+  the requests the agent makes of the client.
+- **Load and resume.** A loaded or resumed session is set to the mode it
+  is shown in, a model the agent lists (a contributor model it hides is
+  replaced by the default) and the effort shown; if the backend refuses,
+  the load fails and nothing is held. The agent advertises no goal; the
+  plan it sends is the history's own.
+
+| Drill | Break                                                  | Result                                                                                                            |
+| ----- | ------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------- |
+| C1    | the shell tool given the agent's environment as it is  | exit 1: "runs a shell command with no credential variable in its environment" (a real run)                        |
+| C2    | Muse Code given no credential variables back           | exit 1: "hands them back to Muse Code only, where META_API_KEY counts as its credential (D1)"                     |
+| C3    | credentials copied but left in the agent's environment | exit 1: "takes every credential variable out of the agent's own environment, and leaves the rest"                 |
+| C4    | `main.ts` hands the runtime none                       | the stdio suite, exit 1: "hands META_API_KEY in its own environment to Muse Code only, …"                         |
+| L1    | a backend failure logged as its message                | exit 1: "logs a backend failure by its kind, never its message"                                                   |
+| E1    | a label that is not an option taken                    | exit 1: "answers nothing on a label that is not an option (rule 7)", "declines a form whose answers do not fit …" |
+| E2    | a multiple choice's lower bound dropped                | exit 1: "answers nothing for a multiple choice with fewer than it needs", "declines a form whose answers …"       |
+| E3    | a malformed response read as an empty accept           | exit 1: 3 tests, "answers nothing on a response that is not one (rule 7)" first                                   |
+| M1    | a loaded session left as the backend restored it       | exit 1: "runs a loaded session as it is shown: the mode, a model it lists, the effort"                            |
+| M2    | an unlisted model kept                                 | exit 1: the same test                                                                                             |
+| M3    | a refused mode logged and the load let through         | exit 1: "fails a load whose mode the backend refuses, and lets that session go"                                   |
+
+Another session answered the same review on the branch meanwhile
+(`7c0ff0c8`, the fake CLI's credential in the captured shape; `83833fe1`,
+recorded in `m63.md`). This commit sits on top and keeps its tests, its
+decline log line and its mode on load. It goes further where the two
+differ: credential variables reach Muse Code only, the editor's failures
+are logged by kind too, and a load sets a listed model and the effort as
+well. It also differs twice from the other session's form rules. A
+single choice takes only an offered option, where the other session
+also took text: the form sends it as `oneOf`, so text is not an answer
+the form allows. And a multiple choice without bounds needs at least
+one pick, where the other session allowed none: this is the panel's
+card rule.

@@ -59,7 +59,13 @@ them, the milestone plan, and the certification checklist.
      `muse-spark-code-acp auth set`, from its standard input (the user's
      terminal, or a pipe into it); never from an environment variable, an
      argument or a file; and it is never passed to a child process
-     (`muse serve`, a tool, a check).
+     (`muse serve`, a tool, a check). A `META_API_KEY` the user sets in the
+     agent's own environment is theirs for Muse Code, not the stored key:
+     as the extension's `muse serve` inherits it (PLAN.md D1), it reaches
+     Muse Code's processes only, where it counts as Muse Code's credential.
+     The agent takes every credential variable (`*_API_KEY` and the named
+     ones hooks never get) out of its own environment at start, so no
+     shell command, hook, git or helper it starts sees one.
    - **The one exception: M80's CI bootstrap** (PLAN.md M80, planned).
      GitHub hands a secret to a step only through its environment or its
      script, so the Action's own step shell is the one environment the key

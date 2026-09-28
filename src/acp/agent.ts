@@ -147,11 +147,6 @@ const FAILED_TERMINAL = 'failed'
 // Turns that finished before `sendTurn` answered with their id; a few suffice.
 const EARLY_FINISHES_KEPT = 8
 
-/** A failure of the editor's side of the connection, as the log names it: its own message. */
-function describe(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
-}
-
 function isContributorModel(modelId: string): boolean {
   return modelId.endsWith(CONTRIBUTOR_MODEL_SUFFIX)
 }
@@ -218,7 +213,7 @@ class AcpSession {
       await this.client.notify('session/update', { sessionId: this.sessionId, update })
     } catch (error: unknown) {
       this.deps.log.warn(
-        `ACP session ${this.sessionId}: an update was not sent: ${describe(error)}`,
+        `ACP session ${this.sessionId}: an update was not sent: ${failureForLog(error)}`,
       )
     }
   }
@@ -387,7 +382,7 @@ class AcpSession {
         )
       } catch (error: unknown) {
         this.deps.log.warn(
-          `ACP session ${this.sessionId}: permission request failed, denying: ${describe(error)}`,
+          `ACP session ${this.sessionId}: permission request failed, denying: ${failureForLog(error)}`,
         )
       }
       choice = decidedChoice(response, event.availableChoices)
@@ -487,7 +482,7 @@ class AcpSession {
       answer = paidUseAnswer(permissionResponse(response), canRemember)
     } catch (error: unknown) {
       this.deps.log.warn(
-        `ACP session ${this.sessionId}: the paid-use question failed, denying: ${describe(error)}`,
+        `ACP session ${this.sessionId}: the paid-use question failed, denying: ${failureForLog(error)}`,
       )
     }
     this.send({
@@ -531,6 +526,23 @@ class AcpSession {
         })),
       },
     ]
+  }
+
+  /**
+   * A loaded or resumed session made to run as the agent advertises it: its
+   * permission mode (the one shown, never stricter than the one in force),
+   * a model the agent lists (a contributor model the agent hides is left),
+   * and the effort shown. What the backend kept from before counts for
+   * nothing the agent shows.
+   */
+  public async matchAdvertised(): Promise<void> {
+    await this.session.setApprovalMode(approvalModeFor(this.mode, true))
+    if (this.models.every((model) => model.modelId !== this.modelId)) {
+      const listed = startingModel(this.models)
+      await this.session.setModel(listed)
+      this.modelId = listed
+    }
+    await this.applyEffort(this.effort)
   }
 
   /** The session's standing effort, as the panel sets it on a new session. */
@@ -833,12 +845,14 @@ class AgentState {
       this.forwardedMcp(host, requestedMcp),
     )
     const acp = this.register(host, loaded.session, cwd, client, models)
-    // A session resumes on the approval mode it last had, which may be more
-    // permissive than the one the editor is told: the mode is set before
-    // anything is replayed, as the panel sets its own on a resume.
+    // A session resumes on the approval mode, model and effort it last had,
+    // which may differ from what the editor is told (a more permissive mode,
+    // a hidden model): they are set before anything is replayed, as the
+    // panel sets its own on a resume.
     try {
-      await acp.setMode(this.deps.options.initialMode)
+      await acp.matchAdvertised()
     } catch (error: unknown) {
+      // Nothing is shown that does not run: the load fails instead.
       this.closeSession(loaded.session.sessionId)
       throw error
     }

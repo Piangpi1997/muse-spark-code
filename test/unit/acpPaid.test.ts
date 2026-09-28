@@ -59,7 +59,7 @@ describe('AcpPaidUse', () => {
     expect(await paid.allows(FOLDER, 's1', WEB_SEARCH, false)).toBe(false)
     expect(asker).toHaveBeenCalledWith('s1', WEB_SEARCH, true)
     expect(log.warn).toHaveBeenCalledWith(
-      'Paid use of webSearch: the editor could not be asked, so it is denied: the connection closed',
+      'Paid use of webSearch: the editor could not be asked, so it is denied: Error',
     )
   })
 

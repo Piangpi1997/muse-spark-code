@@ -35,6 +35,7 @@ import { CredentialStore, type SecretStore } from '../host/auth/credentialStore'
 import type { Logger } from '../host/logger'
 import { createWorkspaceFileLister } from '../host/mention/workspaceFiles'
 import {
+  type EnvironmentVariable,
   MENTION_INDEX_LIMIT,
   MODEL_API_BUNDLE_FILE,
   SEARCH_WORKER_FILE,
@@ -50,6 +51,7 @@ import {
   paidGrantsFile,
   workspaceSessionsFolder,
 } from './dataFolder'
+import { withoutCredentials } from './credentialVariables'
 import { walkFiles } from './fileWalk'
 import { paidGrantFile } from './paidGrants'
 
@@ -63,6 +65,12 @@ export interface RuntimeBackendDeps {
   readonly homeDir: string
   readonly secrets: SecretStore
   readonly runGit: (args: readonly string[], cwd: string) => Promise<string>
+  /**
+   * The credential variables taken out of the agent's own environment at
+   * start (credentialVariables.ts): handed back to Muse Code's processes
+   * only, as the extension's `muse serve` inherits them (D1).
+   */
+  readonly museCodeCredentials: readonly EnvironmentVariable[]
   /** The Model API's transport. */
   readonly fetch: typeof fetch
   /** Waits between retries and rename attempts; injectable so tests do not sleep. */
@@ -99,7 +107,7 @@ function museCodeManager(deps: RuntimeBackendDeps, workspaceRoot: string | undef
     log,
     extensionVersion: deps.version,
     getConfiguredBinaryPath: () => options.museBinary,
-    getEnvironmentVariables: () => [],
+    getEnvironmentVariables: () => deps.museCodeCredentials,
     workspaceRoot,
     getShellSandbox: () => options.shellSandbox,
     // No `--sandbox-network` (M56): Muse Code's default, or a managed policy's.
@@ -142,7 +150,8 @@ function modelApiManager(
     platform,
     listFiles,
     systemRoot,
-    env: () => deps.env,
+    // No credential variable reaches a tool's process (AGENTS.md rule 8).
+    env: () => withoutCredentials(deps.env),
     searchWorkerPath: path.join(deps.distDir, SEARCH_WORKER_FILE),
     log: warn,
     // The agent cannot see the editor's buffers (D62); the client's `fs/*` will (M63c).

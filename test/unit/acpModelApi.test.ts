@@ -62,6 +62,8 @@ function setup(
   isTrusted = false,
   // A later agent on the same computer and folder shares these.
   shared?: { readonly data: string; readonly workspace: string },
+  // More of the agent's own environment (a shell tool needs PATH).
+  extraEnv: NodeJS.ProcessEnv = {},
 ) {
   const api = fakeModelApi()
   const secrets = memorySecrets()
@@ -82,10 +84,11 @@ function setup(
     version: '0.0.0-test',
     distDir: dist.folder,
     platform: process.platform,
-    env: { XDG_DATA_HOME: data, LOCALAPPDATA: data },
+    env: { ...extraEnv, XDG_DATA_HOME: data, LOCALAPPDATA: data },
     homeDir: data,
     secrets,
     runGit: () => Promise.reject(new Error('no git')),
+    museCodeCredentials: [],
     fetch: api.fetch,
     sleep: () => Promise.resolve(),
     log,
@@ -300,6 +303,39 @@ describe('the ACP agent on the Model API backend (M63)', () => {
     expect(failure).not.toContain('http.proxy')
     await t.runtime.close()
   })
+
+  it(
+    'runs a shell command with no credential variable in its environment (Codex on a209130)',
+    { timeout: 60_000 },
+    async () => {
+      // Trusted: shell commands run only in a trusted folder.
+      const t = setup(allowOnce, [], true, undefined, {
+        ...process.env,
+        META_API_KEY: 'LLM|1|placeholder',
+        EXAMPLE_API_KEY: 'placeholder-too',
+      })
+      const shell = process.platform === 'win32' ? 'powershell' : 'bash'
+      // Only a real run prints the joined word; the command's own text does not hold it.
+      const command = `node -e "console.log('keys' + '-' + ([process.env.META_API_KEY, process.env.EXAMPLE_API_KEY].join('') || 'none'))"`
+      t.api.script(
+        {
+          calls: [
+            {
+              name: shell,
+              arguments: JSON.stringify({ command, description: 'keys' }),
+              callId: 'k1',
+            },
+          ],
+        },
+        { text: 'Checked.' },
+      )
+      await t.run((client) => promptOnce(client, t.workspace))
+      const sent = JSON.stringify(t.api.responseBodies()[1])
+      expect(sent).toContain('keys-none')
+      expect(sent).not.toContain('placeholder')
+      await t.runtime.close()
+    },
+  )
 
   it('keeps "Allow always" for a trusted folder until the agent starts without the flag (M58)', async () => {
     const first = setup(answerPaid('paid-allow-always'), ['webSearch'], true)

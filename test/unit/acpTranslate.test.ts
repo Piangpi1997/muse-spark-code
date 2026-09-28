@@ -559,7 +559,7 @@ describe('questions', () => {
     })
   })
 
-  it('reads the answers: an option, several, free text, nothing for a missing field', () => {
+  it('reads the answers: an option, several, free text', () => {
     expect(
       formAnswers([single, multiple, open], {
         action: 'accept',
@@ -571,6 +571,33 @@ describe('questions', () => {
       { questionId: 'q3', freeText: 'Muse' },
     ])
     expect(formAnswers([single], { action: 'decline' })).toBeUndefined()
+    expect(formAnswers([single], { action: 'cancel' })).toBeUndefined()
+  })
+
+  it.each([
+    ['a response that is not one', 'accept'],
+    ['an unknown action', { action: 'maybe' }],
+    ['a missing answer', { action: 'accept' }],
+    ['a label that is not an option', { action: 'accept', content: { q1: 'Green' } }],
+    ['a number for a choice', { action: 'accept', content: { q1: 1 } }],
+    ['a list for a single choice', { action: 'accept', content: { q1: ['Blue'] } }],
+  ])('answers nothing on %s (rule 7)', (_name, raw) => {
+    expect(formAnswers([single], raw)).toBeUndefined()
+  })
+
+  it.each([
+    ['fewer than it needs', []],
+    ['more than it allows', ['A', 'B', 'A']],
+    ['the same option twice', ['A', 'A']],
+    ['an option it does not have', ['A', 'C']],
+    ['text instead of a list', 'A'],
+  ])('answers nothing for a multiple choice with %s', (_name, picked) => {
+    expect(formAnswers([multiple], { action: 'accept', content: { q2: picked } })).toBeUndefined()
+  })
+
+  it('answers nothing for blank free text or an answer to a question it did not ask', () => {
+    expect(formAnswers([open], { action: 'accept', content: { q3: '  ' } })).toBeUndefined()
+    expect(formAnswers([open], { action: 'accept', content: { other: 'x' } })).toBeUndefined()
   })
 
   it('declines a form whose answers do not fit the questions (AGENTS.md rule 7)', () => {
@@ -597,15 +624,19 @@ describe('questions', () => {
     }
     const atMostOne: Question = { ...multiple, selection: { mode: 'multiple', maxSelections: 1 } }
     expect(formAnswers([atMostOne], accepted({ q2: ['A', 'B'] }))).toBeUndefined()
-    // Without bounds, none up to every option.
+    // Without bounds, one up to every option, as the panel's card asks.
     const unbounded: Question = { ...multiple, selection: { mode: 'multiple' } }
-    expect(formAnswers([unbounded], accepted({ q2: [] }))).toEqual([
-      { questionId: 'q2', selectedLabels: [] },
+    expect(formAnswers([unbounded], accepted({ q2: [] }))).toBeUndefined()
+    expect(formAnswers([unbounded], accepted({ q2: ['A', 'B'] }))).toEqual([
+      { questionId: 'q2', selectedLabels: ['A', 'B'] },
     ])
     // Fields for no question are ignored.
     expect(formAnswers([single], accepted({ q1: 'Red', other: 7 }))).toEqual([
       { questionId: 'q1', selectedLabel: 'Red' },
     ])
+    // ACP's accept may carry null content: an answer, with nothing in it.
+    expect(formAnswers([], accepted(null))).toEqual([])
+    expect(formAnswers([single], accepted(null))).toBeUndefined()
   })
 
   it('writes the questions as text for a client without forms', () => {

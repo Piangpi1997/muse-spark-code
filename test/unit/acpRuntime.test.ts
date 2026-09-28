@@ -8,6 +8,7 @@ import type { LaunchResolution } from '../../src/core/backends/musecode/launch'
 import { authClear, authSet, authStatus, login } from '../../src/runtime/authCommands'
 import { createRuntimeBackend } from '../../src/runtime/backends'
 import { parseCommandLine, type ServeOptions } from '../../src/runtime/cliArgs'
+import { takeCredentials, withoutCredentials } from '../../src/runtime/credentialVariables'
 import {
   agentDataFolder,
   paidGrantsFile,
@@ -462,6 +463,7 @@ describe('createRuntimeBackend', () => {
       homeDir: folder(),
       secrets,
       runGit: () => Promise.reject(new Error('no git')),
+      museCodeCredentials: [],
       fetch: fakeModelApi().fetch,
       sleep: () => Promise.resolve(),
       log,
@@ -546,6 +548,7 @@ describe('createRuntimeBackend', () => {
         homeDir: home,
         secrets: memorySecrets(),
         runGit: () => Promise.reject(new Error('no git')),
+        museCodeCredentials: [],
         fetch: fakeModelApi().fetch,
         sleep: () => Promise.resolve(),
         log,
@@ -566,6 +569,56 @@ describe('createRuntimeBackend', () => {
     expect(
       paidGrantsFile({ platform: 'win32', env: { LOCALAPPDATA: String.raw`C:\L` }, homeDir: 'C:' }),
     ).toBe(String.raw`C:\L\Muse Spark Code\acp\paid-uses.json`)
+  })
+})
+
+/** The agent's own environment, with three credential variables among the rest. */
+function env(): NodeJS.ProcessEnv {
+  return {
+    META_API_KEY: 'LLM|1|placeholder',
+    OPENAI_API_KEY: 'sk-placeholder',
+    AWS_SECRET_ACCESS_KEY: 'placeholder',
+    PATH: '/usr/bin',
+    HOME: '/home/person',
+  }
+}
+
+describe('credential variables (AGENTS.md rule 8; Codex on a209130)', () => {
+  it('takes every credential variable out of the agent’s own environment, and leaves the rest', () => {
+    const own = env()
+    expect(takeCredentials(own).map(({ name }) => name)).toEqual([
+      'META_API_KEY',
+      'OPENAI_API_KEY',
+      'AWS_SECRET_ACCESS_KEY',
+    ])
+    expect(own).toEqual({ PATH: '/usr/bin', HOME: '/home/person' })
+    const original = env()
+    expect(withoutCredentials(original)).toEqual({ PATH: '/usr/bin', HOME: '/home/person' })
+    expect(original['META_API_KEY']).toBe('LLM|1|placeholder')
+  })
+
+  it('hands them back to Muse Code only, where META_API_KEY counts as its credential (D1)', () => {
+    vi.stubEnv('META_API_KEY', '')
+    try {
+      const runtime = createRuntimeBackend({
+        options: DEFAULTS,
+        version: '0.0.0-test',
+        distDir: folder(),
+        platform: process.platform,
+        env: {},
+        homeDir: folder(),
+        secrets: memorySecrets(),
+        runGit: () => Promise.reject(new Error('no git')),
+        museCodeCredentials: [{ name: 'META_API_KEY', value: 'LLM|1|placeholder' }],
+        fetch: fakeModelApi().fetch,
+        sleep: () => Promise.resolve(),
+        log: { trace: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      })
+      expect(runtime.museCode.childEnvironment()['META_API_KEY']).toBe('LLM|1|placeholder')
+      expect(runtime.museCode.hasEnvironmentKey()).toBe(true)
+    } finally {
+      vi.unstubAllEnvs()
+    }
   })
 })
 

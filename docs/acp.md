@@ -61,7 +61,9 @@ asks for it. Elsewhere, run it yourself once:
   The agent tells whether Muse Code is signed in as the VS Code panel
   does: from the structure of the CLI's credential file (the emptied file
   `muse logout` leaves counts as signed out); `META_API_KEY` in the
-  agent's environment counts too. Where only the CLI can say (a macOS
+  agent's environment counts too, and is handed to Muse Code only: no
+  command, hook or program the agent itself runs sees it or any other
+  `*_API_KEY` variable. Where only the CLI can say (a macOS
   Keychain sign-in), the agent asks it when the editor checks the sign-in
   again after you sign in (ACP's `authenticate`), and otherwise assumes
   the sign-in holds until a turn says it does not.
@@ -210,15 +212,19 @@ Creator's ACP Client, sublime-acp, Devin Desktop's custom agents).
 - **Modes**: Manual, Edit automatically, Plan, Auto (and Bypass permissions
   with its flag), as in the panel. A session loaded or resumed runs in the
   mode the editor is told, not the one it last ran in.
-- **Settings**: the model and the reasoning effort.
+- **Settings**: the model and the reasoning effort. A session loaded or
+  resumed runs on the model and effort the editor is shown; one last run
+  on a model the agent does not list moves to the default.
 - **Commands**: the session's skills, run as `/name arguments`.
 - **Permission prompts**: the backend's own choices (allow once, allow for
   the session, reject). A prompt the editor cancels, or answers with a
   choice it was not offered, is rejected; nothing runs by default.
 - **Questions** the agent asks: a form where the editor has forms,
   otherwise the question as text, answered in your next message. A form
-  that comes back with an answer that is not one of the options offered,
-  or with more or fewer than the question allows, is declined.
+  that comes back with an answer that is not one of the options offered
+  (text is taken only where the question has no options), or with more
+  or fewer than the question allows (at least one where it sets no
+  bound, as in the panel), is declined.
 - **Sessions**: listed, loaded with their history, resumed and closed.
 - **Prompts**: text, files as @mentions, attached excerpts, and PNG, JPEG,
   GIF and WebP images up to 10 MB.

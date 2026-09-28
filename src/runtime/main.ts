@@ -23,6 +23,7 @@ import { createRuntimeBackend } from './backends'
 import { parseCommandLine, type ServeOptions } from './cliArgs'
 import { readSecretLine } from './hiddenInput'
 import { credentialStoreName, keyringSecretStore } from './keyStore'
+import { takeCredentials } from './credentialVariables'
 import { displayLanguage } from './locale'
 import { envProxyWarning } from './proxyWarning'
 import type { Logger } from '../host/logger'
@@ -30,6 +31,9 @@ import { type LogLevel, stderrLogger } from './stderrLog'
 import { webReadable } from './webStreams'
 
 const EXIT_FAILED = 1
+// Credential variables leave the agent's own environment before anything
+// starts a process; only Muse Code's processes get them back (rule 8).
+const museCodeCredentials = takeCredentials(process.env)
 // The package root holds `package.json` and `l10n/`; this file runs from `dist/`.
 const distDir = __dirname
 const packageRoot = path.dirname(distDir)
@@ -106,6 +110,7 @@ function runtimeFor(options: ServeOptions, log: Logger) {
     homeDir: homedir(),
     secrets,
     runGit: processGitRunner(),
+    museCodeCredentials,
     fetch: globalThis.fetch.bind(globalThis),
     sleep,
     log,

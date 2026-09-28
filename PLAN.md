@@ -2897,6 +2897,14 @@ add-generic-password -w` takes it as an argument, visible to `ps`. A
 - **Never**: an argument, an environment variable, a file, a log (the
   redactor stays), an ACP message, or a child process: not the environment
   of `muse serve` (D1), a tool or a check.
+- **Credential variables** (the Codex review of `a209130`, 2026-09-28):
+  a `META_API_KEY` in the agent's own environment is the user's for Muse
+  Code, as the extension's `muse serve` inherits it (D1's amendment), and
+  counts as Muse Code's credential there; the agent takes it and every
+  other credential variable (`*_API_KEY`, the names hooks never get) out
+  of its own environment at start (`src/runtime/credentialVariables.ts`)
+  and hands them back to Muse Code's processes only, so a shell command,
+  a hook, git or a helper never sees one.
 - **AGENTS.md rule 8 (amended 2026-09-28)** names this store as
   SecretStorage's stand-in outside VS Code (it is the store SecretStorage
   itself rests on), filled only through `auth set`'s standard input and
@@ -2959,6 +2967,14 @@ modelApi` (the key of D61). There is no "auto", so the bill is never a
   credential. Muse Code's is read as the panel reads it (D26, PR #49): the
   credential file's structure, and `account/read` where only the CLI can
   say; `authenticate` asks afresh.
+- **Load and resume run as advertised** (the Codex review of `a209130`):
+  a loaded or resumed session gets the permission mode, a listed model and
+  the effort the agent shows, or the load fails; the agent never shows a
+  mode stricter than the one in force. The client's answers to the
+  agent's own requests (permission, elicitation) are parsed with zod, and
+  a form answer must be one the form allowed (its options, how many), or
+  the question is declined. The agent's log names a backend failure by
+  its kind (`failureForLog`, PR #49), never by its message.
 - **Trust**: a folder's rules, skills and memory load only with
   `--trust-workspace`, the flag Muse Code itself takes (D13); ACP carries
   no workspace trust of its own.
