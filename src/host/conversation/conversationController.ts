@@ -6,31 +6,29 @@
 import path from 'node:path'
 import { Buffer } from 'node:buffer'
 import { AttachmentStore } from '../../core/attachments'
-import { isProtectedPath } from '../../core/backends/modelapi/permissions'
+import { isProtectedPath } from '../../core/protectedPaths'
 import {
   type AgentHost,
   type AgentSession,
   type BackendKind,
   type GoalCommand,
   type GoalRefusal,
-  GoalRefusedError,
   type HostExit,
+  isGoalRefusedError,
+  isPromptSettledError,
+  isSessionNotLoadedError,
   type LoadedSession,
-  PromptSettledError,
+  type PromptSettledError,
   type PromptSettledReason,
   type SessionHistoryOutcome,
   type SessionListEvent,
   type SessionMcpHttpServer,
-  SessionNotLoadedError,
   type SessionRecord,
   type TurnPart,
   type TurnSubmission,
 } from '../../core/agent/agentBackend'
 import { toSessionRow } from '../../core/agent/sessionRows'
-import {
-  isProfileWorkspaceLimited,
-  type ShellSandboxPosture,
-} from '../../core/backends/musecode/sandbox'
+import { isProfileWorkspace, type ShellSandboxPosture } from '../../core/backends/musecode/sandbox'
 import { chatReferenceText } from '../../core/chatReference'
 import { textFileDisplay } from '../../shared/textFileDisplay'
 import { type EditorContext, editorContextText } from '../../core/editorContext'
@@ -1212,18 +1210,17 @@ export class ConversationController {
    * turned it off for a Windows profile workspace, or the user forced it on
    * where the CLI cannot run commands in the workspace.
    */
-  private noteShellSandbox(workspaceRoot: string, serverVersion: string): void {
+  private noteShellSandbox(workspaceRoot: string): void {
     const posture = this.deps.shellSandbox()
     if (posture.reason === 'profileWorkspace') {
       this.notice('info', UI_TEXT.sandboxOffProfileNotice)
       return
     }
-    const isLimited = isProfileWorkspaceLimited({
-      platform: this.deps.platform,
+    const isLimited = isProfileWorkspace(
+      this.deps.platform,
       workspaceRoot,
-      userProfileDir: this.deps.userProfileDir,
-      serverVersion,
-    })
+      this.deps.userProfileDir,
+    )
     if (isLimited && posture.isSandboxed) {
       this.notice('warning', UI_TEXT.sandboxProfileNotice)
     }
@@ -1275,7 +1272,7 @@ export class ConversationController {
         ...(message.feedback !== undefined && { feedback: message.feedback }),
       })
     } catch (error: unknown) {
-      if (error instanceof PromptSettledError) {
+      if (isPromptSettledError(error)) {
         this.promptSettled(error, { approvalId: message.approvalId })
         return
       }
@@ -1311,7 +1308,7 @@ export class ConversationController {
     try {
       await this.session.cancelQuestions(userInputId)
     } catch (error: unknown) {
-      if (error instanceof PromptSettledError) {
+      if (isPromptSettledError(error)) {
         this.promptSettled(error, { userInputId })
         return
       }
@@ -1328,7 +1325,7 @@ export class ConversationController {
     try {
       await this.session.answerQuestions(message.userInputId, message.answers)
     } catch (error: unknown) {
-      if (error instanceof PromptSettledError) {
+      if (isPromptSettledError(error)) {
         this.promptSettled(error, { userInputId: message.userInputId })
         return
       }
@@ -1347,7 +1344,7 @@ export class ConversationController {
     try {
       await this.session.clarifyQuestions(message.userInputId, text)
     } catch (error: unknown) {
-      if (error instanceof PromptSettledError) {
+      if (isPromptSettledError(error)) {
         this.promptSettled(error, { userInputId: message.userInputId })
         return
       }
@@ -1873,7 +1870,7 @@ export class ConversationController {
     if (host.info.kind === 'modelApi') {
       this.notice('info', UI_TEXT.modelApiBackendNotice)
     } else {
-      this.noteShellSandbox(workspaceRoot, host.info.serverVersion)
+      this.noteShellSandbox(workspaceRoot)
     }
     return session
   }
@@ -2411,7 +2408,7 @@ export class ConversationController {
             // Muse Code's fork keeps the parent's goal until cleared.
             await loaded.session.controlGoal({ verb: 'clear' })
           } catch (error: unknown) {
-            if (!(error instanceof GoalRefusedError && error.refusal === 'noGoal')) {
+            if (!(isGoalRefusedError(error) && error.refusal === 'noGoal')) {
               throw error
             }
           }
@@ -2700,7 +2697,7 @@ export class ConversationController {
     try {
       return await run(session)
     } catch (error: unknown) {
-      if (!(error instanceof SessionNotLoadedError) || this.deps.workspaceRoot === undefined) {
+      if (!isSessionNotLoadedError(error) || this.deps.workspaceRoot === undefined) {
         throw error
       }
       // A late refusal from an old session must not replace the session
@@ -2787,7 +2784,7 @@ export class ConversationController {
       ) {
         return
       }
-      if (error instanceof GoalRefusedError) {
+      if (isGoalRefusedError(error)) {
         this.deps.log.info(`Goal ${verb} refused: ${error.message}`)
         this.say('warning', goalRefusalText(verb, error.refusal))
         result(false)

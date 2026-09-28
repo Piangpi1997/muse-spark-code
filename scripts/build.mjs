@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// Bundles the extension host entry, the search worker, the webview, and (in
-// dev mode) the integration tests with esbuild.
+// Bundles the extension host entry, the Model API backend, the search worker,
+// the webview, and (in dev mode) the integration tests with esbuild.
 //
 //   node scripts/build.mjs               dev build + integration test bundles
 //   node scripts/build.mjs --watch       rebuild on change (extension + webview)
@@ -8,6 +8,12 @@
 //
 // The extension host bundle is CommonJS because VS Code loads `main` with
 // require(). `vscode` is provided by the host and must stay external.
+//
+// The Model API backend is a second host bundle, dist/modelApi.js (M57,
+// PLAN.md D6), with the same format, platform and target: the activation
+// bundle requires it the first time that backend starts. Nothing it bundles
+// may import `vscode` (src/core must not), so `vscode` is not external there
+// and a stray import fails this build.
 //
 // A production build also writes each shipped bundle's esbuild metafile to
 // dist/meta/ (M26, PLAN.md D29): the list of every source file that went in,
@@ -24,6 +30,8 @@ const isWatch = args.has('--watch')
 
 const HOST_ENTRY = 'src/extension.ts'
 const HOST_OUTFILE = 'dist/extension.js'
+const MODEL_API_ENTRY = 'src/host/backend/modelApiEntry.ts'
+const MODEL_API_OUTFILE = 'dist/modelApi.js'
 const SEARCH_WORKER_ENTRY = 'src/host/backend/searchWorker.ts'
 const SEARCH_WORKER_OUTFILE = 'dist/searchWorker.js'
 const WEBVIEW_ENTRY = 'src/webview/main.tsx'
@@ -54,6 +62,16 @@ const hostOptions = {
   format: 'cjs',
   target: NODE_TARGET,
   external: ['vscode'],
+}
+
+/** @type {import('esbuild').BuildOptions} */
+const modelApiOptions = {
+  ...common,
+  entryPoints: [MODEL_API_ENTRY],
+  outfile: MODEL_API_OUTFILE,
+  platform: 'node',
+  format: 'cjs',
+  target: NODE_TARGET,
 }
 
 /** @type {import('esbuild').BuildOptions} */
@@ -103,6 +121,7 @@ function reportSize(path) {
 if (isWatch) {
   const contexts = await Promise.all([
     esbuild.context(hostOptions),
+    esbuild.context(modelApiOptions),
     esbuild.context(searchWorkerOptions),
     esbuild.context(webviewOptions),
   ])
@@ -111,6 +130,7 @@ if (isWatch) {
 } else {
   const shipped = {
     extension: esbuild.build(hostOptions),
+    modelApi: esbuild.build(modelApiOptions),
     searchWorker: esbuild.build(searchWorkerOptions),
     webview: esbuild.build(webviewOptions),
   }
@@ -128,6 +148,7 @@ if (isWatch) {
   }
   console.log('bundle sizes:')
   reportSize(HOST_OUTFILE)
+  reportSize(MODEL_API_OUTFILE)
   reportSize(SEARCH_WORKER_OUTFILE)
   reportSize(path.join(WEBVIEW_OUTDIR, 'main.js'))
   reportSize(path.join(WEBVIEW_OUTDIR, 'main.css'))

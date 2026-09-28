@@ -40,12 +40,12 @@ const THIN_RULE = '-'.repeat(72)
 const HEADER = `THIRD-PARTY SOFTWARE NOTICES
 Muse Spark Code (Unofficial)
 
-The extension's bundles (dist/extension.js, dist/searchWorker.js,
-dist/webview/main.js and dist/webview/main.css) include code from the
-packages below, each under its own licence, reproduced here as the package
-ships it. The macOS dictation helper links only Apple's system frameworks
-and the Windows helper is a PowerShell script of this project; neither
-includes third-party code.
+The extension's bundles (dist/extension.js, dist/modelApi.js,
+dist/searchWorker.js, dist/webview/main.js and dist/webview/main.css)
+include code from the packages below, each under its own licence,
+reproduced here as the package ships it. The macOS dictation helper links
+only Apple's system frameworks and the Windows helper is a PowerShell
+script of this project; neither includes third-party code.
 
 Generated from the production build by scripts/third-party-notices.mjs;
 "npm run notices" regenerates this file.

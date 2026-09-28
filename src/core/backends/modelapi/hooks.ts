@@ -32,7 +32,8 @@ import {
   PROJECT_HOOKS_SEGMENTS,
 } from '../../../shared/constants'
 import { type ContextIo, decodeContextText } from '../../context/contextFiles'
-import { confineWorkspacePath, type ShellResult, type ToolIo } from './tools'
+import { confineWorkspacePath } from '../../workspacePath'
+import type { ShellResult, ToolIo } from './tools'
 
 export const HOOK_EVENTS = [
   'SessionStart',

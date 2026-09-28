@@ -1221,10 +1221,15 @@ function hostOn(platformOs: string, version: string) {
 }
 
 describe('MuseCodeHost: the handshake facts (D26)', () => {
-  it('offers rename and fork except on Windows up to 1.3.0, and says so before forking', async () => {
-    expect(hostOn('windows', '1.3.0-R3401.1').host.info.canEditSessions).toBe(false)
-    expect(hostOn('windows', '1.4.0').host.info.canEditSessions).toBe(true)
+  it('offers rename and fork except on Windows, any version, and says so before forking', async () => {
+    // 1.3.0 and 1.4.0 both refuse them there (#30, #31); a later version is
+    // limited too until one is verified, so a new CLI never brings back
+    // actions that fail (0.9.1).
+    for (const version of ['1.3.0-R3401.1', '1.4.0-R4302.1', '1.5.0', 'dev']) {
+      expect(hostOn('windows', version).host.info.canEditSessions, version).toBe(false)
+    }
     expect(hostOn('linux', '1.3.0').host.info.canEditSessions).toBe(true)
+    expect(hostOn('macos', '1.4.0').host.info.canEditSessions).toBe(true)
     const { host, server } = hostOn('windows', '1.3.0')
     await expect(host.forkSession('s1', 'muse-spark-1.3')).rejects.toThrow(
       UI_TEXT.sessionEditsUnsupported,

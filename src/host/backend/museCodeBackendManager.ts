@@ -14,7 +14,7 @@
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import path from 'node:path'
-import { spawnMspConnection } from '@muse-code/sdk'
+import { type FingerprintWarning, spawnMspConnection } from '@muse-code/sdk'
 import type { CredentialFileVerdict } from '../../core/backends/musecode/credentialFile'
 import { MuseCodeHost, type MspHost } from '../../core/backends/musecode/MuseCodeHost'
 import {
@@ -38,6 +38,7 @@ import {
   MILLISECONDS_PER_SECOND,
   MSP_CLIENT_NAME,
   MSP_HANDSHAKE_TIMEOUT_MS,
+  MSP_KNOWN_SCHEMA_FINGERPRINTS,
   MSP_REQUESTED_CAPABILITIES,
   MUSE_VERSION_FILE,
   type EnvironmentVariable,
@@ -150,6 +151,25 @@ export class MuseCodeBackendManager {
     return variables
   }
 
+  /**
+   * The SDK reports a host whose schema fingerprint differs from its pin. A
+   * build known to be an additive successor is an info line naming it; any
+   * other difference stays a warning (0.9.1: every 1.4.0 start warned).
+   */
+  private logFingerprint(warning: FingerprintWarning | undefined): void {
+    if (warning === undefined) {
+      return
+    }
+    const build = MSP_KNOWN_SCHEMA_FINGERPRINTS[warning.served]
+    if (build === undefined) {
+      this.deps.log.warn(`MSP schema fingerprint mismatch: ${JSON.stringify(warning)}`)
+      return
+    }
+    this.deps.log.info(
+      `MSP schema ${warning.served} is Muse Code ${build}'s, an additive successor of the SDK's ${warning.pinned}`,
+    )
+  }
+
   private async spawn(generation: number): Promise<MuseCodeHost> {
     const resolution = this.resolveLaunch()
     if (!resolution.ok) {
@@ -216,11 +236,7 @@ export class MuseCodeBackendManager {
         `muse serve did not grant ${IDE_MCP_CAPABILITY}; the IDE diagnostics tool is unavailable (granted: ${spawned.initializeResult.grantedCapabilities.join(', ')})`,
       )
     }
-    if (spawned.fingerprintWarning !== undefined) {
-      this.deps.log.warn(
-        `MSP schema fingerprint mismatch: ${JSON.stringify(spawned.fingerprintWarning)}`,
-      )
-    }
+    this.logFingerprint(spawned.fingerprintWarning)
     const mspHost: MspHost = {
       connection: spawned.connection,
       initializeResult: spawned.initializeResult,

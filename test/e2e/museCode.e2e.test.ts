@@ -16,7 +16,12 @@ import type { AgentEvent } from '../../src/shared/agentEvents'
 import type { AgentSession, HostExit } from '../../src/core/agent/agentBackend'
 import type { MuseCodeHost } from '../../src/core/backends/musecode/MuseCodeHost'
 import { MuseCodeBackendManager } from '../../src/host/backend/museCodeBackendManager'
-import { DEFAULT_MODEL_ID, MSP_CLIENT_NAME, UI_TEXT } from '../../src/shared/constants'
+import {
+  DEFAULT_MODEL_ID,
+  MSP_CLIENT_NAME,
+  MSP_KNOWN_SCHEMA_FINGERPRINTS,
+  UI_TEXT,
+} from '../../src/shared/constants'
 import { FakeLogOutputChannel } from '../unit/helpers/fakes'
 import { installFakeCredential, installFakeMuse, removeTestFolders } from './fakeMuse'
 
@@ -53,7 +58,12 @@ async function until(isMet: () => boolean): Promise<void> {
 }
 
 function manager(
-  options: { binaryPath?: string; start?: string; handshakeTimeoutMs?: number } = {},
+  options: {
+    binaryPath?: string
+    start?: string
+    handshakeTimeoutMs?: number
+    fingerprint?: string
+  } = {},
 ) {
   const log = new FakeLogOutputChannel()
   const created = new MuseCodeBackendManager({
@@ -64,7 +74,7 @@ function manager(
     // Node it should run under and the SDK's pinned schema fingerprint.
     getEnvironmentVariables: () => [
       { name: 'MUSE_FAKE_NODE', value: process.execPath },
-      { name: 'MUSE_FAKE_FINGERPRINT', value: EXPECTED_SCHEMA_FINGERPRINT },
+      { name: 'MUSE_FAKE_FINGERPRINT', value: options.fingerprint ?? EXPECTED_SCHEMA_FINGERPRINT },
       ...(options.start === undefined ? [] : [{ name: 'MUSE_FAKE_START', value: options.start }]),
     ],
     workspaceRoot,
@@ -419,6 +429,26 @@ describe('Muse Code backend against a real child process', { timeout: TEST_TIMEO
     const next = await backend.ensureHost()
     expect(next).not.toBe(host)
     expect(next.info.serverName).toBe('muse')
+  })
+
+  it('names a known additive schema at info and still warns about an unknown one (0.9.1)', async () => {
+    const [known] = Object.keys(MSP_KNOWN_SCHEMA_FINGERPRINTS)
+    if (known === undefined) {
+      throw new Error('no known fingerprint to test')
+    }
+    const successor = manager({ fingerprint: known })
+    await successor.manager.ensureHost()
+    const mismatch = expect.stringContaining('MSP schema fingerprint mismatch') as string
+    expect(successor.log.warn).not.toHaveBeenCalledWith(mismatch)
+    expect(successor.log.info).toHaveBeenCalledWith(
+      expect.stringContaining(`Muse Code ${String(MSP_KNOWN_SCHEMA_FINGERPRINTS[known])}`),
+    )
+    const unknown = manager({ fingerprint: 'sha256:not-a-known-build' })
+    await unknown.manager.ensureHost()
+    expect(unknown.log.warn).toHaveBeenCalledWith(mismatch)
+    const pinned = manager()
+    await pinned.manager.ensureHost()
+    expect(pinned.log.warn).not.toHaveBeenCalledWith(mismatch)
   })
 
   it('rejects when the binary will not start (drill)', async () => {

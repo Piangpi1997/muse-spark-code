@@ -2,8 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { MuseLaunch } from '../../src/core/backends/musecode/launch'
 import {
   elevatedInvocation,
-  isProfileWorkspaceLimited,
-  isVersionAtMost,
+  isProfileWorkspace,
   museCliInvocation,
   parseSandboxCheck,
   resolveShellSandbox,
@@ -138,58 +137,18 @@ describe('elevatedInvocation', () => {
   })
 })
 
-describe('isVersionAtMost', () => {
-  it.each([
-    ['1.3.0', '1.3.0', true],
-    ['1.3.0-R3401.1', '1.3.0', true],
-    ['1.2.9', '1.3.0', true],
-    ['0.9.99', '1.3.0', true],
-    ['1.3.1', '1.3.0', false],
-    ['1.10.0', '1.3.0', false],
-    ['2.0.0', '1.3.0', false],
-    ['1.3', '1.3.0', false],
-    ['dev', '1.3.0', false],
-  ])('%s at most %s is %s', (version, limit, expected) => {
-    expect(isVersionAtMost(version, limit)).toBe(expected)
-  })
-})
+describe('isProfileWorkspace', () => {
+  const profile = String.raw`C:\Users\randy`
 
-describe('isProfileWorkspaceLimited', () => {
-  const probe = {
-    platform: 'win32' as const,
-    userProfileDir: String.raw`C:\Users\randy`,
-    serverVersion: '1.3.0',
-  }
-
-  it('is limited for a workspace under the profile on an affected version, whatever the case', () => {
-    expect(
-      isProfileWorkspaceLimited({ ...probe, workspaceRoot: String.raw`c:\users\RANDY\Coding\x` }),
-    ).toBe(true)
-    expect(isProfileWorkspaceLimited({ ...probe, workspaceRoot: String.raw`C:\Users\randy` })).toBe(
-      true,
-    )
+  it('is true for a Windows workspace under the profile, whatever the case', () => {
+    expect(isProfileWorkspace('win32', String.raw`c:\users\RANDY\Coding\x`, profile)).toBe(true)
+    expect(isProfileWorkspace('win32', String.raw`C:\Users\randy`, profile)).toBe(true)
   })
 
-  it('is not limited outside the profile, for a sibling prefix, off Windows, or on a later CLI', () => {
-    expect(isProfileWorkspaceLimited({ ...probe, workspaceRoot: String.raw`C:\src\x` })).toBe(false)
-    expect(
-      isProfileWorkspaceLimited({ ...probe, workspaceRoot: String.raw`C:\Users\randy2\x` }),
-    ).toBe(false)
-    expect(
-      isProfileWorkspaceLimited({
-        ...probe,
-        platform: 'linux',
-        userProfileDir: undefined,
-        workspaceRoot: '/home/randy/x',
-      }),
-    ).toBe(false)
-    expect(
-      isProfileWorkspaceLimited({
-        ...probe,
-        serverVersion: '1.4.0',
-        workspaceRoot: String.raw`C:\Users\randy\x`,
-      }),
-    ).toBe(false)
+  it('is false outside the profile, for a sibling prefix, and off Windows', () => {
+    expect(isProfileWorkspace('win32', String.raw`C:\src\x`, profile)).toBe(false)
+    expect(isProfileWorkspace('win32', String.raw`C:\Users\randy2\x`, profile)).toBe(false)
+    expect(isProfileWorkspace('linux', '/home/randy/x', undefined)).toBe(false)
   })
 })
 

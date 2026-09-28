@@ -6,15 +6,21 @@
 // bundled library that sniffs `typeof navigator` to detect a browser has
 // broken other extensions that way (zod's Cloudflare check, openai/codex
 // #43476). Our host bundles never touch it (zod/mini leaves that check out);
-// this gate keeps it so (M26, PLAN.md D29). Exits 1 on any reference.
+// this gate keeps it so (M26, PLAN.md D29), in the Model API backend's own
+// bundle too (M57). Exits 1 on any reference, or when a bundle is missing.
 
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 
-const HOST_BUNDLES = ['dist/extension.js', 'dist/searchWorker.js']
+const HOST_BUNDLES = ['dist/extension.js', 'dist/modelApi.js', 'dist/searchWorker.js']
 const NAVIGATOR = /\bnavigator\b/g
 
 let hasFailure = false
 for (const bundle of HOST_BUNDLES) {
+  if (!existsSync(bundle)) {
+    hasFailure = true
+    console.log(`MISS ${bundle}: not built`)
+    continue
+  }
   const count = readFileSync(bundle, 'utf8').match(NAVIGATOR)?.length ?? 0
   if (count > 0) {
     hasFailure = true

@@ -7,6 +7,22 @@ happened, not what was planned; superseded entries are kept.
 
 ## [Unreleased]
 
+### Changed
+
+- **The extension starts lighter** (M57, PLAN.md D6). The Model API backend
+  (its host, tools, hooks, goals, subagents and MCP client) is now a bundle
+  of its own, `dist/modelApi.js`, loaded the first time a conversation uses
+  that backend rather than whenever VS Code starts the extension:
+  `dist/extension.js` goes from 596.8 KiB to 425.3 KiB, and a Muse Code user
+  never loads the backend at all. Nothing it does changes. If the file is
+  missing or damaged, the conversation says so in your language and the log
+  names the file.
+- **Build.** `dist/modelApi.js` has a size budget of 400 KiB (295.6 KiB
+  today), and `npm run build` fails if the backend's files creep back into
+  the activation bundle (`scripts/check-bundle-split.mjs`). The host-globals
+  and third-party-notices checks cover the new bundle, `npm run cycles`
+  follows it, and the `.vsix` ships it.
+
 ### Fixed
 
 - **Signing out of Muse Code finishes, and a signed-out CLI no longer reads
@@ -40,6 +56,28 @@ happened, not what was planned; superseded entries are kept.
   structure and gives the CLI's sign-in state. On macOS it also says whether
   the login Keychain holds Muse Code's item, looked up by attribute only:
   no secret and no prompt.
+
+## [0.9.1] - 2026-09-27
+
+Works with Muse Code 1.4.0, now Meta's stable release, which its launcher
+installs by itself.
+
+### Fixed
+
+- **Rename, conversation rewind and Side chat came back on Windows with
+  Muse Code 1.4.0, and failed.** The panel hid them only up to Muse Code
+  1.3.0, but 1.4.0 still refuses `session/rename` and `session/fork` on
+  Windows (meta-models/muse-code-sdk#30, #31). They are now hidden on
+  Windows for every Muse Code version until a release is verified to fix
+  them, and the message no longer names a version.
+- **The warning about a workspace under your Windows user profile was
+  missing with Muse Code 1.4.0.** Its sandbox still starts shell commands in
+  PowerShell's folder there (#26), so the warning is shown again for every
+  version. It no longer says each command takes half a minute, which is no
+  longer true on 1.4.0.
+- **Every Muse Code 1.4.0 start logged "MSP schema fingerprint mismatch".**
+  1.4.0's protocol only adds to 1.3.0's; its known fingerprints are now an
+  info line naming the build, and an unknown one is still a warning.
 
 ## [0.9.0] - 2026-09-27
 

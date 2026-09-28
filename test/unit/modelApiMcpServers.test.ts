@@ -2,8 +2,8 @@ import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
-import type { McpToolSource } from '../../src/core/backends/modelapi/mcp/pool'
-import { createModelApiMcpServers } from '../../src/host/backend/mcpServers'
+import { McpServerPool, type McpToolSource } from '../../src/core/backends/modelapi/mcp/pool'
+import { modelApiMcpPoolDeps } from '../../src/host/backend/mcpServers'
 import { FakeLogOutputChannel } from './helpers/fakes'
 import { FAKE_MCP_SERVER, fixtureJobLifecycle } from './helpers/mcpFixtures'
 import { removeFolder } from './helpers/temporaryFolders'
@@ -27,23 +27,25 @@ function servers(settings: string | undefined, settingsPath?: string) {
   if (settings !== undefined) {
     writeFileSync(file, settings)
   }
-  const source = createModelApiMcpServers({
-    workspaceRoot: folder,
-    settingsPath: () => file,
-    isWorkspaceTrusted: () => true,
-    clientVersion: '0.8.0',
-    platform: process.platform,
-    jobExecutablePath: jobState.path,
-    env: () => ({ ...process.env, M50_MARK: 'from-env' }),
-    fetch: globalThis.fetch.bind(globalThis),
-    log: new FakeLogOutputChannel(),
-  })
+  const source = new McpServerPool(
+    modelApiMcpPoolDeps({
+      workspaceRoot: folder,
+      settingsPath: () => file,
+      isWorkspaceTrusted: () => true,
+      clientVersion: '0.8.0',
+      platform: process.platform,
+      jobExecutablePath: jobState.path,
+      env: () => ({ ...process.env, M50_MARK: 'from-env' }),
+      fetch: globalThis.fetch.bind(globalThis),
+      log: new FakeLogOutputChannel(),
+    }),
+  )
   sources.push(source)
   return { source, folder }
 }
 
 // Real child processes: on a loaded machine Node itself can take seconds to start.
-describe('createModelApiMcpServers (M50)', { timeout: 60_000 }, () => {
+describe('modelApiMcpPoolDeps (M50)', { timeout: 60_000 }, () => {
   it("starts the servers of Muse Code's settings file, ${VAR} from the host's environment", async () => {
     const { source } = servers(
       JSON.stringify({

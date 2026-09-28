@@ -7,6 +7,12 @@
 // and explains instead of answering a question. One `it` per feature, so
 // each runs alone (`vitest run <this file> -t case07`).
 //
+// The host comes from the built dist/modelApi.js, as in the extension (M57,
+// PLAN.md D6), so run `npm run build:dev` first (the search worker needs it
+// too). The budget stop answers as Meta refuses a request, an HTTP 400
+// with an error body, so the bundled client reports it and does not retry;
+// an error thrown from here would be this file's class, not the bundle's.
+//
 // Opt-in only, never in CI: it bills the owner's Model API key. It runs
 // when MUSE_LIVE_MODEL_API=1 with the key in MUSE_LIVE_MODEL_API_KEY, which
 // is taken out of the environment when this file loads, so no process it
@@ -38,7 +44,6 @@ import { crc32, deflateSync } from 'node:zlib'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import * as z from 'zod/mini'
 import type { AgentSession, TurnPart } from '../../src/core/agent/agentBackend'
-import { ModelApiError } from '../../src/core/backends/modelapi/client'
 import { APPROVAL_CHOICE_IDS } from '../../src/core/backends/modelapi/permissions'
 import { parseLoopPrompt } from '../../src/core/backends/modelapi/schedules'
 import { type Usage, usageSchema } from '../../src/core/backends/modelapi/schemas'
@@ -57,7 +62,7 @@ import { fileContextIo } from '../../src/host/backend/contextIo'
 import { describeEnvironment } from '../../src/host/backend/environment'
 import { createFileScheduleStore } from '../../src/host/backend/fileScheduleStore'
 import { createFileSessionStore } from '../../src/host/backend/fileSessionStore'
-import { createModelApiMcpServers } from '../../src/host/backend/mcpServers'
+import { modelApiMcpPoolDeps } from '../../src/host/backend/mcpServers'
 import { createMemoryIo, systemPath } from '../../src/host/backend/memoryIo'
 import { ModelApiBackendManager } from '../../src/host/backend/modelApiBackendManager'
 import { museSettingsPath } from '../../src/host/backend/museSettings'
@@ -74,6 +79,7 @@ import {
   FILE_EDIT_TOOLS,
   MEMORY_SCOPES,
   MODEL_API_BASE_URL,
+  MODEL_API_BUNDLE_FILE,
   MODEL_API_EFFORT_OFF,
   MODEL_API_SCHEDULED_TOOL,
   MODEL_API_SCHEDULES_DIR,
@@ -311,12 +317,12 @@ async function meteredFetch(input: string | URL | Request, init?: RequestInit): 
     return await realFetch(input, init)
   }
   if (spentUsd() > BUDGET_USD) {
-    throw new ModelApiError(
-      `the live sweep's budget of $${BUDGET_USD.toFixed(2)} is spent`,
-      0,
-      undefined,
-      'live_budget',
-    )
+    const error = {
+      message: `the live sweep's budget of $${BUDGET_USD.toFixed(2)} is spent`,
+      type: 'live_budget',
+      code: 'live_budget',
+    }
+    return Response.json({ error }, { status: HTTP_CLIENT_ERROR_MIN })
   }
   const call: WireCall = {
     caseName: running.caseName,
@@ -733,18 +739,22 @@ async function openRig(options: RigOptions): Promise<Rig> {
       noteSubagentUsage: (modelId, childUsage) => {
         usage.addSubagentUsage(modelId, childUsage)
       },
-      createMcpServers: (workspaceRoot) =>
-        createModelApiMcpServers({
-          workspaceRoot,
-          settingsPath: () => settingsPath,
-          isWorkspaceTrusted: isTrusted,
-          clientVersion: '0.0.0-live-modelapi',
-          platform: process.platform,
-          jobExecutablePath: options.mcpJobPath,
-          env: () => process.env,
-          fetch: globalThis.fetch.bind(globalThis),
-          log,
-        }),
+      createMcpServers: (workspaceRoot, newPool) =>
+        newPool(
+          modelApiMcpPoolDeps({
+            workspaceRoot,
+            settingsPath: () => settingsPath,
+            isWorkspaceTrusted: isTrusted,
+            clientVersion: '0.0.0-live-modelapi',
+            platform: process.platform,
+            jobExecutablePath: options.mcpJobPath,
+            env: () => process.env,
+            fetch: globalThis.fetch.bind(globalThis),
+            log,
+          }),
+        ),
+      // Built by `npm run build:dev`, as in activate (M57).
+      bundlePath: path.join(process.cwd(), 'dist', MODEL_API_BUNDLE_FILE),
       ideTools: [
         diagnosticsTool({
           getDiagnostics: () => [],

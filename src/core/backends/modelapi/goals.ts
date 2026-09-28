@@ -23,27 +23,8 @@ import {
   MODEL_TEXT,
 } from '../../../shared/constants'
 import type { GoalCommand, GoalRefusal } from '../../agent/agentBackend'
+import type { GoalRecord } from './goalRecord'
 import type { ToolOutcome } from './tools'
-
-/**
- * One goal, as Muse Code's tools return it (`{ goal: { … } }`, snake case,
- * `null` for what is not set) without its `session_id`; stored with the
- * session as it is (D14).
- */
-export const goalRecordSchema = z.object({
-  goal_id: z.string(),
-  objective: z.string(),
-  status: z.string(),
-  percent_complete: z.number(),
-  current_work: z.nullable(z.string()),
-  next_work: z.nullable(z.string()),
-  token_budget: z.nullable(z.number()),
-  tokens_used: z.number(),
-  created_at_ms: z.number(),
-  updated_at_ms: z.number(),
-  last_progress_at_ms: z.nullable(z.number()),
-})
-export type GoalRecord = z.infer<typeof goalRecordSchema>
 
 /** What a goal operation needs from the session: the clock and fresh ids. */
 export interface GoalContext {

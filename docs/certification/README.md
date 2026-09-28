@@ -69,4 +69,6 @@ The PNGs beside the records are that day's harness renders.
 - [M55](m55.md): install and sign in to Muse Code from the panel; absorbs the M41 installer proposal (PLAN.md M55; merged as PR #43; ships in 0.9.0)
 - [M56](m56.md): enterprise network and posture: proxies and certificates, the sandbox network, `muse config status`, prompt caching (PLAN.md D43; merged as PR #44; ships in 0.9.0)
 - [0.9.0 release fixes](release-0.9.0.md): Model API keys in Meta's current format, hooks only in a trusted workspace, the search worker's parsed job (PLAN.md §10)
+- [0.9.1](release-0.9.1.md): Muse Code 1.4.0 on Windows: rename, fork and the sandbox warning limited for every version; known 1.4.0 schema fingerprints (PLAN.md D26 amendment)
+- [M57](m57.md): the Model API backend out of the activation bundle into `dist/modelApi.js`, the identity audit and the bundle-split gate (PLAN.md D6)
 - [Sign-in detection](sign-in-detection.md): the CLI's sign-in read from its credential file's structure and confirmed by the CLI, sign-out through `account/logout`, and every way a browser sign-in ends (PLAN.md D26 amendment)

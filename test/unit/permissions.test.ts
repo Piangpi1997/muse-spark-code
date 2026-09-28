@@ -3,12 +3,12 @@ import {
   APPROVAL_CHOICE_IDS,
   choicesFor,
   isKnownChoice,
-  isProtectedPath,
   paidChoices,
   PermissionEngine,
   type ToolClass,
   verdictFor,
 } from '../../src/core/backends/modelapi/permissions'
+import { isProtectedPath } from '../../src/core/protectedPaths'
 import { APPROVAL_MODES, type ApprovalMode } from '../../src/shared/permissionModes'
 
 const CLASSES: readonly ToolClass[] = [
