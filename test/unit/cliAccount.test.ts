@@ -9,7 +9,10 @@ import {
   isCliSignedIn,
   readCredentialFile,
 } from '../../src/host/auth/cliAccount'
-import { MUSE_CREDENTIAL_FILE_MAX_BYTES } from '../../src/shared/constants'
+import {
+  MUSE_CREDENTIAL_FILE_MAX_BYTES,
+  MUSE_USER_ACTION_ANSWER_REUSE_MS,
+} from '../../src/shared/constants'
 import {
   capturedInlineVerdict,
   DEVICE_LOGIN_FILE,
@@ -221,6 +224,38 @@ describe('CliAccount', () => {
       'Muse Code sign-in confirmed by account/read: accountLogin (signedIn)',
     )
   })
+
+  // A Keychain-only sign-in or sign-out elsewhere leaves the file as it was:
+  // on macOS a later user action (Diagnostics, Check again, Cancel, a
+  // sign-in or sign-out) asks afresh; the same click reuses its answer
+  // (Codex on 2a324d48). Off macOS the file speaks for the sign-in.
+  it.each([
+    ['darwin', MAC_POINTER, 2, 'signedOut'],
+    ['linux', MALFORMED, 1, 'signedIn'],
+  ] as const)(
+    'on %s, asks a later user action afresh only on macOS, the file unchanged',
+    async (platform, contents, asks, later) => {
+      const home = configHome()
+      home.write(contents)
+      let clock = 0
+      const answers: AccountState[] = [SIGNED_IN, LOGGED_OUT]
+      const probe = vi.fn(() => Promise.resolve(answers.shift()))
+      const checker = new CliAccount({
+        platform,
+        credentialFilePath: () => home.file,
+        probe,
+        log: new FakeLogOutputChannel(),
+        now: () => clock,
+      })
+      await expect(checker.signIn(true)).resolves.toBe('signedIn')
+      clock += MUSE_USER_ACTION_ANSWER_REUSE_MS - 1
+      await expect(checker.signIn(true)).resolves.toBe('signedIn')
+      expect(probe).toHaveBeenCalledOnce()
+      clock += 2
+      await expect(checker.signIn(true)).resolves.toBe(later)
+      expect(probe).toHaveBeenCalledTimes(asks)
+    },
+  )
 
   it('asks about a malformed file off macOS at once, and keeps the answer until it changes', async () => {
     const home = configHome()

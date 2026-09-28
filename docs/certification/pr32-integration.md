@@ -326,8 +326,10 @@ main: three conflicts (the certification index, `report.ts`'s imports,
   CLI's environment, or PR #49's `CliAccount` over the file's structure
   (`empty` signed out, `inline` signed in), with `account/read` on a
   short-lived host where only the CLI can say (a Keychain pointer, any
-  macOS file but the empty one, an unrecognized one; the editor asks only
-  when the user acts).
+  macOS file but the empty one, an unrecognized one). The agent's user
+  action is `authenticate`: on macOS a session or a list takes the panel's
+  passive estimate rather than start `muse serve` each time (after PR #49's
+  `328efb5`, which asks again on every macOS user action).
   `unsupportedHere` (a macOS file on Windows or Linux) is "cannot run" with
   the panel's `cliCredentialUnsupported` sentence. `authenticate`, after a
   sign-in in the terminal, forgets what the CLI said before (the panel's
@@ -377,18 +379,19 @@ fixes:
   agent's sign-in read, and a pointer in `m63.md` to the superseded price
   question.
 
-| Drill | Break                                              | Result                                                                                      |
-| ----- | -------------------------------------------------- | ------------------------------------------------------------------------------------------- |
-| R1    | an add replaces the folder's set                   | exit 1: "adds to the file as it is when written, never a set read before another change"    |
-| R2    | a change reads an unreadable file as empty         | exit 1: "fails a change on a file it cannot read, rather than writing over it, …"           |
-| R3    | grants lapse whatever the backend                  | exit 1: "lets "always" lapse at start only for the Model API agent, which has the flags"    |
-| R4    | a malformed permission answer passed through       | exit 1: "reads a permission answer only in its schema, and anything else as a cancel"       |
-| R5    | no busy check while the skills are announced       | exit 1: "is busy while the skills are first announced, and a cancel then ends the prompt …" |
-| R6    | a failed form request not declined                 | exit 1: "declines a question the form was cancelled on, …"                                  |
-| R7    | an "always" write failure thrown                   | exit 1: "lets an "always" it cannot keep go ahead once, and says so"                        |
-| R8    | the agent's bundle sentence not passed             | exit 1: "loads the Model API backend from dist/modelApi.js beside the agent, …"             |
-| R9    | the store's name not used in the warning           | exit 1: "reads an unreadable secret store as no key and says so once (D25)"                 |
-| K1    | a failed grant write rethrown (before R7 moved it) | exit 1: "lets an "always" it cannot keep go ahead once, and asks again next time"           |
+| Drill | Break                                                         | Result                                                                                                                           |
+| ----- | ------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| R1    | an add replaces the folder's set                              | exit 1: "adds to the file as it is when written, never a set read before another change"                                         |
+| R2    | a change reads an unreadable file as empty                    | exit 1: "fails a change on a file it cannot read, rather than writing over it, …"                                                |
+| R3    | grants lapse whatever the backend                             | exit 1: "lets "always" lapse at start only for the Model API agent, which has the flags"                                         |
+| R4    | a malformed permission answer passed through                  | exit 1: "reads a permission answer only in its schema, and anything else as a cancel"                                            |
+| R5    | no busy check while the skills are announced                  | exit 1: "is busy while the skills are first announced, and a cancel then ends the prompt …"                                      |
+| R6    | a failed form request not declined                            | exit 1: "declines a question the form was cancelled on, …"                                                                       |
+| R7    | an "always" write failure thrown                              | exit 1: "lets an "always" it cannot keep go ahead once, and says so"                                                             |
+| R8    | the agent's bundle sentence not passed                        | exit 1: "loads the Model API backend from dist/modelApi.js beside the agent, …"                                                  |
+| R9    | the store's name not used in the warning                      | exit 1: "reads an unreadable secret store as no key and says so once (D25)"                                                      |
+| K1    | a failed grant write rethrown (before R7 moved it)            | exit 1: "lets an "always" it cannot keep go ahead once, and asks again next time"                                                |
+| R10   | every readiness call a user action (after PR #49's `328efb5`) | the stdio suite, exit 1: "reads Muse Code's readiness from the credential file, and asks the CLI where only it can say (PR #49)" |
 
 Left as they are, with their reasons:
 

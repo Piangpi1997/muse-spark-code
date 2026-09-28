@@ -273,11 +273,14 @@ export function createRuntimeBackend(deps: RuntimeBackendDeps): RuntimeBackend {
    * Muse Code's readiness, as the panel's sign-in gate counts it (D26):
    * `META_API_KEY` in the CLI's environment (with it `muse serve` starts
    * whatever the file says), or the CLI's own sign-in from the file's
-   * structure, asked of the CLI where only it can say. The editor asks only
-   * when the user acts (a session, a sign-in check), so macOS may ask the
-   * CLI; `authenticate`, after a sign-in in the terminal, forgets what the
-   * CLI said before, as the panel's Check again does. A macOS file on
-   * Windows or Linux stops `muse serve`, so it is said as such.
+   * structure, asked of the CLI where only it can say. `authenticate`, the
+   * user saying they signed in, is the agent's user action, as the panel's
+   * Check again is: it forgets what the CLI said before and may ask on
+   * macOS, where a question can read the Keychain. A session or a list is
+   * not: on macOS it takes the file's word or the panel's passive estimate
+   * (a turn's `authRequired` corrects it) rather than start `muse serve`
+   * each time. A macOS file on Windows or Linux stops `muse serve`, so it is
+   * said as such.
    */
   const museCodeReadiness = async (isRecheck: boolean): Promise<BackendReadiness> => {
     const resolution = museCode.resolveLaunch()
@@ -293,7 +296,7 @@ export function createRuntimeBackend(deps: RuntimeBackendDeps): RuntimeBackend {
     if (isRecheck) {
       cliAccount.forgetAnswers()
     }
-    const signIn: CliSignIn = await cliAccount.signIn(true)
+    const signIn: CliSignIn = await cliAccount.signIn(isRecheck)
     if (signIn === 'unsupportedHere') {
       return {
         state: 'unavailable',

@@ -60,10 +60,11 @@ asks for it. Elsewhere, run it yourself once:
 - **Muse Code**: `muse-spark-code-acp login` runs Muse Code's own sign-in.
   The agent tells whether Muse Code is signed in as the VS Code panel
   does: from the structure of the CLI's credential file (the emptied file
-  `muse logout` leaves counts as signed out), asking the CLI itself where
-  only it can say (a macOS Keychain sign-in); `META_API_KEY` in the
-  agent's environment counts too. When the editor checks the sign-in
-  again after you sign in (ACP's `authenticate`), the agent asks afresh.
+  `muse logout` leaves counts as signed out); `META_API_KEY` in the
+  agent's environment counts too. Where only the CLI can say (a macOS
+  Keychain sign-in), the agent asks it when the editor checks the sign-in
+  again after you sign in (ACP's `authenticate`), and otherwise assumes
+  the sign-in holds until a turn says it does not.
 - **Model API key**: `muse-spark-code-acp auth set` asks for the key without
   showing it and keeps it in the operating system's credential store:
   Windows Credential Manager, the macOS Keychain, or on Linux the Secret

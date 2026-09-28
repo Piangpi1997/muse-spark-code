@@ -33,7 +33,7 @@ The VS Code adapter: 13 files. Everything else reaches VS Code only through them
 
 | File                                   | VS Code APIs used |
 | -------------------------------------- | ----------------- |
-| `src/extension.ts`                     | 143               |
+| `src/extension.ts`                     | 144               |
 | `src/host/cliFeatures.ts`              | 26                |
 | `src/host/memoryFeatures.ts`           | 17                |
 | `src/host/mention/mentionQuickPick.ts` | 10                |
@@ -66,7 +66,7 @@ These never reach `vscode` through their imports, type-only ones included; the g
 - `src/host/conversation/conversationController.ts`
 - `src/host/ide/ideMcpServer.ts`
 
-## VS Code API used at run time (200)
+## VS Code API used at run time (201)
 
 Functions, variables, classes, enums and members declared in `@types/vscode`; the members of a VS Code interface the code implements (a provider, an options object); and the members of a VS Code object handed to code that takes it by shape.
 
@@ -163,6 +163,7 @@ Functions, variables, classes, enums and members declared in `@types/vscode`; th
 | `Terminal.sendText`                                                                  | `src/extension.ts`                                                                                                                         |
 | `Terminal.show`                                                                      | `src/extension.ts`                                                                                                                         |
 | `TerminalOptions.cwd`                                                                | `src/extension.ts`                                                                                                                         |
+| `TerminalOptions.env`                                                                | `src/extension.ts`                                                                                                                         |
 | `TerminalOptions.name`                                                               | `src/extension.ts`                                                                                                                         |
 | `TerminalOptions.shellPath`                                                          | `src/extension.ts`                                                                                                                         |
 | `TextDocument.getText`                                                               | `src/extension.ts`                                                                                                                         |
@@ -279,8 +280,8 @@ Functions, variables, classes, enums and members declared in `@types/vscode`; th
 | --------------------- | ----- |
 | `node:buffer`         | 17    |
 | `node:child_process`  | 8     |
-| `node:crypto`         | 13    |
-| `node:fs`             | 12    |
+| `node:crypto`         | 14    |
+| `node:fs`             | 13    |
 | `node:fs/promises`    | 15    |
 | `node:http`           | 1     |
 | `node:module`         | 1     |

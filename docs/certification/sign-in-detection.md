@@ -581,6 +581,38 @@ pre-drill SHA-256 afterwards.
 | DJ    | A Cancel after the code refreshes on the CLI’s answer from before the flow                    | exit 1, 2 failed: the same two                                                                                                                                            |
 | DK    | A Cancel as the file changed reads it passively (estimated on macOS, not asked)               | exit 1, 1 failed: "asks the CLI about a file rewritten as Cancel was pressed, on macOS too"                                                                               |
 
+## Codex on `2a324d48`: a user action on macOS asks afresh
+
+**P2.** On macOS a sign-in or sign-out made elsewhere may change only the
+Keychain, leaving the file's path, size and mtime as they were.
+`CliAccount.confirm` reused a remembered definitive answer even for a
+user action, so Diagnostics (and any other click) could report a stale
+sign-in.
+
+- **Fixed in the class, not the call site.** On macOS a user action now
+  reuses a remembered answer only if it came from the same click:
+  younger than `MUSE_USER_ACTION_ANSWER_REUSE_MS`, 5 s. Otherwise it asks
+  `account/read` afresh, bounded as before. "Never reuse" was taken
+  literally at first and then bounded this way: a sign-out asks up to
+  three times and a refresh with the hold on four, and each question may
+  bring a Keychain prompt. Off macOS the file speaks for the sign-in, as
+  before. The answer's age is read on an injectable clock (`now`).
+- **Every user action takes that path.** Diagnostics
+  (`cliAccount.signIn(true)`), Check again, Cancel, the sign-in button
+  (with the hold on, and after the code), sign-out and the Sign Out
+  command all ask with `isUserAction`. The browser sign-in's pre-check
+  stays passive on purpose: it only looks for a file the host cannot
+  start with, and must not prompt before the code is shown.
+- **Drills.** From `scratchpad/cred-capture/drills10.mjs`, and each
+  target matched its SHA-256 afterwards:
+  - DL: macOS reuses any remembered answer. Exit 1, 1 failed: "on darwin,
+    asks a later user action afresh only on macOS, the file unchanged".
+  - DM: every question of one click asks again. Exit 1, 2 failed: the
+    same, and "asks about a macOS Keychain pointer only on a user action".
+- **Checks.** `cliAccount`, `authService`, `supportReport` and the
+  `cliAccount` e2e (153 tests), typecheck, lint, l10n, jscpd and format;
+  not the full gate (the machine was loaded).
+
 ## Codex on `55b9e24c`: a Cancel after a Keychain-only approval
 
 **P2.** On macOS an approval may update only the Keychain, the pointer

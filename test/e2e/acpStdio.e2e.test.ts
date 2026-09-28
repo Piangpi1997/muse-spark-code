@@ -65,6 +65,11 @@ const UNPLACEABLE = JSON.stringify({
   schema_version: 1,
   providers: { meta: { storage: 'elsewhere', access_token: '<placeholder>' } },
 })
+// The same lane with no credential key: the fake CLI answers signed out.
+const SIGNED_OUT_UNPLACEABLE = JSON.stringify({
+  schema_version: 1,
+  providers: { meta: { storage: 'elsewhere' } },
+})
 const workspace = mkdtempSync(path.join(tmpdir(), 'acp-e2e-ws-'))
 const dataHome = mkdtempSync(path.join(tmpdir(), 'acp-e2e-data-'))
 const children: ChildProcessWithoutNullStreams[] = []
@@ -299,19 +304,23 @@ describe('the ACP agent over stdio (M63)', { timeout: TEST_TIMEOUT_MS }, () => {
     vi.stubEnv('MUSE_FAKE_NODE', process.execPath)
     vi.stubEnv('MUSE_FAKE_FINGERPRINT', EXPECTED_SCHEMA_FINGERPRINT)
     vi.stubEnv('META_API_KEY', '')
-    const runtime = createRuntimeBackend({
-      options: { ...MUSE_CODE_OPTIONS, museBinary: fake.binaryPath },
-      version: LAID_OUT_VERSION,
-      distDir: path.dirname(AGENT),
-      platform: process.platform,
-      env: process.env,
-      homeDir: configHome,
-      secrets: memorySecrets(),
-      runGit: () => Promise.reject(new Error('no git')),
-      fetch: () => Promise.reject(new Error('no network')),
-      sleep: () => Promise.resolve(),
-      log,
-    })
+    // The platform the file is read for; the fake CLI answers on this one.
+    const runtimeReadingFor = (platform: NodeJS.Platform) =>
+      createRuntimeBackend({
+        options: { ...MUSE_CODE_OPTIONS, museBinary: fake.binaryPath },
+        version: LAID_OUT_VERSION,
+        distDir: path.dirname(AGENT),
+        platform,
+        env: process.env,
+        homeDir: configHome,
+        secrets: memorySecrets(),
+        runGit: () => Promise.reject(new Error('no git')),
+        fetch: () => Promise.reject(new Error('no network')),
+        sleep: () => Promise.resolve(),
+        log,
+      })
+    const runtime = runtimeReadingFor(process.platform)
+    const mac = runtimeReadingFor('darwin')
     const asked = () =>
       log.info.mock.calls.filter(([line]) => String(line).includes('confirmed by account/read'))
         .length
@@ -322,17 +331,30 @@ describe('the ACP agent over stdio (M63)', { timeout: TEST_TIMEOUT_MS }, () => {
         state: 'signedOut',
         message: UI_TEXT.acpMuseCodeSignedOut,
       })
-      // A browser sign-in: settled by the file off macOS, asked of the CLI there.
+      // A browser sign-in: settled by the file off macOS; there, the passive
+      // estimate until the user checks again.
       writeFakeCredential(configHome, DEVICE_LOGIN_FILE)
       expect(await runtime.backend.readiness(false)).toEqual({ state: 'ready' })
-      // A file only the CLI can place: asked once, remembered, asked again on authenticate.
+      // A file only the CLI can place: off macOS asked once and remembered;
+      // on macOS asked only on authenticate. authenticate always asks afresh.
       writeFakeCredential(configHome, UNPLACEABLE)
       const before = asked()
+      const asksPassively = process.platform === 'darwin' ? 0 : 1
       expect(await runtime.backend.readiness(false)).toEqual({ state: 'ready' })
       expect(await runtime.backend.readiness(false)).toEqual({ state: 'ready' })
-      expect(asked()).toBe(before + 1)
+      expect(asked()).toBe(before + asksPassively)
       expect(await runtime.backend.readiness(true)).toEqual({ state: 'ready' })
-      expect(asked()).toBe(before + 2)
+      expect(asked()).toBe(before + asksPassively + 1)
+      // Read as macOS reads it, on any runner: a session starts no CLI, and
+      // authenticate asks it; its answer decides.
+      writeFakeCredential(configHome, DEVICE_LOGIN_FILE)
+      const beforeMac = asked()
+      expect(await mac.backend.readiness(false)).toEqual({ state: 'ready' })
+      expect(asked()).toBe(beforeMac)
+      expect(await mac.backend.readiness(true)).toEqual({ state: 'ready' })
+      expect(asked()).toBe(beforeMac + 1)
+      writeFakeCredential(configHome, SIGNED_OUT_UNPLACEABLE)
+      expect(await mac.backend.readiness(true)).toMatchObject({ state: 'signedOut' })
       if (process.platform !== 'darwin') {
         writeFakeCredential(configHome, MACOS_POINTER)
         expect(await runtime.backend.readiness(false)).toEqual({
@@ -348,7 +370,7 @@ describe('the ACP agent over stdio (M63)', { timeout: TEST_TIMEOUT_MS }, () => {
       expect(await runtime.backend.readiness(false)).toEqual({ state: 'ready' })
     } finally {
       vi.unstubAllEnvs()
-      await runtime.close()
+      await Promise.all([runtime.close(), mac.close()])
       await removeFolder(configHome)
     }
   })

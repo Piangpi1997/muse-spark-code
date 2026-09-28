@@ -13,7 +13,7 @@ happened, not what was planned; superseded entries are kept.
   The owner's IDE compatibility plan is filed in `docs/ide-compatibility.md`.
   A new gate, `npm run check:host-api`, keeps a record of what the
   extension asks of its host (`docs/ide-compatibility/host-api.md`): the
-  200 VS Code APIs it uses and where, the 13 files that import `vscode`,
+  201 VS Code APIs it uses and where, the 13 files that import `vscode`,
   the Node built-ins, and what the webview needs (`acquireVsCodeApi` and 57
   theme variables); it fails when the record goes stale, and when the
   engine, the protocol, the webview, the conversation controller, either
@@ -203,7 +203,9 @@ happened, not what was planned; superseded entries are kept.
     the code leaves the panel at once. If the browser approved just
     before, the panel follows what Muse Code saved instead of saying the
     sign-in was cancelled. On macOS, where an approval may reach only the
-    Keychain, a Cancel after the code was shown asks Muse Code afresh.
+    Keychain, a Cancel after the code was shown asks Muse Code afresh,
+    and so does every click that asks it (Diagnostics included), unless
+    it already asked during that same click.
   - **Success.** It is taken from Muse Code's `account/read` turning
     signed in, or from a new credential file it does not contradict. When
     Muse Code could not say who was signed in before the flow, its own
