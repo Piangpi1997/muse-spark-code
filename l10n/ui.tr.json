@@ -592,6 +592,7 @@
   "planSavedNotStarted": "Plan {path} konumuna kaydedildi ama başlatılmadı: bu arada konuşma değişti.",
   "planChangedNotStarted": "Plan başlatılmadı: bu arada konuşma değişti.",
   "planActionBusy": "Bir plan eylemi hâlâ sürüyor.",
+  "planMarkdownUnavailable": "Plan okuyucu yüklenemedi, bu yüzden planlar kaydedilmiyor, listelenmiyor veya uygulanmıyor; uzantıyı yeniden yükleyin ve pencereyi yeniden yükleyin. Ayrıntılar günlükte.",
   "planFromFileMode": "Planlar… üzerinden seçilen bir plan {mode} modunda başlar: dosya çalışma alanından geldiği için konuşma bir şey yapmadan önce sorar.",
   "planOpen": "Aç",
   "plansItem": "Planlar…",

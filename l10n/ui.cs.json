@@ -616,6 +616,7 @@
   "planSavedNotStarted": "Plán byl uložen do {path}, ale nespustil se: konverzace se mezitím změnila.",
   "planChangedNotStarted": "Plán se nespustil: konverzace se mezitím změnila.",
   "planActionBusy": "Akce plánu ještě probíhá.",
+  "planMarkdownUnavailable": "Čtečku plánů se nepodařilo načíst, takže se plány neukládají, nevypisují ani neprovádějí; přeinstalujte rozšíření a znovu načtěte okno. Podrobnosti jsou v protokolu.",
   "planFromFileMode": "Plán vybraný z Plánů… začíná v režimu {mode}: soubor pochází z pracovního prostoru, takže se konverzace před každou akcí zeptá.",
   "planOpen": "Otevřít",
   "plansItem": "Plány…",

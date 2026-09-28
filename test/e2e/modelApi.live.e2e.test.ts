@@ -57,7 +57,8 @@ import { memoryDataRoot } from '../../src/core/memory/memoryLocation'
 import { MemoryStore } from '../../src/core/memory/memoryStore'
 import { PaidFeatureGate, PaidUsage } from '../../src/core/paid/paidFeatures'
 import { pdfPageCount } from '../../src/core/pdf'
-import { planBody, planSteps } from '../../src/core/plans/planDocument'
+import { planBody } from '../../src/core/plans/planDocument'
+import { listItems } from '../../src/core/plans/planMarkdown'
 import { estimateCostUsd } from '../../src/core/usage/insights'
 import type { DictationHandle, DictationListener } from '../../src/core/voice/dictation'
 import { MuseVoiceDictation } from '../../src/core/voice/museVoice'
@@ -77,6 +78,7 @@ import { liveFetch } from '../../src/host/networkPosture'
 import { ConversationController } from '../../src/host/conversation/conversationController'
 import type { AuthSnapshot } from '../../src/host/auth/authService'
 import { createPlanFiles, createPlanIo } from '../../src/host/planFeatures'
+import { planMarkdownLoader } from '../../src/host/planMarkdownBundle'
 import { openWebSocket } from '../../src/host/voice/dictationHost'
 import type { AgentEvent, ItemSnapshot } from '../../src/shared/agentEvents'
 import {
@@ -94,6 +96,7 @@ import {
   MUSE_VOICE_BYTES_PER_SECOND,
   MUSE_VOICE_REALTIME_URL,
   MUSE_VOICE_SAMPLE_RATE,
+  PLAN_MARKDOWN_BUNDLE_FILE,
   PAID_PRICES_USD,
   type PaidFeature,
   PLAN_TODO_PENDING_STATUS,
@@ -1023,6 +1026,11 @@ function livePanel(rig: Rig): LivePanel {
       io: createPlanIo({ log: rig.log, now: Date.now }),
       pick: unreached,
       confirm: () => Promise.resolve(true),
+      // Built by `npm run build:dev`, as in activate: the plan reader's own bundle.
+      markdown: planMarkdownLoader({
+        bundlePath: path.join(process.cwd(), 'dist', PLAN_MARKDOWN_BUNDLE_FILE),
+        log: rig.log,
+      }),
     }),
     setPaidFeature: unreached,
     isWorkspaceTrusted: () => true,
@@ -2013,12 +2021,12 @@ describe.skipIf(!IS_ENABLED)('live Model API sweep (MUSE_LIVE_MODEL_API=1)', () 
           )
           // The new conversation's first list is the plan's steps, set before the brief went.
           expect(lists[0]).toBe(
-            planSteps(text)
+            listItems(text)
               .map(() => PLAN_TODO_PENDING_STATUS)
               .join(','),
           )
           rig.notes.push(
-            `plan ${relativePath} (${String(planSteps(text).length)} steps)`,
+            `plan ${relativePath} (${String(listItems(text).length)} steps)`,
             `todo lists ${lists.join(' | ')}`,
             `cards allowed ${panel.allowed.join(' ')}`,
           )

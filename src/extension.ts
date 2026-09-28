@@ -79,6 +79,7 @@ import { createCliFeatures } from './host/cliFeatures'
 import { createWorktreeFeatures } from './host/worktreeFeatures'
 import { createMemoryFeatures } from './host/memoryFeatures'
 import { createPlanFiles, createPlanIo } from './host/planFeatures'
+import { planMarkdownLoader } from './host/planMarkdownBundle'
 import { showPickOne } from './host/quickPick'
 import { processGitRunner } from './host/git'
 import { createLogger, errorDetail, type Logger, logRejection } from './host/logger'
@@ -120,6 +121,7 @@ import {
   FIND_FILES_GLOB,
   MODEL_API_BASE_URL,
   MODEL_API_BUNDLE_FILE,
+  PLAN_MARKDOWN_BUNDLE_FILE,
   MODEL_API_SCHEDULES_DIR,
   MODEL_API_SESSIONS_DIR,
   PAID_FEATURE_SETTINGS,
@@ -956,6 +958,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           confirm: async (message, detail, action) =>
             (await vscode.window.showWarningMessage(message, { modal: true, detail }, action)) ===
             action,
+          // The panel's Markdown parser, its own bundle, loaded on the first plan action (D6).
+          markdown: planMarkdownLoader({
+            bundlePath: vscode.Uri.joinPath(context.extensionUri, 'dist', PLAN_MARKDOWN_BUNDLE_FILE)
+              .fsPath,
+            log,
+          }),
         })
   const modelApi = new ModelApiBackendManager({
     log,

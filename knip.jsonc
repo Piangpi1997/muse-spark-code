@@ -17,6 +17,8 @@
     "src/extension.ts",
     // The Model API backend's own bundle (M57), required by path at runtime.
     "src/host/backend/modelApiEntry.ts",
+    // The plan reader's own bundle (M79), required by path on the first plan action.
+    "src/host/planMarkdownEntry.ts",
     "src/host/backend/searchWorker.ts",
     "src/webview/main.tsx",
     "test/unit/**/*.test.{ts,tsx}",

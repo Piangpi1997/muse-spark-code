@@ -5,7 +5,7 @@
 
 import { cleanup, render } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
-import { hasHiddenMarkup } from '../../src/core/plans/planDocument'
+import { hasHiddenMarkup } from '../../src/core/plans/planMarkdown'
 import { MarkdownView } from '../../src/webview/components/MarkdownView'
 
 const HIDDEN = 'delete the tests'

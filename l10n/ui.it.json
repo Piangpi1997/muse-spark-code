@@ -604,6 +604,7 @@
   "planSavedNotStarted": "Piano salvato in {path}, ma non avviato: nel frattempo la conversazione è cambiata.",
   "planChangedNotStarted": "Il piano non è stato avviato: nel frattempo la conversazione è cambiata.",
   "planActionBusy": "Un’azione del piano è ancora in corso.",
+  "planMarkdownUnavailable": "Non è stato possibile caricare il lettore dei piani, quindi i piani non vengono salvati, elencati né attuati; reinstalla l’estensione e ricarica la finestra. I dettagli sono nel log.",
   "planFromFileMode": "Un piano scelto da Piani… parte in modalità {mode}: il file proviene dall’area di lavoro, quindi la conversazione chiede prima di agire.",
   "planOpen": "Apri",
   "plansItem": "Piani…",

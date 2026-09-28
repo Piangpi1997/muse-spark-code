@@ -580,6 +580,7 @@
   "planSavedNotStarted": "计划已保存到 {path}，但未开始：对话在此期间已改变。",
   "planChangedNotStarted": "计划未开始：对话在此期间已改变。",
   "planActionBusy": "仍有计划操作在进行中。",
+  "planMarkdownUnavailable": "无法加载计划读取器，因此无法保存、列出或实施计划；请重新安装扩展并重新加载窗口。日志中有详细信息。",
   "planFromFileMode": "从“计划…”中选择的计划以{mode}模式开始：文件来自工作区，因此对话在行动前会先询问。",
   "planOpen": "打开",
   "plansItem": "计划…",

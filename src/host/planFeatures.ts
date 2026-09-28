@@ -5,6 +5,7 @@
 
 import { lstat, rm } from 'node:fs/promises'
 import path from 'node:path'
+import type { PlanMarkdown } from '../core/plans/planDocument'
 import { type PlanDirectoryEntry, type PlanIo, PlanStore } from '../core/plans/planStore'
 import {
   ATOMIC_TEMPORARY_SUFFIX,
@@ -122,6 +123,8 @@ export interface PlanFeatureDeps {
   readonly pick: PickOne
   /** A modal; true when the user chose `action`. */
   readonly confirm: (message: string, detail: string, action: string) => Promise<boolean>
+  /** The plan reader, dist/planMarkdown.js on first use (`planMarkdownLoader`). */
+  readonly markdown: () => PlanMarkdown
 }
 
 export function createPlanFiles(deps: PlanFeatureDeps): PlanFiles {
@@ -129,8 +132,10 @@ export function createPlanFiles(deps: PlanFeatureDeps): PlanFiles {
     workspaceRoot: deps.workspaceRoot,
     platform: deps.platform,
     io: deps.io,
+    markdown: deps.markdown,
   })
   return {
+    markdown: deps.markdown,
     find: (content) => store.find(content),
     save: (content) => store.save(content),
     has: (fileName) => store.has(fileName),

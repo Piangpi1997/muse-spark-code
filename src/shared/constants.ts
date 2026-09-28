@@ -947,6 +947,9 @@ export const SEARCH_WORKER_FILE = 'searchWorker.js'
 // The Model API backend's bundle (M57, PLAN.md D6), beside dist/extension.js:
 // loaded when that backend first starts, not at activation.
 export const MODEL_API_BUNDLE_FILE = 'modelApi.js'
+// The plan reader's bundle (M79, PLAN.md D6), beside dist/extension.js:
+// the panel's Markdown parser, loaded on the first plan action.
+export const PLAN_MARKDOWN_BUNDLE_FILE = 'planMarkdown.js'
 // A glob is matched by a table over pattern × path (no regular expression,
 // PLAN.md D24); the length cap bounds that table.
 export const GLOB_MAX_LENGTH = 256

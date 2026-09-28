@@ -1614,7 +1614,9 @@ Press **F5** to launch the Extension Development Host with a fresh build.
 **Stack.** TypeScript 6.0.3 (pinned: `typescript-eslint` does not yet
 support TS 7); the extension host bundled with esbuild to CommonJS, with the
 Model API backend as a second bundle (`dist/modelApi.js`) that loads when
-that backend first starts; the webview is React 19 bundled to one IIFE with
+that backend first starts, and the plan reader (the panel's Markdown
+parser) as a third (`dist/planMarkdown.js`) that loads on the first plan
+action; the webview is React 19 bundled to one IIFE with
 its stylesheet; `zod/mini` validates every host ⇄ webview message; the voice
 helpers are Windows PowerShell and Swift with no dependencies.
 

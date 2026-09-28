@@ -20,6 +20,7 @@ import {
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { PLAN_MARKDOWN } from '../../src/core/plans/planMarkdown'
 import { PlanStore } from '../../src/core/plans/planStore'
 import { createPlanIo } from '../../src/host/planFeatures'
 import {
@@ -58,6 +59,7 @@ async function workspace(name: string): Promise<{ root: string; store: PlanStore
       workspaceRoot: root,
       platform: process.platform,
       io: createPlanIo({ log, now: () => Date.now() }),
+      markdown: () => PLAN_MARKDOWN,
     }),
   }
 }
@@ -152,6 +154,7 @@ describe('PlanStore on the file system (M79)', () => {
     const store = new PlanStore({
       workspaceRoot: root,
       platform: process.platform,
+      markdown: () => PLAN_MARKDOWN,
       io: {
         ...io,
         // The name was checked; the folder is swapped before the file is made.
@@ -277,6 +280,22 @@ describe('PlanStore on the file system (M79)', () => {
     await writeFile(path.join(plansFolder(root), 'fake.md'), Buffer.from(pdfFixture(1)))
     await expect(store.read('fake.md')).rejects.toThrow(UI_TEXT.textFileInvalid)
     await expect(store.read('../escape.md')).rejects.toThrow(/not a plan file name/)
+  })
+
+  it('lists and reads nothing when the plan reader cannot load, and says why', async () => {
+    const { root } = await workspace('no-reader')
+    await mkdir(plansFolder(root), { recursive: true })
+    await writeFile(path.join(plansFolder(root), '2026-09-27-a.md'), '# A')
+    const store = new PlanStore({
+      workspaceRoot: root,
+      platform: process.platform,
+      io: createPlanIo({ log, now: () => Date.now() }),
+      markdown: () => {
+        throw new Error(UI_TEXT.planMarkdownUnavailable)
+      },
+    })
+    await expect(store.list()).rejects.toThrow(UI_TEXT.planMarkdownUnavailable)
+    await expect(store.read('2026-09-27-a.md')).rejects.toThrow(UI_TEXT.planMarkdownUnavailable)
   })
 
   it('lists the plans newest first, by heading or name, and knows which it holds', async () => {

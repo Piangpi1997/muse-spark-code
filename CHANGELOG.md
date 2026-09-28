@@ -38,6 +38,10 @@ happened, not what was planned; superseded entries are kept.
     warning and not started; it, the plan's title and its steps are read
     with the panel's own Markdown parser. The log names a plan by its date
     and a hash, never its file name.
+  - The plan reader (the panel's Markdown parser) is a bundle of its own,
+    `dist/planMarkdown.js` (budget 150 KiB), loaded on the first Save plan,
+    Implement or Plans…, so the activation bundle stays at 449.7 KiB. If it
+    cannot load, those actions are refused with the reason.
   - Leaving Plan mode when the backend refuses the change keeps a running
     Plan-mode turn a plan turn. A reasoning effort the session refuses is
     no longer shown as applied.

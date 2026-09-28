@@ -592,6 +592,7 @@
   "planSavedNotStarted": "Plan in {path} gespeichert, aber nicht gestartet: Die Unterhaltung hat sich inzwischen geändert.",
   "planChangedNotStarted": "Der Plan wurde nicht gestartet: Die Unterhaltung hat sich inzwischen geändert.",
   "planActionBusy": "Eine Planaktion läuft noch.",
+  "planMarkdownUnavailable": "Der Planleser konnte nicht geladen werden, daher werden Pläne weder gespeichert noch aufgelistet noch umgesetzt; installieren Sie die Erweiterung neu und laden Sie das Fenster neu. Details stehen im Protokoll.",
   "planFromFileMode": "Ein Plan aus „Pläne…“ startet im Modus {mode}: Die Datei stammt aus dem Arbeitsbereich, daher fragt die Unterhaltung, bevor sie handelt.",
   "planOpen": "Öffnen",
   "plansItem": "Pläne…",

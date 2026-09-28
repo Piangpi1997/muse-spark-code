@@ -95,7 +95,9 @@ them, the milestone plan, and the certification checklist.
 src/extension.ts      activation: the view, the panel, the commands, the openers
 src/host/**           VS Code adapters (views, conversation, backend managers,
                       the Model API bundle's entry (dist/modelApi.js, loaded
-                      when that backend first starts) and the search worker,
+                      when that backend first starts), the plan reader's
+                      (dist/planMarkdown.js, loaded on the first plan action)
+                      and the search worker,
                       commands, auth, settings, mentions,
                       editor tracking, usage trace logs, voice, the diagnostics
                       MCP server, the MCP servers' spawner, the network posture)

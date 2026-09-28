@@ -29,10 +29,10 @@ import {
 } from '../../core/agent/agentBackend'
 import { toSessionRow } from '../../core/agent/sessionRows'
 import {
-  hasHiddenMarkup,
   numberedSteps,
   planBody,
   planLogName,
+  type PlanMarkdown,
   planSteps,
   planTitle,
 } from '../../core/plans/planDocument'
@@ -209,6 +209,12 @@ export interface PlanFiles extends Pick<PlanStore, 'find' | 'save' | 'has' | 're
   confirmSave(): Promise<boolean>
   /** A plan and what to do with it; undefined when the pick was dismissed. */
   choose(plans: readonly PlanSummary[]): Promise<PlanChoice | undefined>
+  /**
+   * The plan reader (dist/planMarkdown.js, loaded on first use): a plan's
+   * title, steps and hidden text. Throws, with the reason, when it cannot
+   * load; a plan action then refuses rather than skip the hidden-text check.
+   */
+  markdown(): PlanMarkdown
 }
 
 /** The last session a surface held, for the reopen-within-ten-minutes rule. */
@@ -586,10 +592,9 @@ const PLAN_MODE: PermissionMode = 'plan'
 function planBrief(
   relativePath: string,
   bytes: Uint8Array,
-  body: string,
+  steps: readonly string[],
   isApproved: boolean,
 ): ConversationBrief {
-  const steps = planSteps(body)
   const name = JSON.stringify(relativePath)
   return {
     label: planLogName(path.posix.basename(relativePath)),
@@ -2723,7 +2728,10 @@ export class ConversationController {
     sourceSessionId: string,
     itemId: string,
     generation: number,
-  ): Promise<{ readonly saved: SaveOutcome; readonly text: string } | undefined> {
+  ): Promise<
+    | { readonly saved: SaveOutcome; readonly text: string; readonly markdown: PlanMarkdown }
+    | undefined
+  > {
     // Refused with its reason said first: no plans without a workspace folder.
     if (this.refuseAction() !== undefined) {
       return undefined
@@ -2740,6 +2748,8 @@ export class ConversationController {
       this.notice('info', UI_TEXT.planWaitForTurn)
       return undefined
     }
+    // The reader first: without it no plan is titled or checked, so none is saved.
+    const markdown = plans.markdown()
     const reply = await this.planReply(sourceSessionId, itemId, generation)
     if (reply === undefined) {
       return undefined
@@ -2752,14 +2762,14 @@ export class ConversationController {
       return undefined
     }
     const content = {
-      title: planTitle(text, reply.prompt, reply.name ?? UI_TEXT.untitledConversation),
+      title: planTitle(markdown, text, reply.prompt, reply.name ?? UI_TEXT.untitledConversation),
       savedAt: new Date(this.deps.now()),
       text,
     }
     // Saved already (this press or another panel's): the same file, nothing asked.
     const known = await plans.find(content)
     if (known !== undefined) {
-      return { saved: { ...known, isNew: false }, text }
+      return { saved: { ...known, isNew: false }, text, markdown }
     }
     // `.agents/` is a protected path (D24): the save asks, as a protected write does.
     if (!(await plans.confirmSave())) {
@@ -2770,7 +2780,7 @@ export class ConversationController {
     this.deps.log.info(
       `Plan ${saved.isNew ? 'saved' : 'found saved'} as ${planLogName(saved.fileName)} from session ${sourceSessionId}`,
     )
-    return { saved, text }
+    return { saved, text, markdown }
   }
 
   /**
@@ -2812,7 +2822,7 @@ export class ConversationController {
         'info',
         fill(outcome.saved.isNew ? UI_TEXT.planSaved : UI_TEXT.planAlreadySaved, { path }),
       )
-      if (hasHiddenMarkup(outcome.text)) {
+      if (outcome.markdown.hasHiddenMarkup(outcome.text)) {
         this.say('warning', fill(UI_TEXT.planHiddenMarkup, { path }))
       }
     } catch (error: unknown) {
@@ -2982,9 +2992,9 @@ export class ConversationController {
       const { relativePath } = outcome.saved
       const bytes = new TextEncoder().encode(outcome.text)
       return {
-        brief: planBrief(relativePath, bytes, outcome.text, true),
+        brief: planBrief(relativePath, bytes, planSteps(outcome.markdown, outcome.text), true),
         relativePath,
-        hasHiddenMarkup: hasHiddenMarkup(outcome.text),
+        hasHiddenMarkup: outcome.markdown.hasHiddenMarkup(outcome.text),
       }
     }
     // Refused with its reason said first: no plans without a workspace folder.
@@ -2995,9 +3005,11 @@ export class ConversationController {
       this.notice('warning', UI_TEXT.planRestricted)
       return undefined
     }
-    const plan = await this.deps.plans.read(source.fileName)
+    const { plans } = this.deps
+    const plan = await plans.read(source.fileName)
+    const steps = planSteps(plans.markdown(), plan.document.body)
     return {
-      brief: planBrief(plan.relativePath, plan.bytes, plan.document.body, false),
+      brief: planBrief(plan.relativePath, plan.bytes, steps, false),
       relativePath: plan.relativePath,
       // A file is sent as untrusted content in a mode that asks, and Plans… can open it first.
       hasHiddenMarkup: false,

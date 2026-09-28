@@ -604,6 +604,7 @@
   "planSavedNotStarted": "Plano salvo em {path}, mas não iniciado: a conversa mudou nesse meio-tempo.",
   "planChangedNotStarted": "O plano não foi iniciado: a conversa mudou nesse meio-tempo.",
   "planActionBusy": "Uma ação de plano ainda está em andamento.",
+  "planMarkdownUnavailable": "Não foi possível carregar o leitor de planos, então os planos não são salvos, listados nem implementados; reinstale a extensão e recarregue a janela. O log tem os detalhes.",
   "planFromFileMode": "Um plano escolhido em Planos… começa no modo {mode}: o arquivo vem do espaço de trabalho, então a conversa pergunta antes de agir.",
   "planOpen": "Abrir",
   "plansItem": "Planos…",

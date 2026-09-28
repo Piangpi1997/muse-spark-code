@@ -155,7 +155,7 @@ tested on chunk splits inside frames and inside multi-byte characters.
 | `jscpd`                                                                   | 5.3.1                             | Copy-paste detection.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | `npm-run-all2`                                                            | 9.0.3                             | Runs gate scripts in sequence/parallel.                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | `rimraf`                                                                  | 6.1.3                             | Cross-platform clean.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| `mdast-util-from-markdown` / `micromark-extension-gfm` / `mdast-util-gfm` | 2.0.3 / 3.0.0 / 3.1.0             | M79: the host reads a plan with the panel's own Markdown grammar (what react-markdown 10.1.0 and remark-gfm 4.0.1 resolve to; no peers; 0 advisories). +114 KiB in `dist/extension.js` (448.7 to 563.2 KiB of 600), `character-entities` among it.                                                                                                                                                                                                                                                   |
+| `mdast-util-from-markdown` / `micromark-extension-gfm` / `mdast-util-gfm` | 2.0.3 / 3.0.0 / 3.1.0             | M79: the host reads a plan with the panel's own Markdown grammar (what react-markdown 10.1.0 and remark-gfm 4.0.1 resolve to; no peers; 0 advisories). Its own lazily loaded bundle, `dist/planMarkdown.js` (114.7 KiB, `character-entities` among it), so `dist/extension.js` stays at 449.7 KiB (D6).                                                                                                                                                                                              |
 | `axe-core`                                                                | 4.13.0                            | The accessibility gate (M37, D32): WCAG 2.0 to 2.2, levels A and AA, run inside the harness page. MPL-2.0; a dev dependency, never bundled.                                                                                                                                                                                                                                                                                                                                                          |
 
 Deprecated and avoided: `@vscode/webview-ui-toolkit` (archived; npm marks it
@@ -207,13 +207,14 @@ quality`) and as a CI job.
 
 ### D6 — Bundle budgets (Phase 6)
 
-| Artifact               | Budget (minified, uncompressed)                                                                      |
-| ---------------------- | ---------------------------------------------------------------------------------------------------- |
-| `dist/extension.js`    | ≤ 600 KiB (the M7 Model API client fit without raising it; the activation bundle since M57)          |
-| `dist/modelApi.js`     | ≤ 400 KiB (M57: the Model API backend, loaded when it first starts; 295.6 KiB when split, see below) |
-| `dist/searchWorker.js` | ≤ 50 KiB                                                                                             |
-| `dist/webview/main.js` | ≤ 900 KiB including React, the markdown renderer and highlight.js (one bundle)                       |
-| `.vsix`                | not gated; 0.8.0 is 905,941 bytes (the GitHub Release asset, §10)                                    |
+| Artifact               | Budget (minified, uncompressed)                                                                           |
+| ---------------------- | --------------------------------------------------------------------------------------------------------- |
+| `dist/extension.js`    | ≤ 600 KiB (the M7 Model API client fit without raising it; the activation bundle since M57)               |
+| `dist/modelApi.js`     | ≤ 400 KiB (M57: the Model API backend, loaded when it first starts; 295.6 KiB when split, see below)      |
+| `dist/planMarkdown.js` | ≤ 150 KiB (M79: the plan reader, the panel's Markdown parser, loaded on the first plan action; 114.7 KiB) |
+| `dist/searchWorker.js` | ≤ 50 KiB                                                                                                  |
+| `dist/webview/main.js` | ≤ 900 KiB including React, the markdown renderer and highlight.js (one bundle)                            |
+| `.vsix`                | not gated; 0.8.0 is 905,941 bytes (the GitHub Release asset, §10)                                         |
 
 `npm run build` prints sizes; `scripts/check-bundle-size.mjs` holds the numbers
 and fails the build over budget or when a bundle is missing. This table mirrors
@@ -269,6 +270,24 @@ instead.
   list of 20) or the entry is in `dist/extension.js`, when `dist/modelApi.js`
   stops carrying one of them, or when a file of the folder is on neither the
   lazy list nor the allowed list above.
+
+**Amendment (M79, 2026-09-28): the plan reader is a bundle of its own.**
+Reading a plan with the panel's own Markdown grammar (PR #53 review) takes
+`mdast-util-from-markdown`, `micromark-extension-gfm` and `mdast-util-gfm`:
+114.5 KiB, which would have taken `dist/extension.js` from 448.7 to
+563.2 KiB with several milestones' host code still to land. So
+`src/core/plans/planMarkdown.ts` is built from `src/host/planMarkdownEntry.ts`
+into `dist/planMarkdown.js` (114.7 KiB, budget 150 KiB) and required by
+`planMarkdownLoader` on the first Save plan, Implement or Plans…;
+`dist/extension.js` is 449.7 KiB. The reader imports no value of
+`shared/constants` (that would bring the English table, 58.7 KiB): it
+lists, and `planDocument.ts` cuts and caps. There is no fallback without
+it: a plan action that cannot load it is refused with
+`planMarkdownUnavailable`, since it is what checks for hidden text. The
+split gate fails when `dist/extension.js` carries the reader's module, its
+entry or any file of the parser's packages (`micromark*`, `mdast-util-*`,
+`character-entities`, `decode-named-character-reference`), or when
+`dist/planMarkdown.js` stops carrying the reader.
 
 ### D7 — Permission modes map onto MSP approval modes; prompting modes wait for M4
 

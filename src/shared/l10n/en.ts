@@ -699,6 +699,8 @@ export const EN = {
     'Plan saved to {path}, but not started: the conversation changed in the meantime.',
   planChangedNotStarted: 'The plan was not started: the conversation changed in the meantime.',
   planActionBusy: 'A plan action is still running.',
+  planMarkdownUnavailable:
+    'The plan reader could not be loaded, so plans are not saved, listed or implemented; reinstall the extension and reload the window. The log has the details.',
   // {mode}: the permission mode's name.
   planFromFileMode:
     'A plan picked from Plans… starts in {mode}: the file comes from the workspace, so the conversation asks before it acts.',

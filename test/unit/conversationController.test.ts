@@ -37,6 +37,7 @@ import {
 import { fill } from '../../src/shared/l10n/text'
 import { textFileDisplay } from '../../src/shared/textFileDisplay'
 import { planFileName, planLogName, planSlug, planTitle } from '../../src/core/plans/planDocument'
+import { PLAN_MARKDOWN } from '../../src/core/plans/planMarkdown'
 import type { ConversationMessage } from '../../src/host/views/webviewSetup'
 import { logLines } from './helpers/logText'
 import type { HostAction, LineRange, MentionItem } from '../../src/shared/protocol'
@@ -6966,7 +6967,7 @@ const IMPLEMENT = { type: 'implementPlan', sourceSessionId: 's1', itemId: REPLY_
 /** Where the captured plan lands: named after its prompt (its headings are sections). */
 const PLAN_FILE = planFileName(
   new Date(NOW),
-  planSlug(planTitle(CAPTURED_PLAN_BODY, CAPTURED_PLAN_PROMPT, 'unused')),
+  planSlug(planTitle(PLAN_MARKDOWN, CAPTURED_PLAN_BODY, CAPTURED_PLAN_PROMPT, 'unused')),
   1,
 )
 const PLAN_PATH = `.agents/plans/${PLAN_FILE}`
@@ -7266,6 +7267,34 @@ describe('ConversationController: plans as files (M79)', () => {
         fill(UI_TEXT.planSaved, { path: PLAN_PATH }),
       )
     }
+  })
+
+  it('refuses Save, Implement and Plans… with the reason when the plan reader cannot load', async () => {
+    const t = await museCodePlan()
+    t.planFiles.markdown.mockImplementation(() => {
+      throw new Error(UI_TEXT.planMarkdownUnavailable)
+    })
+    t.planFiles.files.set(`/ws/${FILE_PATH}`, '# A\n\n1. One.')
+    chooses(t, 'implement')
+    expect(await noticesOf(t, SAVE)).toEqual([
+      {
+        type: 'notice',
+        level: 'error',
+        text: `${UI_TEXT.planSaveFailed}: ${UI_TEXT.planMarkdownUnavailable}`,
+      },
+    ])
+    expect(await lastNoticeText(t, IMPLEMENT)).toBe(
+      `${UI_TEXT.planImplementFailed}: ${UI_TEXT.planMarkdownUnavailable}`,
+    )
+    expect(await lastNoticeText(t, { type: 'showPlans' })).toBe(
+      `${UI_TEXT.plansFailed}: ${UI_TEXT.planMarkdownUnavailable}`,
+    )
+    // Nothing asked, written or started without the hidden-text check.
+    expect(t.planFiles.confirmSave).not.toHaveBeenCalled()
+    expect(t.planFiles.files.has(`/ws/${FILE_PATH}`)).toBe(true)
+    expect(t.planFiles.files.size).toBe(1)
+    expect(t.server.requestsFor('session/start')).toHaveLength(1)
+    expect(t.surface.posted.some((message) => message.type === 'briefSubmitted')).toBe(false)
   })
 
   it('saves after a restart by resuming the conversation, and says so when the panel lost it', async () => {

@@ -592,6 +592,7 @@
   "planSavedNotStarted": "A terv mentve ide: {path}, de nem indult el: a beszélgetés időközben megváltozott.",
   "planChangedNotStarted": "A terv nem indult el: a beszélgetés időközben megváltozott.",
   "planActionBusy": "Egy tervművelet még folyamatban van.",
+  "planMarkdownUnavailable": "A tervolvasót nem sikerült betölteni, ezért a terveket nem lehet menteni, listázni vagy megvalósítani; telepítse újra a bővítményt, és töltse be újra az ablakot. A részletek a naplóban vannak.",
   "planFromFileMode": "A Tervek… menüből választott terv {mode} módban indul: a fájl a munkaterületről származik, ezért a beszélgetés kérdez, mielőtt cselekszik.",
   "planOpen": "Megnyitás",
   "plansItem": "Tervek…",

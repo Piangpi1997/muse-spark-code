@@ -6,19 +6,11 @@
 // steps that seed a new conversation's todo list. No file system, no
 // `vscode`.
 //
-// A plan's structure (its heading, its steps, what the panel leaves out) is
-// read with the panel's own Markdown grammar. MarkdownView renders a reply
-// with react-markdown, whose remark-parse is `mdast-util-from-markdown`, and
-// the panel's remark-gfm adds `micromark-extension-gfm` and `mdast-util-gfm`
-// (no options): the same three, at the versions those resolve to, parse the
-// plan here, without unified around them. A hand-made line scanner
-// disagreed with it (a backtick fence whose info string holds a backtick is
-// no fence), so what it called code the panel showed as prose.
+// A plan's heading and steps, and what the panel leaves out of it, need the
+// panel's own Markdown parser, which loads on first use (planMarkdown.ts,
+// dist/planMarkdown.js): they arrive here as a `PlanMarkdown`.
 
 import { createHash } from 'node:crypto'
-import { fromMarkdown } from 'mdast-util-from-markdown'
-import { gfmFromMarkdown } from 'mdast-util-gfm'
-import { gfm } from 'micromark-extension-gfm'
 import {
   MUSE_PLAN_HANDOFF_LEAD,
   MUSE_PLAN_HANDOFF_TAIL,
@@ -39,6 +31,19 @@ export interface PlanDocument {
   readonly body: string
 }
 
+/**
+ * What the panel's Markdown parser says of a plan (planMarkdown.ts), loaded
+ * with dist/planMarkdown.js on the first plan action.
+ */
+export interface PlanMarkdown {
+  /** The text of its first top-level heading as the panel shows it, if any. */
+  readonly topHeading: (text: string) => string | undefined
+  /** The items of its top-level numbered lists, else of its bulleted ones, each on one line. */
+  readonly listItems: (body: string) => readonly string[]
+  /** Whether it holds text the panel does not show (raw HTML, a title, an unused definition). */
+  readonly hasHiddenMarkup: (text: string) => boolean
+}
+
 /** What a plan file is written from. */
 export interface PlanContent {
   /** What the file is named after. */
@@ -48,20 +53,6 @@ export interface PlanContent {
   readonly text: string
 }
 
-/** The parts of a parsed Markdown node (mdast) this module reads. */
-interface MarkdownNode {
-  readonly type: string
-  readonly value?: string | undefined
-  readonly alt?: string | null | undefined
-  readonly title?: string | null | undefined
-  readonly identifier?: string | undefined
-  readonly depth?: number | undefined
-  readonly ordered?: boolean | null | undefined
-  readonly children?: readonly MarkdownNode[] | undefined
-}
-
-// The panel's parser: remark-parse's options once remark-gfm (no options) is in.
-const MARKDOWN_OPTIONS = { extensions: [gfm()], mdastExtensions: [gfmFromMarkdown()] }
 const LINE_BREAK = /\r?\n/
 // "Plan", "Plan:", "Plan how to", "Implementation plan —" say nothing about the task.
 const GENERIC_PLAN_LEAD = /^(?:implementation\s+)?plan\b(?:\s+how\s+to\b)?[\s:.\-–—]*/i
@@ -78,20 +69,6 @@ const TRAILING_BREAKS = /(?:\r?\n)+$/
 // would reach the brief unquoted) or a format character (a right-to-left
 // override would disguise the name in Plans…): never part of a plan's name.
 const UNSAFE_NAME_CHARACTER = /[\\/:\p{Cc}\p{Cf}]/u
-// What the panel never shows: raw HTML, block or inline (MarkdownView's
-// `skipHtml`); a title (links and pictures render without one); and a
-// definition nothing refers to, which renders as nothing at all. A link
-// definition serves link and picture references; a footnote, footnote ones.
-const HTML_NODE = 'html'
-const DEFINITION_KINDS: ReadonlyMap<string, string> = new Map([
-  ['definition', 'link'],
-  ['footnoteDefinition', 'footnote'],
-])
-const REFERENCE_KINDS: ReadonlyMap<string, string> = new Map([
-  ['linkReference', 'link'],
-  ['imageReference', 'link'],
-  ['footnoteReference', 'footnote'],
-])
 const ISO_DATE_CHARS = 10
 const DATE_PAD = 2
 const ELLIPSIS = '…'
@@ -118,55 +95,6 @@ function cut(text: string, maxChars: number): string {
         .trimEnd()}${ELLIPSIS}`
 }
 
-/** The plan as the panel parses it. */
-function parseMarkdown(text: string): MarkdownNode {
-  return fromMarkdown(text, MARKDOWN_OPTIONS)
-}
-
-function childrenOf(node: MarkdownNode): readonly MarkdownNode[] {
-  return node.children ?? []
-}
-
-/** Every node of the tree, depth first. */
-function nodesOf(node: MarkdownNode): readonly MarkdownNode[] {
-  return [node, ...childrenOf(node).flatMap((child) => nodesOf(child))]
-}
-
-/**
- * A node's text as the panel shows it: markup gone, a picture's alt text,
- * and raw HTML left out (an `html` node has a value but no children).
- */
-function shownText(node: MarkdownNode): string {
-  switch (node.type) {
-    case 'text':
-    case 'inlineCode': {
-      return node.value ?? ''
-    }
-    case 'image': {
-      return node.alt ?? ''
-    }
-    case 'break': {
-      return ' '
-    }
-    default: {
-      return childrenOf(node)
-        .map((child) => shownText(child))
-        .join('')
-    }
-  }
-}
-
-/** The text of the plan's first top-level heading (`# ` or underlined with `=`), if any. */
-function topHeading(tree: MarkdownNode): string | undefined {
-  for (const node of childrenOf(tree)) {
-    const heading = node.type === 'heading' && node.depth === 1 ? oneLine(shownText(node)) : ''
-    if (heading !== '') {
-      return heading
-    }
-  }
-  return undefined
-}
-
 /**
  * The plan a reply holds. A Muse Code plan reply opens and closes with its
  * `plan` skill's handoff (captured live 2026-09-27, docs/certification/m79.md):
@@ -190,8 +118,13 @@ export function planBody(reply: string): string {
  * "Plan"; else the first line of the prompt that asked for it, its "Plan how
  * to" dropped; else `fallback`.
  */
-export function planTitle(text: string, prompt: string | undefined, fallback: string): string {
-  const heading = topHeading(parseMarkdown(text))?.replace(GENERIC_PLAN_LEAD, '').trim()
+export function planTitle(
+  markdown: PlanMarkdown,
+  text: string,
+  prompt: string | undefined,
+  fallback: string,
+): string {
+  const heading = markdown.topHeading(text)?.replace(GENERIC_PLAN_LEAD, '').trim()
   const request = (prompt ?? '')
     .split(LINE_BREAK)
     .map((line) => oneLine(line).replace(GENERIC_PLAN_LEAD, ''))
@@ -226,27 +159,6 @@ export function planLogName(fileName: string): string {
   return `${fileName.slice(0, ISO_DATE_CHARS)}-#${hash}${PLAN_FILE_EXTENSION}`
 }
 
-/**
- * Whether the plan holds text the panel does not show, so the user did not
- * see all of what the model would be sent: raw HTML anywhere outside code
- * (a comment, a tag, a declaration), a link's or picture's title, or a
- * definition nothing refers to.
- */
-export function hasHiddenMarkup(text: string): boolean {
-  const nodes = nodesOf(parseMarkdown(text))
-  const referenced = new Set(
-    nodes.flatMap((node) => {
-      const kind = REFERENCE_KINDS.get(node.type)
-      return kind === undefined ? [] : [`${kind}:${node.identifier ?? ''}`]
-    }),
-  )
-  return nodes.some((node) => {
-    const kind = DEFINITION_KINDS.get(node.type)
-    const isUnreferenced = kind !== undefined && !referenced.has(`${kind}:${node.identifier ?? ''}`)
-    return node.type === HTML_NODE || isUnreferenced || (node.title ?? '').trim() !== ''
-  })
-}
-
 /** `2026-09-27`: the local calendar day. */
 function localDay(date: Date): string {
   const month = String(date.getMonth() + 1).padStart(DATE_PAD, '0')
@@ -261,44 +173,30 @@ export function planFileName(savedAt: Date, slug: string, attempt: number): stri
 }
 
 /** Reads a plan file back; `fileName` names it when no top-level heading does. */
-export function parsePlanFile(content: string, fileName: string): PlanDocument {
+export function parsePlanFile(
+  markdown: PlanMarkdown,
+  content: string,
+  fileName: string,
+): PlanDocument {
   const bareName = fileName.endsWith(PLAN_FILE_EXTENSION)
     ? fileName.slice(0, -PLAN_FILE_EXTENSION.length)
     : fileName
   return {
-    title: cut(topHeading(parseMarkdown(content)) ?? bareName, PLAN_TITLE_MAX_CHARS),
+    title: cut(markdown.topHeading(content) ?? bareName, PLAN_TITLE_MAX_CHARS),
     body: content,
   }
 }
 
-/** A list item as a task: its first paragraph as shown (no task box, no markup), one line, cut. */
-function stepText(item: MarkdownNode): string {
-  const paragraph = childrenOf(item).find((child) => child.type === 'paragraph')
-  return cut(oneLine(paragraph === undefined ? '' : shownText(paragraph)), PLAN_STEP_MAX_CHARS)
-}
-
 /**
- * The plan's steps: the items of its top-level numbered lists, or, when it
- * numbers none, of its top-level bulleted lists, as the panel parses them.
- * Nested items and further paragraphs belong to their step. At most
- * PLAN_STEPS_MAX.
+ * The plan's steps: its top-level numbered items, or, when it numbers none,
+ * its top-level bullets, as the panel parses them; at most PLAN_STEPS_MAX,
+ * each cut to PLAN_STEP_MAX_CHARS.
  */
-export function planSteps(body: string): readonly string[] {
-  const ordered: string[] = []
-  const bullets: string[] = []
-  const blocks = childrenOf(parseMarkdown(body))
-  for (const list of blocks) {
-    if (list.type !== 'list') {
-      continue
-    }
-    for (const item of childrenOf(list)) {
-      const text = stepText(item)
-      if (text !== '') {
-        ;(list.ordered === true ? ordered : bullets).push(text)
-      }
-    }
-  }
-  return (ordered.length > 0 ? ordered : bullets).slice(0, PLAN_STEPS_MAX)
+export function planSteps(markdown: PlanMarkdown, body: string): readonly string[] {
+  return markdown
+    .listItems(body)
+    .slice(0, PLAN_STEPS_MAX)
+    .map((item) => cut(item, PLAN_STEP_MAX_CHARS))
 }
 
 /** The steps as numbered lines, as the model is told its todo list was set. */

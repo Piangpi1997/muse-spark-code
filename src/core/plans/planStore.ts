@@ -19,6 +19,7 @@ import {
   isPlanFileName,
   type PlanContent,
   type PlanDocument,
+  type PlanMarkdown,
   parsePlanFile,
   planFileName,
   planSlug,
@@ -58,6 +59,11 @@ export interface PlanStoreDeps {
   readonly workspaceRoot: string
   readonly platform: NodeJS.Platform
   readonly io: PlanIo
+  /**
+   * The panel's Markdown parser for a plan's title (dist/planMarkdown.js,
+   * loaded on first use); throws, with the reason, when it cannot load.
+   */
+  readonly markdown: () => PlanMarkdown
 }
 
 /** Where a saved plan landed. */
@@ -205,6 +211,7 @@ export class PlanStore {
 
   /** A plan whole, bounded; throws with the reason when it cannot be read as one. */
   public async read(fileName: string): Promise<PlanFile> {
+    const markdown = this.deps.markdown()
     const place = await this.planPlace(fileName)
     const read = await this.deps.io.readFile(
       place.checkedAbsolute,
@@ -222,7 +229,7 @@ export class PlanStore {
       fileName,
       relativePath: place.relativePath,
       bytes: read.bytes,
-      document: parsePlanFile(text, fileName),
+      document: parsePlanFile(markdown, text, fileName),
     }
   }
 
@@ -232,6 +239,8 @@ export class PlanStore {
    * cannot be read is listed by its name.
    */
   public async list(): Promise<readonly PlanSummary[]> {
+    // The parser first: a listing it cannot title is refused, not half made.
+    this.deps.markdown()
     const folder = await this.place(PLANS_DIR)
     await this.deps.io.removeStaleStages(folder.checkedAbsolute)
     const entries = await this.deps.io.listEntries(folder.checkedAbsolute)

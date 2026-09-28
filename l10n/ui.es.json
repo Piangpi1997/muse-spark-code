@@ -604,6 +604,7 @@
   "planSavedNotStarted": "Plan guardado en {path}, pero no iniciado: la conversación cambió mientras tanto.",
   "planChangedNotStarted": "El plan no se inició: la conversación cambió mientras tanto.",
   "planActionBusy": "Todavía hay una acción de plan en curso.",
+  "planMarkdownUnavailable": "No se pudo cargar el lector de planes, así que los planes no se guardan, no se listan ni se implementan; reinstale la extensión y vuelva a cargar la ventana. El registro tiene los detalles.",
   "planFromFileMode": "Un plan elegido en Planes… empieza en {mode}: el archivo viene del área de trabajo, así que la conversación pregunta antes de actuar.",
   "planOpen": "Abrir",
   "plansItem": "Planes…",

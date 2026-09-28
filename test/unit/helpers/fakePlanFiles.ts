@@ -3,6 +3,8 @@
 
 import path from 'node:path'
 import { vi } from 'vitest'
+import type { PlanMarkdown } from '../../../src/core/plans/planDocument'
+import { PLAN_MARKDOWN } from '../../../src/core/plans/planMarkdown'
 import type { PlanDirectoryEntry, PlanIo, PlanSummary } from '../../../src/core/plans/planStore'
 import type { PlanChoice, PlanFiles } from '../../../src/host/conversation/conversationController'
 import { createPlanFiles } from '../../../src/host/planFeatures'
@@ -15,6 +17,8 @@ export interface FakePlanFiles {
   readonly choose: ReturnType<
     typeof vi.fn<(plans: readonly PlanSummary[]) => Promise<PlanChoice | undefined>>
   >
+  /** The plan reader: the source module, unless a test makes it fail to load. */
+  readonly markdown: ReturnType<typeof vi.fn<() => PlanMarkdown>>
 }
 
 function memoryPlanIo(files: Map<string, string>): PlanIo {
@@ -59,6 +63,7 @@ export function fakePlanFiles(workspaceRoot = '/ws'): FakePlanFiles {
   const choose = vi.fn<(plans: readonly PlanSummary[]) => Promise<PlanChoice | undefined>>(() =>
     Promise.resolve(undefined),
   )
+  const markdown = vi.fn<() => PlanMarkdown>(() => PLAN_MARKDOWN)
   const host = createPlanFiles({
     workspaceRoot,
     platform: 'linux',
@@ -66,6 +71,7 @@ export function fakePlanFiles(workspaceRoot = '/ws'): FakePlanFiles {
     // The tests answer the save's modal and the picks through the spies below.
     pick: () => Promise.reject(new Error('the test answers through choose')),
     confirm: () => Promise.reject(new Error('the test answers through confirmSave')),
+    markdown,
   })
-  return { files, confirmSave, choose, plans: { ...host, confirmSave, choose } }
+  return { files, confirmSave, choose, markdown, plans: { ...host, confirmSave, choose } }
 }

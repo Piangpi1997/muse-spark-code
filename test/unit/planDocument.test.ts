@@ -1,22 +1,28 @@
 import { describe, expect, it } from 'vitest'
 import {
-  hasHiddenMarkup,
   isPlanFileName,
   numberedSteps,
-  parsePlanFile,
+  parsePlanFile as parsePlanFileWith,
   planBody,
   planFileName,
   planLogName,
   planSlug,
-  planSteps,
-  planTitle,
+  planSteps as planStepsWith,
+  planTitle as planTitleWith,
 } from '../../src/core/plans/planDocument'
+import { hasHiddenMarkup, PLAN_MARKDOWN } from '../../src/core/plans/planMarkdown'
 import {
   PLAN_SLUG_MAX_CHARS,
   PLAN_STEP_MAX_CHARS,
   PLAN_STEPS_MAX,
 } from '../../src/shared/constants'
 import { CAPTURED_PLAN_BODY, CAPTURED_PLAN_PROMPT, CAPTURED_PLAN_REPLY } from './helpers/m79Capture'
+
+const planTitle = (text: string, prompt: string | undefined, fallback: string) =>
+  planTitleWith(PLAN_MARKDOWN, text, prompt, fallback)
+const planSteps = (body: string) => planStepsWith(PLAN_MARKDOWN, body)
+const parsePlanFile = (content: string, fileName: string) =>
+  parsePlanFileWith(PLAN_MARKDOWN, content, fileName)
 
 describe('planBody (M79)', () => {
   it('keeps the captured Muse Code plan between its handoff lines, byte for byte', () => {

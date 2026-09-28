@@ -580,6 +580,7 @@
   "planSavedNotStarted": "計畫已儲存至 {path}，但未開始：對話在此期間已改變。",
   "planChangedNotStarted": "計畫未開始：對話在此期間已改變。",
   "planActionBusy": "仍有計畫動作在進行中。",
+  "planMarkdownUnavailable": "無法載入計畫讀取器，因此無法儲存、列出或實作計畫；請重新安裝擴充功能並重新載入視窗。記錄中有詳細資訊。",
   "planFromFileMode": "從「計畫…」中選擇的計畫以{mode}模式開始：檔案來自工作區，因此對話在行動前會先詢問。",
   "planOpen": "開啟",
   "plansItem": "計畫…",
