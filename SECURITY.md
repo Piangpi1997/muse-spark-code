@@ -111,6 +111,11 @@ Only the latest release on the Visual Studio Marketplace receives fixes.
   file, and once the agent writes one the loop opens and formats nothing
   more until the user's next message. `getDiagnostics` opens only a file
   inside the workspace by its real path (links and junctions resolved).
+  Every later act on an edited file (format on edit's write-back, `then_run`,
+  the diagnostics' show and read, a check's file arguments) uses the real
+  path and canonical name confinement found at the edit and checks, just
+  before, that the file is still there and still holds what the edit left
+  (a check's arguments: still there).
   Muse Code's own edits are not seen by the extension, so after Muse Code
   writes such a config, a later `getDiagnostics` request for an ordinary
   file can still open that file and let the extension load the config.

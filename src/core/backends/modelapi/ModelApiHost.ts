@@ -142,6 +142,8 @@ import type { CoreLogger } from '../../logging'
 import { textFileInput } from '../../textAttachment'
 import { isProtectedPath } from '../../protectedPaths'
 import { confineWorkspacePath } from '../../workspacePath'
+import { pathModule } from '../../workspaceRoot'
+import { fingerprint } from '../../verify/fingerprint'
 import type { McpTool } from '../../mcp'
 import type { MemoryStore } from '../../memory/memoryStore'
 import {
@@ -224,7 +226,6 @@ import {
   classifyTool,
   type EditFormatter,
   executeTool,
-  fingerprint,
   parseQuestions,
   readSkillArgs,
   type ShellResult,
@@ -3806,13 +3807,16 @@ export class ModelApiSession implements AgentSession {
   /**
    * One check: skipped when the fix loop stopped the checks or the user
    * rejected it since their message; its line (paths refused when they
-   * cannot be passed safely); then the command's path above, a Reject
-   * remembered. Its output takes `maxChars` of the note's budget.
+   * cannot be passed safely), the files by the canonical names confinement
+   * gave them; then the command's path above, a Reject remembered, and just
+   * before it runs each file must still be where confinement found it (the
+   * Codex review of PR #54). Its output takes `maxChars` of the note's
+   * budget.
    */
   private async runCheck(
     itemId: string,
     check: CheckCommandSetting,
-    paths: readonly string[],
+    files: readonly EditedFile[],
     signal: AbortSignal,
     effects: HookEffects,
     maxChars: number,
@@ -3824,7 +3828,11 @@ export class ModelApiSession implements AgentSession {
     if (state.rejected.has(check.name)) {
       return skippedCheck(check, 'rejected')
     }
-    const built = checkCommandLine(check, paths, this.deps.platform)
+    const built = checkCommandLine(
+      check,
+      files.map((file) => file.relative),
+      this.deps.platform,
+    )
     if (!built.ok) {
       return skippedCheck(check, 'unsafePath')
     }
@@ -3838,6 +3846,8 @@ export class ModelApiSession implements AgentSession {
         timeoutMs,
         isForced: false,
         isRuleIgnored: this.changesWhatRunsNow(check.command),
+        ...(check.changedFiles === true &&
+          files.length > 0 && { guard: () => this.areStillWhereConfined(files) }),
       },
       signal,
       effects,
@@ -3882,7 +3892,7 @@ export class ModelApiSession implements AgentSession {
   private async runChecks(
     itemId: string,
     checks: readonly CheckCommandSetting[],
-    paths: readonly string[],
+    files: readonly EditedFile[],
     signal: AbortSignal,
     effects: HookEffects,
     maxChars: number,
@@ -3895,13 +3905,13 @@ export class ModelApiSession implements AgentSession {
       if (effects.stopReason !== undefined) {
         break
       }
-      runs.push(await this.runCheck(itemId, check, paths, signal, effects, maxChars))
+      runs.push(await this.runCheck(itemId, check, files, signal, effects, maxChars))
     }
     return runs
   }
 
-  /** The files that still exist, workspace-relative: only those reach a check (the M68 review). */
-  private async existingPaths(files: readonly EditedFile[]): Promise<readonly string[]> {
+  /** The files that still exist: only those reach a check (the M68 review). */
+  private async existingFiles(files: readonly EditedFile[]): Promise<readonly EditedFile[]> {
     const exists = await Promise.all(
       files.map(async (file) => {
         try {
@@ -3912,7 +3922,27 @@ export class ModelApiSession implements AgentSession {
         }
       }),
     )
-    return files.filter((_file, index) => exists[index] === true).map((file) => file.relative)
+    return files.filter((_file, index) => exists[index] === true)
+  }
+
+  /**
+   * Whether each file's canonical name still leads to the real path
+   * confinement gave it: a link or junction retargeted since, or a folder
+   * swapped for one, would hand the check another file (the Codex review of
+   * PR #54). Content may change (an earlier check may fix a file); the check
+   * then reports on the file as it is.
+   */
+  private async areStillWhereConfined(files: readonly EditedFile[]): Promise<boolean> {
+    const p = pathModule(this.deps.platform)
+    try {
+      const real = await Promise.all(
+        files.map((file) => this.deps.io.realPath(p.join(this.deps.workspaceRoot, file.relative))),
+      )
+      return files.every((file, index) => real[index] === file.absolute)
+    } catch (error: unknown) {
+      this.deps.log.warn(`Verify: a checked file could not be resolved again: ${describe(error)}`)
+      return false
+    }
   }
 
   /**
@@ -3949,10 +3979,10 @@ export class ModelApiSession implements AgentSession {
       }
     }
     const isEditedScope = parsed.args.paths === undefined
-    const paths: string[] = []
+    const files: EditedFile[] = []
     if (isEditedScope) {
       const edited = Array.from(this.verifyState.edited, ([, file]) => file)
-      paths.push(...(await this.existingPaths(edited)))
+      files.push(...(await this.existingFiles(edited)))
     } else {
       const named = parsed.args.paths ?? []
       for (const given of named) {
@@ -3972,13 +4002,13 @@ export class ModelApiSession implements AgentSession {
             ),
           }
         }
-        paths.push(resolved.relative)
+        files.push({ relative: resolved.canonical, absolute: resolved.checkedAbsolute })
       }
     }
     const selected = configured.filter((check) => names.includes(check.name))
     const effects = newHookEffects()
     const share = Math.floor(VERIFY_NOTE_MAX_CHARS / Math.max(selected.length, 1))
-    const runs = await this.runChecks(itemId, selected, paths, signal, effects, share)
+    const runs = await this.runChecks(itemId, selected, files, signal, effects, share)
     const turn = this.active
     if (turn !== undefined) {
       turn.roundCheckRuns.push(...runs)
@@ -3995,7 +4025,10 @@ export class ModelApiSession implements AgentSession {
       outcome: {
         output: `${MODEL_TEXT.runChecksLead}\n\n${section}`,
         visibleOutput: section,
-        verifySummary: { files: paths, checks: runs.map((run) => run.summary) },
+        verifySummary: {
+          files: files.map((file) => file.relative),
+          checks: runs.map((run) => run.summary),
+        },
       },
       hookEffects: effects,
     }
@@ -4281,12 +4314,22 @@ export class ModelApiSession implements AgentSession {
     readonly relative: string
     readonly absolute: string
     readonly canonical: string
+    readonly checkedAbsolute: string
   }): void {
-    const file: EditedFile = { relative: target.relative, absolute: target.absolute }
-    this.active?.editedInRound.set(target.absolute, file)
+    // By the real path and canonical name confinement found at the edit, with
+    // what the edit left: nothing later follows a link retargeted since, and
+    // the editor reads the file only while it still holds that (the Codex
+    // review of PR #54).
+    const fingerprint = this.seenFiles.get(target.absolute)
+    const file: EditedFile = {
+      relative: target.canonical,
+      absolute: target.checkedAbsolute,
+      ...(fingerprint !== undefined && { fingerprint }),
+    }
+    this.active?.editedInRound.set(target.checkedAbsolute, file)
     this.active?.checksSinceEdit.clear()
     const state = this.verifyState
-    state.edited.set(target.absolute, file)
+    state.edited.set(target.checkedAbsolute, file)
     state.writtenNames.add(target.relative)
     state.writtenNames.add(target.canonical)
     if (
@@ -4876,7 +4919,7 @@ export class ModelApiSession implements AgentSession {
         ? await this.editDiagnostics(verify, edited, signal, share)
         : undefined
       // Looked up after the language servers' wait, so a file gone by now is not passed.
-      const existing = checks.length === 0 ? [] : await this.existingPaths(edited)
+      const existing = checks.length === 0 ? [] : await this.existingFiles(edited)
       runs = await this.runChecks(started.itemId, checks, existing, signal, effects, share)
       if (isAbortRequested(signal)) {
         throw new AbortedError()

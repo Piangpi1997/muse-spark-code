@@ -22,6 +22,7 @@ import type { ShellResult, ToolIo } from '../../src/core/backends/modelapi/tools
 import type { VerifyHooks } from '../../src/core/backends/modelapi/verifyLoop'
 import type { DiagnosticEntry } from '../../src/core/diagnostics'
 import type { EditedFile, FileDiagnostics } from '../../src/core/verify/diagnosticsReport'
+import { fingerprint } from '../../src/core/verify/fingerprint'
 import type { ApprovalMode } from '../../src/shared/permissionModes'
 import { FakeLogOutputChannel } from './helpers/fakes'
 import {
@@ -321,6 +322,14 @@ function toolNames(body: Record<string, unknown> | undefined): readonly string[]
   return tools.flatMap((tool) => (tool.name === undefined ? [] : [tool.name]))
 }
 
+/** A turn of one edit of src/a.ts in Bypass permissions, finished. */
+async function editOnce(t: Setup): Promise<Awaited<ReturnType<typeof start>>> {
+  const started = await start(t, 'allowAll')
+  t.api.script({ calls: [editCall('1', '2')] }, { text: 'ok' })
+  await started.turn()
+  return started
+}
+
 /** A turn of one edit whose then_run is `npm test`, finished. */
 async function editThenTest(t: Setup): Promise<Awaited<ReturnType<typeof start>>> {
   const started = await start(t, 'allowAll')
@@ -369,7 +378,16 @@ describe('the verify loop after a round of edits (Model API)', () => {
       { command: "npm run lint -- 'src/a.ts'", cwd: ROOT, timeoutMs: 300_000 },
       { command: 'npm test', cwd: ROOT, timeoutMs: 300_000 },
     ])
-    expect(t.diagnosticsCalls).toEqual([[{ relative: 'src/a.ts', absolute: `${ROOT}/src/a.ts` }]])
+    // With what the edit left, so the editor reads the file only while it holds that.
+    expect(t.diagnosticsCalls).toEqual([
+      [
+        {
+          relative: 'src/a.ts',
+          absolute: `${ROOT}/src/a.ts`,
+          fingerprint: fingerprint("const a = '1'\n"),
+        },
+      ],
+    ])
     const next = userText(t.api.responseBodies()[1])
     expect(next).toContain(MODEL_TEXT.verifyLead)
     expect(next).toContain('src/a.ts: errors 1, warnings 0')
@@ -857,9 +875,7 @@ describe('format on edit', () => {
       isFormatOnEdit: true,
       format: () => Promise.reject(new Error('formatter crashed')),
     })
-    const { events, turn } = await start(t, 'allowAll')
-    t.api.script({ calls: [editCall('1', '2')] }, { text: 'ok' })
-    await turn()
+    const { events } = await editOnce(t)
     expect(t.io.files.get(`${ROOT}/src/a.ts`)).toBe('const a = 2\n')
     expect(completedRows(events, 'edit_file')[0]?.status).toBe('completed')
     expect(logLines(t.log).join('\n')).toContain(
@@ -1467,5 +1483,81 @@ describe('what reaches a check and the editor (the M68 review)', () => {
     expect(logLines(t.log).join('\n')).toContain(
       'Format on edit could not write src/a.ts; the edit stays as written: disk full',
     )
+  })
+})
+
+// The Codex review of PR #54: every act on an edited file after an await uses
+// the real path and canonical name confinement found at the edit, and checks
+// the file is still that (and still holds what the edit left) just before.
+describe('acts on the file the edit wrote, as it left it', () => {
+  it('does not write the formatted text over a change made while the formatter ran', async () => {
+    const io = memoryToolIo({ 'src/a.ts': 'const a = 1\n' }, ROOT)
+    const t = setup({
+      io,
+      isDiagnosticsOn: false,
+      isFormatOnEdit: true,
+      format: (_path, text) => {
+        // Someone else writes the file while the formatter runs.
+        io.files.set(`${ROOT}/src/a.ts`, 'someone else\n')
+        return Promise.resolve(`${text}// formatted\n`)
+      },
+    })
+    const { events } = await editThenTest(t)
+    expect(io.files.get(`${ROOT}/src/a.ts`)).toBe('someone else\n')
+    expect(logLines(t.log).join('\n')).toContain(
+      'Format on edit skipped src/a.ts: the file changed while the formatter ran',
+    )
+    // then_run's guard sees the change too, just before the command.
+    expect(t.io.shellCalls).toEqual([])
+    expect(completedRows(events, 'edit_file')[0]?.thenRun?.skip).toBe('changed')
+  })
+
+  it('reads and checks an edited file by the real path and canonical name it had', async () => {
+    const io = memoryToolIo({ 'real/a.ts': 'const a = 1\n' }, ROOT, undefined, {
+      lnk: `${ROOT}/real`,
+    })
+    const t = setup({ io, checks: [LINT] })
+    const { turn } = await start(t, 'allowAll')
+    t.api.script(
+      {
+        calls: [
+          {
+            name: 'edit_file',
+            arguments: JSON.stringify({ path: 'lnk/a.ts', find: '1', replace: '2' }),
+          },
+        ],
+      },
+      { text: 'ok' },
+    )
+    await turn()
+    expect(t.diagnosticsCalls).toEqual([
+      [
+        {
+          relative: 'real/a.ts',
+          absolute: `${ROOT}/real/a.ts`,
+          fingerprint: fingerprint('const a = 2\n'),
+        },
+      ],
+    ])
+    expect(t.io.shellCalls.map((call) => call.command)).toEqual(["npm run lint -- 'real/a.ts'"])
+  })
+
+  it('skips a check when a checked file no longer is where confinement found it', async () => {
+    const links: Record<string, string> = {}
+    const io = memoryToolIo({ 'src/a.ts': 'const a = 1\n' }, ROOT, undefined, links)
+    const t = setup({
+      io,
+      checks: [LINT],
+      diagnostics: (files) => {
+        // Before the check runs, the folder becomes a link out of the workspace.
+        links['src'] = '/elsewhere/src'
+        return Promise.resolve(files.map((file) => ({ file, entries: [] })))
+      },
+    })
+    const { events } = await editOnce(t)
+    expect(t.io.shellCalls).toEqual([])
+    expect(completedRows(events, 'verify_edits')[0]?.verifySummary?.checks).toEqual([
+      { name: 'lint', outcome: 'notRun', skip: 'changed' },
+    ])
   })
 })

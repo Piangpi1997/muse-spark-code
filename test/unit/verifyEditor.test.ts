@@ -19,6 +19,7 @@ import {
   workspace,
 } from './mocks/vscode'
 import { createVerifyEditor, type VerifyEditor } from '../../src/host/editor/verifyEditor'
+import { fingerprint } from '../../src/core/verify/fingerprint'
 import { FakeLogOutputChannel } from './helpers/fakes'
 import { logLines } from './helpers/logText'
 import { createLogger } from '../../src/host/logger'
@@ -486,6 +487,130 @@ describe('diagnosticsAfterEdit', () => {
     expect(logLines(channel).join('\n')).toContain(
       'Verify: the files shown for diagnostics could not be closed: busy',
     )
+  })
+})
+
+/** What the file holds on disk at each next read, in turn. */
+function onDisk(...texts: readonly string[]): void {
+  for (const text of texts) {
+    vi.mocked(workspace.fs.readFile).mockResolvedValueOnce(new TextEncoder().encode(text))
+  }
+}
+
+// The Codex review of PR #54: the file is checked just before each act on it.
+describe('the file as the edit left it', () => {
+  const EDITED = { ...FILE, fingerprint: fingerprint('const a = 2\n') }
+
+  it('never opens a file that no longer holds what the edit left, or is not where it was', async () => {
+    const { verify } = editor({ links: { [FILE.absolute]: '/elsewhere/a.ts' } })
+    expect(await verify.diagnosticsAfterEdit([EDITED], new AbortController().signal)).toEqual([
+      { file: EDITED, entries: [], unchecked: 'changed' },
+    ])
+    const plain = editor().verify
+    onDisk('someone else')
+    expect(await plain.diagnosticsAfterEdit([EDITED], new AbortController().signal)).toEqual([
+      { file: EDITED, entries: [], unchecked: 'changed' },
+    ])
+    expect(workspace.openTextDocument).not.toHaveBeenCalled()
+  })
+
+  it('reads a file only while it still holds what the edit left', async () => {
+    const { verify } = editor()
+    vi.mocked(languages.getDiagnostics).mockReturnValue([
+      [Uri.file(FILE.absolute), [diagnostic(0, 0, 0, 'about the new text')]],
+    ])
+    onDisk('const a = 2\n', 'const a = 3\n')
+    const pending = verify.diagnosticsAfterEdit([EDITED], new AbortController().signal)
+    setTimeout(() => {
+      report(FILE.absolute)
+    }, 5)
+    expect(await pending).toEqual([{ file: EDITED, entries: [], unchecked: 'changed' }])
+    onDisk('const a = 2\n', 'const a = 2\n')
+    const again = verify.diagnosticsAfterEdit([EDITED], new AbortController().signal)
+    setTimeout(() => {
+      report(FILE.absolute)
+    }, 5)
+    const [read] = await again
+    expect(read?.entries.map((entry) => entry.message)).toEqual(['about the new text'])
+  })
+
+  it('does not open for the diagnostics tool a path retargeted after it was confined', async () => {
+    let calls = 0
+    const verify = createVerifyEditor({
+      platform: 'linux',
+      log: createLogger(new FakeLogOutputChannel()),
+      workspaceRoot: ROOT,
+      // Confinement resolves the root and the path; the next look finds a link.
+      realPath: (absolutePath) => {
+        calls += 1
+        return Promise.resolve(calls > 2 ? '/elsewhere/a.ts' : absolutePath)
+      },
+      settle: SETTLE,
+    })
+    made.push(verify)
+    expect(await verify.settleFile(FILE.absolute)).toBeUndefined()
+    expect(workspace.openTextDocument).not.toHaveBeenCalled()
+  })
+
+  it('does not format a file whose path now leads elsewhere', async () => {
+    const { verify, channel } = editor({ links: { [FILE.absolute]: '/elsewhere/a.ts' } })
+    expect(await verify.formatAfterEdit(FILE.absolute, 'x')).toBeUndefined()
+    expect(workspace.openTextDocument).not.toHaveBeenCalled()
+    expect(logLines(channel).join('\n')).toContain('its path now leads to another file')
+  })
+
+  it('shows a background tab where it is, as it is, and brings back the tab that was in front', async () => {
+    const { verify } = editor()
+    const side: {
+      isActive: boolean
+      viewColumn: number
+      activeTab: vscode.Tab | undefined
+      tabs: vscode.Tab[]
+    } = { isActive: false, viewColumn: BESIDE_COLUMN, activeTab: undefined, tabs: [] }
+    const tabIn = (path: string, isPreview: boolean): vscode.Tab => ({
+      label: path,
+      group: side,
+      input: new TabInputText(Uri.file(path)),
+      isActive: false,
+      isDirty: false,
+      isPinned: false,
+      isPreview,
+    })
+    const users = tabIn('/ws/user.ts', false)
+    side.tabs.push(users, tabIn(FILE.absolute, true))
+    side.activeTab = users
+    const main: vscode.TabGroup = {
+      isActive: true,
+      viewColumn: USER_COLUMN,
+      activeTab: undefined,
+      tabs: [],
+    }
+    window.tabGroups.all = [main, side]
+    vi.mocked(shownDocument).mockImplementation((uri: vscode.Uri | vscode.TextDocument) => {
+      const target = 'fsPath' in uri ? uri : uri.uri
+      side.activeTab = side.tabs.find(
+        (tab) => tab.input instanceof TabInputText && tab.input.uri.fsPath === target.fsPath,
+      )
+      return Promise.resolve(fakeEditor(target))
+    })
+    const pending = verify.diagnosticsAfterEdit([FILE], new AbortController().signal)
+    setTimeout(() => {
+      report(FILE.absolute)
+    }, 5)
+    await pending
+    expect(
+      vi
+        .mocked(shownDocument)
+        .mock.calls.map(([uri, options]): readonly unknown[] => [
+          uri instanceof FakeUri ? uri.fsPath : undefined,
+          options,
+        ]),
+    ).toEqual([
+      [FILE.absolute, { viewColumn: BESIDE_COLUMN, preview: true, preserveFocus: true }],
+      ['/ws/user.ts', { viewColumn: BESIDE_COLUMN, preview: false, preserveFocus: true }],
+    ])
+    expect(side.activeTab).toBe(users)
+    expect(window.tabGroups.close).not.toHaveBeenCalled()
   })
 })
 

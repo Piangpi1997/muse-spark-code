@@ -18,6 +18,7 @@ import * as vscode from 'vscode'
 import { DIAGNOSTIC_SEVERITIES, type DiagnosticEntry } from '../../core/diagnostics'
 import { isCodeLoading } from '../../core/verify/codeFiles'
 import type { EditedFile, FileDiagnostics } from '../../core/verify/diagnosticsReport'
+import { bytesFingerprint } from '../../core/verify/fingerprint'
 import { applyOffsetEdits, type OffsetEdit } from '../../core/verify/textEdits'
 import { confineWorkspacePath } from '../../core/workspacePath'
 import {
@@ -255,10 +256,12 @@ type Shown =
   | { readonly ok: false; readonly reason: UncheckedReason }
 
 /**
- * Shows the file beside the active editor unless an editor already shows it,
- * as its own tab (never a preview, which would replace the user's) and
- * without focus, noting the tabs it created. Beside, so nothing the user
- * types lands in it.
+ * Shows the file unless an editor already shows it, without focus: in the
+ * group of a tab it already has outside the user's group, as that tab is
+ * (its preview state kept; the Codex review of PR #54), else beside the
+ * active editor as a tab of its own (never a preview, which would replace
+ * the user's), noting the tabs it created. Never in the user's group, so
+ * nothing the user types lands in it.
  */
 async function show(
   deps: VerifyEditorDeps,
@@ -284,11 +287,13 @@ async function show(
   if (isVisible) {
     return { ok: true, document, wasVisible: true }
   }
-  const before = new Set(tabsOf(key, deps.platform).map((tab) => tab.group.viewColumn))
+  const existing = tabsOf(key, deps.platform)
+  const before = new Set(existing.map((tab) => tab.group.viewColumn))
+  const reused = existing.find((tab) => !tab.group.isActive)
   try {
     await vscode.window.showTextDocument(document.uri, {
-      viewColumn: vscode.ViewColumn.Beside,
-      preview: false,
+      viewColumn: reused?.group.viewColumn ?? vscode.ViewColumn.Beside,
+      preview: reused?.isPreview ?? false,
       preserveFocus: true,
     })
   } catch (error: unknown) {
@@ -344,6 +349,85 @@ async function isShowingDiskText(document: vscode.TextDocument): Promise<boolean
   }
 }
 
+/**
+ * Whether the file is still the one confinement found (its real path
+ * unchanged) and, for an edited file, still holds what the edit left:
+ * checked immediately before each act on it, the show and the read (the
+ * Codex review of PR #54).
+ */
+async function isStillAsConfined(deps: VerifyEditorDeps, file: EditedFile): Promise<boolean> {
+  try {
+    if ((await deps.realPath(file.absolute)) !== file.absolute) {
+      return false
+    }
+    if (file.fingerprint === undefined) {
+      return true
+    }
+    const bytes = await vscode.workspace.fs.readFile(vscode.Uri.file(file.absolute))
+    return bytesFingerprint(bytes) === file.fingerprint
+  } catch (error: unknown) {
+    deps.log.warn(`Verify: ${file.relative} could not be checked again: ${describe(error)}`)
+    return false
+  }
+}
+
+/** Each group's active tab, by the group's column. */
+function activeTabs(): ReadonlyMap<vscode.ViewColumn, vscode.Tab | undefined> {
+  return new Map(vscode.window.tabGroups.all.map((group) => [group.viewColumn, group.activeTab]))
+}
+
+/** A tab's document key, or undefined for a tab that shows no text document. */
+function tabKey(tab: vscode.Tab | undefined, platform: NodeJS.Platform): string | undefined {
+  return tab?.input instanceof vscode.TabInputText ? uriKey(tab.input.uri, platform) : undefined
+}
+
+function isSameTab(
+  a: vscode.Tab | undefined,
+  b: vscode.Tab | undefined,
+  platform: NodeJS.Platform,
+): boolean {
+  return a?.label === b?.label && tabKey(a, platform) === tabKey(b, platform)
+}
+
+/**
+ * Brings back to the front, in each group where the loop left one of its
+ * files in front, the tab that was there before the batch (the Codex review
+ * of PR #54): a reused tab stays open, and would otherwise hide the user's.
+ * A text tab is shown again as it was, without focus; any other kind is
+ * logged.
+ */
+async function restoreActiveTabs(
+  deps: VerifyEditorDeps,
+  before: ReadonlyMap<vscode.ViewColumn, vscode.Tab | undefined>,
+  shownKeys: ReadonlySet<string>,
+): Promise<void> {
+  for (const group of vscode.window.tabGroups.all) {
+    const previous = before.get(group.viewColumn)
+    const nowKey = tabKey(group.activeTab, deps.platform)
+    const isOurs = nowKey !== undefined && shownKeys.has(nowKey)
+    if (!isOurs || isSameTab(group.activeTab, previous, deps.platform)) {
+      continue
+    }
+    const still = group.tabs.find((tab) => isSameTab(tab, previous, deps.platform))
+    if (still === undefined) {
+      continue
+    }
+    if (!(still.input instanceof vscode.TabInputText)) {
+      deps.log.warn(`Verify: ${still.label} could not be brought back to the front`)
+      continue
+    }
+    try {
+      await vscode.window.showTextDocument(still.input.uri, {
+        viewColumn: group.viewColumn,
+        preview: still.isPreview,
+        preserveFocus: true,
+      })
+    } catch (error: unknown) {
+      deps.log.warn(`Verify: ${still.label} could not be brought back: ${describe(error)}`)
+    }
+  }
+}
+
 /** Closes the tabs the loop opened, unless the user has since changed their text. */
 async function closeOpened(deps: VerifyEditorDeps, opened: readonly OpenedTab[]): Promise<void> {
   const tabs = opened.flatMap(({ key, column }) =>
@@ -366,17 +450,22 @@ async function settledDiagnostics(
   file: EditedFile,
   signal: AbortSignal,
   opened: OpenedTab[],
+  shownKeys: Set<string>,
 ): Promise<FileDiagnostics> {
   if (signal.aborted) {
     return { file, entries: [], unchecked: 'stopped' }
   }
   const key = uriKey(vscode.Uri.file(file.absolute), deps.platform)
+  if (!(await isStillAsConfined(deps, file))) {
+    return { file, entries: [], unchecked: 'changed' }
+  }
   const reports = watchReports(key, deps.platform)
   try {
     const shown = await show(deps, file, key, opened)
     if (!shown.ok) {
       return { file, entries: [], unchecked: shown.reason }
     }
+    shownKeys.add(key)
     // A file an editor already showed may have been reported on before the
     // wait began, and showing it again brings no new report.
     const hasEarlierReport = shown.wasVisible && (await isReportedSinceWrite(file, key, reportLog))
@@ -389,6 +478,14 @@ async function settledDiagnostics(
     if (!isSettled) {
       return { file, entries: [], unchecked: 'noReport' }
     }
+    // What the servers hold is about the text the editor has: read it only
+    // while that is still what the edit left, at the path it left it.
+    if (shown.document.isDirty) {
+      return { file, entries: [], unchecked: 'unsaved' }
+    }
+    if (!(await isStillAsConfined(deps, file))) {
+      return { file, entries: [], unchecked: 'changed' }
+    }
     const held = vscode.languages
       .getDiagnostics()
       .find(([candidate]) => uriKey(candidate, deps.platform) === key)
@@ -398,7 +495,10 @@ async function settledDiagnostics(
   }
 }
 
-/** Each file in turn, then the tabs opened for them closed. */
+/**
+ * Each file in turn, then the tabs opened for them closed and each group's
+ * front tab as it was before.
+ */
 async function readFiles(
   deps: VerifyEditorDeps,
   reportLog: ReportLog,
@@ -406,13 +506,16 @@ async function readFiles(
   signal: AbortSignal,
 ): Promise<readonly FileDiagnostics[]> {
   const opened: OpenedTab[] = []
+  const shownKeys = new Set<string>()
+  const before = activeTabs()
   const results: FileDiagnostics[] = []
   try {
     for (const file of files) {
-      results.push(await settledDiagnostics(deps, reportLog, file, signal, opened))
+      results.push(await settledDiagnostics(deps, reportLog, file, signal, opened, shownKeys))
     }
   } finally {
     await closeOpened(deps, opened)
+    await restoreActiveTabs(deps, before, shownKeys)
   }
   return results
 }
@@ -493,6 +596,12 @@ async function formatAfterEdit(
   absolutePath: string,
   text: string,
 ): Promise<string | undefined> {
+  // The real path the edit wrote: a link retargeted since would open another
+  // file (the Codex review of PR #54). The text is compared once it opens.
+  if ((await deps.realPath(absolutePath)) !== absolutePath) {
+    deps.log.warn(`Format on edit skipped ${absolutePath}: its path now leads to another file`)
+    return undefined
+  }
   const timing = deps.format ?? FORMAT_TIMING
   const hasBom = text.startsWith(BOM)
   const expected = hasBom ? text.slice(BOM.length) : text
@@ -538,22 +647,30 @@ function reachedBeforeStop(waited: Promise<void>, signal: AbortSignal): Promise<
   if (signal.aborted) {
     return Promise.resolve(false)
   }
-  const reached = Promise.withResolvers<boolean>()
-  const onAbort = () => {
-    reached.resolve(false)
-  }
-  signal.addEventListener('abort', onAbort, { once: true })
-  void (async () => {
-    await waited
-    signal.removeEventListener('abort', onAbort)
-    reached.resolve(true)
-  })()
-  return reached.promise
+  return new Promise<boolean>((resolve) => {
+    const onAbort = () => {
+      resolve(false)
+    }
+    signal.addEventListener('abort', onAbort, { once: true })
+    void (async () => {
+      await waited
+      signal.removeEventListener('abort', onAbort)
+      resolve(true)
+    })()
+  })
 }
 
+/**
+ * Once `first` settles and then `second` does, however `second` ended: the
+ * queue only waits on a caller, whose own error goes to that caller.
+ */
 async function afterBoth(first: Promise<void>, second: Promise<unknown>): Promise<void> {
   await first
-  await second
+  try {
+    await second
+  } catch {
+    // The caller that ran it receives this error; the next caller only waits.
+  }
 }
 
 export function createVerifyEditor(deps: VerifyEditorDeps): VerifyEditor {
@@ -569,13 +686,11 @@ export function createVerifyEditor(deps: VerifyEditorDeps): VerifyEditor {
     work: () => Promise<T>,
   ): Promise<T> => {
     const previous = tail
-    const done = Promise.withResolvers<undefined>()
-    tail = afterBoth(previous, done.promise)
-    try {
-      return (await reachedBeforeStop(previous, signal)) ? await work() : stopped()
-    } finally {
-      done.resolve(undefined)
-    }
+    // No Promise.withResolvers here: VS Code 1.99's extension host runs Node 20.
+    const turn = (async () =>
+      (await reachedBeforeStop(previous, signal)) ? await work() : stopped())()
+    tail = afterBoth(previous, turn)
+    return await turn
   }
   return {
     diagnosticsAfterEdit: (files, signal) =>

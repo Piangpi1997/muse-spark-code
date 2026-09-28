@@ -6574,7 +6574,11 @@ timeoutSeconds? }`, at most 8, names unique, 300 s unless set, 600 s at
     remaining checks; a queued editor caller stops while it waits; an
     already shown file's report since the write, or a shown document that
     holds the disk text, counts; `run_checks` rounds without edits count for
-    the fix loop.
+    the fix loop. Its second round added three, closed as a class: every act on
+    a file after an await uses the confined real path and canonical name
+    and checks the file (its real path, and what the edit left) just
+    before; a reused background tab keeps its preview state and the tab
+    that was in front comes back (drills R47 to R56).
   - **Open for the owner**: the side editor group, the upstream MSP ask, and
     the `diagnosticsAfterEdits` default (on).
 
@@ -7335,6 +7339,15 @@ Every lint or scanner suppression (`eslint-disable`, `@ts-expect-error`, `nosemg
   covered. Check paths on Windows are refused by character, a deny list
   over PowerShell 5.1's and `cmd.exe`'s syntax as measured, with only
   existing workspace files passed.
+  Every act the verify loop takes on a file after an await (format on
+  edit's open and write-back, `then_run`, the diagnostics' show and read,
+  `getDiagnostics`, a check's path arguments) uses the real path and
+  canonical name confinement found and checks the file just before (the
+  Codex review of PR #54; the sites are listed in the M68 certification).
+  Residual risk: a moment remains between that check and the act (no
+  compare-and-swap on the file system; an atomic rename cannot be
+  conditional), and a folder on the real path swapped for a link in that
+  moment is not caught.
 
 - M50's Windows stdio server inherits the extension's three binary pipes
   unchanged. A hidden helper creates it suspended, assigns it to a fresh

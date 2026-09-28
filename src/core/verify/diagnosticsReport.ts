@@ -20,11 +20,18 @@ import {
 import { fill } from '../../shared/l10n/text'
 import { type DiagnosticEntry, formatDiagnostics, type WorkspaceDiagnostic } from '../diagnostics'
 
-/** A file an edit tool wrote this round: as the model named it, and where it is. */
+/**
+ * A file an edit tool wrote, as confinement found it at the edit (links and
+ * junctions resolved), so nothing done to it later follows a link retargeted
+ * since (the Codex review of PR #54).
+ */
 export interface EditedFile {
-  /** Workspace-relative, forward slashes. */
+  /** Workspace-relative, forward slashes, links resolved (the canonical name). */
   readonly relative: string
+  /** Its real path at the edit. */
   readonly absolute: string
+  /** SHA-256 of what the edit left (after format on edit); absent for a file an edit did not write. */
+  readonly fingerprint?: string
 }
 
 /** What the language servers hold for one edited file once they settled. */
@@ -120,6 +127,9 @@ function uncheckedReason(reason: UncheckedReason, codeFile: string | undefined):
     }
     case 'stopped': {
       return MODEL_TEXT.verifyUncheckedStopped
+    }
+    case 'changed': {
+      return MODEL_TEXT.verifyUncheckedChanged
     }
   }
 }

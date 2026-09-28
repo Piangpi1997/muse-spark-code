@@ -1513,6 +1513,7 @@ export const UNCHECKED_REASONS = [
   'codeLoading',
   'tooMany',
   'stopped',
+  'changed',
 ] as const
 export type UncheckedReason = (typeof UNCHECKED_REASONS)[number]
 export const JSON_RPC_ERRORS = {
@@ -1945,6 +1946,8 @@ export const MODEL_TEXT = {
     "this turn wrote {file}, which the editor's own tools load and run as code, so no file is shown or formatted automatically until the user's next message",
   verifyUncheckedTooMany: 'more than {count} files were edited in this round',
   verifyUncheckedStopped: 'the turn was stopped',
+  verifyUncheckedChanged:
+    'the file no longer holds what the edit left there, or its path now leads to another file',
   verifyDiagnosticsUnavailable: 'The diagnostics could not be read: {reason}',
   verifyChecksHeading: "The user's check commands:",
   checkPassed: '{name}: passed',

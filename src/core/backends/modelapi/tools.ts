@@ -6,7 +6,6 @@
 // Open diff and Revert (M5) work unchanged.
 
 import { Buffer } from 'node:buffer'
-import { createHash } from 'node:crypto'
 import path from 'node:path'
 import * as z from 'zod/mini'
 import {
@@ -56,6 +55,7 @@ import { fill, formatNumber, plural } from '../../../shared/l10n/text'
 import type { DocumentPart, ImagePart } from '../../agent/agentBackend'
 import { readImageInfo } from '../../imageDimensions'
 import { isPdf, pdfPageCount } from '../../pdf'
+import { fingerprint } from '../../verify/fingerprint'
 import { confineWorkspacePath } from '../../workspacePath'
 import { compileGlob } from './glob'
 import {
@@ -249,8 +249,6 @@ export interface EditFormatter {
   /** A formatted text that could not be written back, for the log. */
   readonly warn: (message: string) => void
 }
-
-const FINGERPRINT_HASH = 'sha256'
 
 /** A PDF or an image `read_file` read whole for the model to see (M54, PLAN.md D47). */
 export interface VisibleFile {
@@ -661,14 +659,6 @@ function fileText(text: string, shape: TextShape): string {
 }
 
 /**
- * What the model last saw of a file, to know it is not overwriting an unseen
- * change; and what an edit left, which `then_run`'s guard compares (M68).
- */
-export function fingerprint(raw: string): string {
-  return createHash(FINGERPRINT_HASH).update(raw).digest('hex')
-}
-
-/**
  * Format on edit (M68): what the edit wrote, as the file's formatter leaves
  * it, written back when it changed; the text on disk either way. It runs
  * before the fingerprint is taken, so `then_run` checks the formatted file.
@@ -684,6 +674,24 @@ async function formatWritten(
   const { formatter } = context
   const formatted = await formatter?.format(target, written)
   if (formatter === undefined || formatted === undefined || formatted === written) {
+    return written
+  }
+  // Only over what the edit wrote, at the real path the edit wrote it: a
+  // change made while the formatter ran stands (the Codex review of PR #54).
+  // The write itself refuses a path whose real form moved.
+  let current: string | undefined
+  try {
+    current = await context.io.readFile(target.checkedAbsolute, target.checkedAbsolute)
+  } catch (error: unknown) {
+    formatter.warn(
+      `Format on edit could not read ${target.relative} again; the edit stays as written: ${error instanceof Error ? error.message : String(error)}`,
+    )
+    return written
+  }
+  if (current !== written) {
+    formatter.warn(
+      `Format on edit skipped ${target.relative}: the file changed while the formatter ran`,
+    )
     return written
   }
   try {

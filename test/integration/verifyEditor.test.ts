@@ -25,7 +25,8 @@ suite('verify loop in VS Code (M68)', () => {
   const channel = vscode.window.createOutputChannel('M68 verify', { log: true })
 
   suiteSetup(async () => {
-    folder = await mkdtemp(path.join(tmpdir(), 'm68-verify-'))
+    // Its real form, as confinement hands the loop every path (the Codex review of PR #54).
+    folder = await canonicalPath(await mkdtemp(path.join(tmpdir(), 'm68-verify-')))
     verify = createVerifyEditor({
       platform: process.platform,
       log: createLogger(channel),
