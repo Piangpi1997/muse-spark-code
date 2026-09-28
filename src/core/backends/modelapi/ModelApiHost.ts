@@ -5372,6 +5372,20 @@ export class ModelApiSession implements AgentSession {
     return Promise.resolve(name)
   }
 
+  /**
+   * The todo list set from outside a turn (M79): a plan's steps before the
+   * turn that implements it. Refused while a turn or a compaction holds the
+   * session, where `todo_write` may be replacing the list.
+   */
+  public setTodos(items: readonly TodoItem[]): void {
+    if (this.active !== undefined || this.compacting !== undefined) {
+      throw new Error(UI_TEXT.planWaitForTurn)
+    }
+    this.todos = [...items]
+    this.emit({ type: 'todoChanged', items: [...this.todos] })
+    this.touch()
+  }
+
   /** The exact user card's pictures, or unavailable without a durable replay link. */
   public sentImages(turnId: string, itemId: string): readonly SentImage[] | undefined {
     const card = this.transcript.find(

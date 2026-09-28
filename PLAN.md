@@ -559,6 +559,33 @@ the trust flag. On the Model API backend the extension is the host, so it
 mirrors the conventions above and no others: no invented file names, no
 `MUSE.md`.
 
+**Plans (M79, 2026-09-27).** The saved-plan location is Muse Code's own,
+not the extension's. It was read from `skills/plan/SKILL.md`, the `plan`
+skill bundled in `muse-bin-1.4.0-R4302.1.exe`, under "Explicit File Output":
+
+- "If saving and no stronger convention exists, save to
+  `.agents/plans/YYYY-MM-DD-<slug>.md`";
+- "When creating a new dated file and the chosen file exists, add a short
+  numeric suffix";
+- "If you save a plan file, its content must be exactly the canonical
+  body".
+
+The extension follows all three. It does not follow the skill's
+precedence for a stronger convention (an active `specs/<feature>/plan.md`,
+a `docs/plans/` folder), which is the model's judgement, not a fixed
+name. The skill's delivery form is the other half:
+
+- a plan reply starts with "This is a plan, not a special mode; I haven’t
+  started implementation. Reply `go` to execute this plan, or tell me what
+  to change.";
+- it ends with the second sentence repeated;
+- the user's next message ("go") is the approval.
+
+A live capture of a Plan-mode turn on Muse Code 1.4.0 showed exactly that
+reply as an ordinary `agentMessage`, with no plan item and no approval
+request (docs/certification/m79.md). The extension saves the text between
+those two lines; any other reply is saved whole.
+
 ### D14 — Production hardening set for 0.2.0 (2026-09-22)
 
 The owner's brief after D13: "fully enterprise grade and production ready
@@ -6529,6 +6556,9 @@ full gate. A paid item follows D30/D48.
 
 ### M79 — Plans as files (D49)
 
+**Status 2026-09-28: built on `feature/m79-plans-as-files`; certified in
+`docs/certification/m79.md`. Not pushed; no pull request yet.**
+
 - **Goal.** A plan the user approved survives and can drive a clean run.
 - **Scope.**
   - The approved Plan-mode plan is saved as Markdown under `.agents/plans/`.
@@ -6537,6 +6567,71 @@ full gate. A paid item follows D30/D48.
   - The plan's steps become the todo list.
 - **Backends.** Both.
 - **Size.** S.
+- **Research.**
+  - **Muse Code 1.4.0**, one live Plan-mode turn (`denyUnmatched`, the
+    contributor model, an empty folder, 19 model attempts). The model read
+    its bundled `plan` skill and delivered the plan as an ordinary
+    `agentMessage`, wrapped in the skill's handoff. There was no plan item,
+    exit-plan request or approval event; the skill's own approval is the
+    user's next message, "go".
+  - **MSP 1.3.0** has `session/todoListChanged` but no command that sets a
+    todo list.
+  - **The Model API harness** has no plan tool.
+- **Decisions.**
+  - **The approval.** "Save plan" and "Implement in a fresh conversation"
+    appear under the latest Plan-mode reply once no turn runs; pressing
+    either is the approval. The host reads the reply back from the backend
+    (`readSession`) and takes it only while it is the latest reply, after
+    the latest prompt, in Plan mode. The webview's ids only name it.
+  - **The file (D13).** Muse Code's own convention:
+    `.agents/plans/YYYY-MM-DD-<slug>.md`, a numeric suffix on a taken name,
+    the plan byte for byte.
+    - Between a Muse Code plan reply's two captured handoff lines;
+      otherwise the whole reply.
+    - The slug comes from the top-level heading, else the prompt.
+    - No front matter, so the title lives in the file name, and the source
+      conversation's session id in the log line that names the file.
+    - It is published by a hard link from a hidden stage, so it never
+      replaces a file (`createFileExclusively`, shared with memory).
+    - It is confined to the workspace's own `.agents/plans`; a link or
+      junction there is refused.
+    - `.agents` is a protected path (D24), so the save asks in a modal.
+    - Restricted Mode refuses it.
+  - **The brief.** "Start a new conversation from a brief"
+    (`ConversationBrief`, `startFromBrief`) is its own piece, for M74's
+    `/handoff`.
+    - The attachment is checked before the old conversation is left.
+    - The conversation is then cleared (History keeps it), Plan mode gives
+      way to the starting mode, and the brief goes as the first message.
+      Its card is the host's `briefSubmitted`.
+    - The plan file travels as named text on both backends (M54), with a
+      MODEL_TEXT note after it.
+    - Nothing else from the old conversation comes along: no editor
+      context, no reference, no goal.
+    - Implementing a saved plan is refused in Restricted Mode.
+  - **The todo list.** The top-level numbered items, else the top-level
+    bullets, outside code; at most 50.
+    - Model API: `AgentSession.setTodos`, before the first request, refused
+      while a turn runs.
+    - Muse Code: the note asks the model to take the steps as its list, and
+      the panel says so.
+  - **Plans…** in the palette lists `.agents/plans/*.md` newest first, to
+    open or implement.
+  - **One plan action at a time.** A second press is dropped.
+- **Acceptance.**
+  - The captured reply saves byte for byte as its body.
+  - Implement on the fake MSP host sends the file, the note and the
+    display marker in a new `promptUnmatched` session.
+  - On the fake Model API, the todo list lands before the brief's request,
+    and nothing of the planning turn is in it.
+  - Restricted Mode, a no, a stale reply, a side chat, a plan neither
+    backend takes and a double press all start or write nothing.
+  - The live Model API case (7 requests) saved a plan, implemented it, and
+    the model moved the seeded list to completed.
+  - The harness has `plan`, `plan-brief` and `plan-narrow`.
+- **Left.** None of the milestone. Not taken: the plan skill's precedence
+  for a stronger plan location (`specs/…/plan.md`, `docs/plans/`), which is
+  the model's judgement, not a fixed name (D13).
 
 ### M80 — Headless and CI (D49)
 

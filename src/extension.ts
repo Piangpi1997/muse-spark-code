@@ -78,6 +78,8 @@ import { usablePaidFeatures } from './shared/paid'
 import { createCliFeatures } from './host/cliFeatures'
 import { createWorktreeFeatures } from './host/worktreeFeatures'
 import { createMemoryFeatures } from './host/memoryFeatures'
+import { createPlanFiles, createPlanIo } from './host/planFeatures'
+import { showPickOne } from './host/quickPick'
 import { processGitRunner } from './host/git'
 import { createLogger, errorDetail, type Logger, logRejection } from './host/logger'
 import {
@@ -942,6 +944,19 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     },
   })
   const memoryView = createMemoryFeatures({ store: memory, log })
+  // Plans as files (M79): `.agents/plans/` of the workspace folder, when there is one.
+  const plans =
+    workspaceRoot === undefined
+      ? undefined
+      : createPlanFiles({
+          workspaceRoot,
+          platform: process.platform,
+          io: createPlanIo(log),
+          pick: showPickOne,
+          confirm: async (message, detail, action) =>
+            (await vscode.window.showWarningMessage(message, { modal: true, detail }, action)) ===
+            action,
+        })
   const modelApi = new ModelApiBackendManager({
     log,
     getApiKey: () => credentials.getApiKey(),
@@ -1335,6 +1350,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             ? museVoiceSetup
             : undefined,
         exports: cliFeatures.exports,
+        plans,
         // The palette's paid-feature toggles (M33): on goes through the price confirmation.
         setPaidFeature: async (feature, isOn) => {
           if (isOn) {

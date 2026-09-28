@@ -6,15 +6,14 @@
 // The workspace's name for the project folder is taken from the path as the
 // operating system spells it, which is what Muse Code hashes.
 
-import { randomUUID } from 'node:crypto'
 import { realpath } from 'node:fs'
-import { link, mkdir, open, readdir, rm } from 'node:fs/promises'
-import path from 'node:path'
+import { readdir } from 'node:fs/promises'
 import { promisify } from 'node:util'
-import { ATOMIC_TEMPORARY_SUFFIX, MEMORY_STAGE_FILE_MODE } from '../../shared/constants'
+import { MEMORY_STAGE_FILE_MODE } from '../../shared/constants'
 import type { ToolIo } from '../../core/backends/modelapi/tools'
 import type { MemoryDirectoryEntry, MemoryIo } from '../../core/memory/memoryStore'
 import { isMissingPath } from '../canonicalPath'
+import { createFileExclusively } from '../fsAtomic'
 
 /** A folder's entries; none when it does not exist. */
 export async function listMemoryEntries(
@@ -52,39 +51,14 @@ export function createMemoryIo(
     readFile: (absolutePath) => files.readFile(absolutePath),
     hasUnsavedChanges: (absolutePath) => files.hasUnsavedChanges(absolutePath),
     writeFile: (absolutePath, content) => files.writeFile(absolutePath, content),
-    async createFile(absolutePath, content) {
-      const directory = path.dirname(absolutePath)
-      await mkdir(directory, { recursive: true })
-      const stage = path.join(
-        directory,
-        `.${path.basename(absolutePath)}.${randomUUID()}${ATOMIC_TEMPORARY_SUFFIX}`,
-      )
-      let hasOwnedStage = false
-      try {
-        const handle = await open(stage, 'wx', MEMORY_STAGE_FILE_MODE)
-        hasOwnedStage = true
-        try {
-          await handle.writeFile(content, 'utf8')
-          await handle.sync()
-        } finally {
-          await handle.close()
-        }
-        // A same-folder hard link publishes complete bytes under the target
-        // name without replacing another writer's note. Unsupported file
-        // systems fail closed; copy and rename cannot make both guarantees.
-        await (options.publish ?? link)(stage, absolutePath)
-      } finally {
-        if (hasOwnedStage) {
-          try {
-            await rm(stage, { force: true })
-          } catch (error: unknown) {
-            // Once linked, the note is complete. Keep that success so its
-            // index line is written; the hidden stage can be cleaned later.
-            options.warn(`memory stage ${stage} could not be removed: ${String(error)}`)
-          }
-        }
-      }
-    },
+    createFile: (absolutePath, content) =>
+      createFileExclusively(absolutePath, content, {
+        mode: MEMORY_STAGE_FILE_MODE,
+        warn: (message) => {
+          options.warn(`memory ${message}`)
+        },
+        ...(options.publish !== undefined && { publish: options.publish }),
+      }),
     realPath: (absolutePath) => files.realPath(absolutePath),
     listEntries: listMemoryEntries,
   }

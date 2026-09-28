@@ -14,7 +14,7 @@
 
 import { randomUUID } from 'node:crypto'
 import { constants } from 'node:fs'
-import { access, mkdir, open, realpath, rename, rm, stat } from 'node:fs/promises'
+import { access, link, mkdir, open, realpath, rename, rm, stat } from 'node:fs/promises'
 import path from 'node:path'
 import { isSamePath } from '../core/paths'
 import {
@@ -178,5 +178,57 @@ export async function writeFileAtomically(
       // Preserve the original write failure; a moved temp may be left behind.
     }
     throw error
+  }
+}
+
+export interface NewFileOptions {
+  /** The file's mode before the umask; the file keeps the stage's inode. */
+  readonly mode: number
+  /** A warning when cleanup fails after the target has already been published. */
+  readonly warn: (message: string) => void
+  /** Replace the hard-link call in a deterministic publication test. */
+  readonly publish?: (stage: string, target: string) => Promise<void>
+}
+
+/**
+ * Creates `absolutePath` with `content` (UTF-8), its folder made, and never
+ * replaces a file already there: the content goes to a hidden stage beside
+ * it, which a hard link then publishes under the target name. The link fails
+ * with EEXIST when the name is taken, so a reader never sees half a file and
+ * another writer's file is never replaced. File systems without hard links
+ * fail closed; copy and rename cannot make both guarantees.
+ */
+export async function createFileExclusively(
+  absolutePath: string,
+  content: string,
+  options: NewFileOptions,
+): Promise<void> {
+  const directory = path.dirname(absolutePath)
+  await mkdir(directory, { recursive: true })
+  const stage = path.join(
+    directory,
+    `.${path.basename(absolutePath)}.${randomUUID()}${ATOMIC_TEMPORARY_SUFFIX}`,
+  )
+  let hasOwnedStage = false
+  try {
+    const handle = await open(stage, 'wx', options.mode)
+    hasOwnedStage = true
+    try {
+      await handle.writeFile(content, 'utf8')
+      await handle.sync()
+    } finally {
+      await handle.close()
+    }
+    await (options.publish ?? link)(stage, absolutePath)
+  } finally {
+    if (hasOwnedStage) {
+      try {
+        await rm(stage, { force: true })
+      } catch (error: unknown) {
+        // Once linked, the file is complete. Keep that success; the hidden
+        // stage can be cleaned later.
+        options.warn(`stage ${stage} could not be removed: ${String(error)}`)
+      }
+    }
   }
 }

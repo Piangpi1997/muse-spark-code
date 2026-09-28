@@ -108,6 +108,12 @@ security notes for contributors are in `PLAN.md` §9.
   repository's committed project memory then.
 - **The Memory view** (M49) reads and writes only those notes on your
   machine; it sends nothing anywhere. A note it deletes goes to your trash.
+- **Saved plans** (M79). **Save plan** writes a Plan-mode reply to
+  `.agents/plans/` in your workspace, after you say yes, and sends nothing.
+  **Implement in a fresh conversation** sends that file's text to the
+  backend in use, as the first message of the new conversation, as a
+  picked text file would be. It sends nothing else from the planning
+  conversation. **Plans…** only reads the folder.
 - **Environment facts (Model API backend).** The instructions sent with
   every request name the workspace's absolute path, the operating system
   and shell, and today's date. In a trusted workspace that is a git

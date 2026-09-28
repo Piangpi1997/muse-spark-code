@@ -662,6 +662,36 @@ export const EN = {
   rewindConversationFailed: 'Could not rewind the conversation',
   sideChatFailed: 'Could not open a side chat',
   sideChatPlanOnly: 'Side chats stay in Plan mode.',
+  // M79 (PLAN.md D49): plans as files. {path} is the plan's workspace path.
+  planActionsLabel: 'Plan actions',
+  savePlan: 'Save plan',
+  implementPlan: 'Implement in a fresh conversation',
+  planImplementDetail: 'A new conversation with this plan as its brief, out of Plan mode',
+  planSaved: 'Plan saved to {path}.',
+  planAlreadySaved: 'This plan is already saved in {path}.',
+  planSaveFailed: 'Could not save the plan',
+  planSaveConfirm: 'Save this plan in .agents/plans?',
+  planSaveConfirmDetail:
+    '.agents is a protected folder: what is in it guides the agents that work here. The plan is saved as a new file; no file is replaced.',
+  planImplementFailed: 'Could not start the plan',
+  planRestricted:
+    'Plans are not saved or implemented in Restricted Mode. Trust this workspace to use them.',
+  planWaitForTurn: 'Wait for the reply to finish, or stop it, first.',
+  planReplyNotLatest: 'Only the latest reply in Plan mode can be saved as a plan.',
+  planImplementSideChat:
+    'Implement a plan from the main conversation; a side chat stays in Plan mode.',
+  planBriefText: 'Implement the plan in {path}.',
+  planTodosByModel:
+    'Muse Code does not let the extension set its todo list, so the brief asks Muse to list the plan’s steps there.',
+  planNamesTaken: 'Every file name for this plan is taken in .agents/plans.',
+  planFileMissing: 'That plan file no longer exists.',
+  planOpen: 'Open',
+  plansItem: 'Plans…',
+  plansItemDetail: 'Saved plans in .agents/plans: open one or implement it',
+  plansTitle: 'Plans',
+  plansCount: forms({ one: '{count} saved plan', other: '{count} saved plans' }),
+  plansNone: 'No saved plans yet. Save one from a reply in Plan mode.',
+  plansFailed: 'Could not list the plans',
   sideChatSessionOnly: 'This side chat can open only side-chat conversations.',
   renameFailed: 'Could not rename the conversation',
   sandboxOffProfileNotice:

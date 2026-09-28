@@ -25,9 +25,14 @@ import {
   CHOICE_STEERING_NOTE,
   MAX_DOCUMENT_BYTES,
   MAX_IMAGE_BYTES,
+  MODEL_TEXT,
   type GoalCommandVerb,
   UI_TEXT,
 } from '../../src/shared/constants'
+import { fill } from '../../src/shared/l10n/text'
+import { textFileDisplay } from '../../src/shared/textFileDisplay'
+import { planFileName, planSlug, planTitle } from '../../src/core/plans/planDocument'
+import { logLines } from './helpers/logText'
 import type { HostAction, LineRange, MentionItem } from '../../src/shared/protocol'
 import type { SubscriptionUsage } from '../../src/shared/usage'
 import { FakeLogOutputChannel, fakeSurface } from './helpers/fakes'
@@ -44,6 +49,13 @@ import { buildModelApiBundle } from './helpers/modelApiBundle'
 import { fakeManagerDeps } from './helpers/modelApiManager'
 import { ModelApiBackendManager } from '../../src/host/backend/modelApiBackendManager'
 import { memorySessionStore } from './helpers/fakeSessionStore'
+import { fakePlanFiles } from './helpers/fakePlanFiles'
+import {
+  CAPTURED_PLAN_BODY,
+  CAPTURED_PLAN_PROMPT,
+  PLAN_HISTORY_ITEMS,
+  PLAN_REPLY_COMPLETED,
+} from './helpers/m79Capture'
 import { pdfFixture } from './helpers/pdfFixture'
 import {
   fakeInitializeResult,
@@ -236,6 +248,7 @@ function setup(
     hostGate?: { current: Promise<undefined> | undefined; onWait?: () => void }
   } = {},
 ) {
+  const planFiles = fakePlanFiles()
   const handle = fakeMspHost()
   handle.server.handle('session/start', (params) => ({
     session: { sessionId: 's1', modelId: params['modelId'], status: 'idle' },
@@ -504,6 +517,10 @@ function setup(
         return Promise.resolve()
       },
     },
+    plans:
+      'workspaceRoot' in options && options.workspaceRoot === undefined
+        ? undefined
+        : planFiles.plans,
     now: () => options.clock?.now ?? options.now ?? NOW,
     log,
   }
@@ -521,6 +538,7 @@ function setup(
     surface,
     controller,
     deps,
+    planFiles,
     openExternal,
     log,
     hostActions,
@@ -6910,5 +6928,302 @@ describe('ConversationController: the Model API bundle (M57, PLAN.md D6)', () =>
       { type: 'goalCommandResult', requestId: 'g1', accepted: false },
     ])
     await manager.dispose()
+  })
+})
+
+describe('ConversationController: plans as files (M79)', () => {
+  const REPLY_ID = PLAN_REPLY_COMPLETED.item.itemId
+  const SAVE = { type: 'savePlan', sourceSessionId: 's1', itemId: REPLY_ID } as const
+  const IMPLEMENT = { type: 'implementPlan', sourceSessionId: 's1', itemId: REPLY_ID } as const
+  /** Where the captured plan lands: named after its prompt (its headings are sections). */
+  const PLAN_PATH = `.agents/plans/${planFileName(
+    new Date(NOW),
+    planSlug(planTitle(CAPTURED_PLAN_BODY, CAPTURED_PLAN_PROMPT, 'unused')),
+    1,
+  )}`
+
+  /** A Plan-mode Muse Code conversation whose latest reply is the captured plan. */
+  async function museCodePlan(options: Parameters<typeof setup>[0] = {}) {
+    const t = setup({ initialPermissionMode: 'plan', hasApprovalUi: true, ...options })
+    await t.send('l1', CAPTURED_PLAN_PROMPT)
+    t.server.notify('item/completed', { ...PLAN_REPLY_COMPLETED, sessionId: 's1' })
+    t.finishTurn()
+    await settle()
+    t.server.handle('session/read', () => ({
+      session: { sessionId: 's1', createdAt: 'c', updatedAt: 'u', status: 'idle', turnCount: 1 },
+      history: { mode: 'inline', items: PLAN_HISTORY_ITEMS },
+      viewCursor: 'v:s1:9',
+      pendingRequests: [],
+    }))
+    return t
+  }
+
+  it('saves the captured Muse Code plan byte for byte, after one yes, and only once', async () => {
+    const t = await museCodePlan()
+    await t.controller.handle(SAVE)
+    // The handoff lines the plan skill wraps it in are not the plan.
+    expect(t.planFiles.files).toEqual(new Map([[`/ws/${PLAN_PATH}`, CAPTURED_PLAN_BODY]]))
+    expect(t.planFiles.confirmSave).toHaveBeenCalledOnce()
+    expect(notices(t).at(-1)).toEqual({
+      type: 'notice',
+      level: 'info',
+      text: fill(UI_TEXT.planSaved, { path: PLAN_PATH }),
+    })
+    await t.controller.handle(SAVE)
+    expect(t.planFiles.files.size).toBe(1)
+    expect(t.planFiles.confirmSave).toHaveBeenCalledOnce()
+    expect(notices(t).at(-1)?.text).toBe(fill(UI_TEXT.planAlreadySaved, { path: PLAN_PATH }))
+    // The log names the file, never the plan.
+    expect(logLines(t.log)).toContain(`Plan saved to ${PLAN_PATH} from session s1`)
+    expect(logLines(t.log).some((line) => line.includes('Success Criteria'))).toBe(false)
+    // Deleted since: the next save writes it again.
+    t.planFiles.files.clear()
+    await t.controller.handle(SAVE)
+    expect(t.planFiles.files).toEqual(new Map([[`/ws/${PLAN_PATH}`, CAPTURED_PLAN_BODY]]))
+  })
+
+  it('saves nothing in Restricted Mode, on a no, for a stale reply, outside Plan mode or mid-turn', async () => {
+    const restricted = await museCodePlan({ isWorkspaceTrusted: false })
+    await restricted.controller.handle(SAVE)
+    expect(restricted.planFiles.confirmSave).not.toHaveBeenCalled()
+    expect(restricted.planFiles.files.size).toBe(0)
+    expect(notices(restricted).at(-1)).toEqual({
+      type: 'notice',
+      level: 'warning',
+      text: UI_TEXT.planRestricted,
+    })
+
+    const declined = await museCodePlan()
+    declined.planFiles.confirmSave.mockResolvedValue(false)
+    await declined.controller.handle(SAVE)
+    expect(declined.planFiles.files.size).toBe(0)
+    expect(notices(declined).some((notice) => notice.text.startsWith('Plan saved'))).toBe(false)
+
+    const stale = await museCodePlan()
+    await stale.controller.handle({ ...SAVE, itemId: 'an-older-reply' })
+    await stale.controller.handle({ ...SAVE, sourceSessionId: 'another-session' })
+    expect(stale.planFiles.confirmSave).not.toHaveBeenCalled()
+    expect(notices(stale).at(-1)?.text).toBe(UI_TEXT.planReplyNotLatest)
+
+    const manual = await museCodePlan()
+    await manual.controller.handle({ type: 'setPermissionMode', mode: 'manual' })
+    await manual.controller.handle(SAVE)
+    expect(manual.planFiles.files.size).toBe(0)
+    expect(notices(manual).at(-1)?.text).toBe(UI_TEXT.planReplyNotLatest)
+
+    const running = await museCodePlan()
+    running.server.handle('turn/start', (params) => ({
+      turnId: 't2',
+      status: 'accepted',
+      disposition: 'started',
+      startedNewTurn: true,
+      commandId: params['commandId'],
+    }))
+    await running.send('l2', 'one more thing')
+    await running.controller.handle(SAVE)
+    expect(running.planFiles.files.size).toBe(0)
+    expect(notices(running).at(-1)?.text).toBe(UI_TEXT.planWaitForTurn)
+  })
+
+  it('implements the plan in a fresh Muse Code conversation: the file as named text, the model asked to list the steps', async () => {
+    const t = await museCodePlan()
+    t.surface.posted.length = 0
+    await t.controller.handle(IMPLEMENT)
+    const text = fill(UI_TEXT.planBriefText, { path: PLAN_PATH })
+    const kinds = t.surface.posted.map((message) => message.type)
+    // The old conversation is left before the brief's card appears.
+    expect(kinds.indexOf('conversationCleared')).toBeLessThan(kinds.indexOf('briefSubmitted'))
+    expect(t.surface.posted).toContainEqual(
+      expect.objectContaining({ type: 'composerState', permissionMode: 'manual' }),
+    )
+    const brief = t.surface.posted.find((message) => message.type === 'briefSubmitted')
+    expect(brief).toMatchObject({
+      text,
+      attachments: [{ name: PLAN_PATH, mediaType: 'text/plain' }],
+    })
+    // A new session in the starting mode, not Plan.
+    expect(t.server.requestsFor('session/start')).toHaveLength(2)
+    expect(t.server.requestsFor('session/start')[1]?.params).toMatchObject({
+      approvalMode: 'promptUnmatched',
+    })
+    const start = t.server.requestsFor('turn/start')[1]?.params
+    expect(start).toMatchObject({
+      input: [
+        { type: 'text', text },
+        {
+          type: 'text',
+          text: `Attached text file ${JSON.stringify(PLAN_PATH)}:\n\n${CAPTURED_PLAN_BODY}`,
+        },
+        {
+          type: 'text',
+          text: `${fill(MODEL_TEXT.planBrief, { name: JSON.stringify(PLAN_PATH) })} ${MODEL_TEXT.planBriefTodosAsk}`,
+        },
+        NOTE,
+      ],
+      displayText: textFileDisplay(text, [PLAN_PATH]),
+    })
+    // Nothing of the plan conversation rides along.
+    expect(JSON.stringify(start)).not.toContain(CAPTURED_PLAN_PROMPT)
+    expect(t.surface.posted).toContainEqual(
+      expect.objectContaining({
+        type: 'turnAccepted',
+        localId: brief?.type === 'briefSubmitted' ? brief.localId : '',
+      }),
+    )
+    expect(notices(t).at(-1)).toEqual({
+      type: 'notice',
+      level: 'info',
+      text: UI_TEXT.planTodosByModel,
+    })
+  })
+
+  it('implements a plan on the Model API with its steps as the todo list before the first request', async () => {
+    const t = setup({ initialPermissionMode: 'plan', hasApprovalUi: true })
+    let nextId = 0
+    const { api, controller } = modelApiController(t, { newId: () => `id${String(++nextId)}` })
+    const plan = '# Dark mode\n\n1. Add the **toggle**.\n2. Test it.\n\n- a note'
+    api.script({ text: plan })
+    await controller.handle({
+      type: 'sendMessage',
+      localId: 'l1',
+      text: 'Plan a dark mode',
+      attachmentIds: [],
+    })
+    await vi.waitFor(() => {
+      expect(agentEvents(t).some((event) => event.type === 'turnCompleted')).toBe(true)
+    })
+    const reply = agentEvents(t).findLast(
+      (event) => event.type === 'itemCompleted' && event.item.kind === 'agentMessage',
+    )
+    const { info } = latestAcceptedModelTurn(t)
+    if (reply?.type !== 'itemCompleted' || info.sessionId === undefined) {
+      throw new Error('expected the plan reply')
+    }
+    const source = { sourceSessionId: info.sessionId, itemId: reply.item.itemId }
+    await controller.handle({ type: 'savePlan', ...source })
+    const planPath = `.agents/plans/${planFileName(new Date(NOW), 'dark-mode', 1)}`
+    expect(t.planFiles.files.get(`/ws/${planPath}`)).toBe(plan)
+    api.script({ text: 'Done' })
+    t.surface.posted.length = 0
+    await controller.handle({ type: 'implementPlan', ...source })
+    await vi.waitFor(() => {
+      expect(api.responseBodies()).toHaveLength(2)
+    })
+    const posted = t.surface.posted
+    const todoIndex = posted.findIndex(
+      (message) => message.type === 'agentEvent' && message.event.type === 'todoChanged',
+    )
+    expect(posted[todoIndex]).toEqual({
+      type: 'agentEvent',
+      event: {
+        type: 'todoChanged',
+        items: [
+          { text: 'Add the toggle.', status: 'pending' },
+          { text: 'Test it.', status: 'pending' },
+        ],
+      },
+    })
+    // Set before the brief was accepted, so its first request finds it.
+    expect(todoIndex).toBeLessThan(posted.findIndex((message) => message.type === 'turnAccepted'))
+    const body = JSON.stringify(api.responseBodies()[1])
+    expect(body).toContain(
+      JSON.stringify(`Attached text file "${planPath}":\n\n${plan}`).slice(1, -1),
+    )
+    expect(body).toContain(MODEL_TEXT.planBriefTodosSet)
+    expect(body).not.toContain('Plan a dark mode')
+    expect(notices(t).some((notice) => notice.text === UI_TEXT.planTodosByModel)).toBe(false)
+  })
+
+  it('lists saved plans from Plans…, opens one and implements one', async () => {
+    const t = setup({ hasApprovalUi: true })
+    await t.controller.handle({ type: 'showPlans' })
+    expect(notices(t).at(-1)).toEqual({ type: 'notice', level: 'info', text: UI_TEXT.plansNone })
+    t.planFiles.files.set('/ws/.agents/plans/2026-09-01-a.md', '# A\n\n1. One.\n2. Two.')
+    t.planFiles.choose.mockImplementationOnce((plans) =>
+      Promise.resolve(plans[0] === undefined ? undefined : { plan: plans[0], action: 'open' }),
+    )
+    await t.controller.handle({ type: 'showPlans' })
+    expect(t.planFiles.choose).toHaveBeenLastCalledWith([
+      {
+        fileName: '2026-09-01-a.md',
+        relativePath: '.agents/plans/2026-09-01-a.md',
+        title: 'A',
+      },
+    ])
+    expect(t.openedFiles).toEqual([['.agents/plans/2026-09-01-a.md', undefined]])
+    t.planFiles.choose.mockImplementationOnce((plans) =>
+      Promise.resolve(plans[0] === undefined ? undefined : { plan: plans[0], action: 'implement' }),
+    )
+    await t.controller.handle({ type: 'showPlans' })
+    expect(t.planFiles.confirmSave).not.toHaveBeenCalled()
+    expect(t.server.requestsFor('turn/start')[0]?.params).toMatchObject({
+      input: [
+        {
+          type: 'text',
+          text: fill(UI_TEXT.planBriefText, { path: '.agents/plans/2026-09-01-a.md' }),
+        },
+        { type: 'text', text: expect.stringContaining('# A\n\n1. One.\n2. Two.') },
+        { type: 'text', text: expect.stringContaining(MODEL_TEXT.planBriefTodosAsk) },
+        NOTE,
+      ],
+    })
+  })
+
+  it('starts nothing from a side chat, in Restricted Mode, or for a plan the backend would not take', async () => {
+    const side = setup({ isSideChat: true })
+    await side.controller.handle(IMPLEMENT)
+    expect(notices(side).at(-1)?.text).toBe(UI_TEXT.planImplementSideChat)
+    expect(side.surface.posted).not.toContainEqual({ type: 'conversationCleared' })
+
+    const pick = (t: ReturnType<typeof setup>) => {
+      t.planFiles.choose.mockImplementationOnce((plans) =>
+        Promise.resolve(
+          plans[0] === undefined ? undefined : { plan: plans[0], action: 'implement' },
+        ),
+      )
+    }
+    const restricted = setup({ isWorkspaceTrusted: false })
+    restricted.planFiles.files.set('/ws/.agents/plans/2026-09-01-a.md', '# A')
+    pick(restricted)
+    await restricted.controller.handle({ type: 'showPlans' })
+    expect(notices(restricted).at(-1)).toEqual({
+      type: 'notice',
+      level: 'warning',
+      text: UI_TEXT.planRestricted,
+    })
+    expect(restricted.server.requestsFor('turn/start')).toHaveLength(0)
+
+    const binary = setup()
+    await binary.send('l1', 'keep me')
+    binary.finishTurn()
+    await settle()
+    binary.planFiles.files.set('/ws/.agents/plans/2026-09-01-a.md', 'text\u{0}binary')
+    pick(binary)
+    binary.surface.posted.length = 0
+    await binary.controller.handle({ type: 'showPlans' })
+    expect(notices(binary).at(-1)?.text).toBe(
+      `${UI_TEXT.planImplementFailed}: ${UI_TEXT.textFileInvalid}`,
+    )
+    // The conversation the user was in is left as it was.
+    expect(binary.surface.posted).not.toContainEqual({ type: 'conversationCleared' })
+    expect(binary.server.requestsFor('session/start')).toHaveLength(1)
+  })
+
+  it('drops a second press while a plan action runs: one file, one fresh conversation', async () => {
+    const t = await museCodePlan()
+    const answer = Promise.withResolvers<boolean>()
+    t.planFiles.confirmSave.mockImplementationOnce(() => answer.promise)
+    const first = t.controller.handle(IMPLEMENT)
+    await vi.waitFor(() => {
+      expect(t.planFiles.confirmSave).toHaveBeenCalledOnce()
+    })
+    await t.controller.handle(IMPLEMENT)
+    await t.controller.handle(SAVE)
+    answer.resolve(true)
+    await first
+    expect(t.planFiles.files.size).toBe(1)
+    expect(t.planFiles.confirmSave).toHaveBeenCalledOnce()
+    expect(t.server.requestsFor('session/start')).toHaveLength(2)
+    expect(t.surface.posted.filter((message) => message.type === 'briefSubmitted')).toHaveLength(1)
   })
 })

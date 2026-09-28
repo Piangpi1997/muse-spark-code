@@ -402,6 +402,13 @@ export interface AgentSession {
    * not offer this and a rewind warns that the bytes cannot be restored.
    */
   readonly sentImages?: (turnId: string, itemId: string) => readonly SentImage[] | undefined
+  /**
+   * Replace the todo list from outside a turn (M79): a plan's steps before
+   * its first turn. The Model API backend keeps the list itself. MSP 1.3.0
+   * has no such command (the list is `session/todoListChanged`, written by
+   * the model's own tool), so Muse Code sessions do not offer it.
+   */
+  readonly setTodos?: (items: readonly TodoItem[]) => void
   dispose(): void
 }
 

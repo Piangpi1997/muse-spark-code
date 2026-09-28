@@ -71,6 +71,12 @@ Only the latest release on the Visual Studio Marketplace receives fixes.
   tools inside a memory folder, which is an ordinary edit. Muse Code flags
   its own protected writes, and "Edit automatically" never answers those
   for you.
+- **Saved plans (both backends).** **Save plan** is the extension's own
+  write to `.agents/plans/`, and it asks in a modal first, as a protected
+  write does. It creates a new file by a hard link from a hidden stage, so
+  it never replaces a file. The plans folder must be the workspace's own
+  `.agents/plans`: a link or junction to anywhere else is refused.
+  Restricted Mode refuses both saving a plan and implementing one.
 - **Shell commands.** On the Model API backend the extension's own shell
   tool runs the command as an argument array through PowerShell or bash,
   never as a shell string, in the workspace root, with a timeout and an

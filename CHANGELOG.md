@@ -7,6 +7,27 @@ happened, not what was planned; superseded entries are kept.
 
 ## [Unreleased]
 
+### Added
+
+- **Plans as files** (M79, PLAN.md D49). In Plan mode the latest reply gets
+  two buttons, **Save plan** and **Implement in a fresh conversation**.
+  Pressing one is the approval: neither backend marks a plan or its approval
+  on the wire (Muse Code 1.4.0 was captured live).
+  - **Save plan** writes the plan byte for byte to
+    `.agents/plans/YYYY-MM-DD-<slug>.md`, Muse Code's own convention, with a
+    numeric suffix when the name is taken; an existing file is never
+    replaced. A Muse Code plan reply's two handoff lines ("Reply `go` to
+    execute this plan…") are left out. `.agents` is protected, so the save
+    asks first; Restricted Mode refuses it.
+  - **Implement in a fresh conversation** starts a new conversation on the
+    same backend. Its first message is the plan file, attached as named
+    text, and nothing else from the planning conversation, which stays in
+    History. Plan mode gives way to the starting mode.
+  - On the Model API backend, the plan's steps become the todo list before
+    the first request. On Muse Code, which keeps its todo list to the model,
+    the brief asks Muse to list the steps.
+  - **Plans…** in the palette lists the saved plans to open or implement.
+
 ### Changed
 
 - **Every paid use asks first, in a popup** (M58, PLAN.md D48): **Allow

@@ -55,6 +55,8 @@ import { memoryDataRoot } from '../../src/core/memory/memoryLocation'
 import { MemoryStore } from '../../src/core/memory/memoryStore'
 import { PaidFeatureGate, PaidUsage } from '../../src/core/paid/paidFeatures'
 import { pdfPageCount } from '../../src/core/pdf'
+import { planBody, planSteps, planTitle } from '../../src/core/plans/planDocument'
+import { PlanStore } from '../../src/core/plans/planStore'
 import { estimateCostUsd } from '../../src/core/usage/insights'
 import type { DictationHandle, DictationListener } from '../../src/core/voice/dictation'
 import { MuseVoiceDictation } from '../../src/core/voice/museVoice'
@@ -71,6 +73,7 @@ import { createToolIo } from '../../src/host/backend/toolIo'
 import { processGitRunner } from '../../src/host/git'
 import { createLogger, type Logger } from '../../src/host/logger'
 import { liveFetch } from '../../src/host/networkPosture'
+import { createPlanIo } from '../../src/host/planFeatures'
 import { openWebSocket } from '../../src/host/voice/dictationHost'
 import type { AgentEvent, ItemSnapshot } from '../../src/shared/agentEvents'
 import {
@@ -85,11 +88,13 @@ import {
   MODEL_API_SCHEDULES_DIR,
   MODEL_API_SESSIONS_DIR,
   MODEL_API_WEB_SEARCH_TOOL,
+  MODEL_TEXT,
   MUSE_VOICE_BYTES_PER_SECOND,
   MUSE_VOICE_REALTIME_URL,
   MUSE_VOICE_SAMPLE_RATE,
   PAID_PRICES_USD,
   type PaidFeature,
+  PLAN_TODO_PENDING_STATUS,
   PNG_SIGNATURE,
   type PromptCacheRetention,
   SEARCH_WORKER_FILE,
@@ -97,8 +102,10 @@ import {
   SECONDS_PER_HOUR,
   SETTING_DEFAULTS,
   SHELL_TOOLS,
+  TEXT_ATTACHMENT_MEDIA_TYPE,
   THINKING_OFF_EFFORT,
 } from '../../src/shared/constants'
+import { fill } from '../../src/shared/l10n/text'
 import type { PaidTally } from '../../src/shared/paid'
 import { FakeLogOutputChannel } from '../unit/helpers/fakes'
 import { readJobSource } from '../unit/helpers/jobSource'
@@ -1767,6 +1774,67 @@ describe.skipIf(!IS_ENABLED)('live Model API sweep (MUSE_LIVE_MODEL_API=1)', () 
         rig.notes.push(
           `rows ${[...toolsRun(asked), ...toolsRun(stopped)].join(' ')}`,
           `replies ${JSON.stringify(asked.reply)} ${JSON.stringify(resumed.reply)}`,
+        )
+      })
+    },
+    CASE_MS,
+  )
+
+  it(
+    'case19 plans as files: a Plan-mode plan saved byte for byte, then implemented from a fresh session with its steps as the todo list (M79)',
+    async () => {
+      const name = 'case19 plans'
+      await runCase(name, {}, async (rig) => {
+        const planner = await startSession(rig, 'denyUnmatched')
+        const planned = await send(
+          planner,
+          'Plan how to create a file named hello.txt that contains the single word hi. Give the plan as exactly two numbered steps. Only the plan; do not carry it out.',
+        )
+        expectCompleted(planned)
+        const text = planBody(planned.reply)
+        const steps = planSteps(text)
+        expect(steps.length).toBeGreaterThan(0)
+        const store = new PlanStore({
+          workspaceRoot: rig.workspace,
+          platform: process.platform,
+          io: createPlanIo(rig.log),
+        })
+        const saved = await store.save({
+          title: planTitle(text, 'Create hello.txt', 'plan'),
+          savedAt: new Date(),
+          text,
+        })
+        const plan = await store.read(saved.fileName)
+        expect(Buffer.from(plan.bytes).toString('utf8')).toBe(text)
+        // A fresh session: its todo list first, then the brief as the panel sends it.
+        const builder = await startSession(rig, 'onRequest')
+        expect(builder.session.setTodos).toBeTypeOf('function')
+        builder.session.setTodos?.(
+          steps.map((step) => ({ text: step, status: PLAN_TODO_PENDING_STATUS })),
+        )
+        const finished = await send(builder, [
+          { type: 'text', text: `Implement the plan in ${saved.relativePath}.` },
+          {
+            type: 'textFile',
+            name: saved.relativePath,
+            mediaType: TEXT_ATTACHMENT_MEDIA_TYPE,
+            sizeBytes: plan.bytes.byteLength,
+            text,
+          },
+          {
+            type: 'text',
+            text: `${fill(MODEL_TEXT.planBrief, { name: JSON.stringify(saved.relativePath) })} ${MODEL_TEXT.planBriefTodosSet}`,
+          },
+        ])
+        expectCompleted(finished)
+        expect(readFileSync(path.join(rig.workspace, 'hello.txt'), 'utf8').trim()).toBe('hi')
+        const updates = builder.watch.events.flatMap((event) =>
+          event.type === 'todoChanged' ? [event.items.map((item) => item.status).join(',')] : [],
+        )
+        rig.notes.push(
+          `plan ${saved.relativePath}, steps ${JSON.stringify(steps)}`,
+          `todo lists ${updates.join(' | ')}`,
+          `rows ${toolsRun(finished).join(' ')}`,
         )
       })
     },

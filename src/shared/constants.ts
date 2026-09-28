@@ -866,6 +866,36 @@ export const MEMORY_PERSONAL_DIR = 'personal'
 export const MEMORY_PROJECTS_DIR = 'projects'
 export const MEMORY_NOTE_EXTENSION = '.md'
 export const MEMORY_STAGE_FILE_MODE = 0o600
+// Plans as files (M79, PLAN.md D49, D13): where Muse Code's own bundled
+// `plan` skill saves a plan (read from the 1.4.0 binary, 2026-09-27):
+// `.agents/plans/YYYY-MM-DD-<slug>.md`, a short numeric suffix when the name
+// is taken, the file exactly the plan's body. A new file only: a taken name
+// gets `-2`, `-3`… up to the attempt limit, never a replacement.
+export const PLANS_DIR_SEGMENTS = ['.agents', 'plans'] as const
+// That skill's handoff, the first and last line of a plan reply (captured
+// live 2026-09-27 on Muse Code 1.4.0 in Plan mode, docs/certification/m79.md):
+// the plan saved is what lies between them.
+export const MUSE_PLAN_HANDOFF_LEAD =
+  'This is a plan, not a special mode; I haven’t started implementation. Reply `go` to execute this plan, or tell me what to change.'
+export const MUSE_PLAN_HANDOFF_TAIL = 'Reply `go` to execute this plan, or tell me what to change.'
+export const PLAN_FILE_EXTENSION = '.md'
+// The file's mode before the umask, as `fs.writeFile` would create it.
+export const PLAN_FILE_MODE = 0o666
+export const PLAN_NAME_ATTEMPTS = 100
+export const PLAN_SLUG_MAX_CHARS = 60
+export const PLAN_SLUG_FALLBACK = 'plan'
+export const PLAN_TITLE_MAX_CHARS = 80
+// A plan read back (Plans…, Implement) past this is refused: it travels as
+// one named text part, far inside both backends' text budgets (M54).
+export const PLAN_FILE_MAX_BYTES = 256 * 1024
+// What Plans… lists at most, newest first.
+export const PLAN_LIST_MAX = 200
+// The todo list a plan seeds: at most this many steps, each cut to this length.
+export const PLAN_STEPS_MAX = 50
+export const PLAN_STEP_MAX_CHARS = 200
+export const PLAN_TODO_PENDING_STATUS = 'pending'
+// The local id of the user card a brief sends (the webview's own are `local-…`).
+export const PLAN_BRIEF_LOCAL_ID_PREFIX = 'plan-brief-'
 // `add_memory`'s optional `type` (the binary's schema; `user`, `reference`
 // and `project` seen accepted live).
 export const MEMORY_NOTE_TYPES = ['user', 'feedback', 'project', 'reference'] as const
@@ -1721,6 +1751,14 @@ export const MODEL_TEXT = {
   toolMediaBudgetExceeded:
     'Visual media was not attached: images and PDFs returned or read in this tool round exceed the combined media limit. Use fewer images or files at once.',
   attachedTextFile: 'Attached text file {name}:\n\n{text}',
+  // M79 (PLAN.md D49): the first message of "Implement in a fresh
+  // conversation", after the plan file itself.
+  planBrief:
+    'The user approved the plan in the attached file {name} and wants it implemented now, in this new conversation. Work through it in order; if a step turns out to be wrong or unsafe, say so before departing from it.',
+  planBriefTodosSet:
+    "Your todo list already holds the plan's steps; keep it current with todo_write as you work.",
+  planBriefTodosAsk:
+    "Start by putting the plan's steps on your todo list, and keep it current as you work.",
   // M50: MCP tools on the Model API backend.
   mcpRestrictedMode:
     'MCP servers do not run while the workspace is in Restricted Mode; trust the workspace to enable them',
