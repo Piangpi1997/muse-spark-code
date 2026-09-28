@@ -133,22 +133,41 @@ function tabPaths(tabs: readonly vscode.Tab[]): readonly string[] {
   return tabs.map((tab) => (tab.input instanceof TabInputText ? tab.input.uri.fsPath : '?'))
 }
 
+/** Every editor a test made, disposed after it (each listens for reports). */
+const made: VerifyEditor[] = []
+
 function editor(options: { platform?: NodeJS.Platform; links?: Record<string, string> } = {}): {
   verify: VerifyEditor
   channel: FakeLogOutputChannel
 } {
   const channel = new FakeLogOutputChannel()
-  return {
-    verify: createVerifyEditor({
-      platform: options.platform ?? 'linux',
-      log: createLogger(channel),
-      workspaceRoot: ROOT,
-      realPath: (absolutePath) => Promise.resolve(options.links?.[absolutePath] ?? absolutePath),
-      settle: SETTLE,
-      format: FORMAT,
-    }),
-    channel,
-  }
+  const verify = createVerifyEditor({
+    platform: options.platform ?? 'linux',
+    log: createLogger(channel),
+    workspaceRoot: ROOT,
+    realPath: (absolutePath) => Promise.resolve(options.links?.[absolutePath] ?? absolutePath),
+    settle: SETTLE,
+    format: FORMAT,
+  })
+  made.push(verify)
+  return { verify, channel }
+}
+
+/** Records which files are opened, holding FILE's open until `held` resolves. */
+function holdFirstFile(): {
+  readonly order: string[]
+  readonly held: PromiseWithResolvers<undefined>
+} {
+  const order: string[] = []
+  const held = Promise.withResolvers<undefined>()
+  vi.mocked(workspace.openTextDocument).mockImplementation(async (uri) => {
+    order.push(uri.fsPath)
+    if (uri.fsPath === FILE.absolute) {
+      await held.promise
+    }
+    return fakeDocument({ text: '' }, uri)
+  })
+  return { order, held }
 }
 
 function report(...paths: readonly string[]): void {
@@ -183,6 +202,11 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  for (const verify of made.splice(0)) {
+    verify.dispose()
+  }
+  vi.mocked(workspace.fs.stat).mockReset()
+  vi.mocked(workspace.fs.readFile).mockReset()
   vi.mocked(workspace.openTextDocument).mockReset()
   vi.mocked(commands.executeCommand).mockReset()
   vi.mocked(languages.getDiagnostics).mockReset()
@@ -312,15 +336,7 @@ describe('diagnosticsAfterEdit', () => {
 
   it('runs one caller at a time: a second waits for the first', async () => {
     const { verify } = editor()
-    const order: string[] = []
-    const held = Promise.withResolvers<undefined>()
-    vi.mocked(workspace.openTextDocument).mockImplementation(async (uri) => {
-      order.push(uri.fsPath)
-      if (uri.fsPath === FILE.absolute) {
-        await held.promise
-      }
-      return fakeDocument({ text: '' }, uri)
-    })
+    const { order, held } = holdFirstFile()
     const first = verify.diagnosticsAfterEdit([FILE], new AbortController().signal)
     const second = verify.diagnosticsAfterEdit([OTHER], new AbortController().signal)
     await vi.waitFor(() => {
@@ -332,6 +348,81 @@ describe('diagnosticsAfterEdit', () => {
     held.resolve(undefined)
     await Promise.all([first, second])
     expect(order).toEqual([FILE.absolute, OTHER.absolute])
+  })
+
+  // The Codex review of PR #54: a caller that stops while it waits its turn leaves at once.
+  it('lets a waiting caller stop at once, and the next still waits for the first', async () => {
+    const { verify } = editor()
+    const { order, held } = holdFirstFile()
+    const first = verify.diagnosticsAfterEdit([FILE], new AbortController().signal)
+    const gone = new AbortController()
+    const waiting = verify.diagnosticsAfterEdit([OTHER], gone.signal)
+    const tool = new AbortController()
+    const waitingTool = verify.settleFile(OTHER.absolute, tool.signal)
+    const third = verify.diagnosticsAfterEdit([OTHER], new AbortController().signal)
+    await vi.waitFor(() => {
+      expect(order).toEqual([FILE.absolute])
+    })
+    gone.abort()
+    tool.abort()
+    expect(await waiting).toEqual([{ file: OTHER, entries: [], unchecked: 'stopped' }])
+    expect(await waitingTool).toBeUndefined()
+    // A while later the first still runs, and the third has not started.
+    await new Promise((resolve) => setTimeout(resolve, SETTLE.firstMs))
+    expect(order).toEqual([FILE.absolute])
+    held.resolve(undefined)
+    await Promise.all([first, third])
+    expect(order).toEqual([FILE.absolute, OTHER.absolute])
+  })
+
+  // The Codex review of PR #54: a file an editor already shows may be
+  // reported on before the check starts, and showing it brings no new report.
+  it('reads an already shown file its server reported on since the write', async () => {
+    const { verify } = editor()
+    window.visibleTextEditors = [fakeEditor(Uri.file(FILE.absolute))]
+    vi.mocked(workspace.fs.stat).mockResolvedValue({
+      type: 1,
+      ctime: 0,
+      mtime: Date.now() - 1000,
+      size: 1,
+    })
+    vi.mocked(languages.getDiagnostics).mockReturnValue([
+      [Uri.file(FILE.absolute), [diagnostic(0, 0, 0, 'reported before the check')]],
+    ])
+    report(FILE.absolute)
+    const started = Date.now()
+    const [only] = await verify.diagnosticsAfterEdit([FILE], new AbortController().signal)
+    expect(only?.entries.map((entry) => entry.message)).toEqual(['reported before the check'])
+    expect(Date.now() - started).toBeLessThan(SETTLE.firstMs)
+    // A report older than the write does not count.
+    vi.mocked(workspace.fs.stat).mockResolvedValue({
+      type: 1,
+      ctime: 0,
+      mtime: Date.now() + 60_000,
+      size: 1,
+    })
+    const [stale] = await verify.diagnosticsAfterEdit([FILE], new AbortController().signal)
+    expect(stale?.unchecked).toBe('noReport')
+  })
+
+  it('reads an already shown file that holds what is on disk when no new report comes', async () => {
+    const { verify } = editor()
+    window.visibleTextEditors = [fakeEditor(Uri.file(FILE.absolute))]
+    const written = 'const a = 2\n'
+    let shownText = written
+    vi.mocked(workspace.openTextDocument).mockImplementation((uri) =>
+      Promise.resolve(fakeDocument({ text: shownText }, uri)),
+    )
+    vi.mocked(workspace.fs.readFile).mockResolvedValue(new TextEncoder().encode(written))
+    vi.mocked(languages.getDiagnostics).mockReturnValue([
+      [Uri.file(FILE.absolute), [diagnostic(1, 0, 0, 'held for this text')]],
+    ])
+    const [same] = await verify.diagnosticsAfterEdit([FILE], new AbortController().signal)
+    expect(same?.entries.map((entry) => entry.message)).toEqual(['held for this text'])
+    // The editor still shows older text: what it holds is not about the write.
+    shownText = 'const a = 1\n'
+    const [older] = await verify.diagnosticsAfterEdit([FILE], new AbortController().signal)
+    expect(older?.unchecked).toBe('noReport')
   })
 
   it('matches files case-insensitively on Windows, and leaves a shown file as it is', async () => {

@@ -112,6 +112,9 @@ export const workspace = {
     writeFile: vi.fn<typeof vscode.workspace.fs.writeFile>(),
     // The Memory view's delete, to the trash (M49).
     delete: vi.fn<typeof vscode.workspace.fs.delete>(),
+    // The verify loop (M68): when a shown file was written, and what it holds.
+    stat: vi.fn<typeof vscode.workspace.fs.stat>(),
+    readFile: vi.fn<typeof vscode.workspace.fs.readFile>(),
   },
   // The verify loop (M68): the documents the language servers and the
   // formatter read, and the editor's indentation settings.

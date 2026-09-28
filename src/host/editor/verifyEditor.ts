@@ -89,6 +89,8 @@ export interface VerifyEditor {
   ): Promise<readonly DiagnosticEntry[] | undefined>
   /** The file's text as its formatter leaves it, or undefined: no formatter, no change, or not safe. */
   formatAfterEdit(absolutePath: string, text: string): Promise<string | undefined>
+  /** Stops listening for the language servers' reports. */
+  dispose(): void
 }
 
 const BOM = '\u{FEFF}'
@@ -98,6 +100,8 @@ const CONFIGURATION_SECTION = 'editor'
 const TAB_SIZE = 'tabSize'
 const INSERT_SPACES = 'insertSpaces'
 const NEVER_STOPPED = new AbortController().signal
+// What a diagnostics tool call that stopped while it waited its turn read.
+const NOTHING_READ = (): readonly DiagnosticEntry[] | undefined => undefined
 
 function describe(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
@@ -126,18 +130,44 @@ function sleep(ms: number): Promise<void> {
   })
 }
 
+/** When each file last got a report from its language server, since the editor was made. */
+interface ReportLog {
+  readonly lastAt: (key: string) => number | undefined
+  readonly dispose: () => void
+}
+
+function logReports(platform: NodeJS.Platform): ReportLog {
+  const lastAt = new Map<string, number>()
+  const subscription = vscode.languages.onDidChangeDiagnostics((event) => {
+    const at = Date.now()
+    for (const uri of event.uris) {
+      lastAt.set(uriKey(uri, platform), at)
+    }
+  })
+  return {
+    lastAt: (key) => lastAt.get(key),
+    dispose: () => {
+      subscription.dispose()
+    },
+  }
+}
+
 /**
  * The reports for one file, counted from the moment this is called (before
  * the file is shown, so none is missed). `settle` starts its timers when it
- * is called, once the file is shown: true once a report arrived and the
- * server has been quiet, false when none arrived in the first wait or the
- * caller stopped.
+ * is called, once the file is shown: true once a report arrived (or one
+ * arrived earlier, `hasEarlierReport`) and the server has been quiet, false
+ * when none arrived in the first wait or the caller stopped.
  */
 function watchReports(
   key: string,
   platform: NodeJS.Platform,
 ): {
-  readonly settle: (timing: SettleTiming, signal: AbortSignal) => Promise<boolean>
+  readonly settle: (
+    timing: SettleTiming,
+    signal: AbortSignal,
+    hasEarlierReport: boolean,
+  ) => Promise<boolean>
   readonly dispose: () => void
 } {
   let reports = 0
@@ -149,7 +179,11 @@ function watchReports(
     reports += 1
     onReport?.()
   })
-  const settle = (timing: SettleTiming, signal: AbortSignal): Promise<boolean> =>
+  const settle = (
+    timing: SettleTiming,
+    signal: AbortSignal,
+    hasEarlierReport: boolean,
+  ): Promise<boolean> =>
     new Promise<boolean>((resolve) => {
       if (signal.aborted) {
         resolve(false)
@@ -177,10 +211,10 @@ function watchReports(
       }
       signal.addEventListener('abort', onAbort, { once: true })
       const cap = setTimeout(() => {
-        finish(reports > 0)
+        finish(hasEarlierReport || reports > 0)
       }, timing.maxMs)
       onReport = waitForQuiet
-      if (reports > 0) {
+      if (hasEarlierReport || reports > 0) {
         waitForQuiet()
       } else {
         first = setTimeout(() => {
@@ -217,7 +251,7 @@ interface OpenedTab {
 }
 
 type Shown =
-  | { readonly ok: true; readonly document: vscode.TextDocument }
+  | { readonly ok: true; readonly document: vscode.TextDocument; readonly wasVisible: boolean }
   | { readonly ok: false; readonly reason: UncheckedReason }
 
 /**
@@ -248,7 +282,7 @@ async function show(
     (shown) => uriKey(shown.document.uri, deps.platform) === key,
   )
   if (isVisible) {
-    return { ok: true, document }
+    return { ok: true, document, wasVisible: true }
   }
   const before = new Set(tabsOf(key, deps.platform).map((tab) => tab.group.viewColumn))
   try {
@@ -266,7 +300,48 @@ async function show(
       opened.push({ key, column: tab.group.viewColumn })
     }
   }
-  return { ok: true, document }
+  return { ok: true, document, wasVisible: false }
+}
+
+/**
+ * Whether the server reported on the file since it was written: for a file
+ * an editor already showed, that report can come before the wait starts
+ * (the Codex review of PR #54).
+ */
+async function isReportedSinceWrite(
+  file: EditedFile,
+  key: string,
+  reportLog: ReportLog,
+): Promise<boolean> {
+  const reportedAt = reportLog.lastAt(key)
+  if (reportedAt === undefined) {
+    return false
+  }
+  try {
+    const { mtime } = await vscode.workspace.fs.stat(vscode.Uri.file(file.absolute))
+    return reportedAt >= mtime
+  } catch {
+    // A file that cannot be looked up has no write time to compare: wait for a new report.
+    return false
+  }
+}
+
+/**
+ * Whether a document an editor already showed holds what is on disk, unsaved
+ * changes aside: its server has had that text, and a server that reports
+ * nothing new keeps what it said about it.
+ */
+async function isShowingDiskText(document: vscode.TextDocument): Promise<boolean> {
+  if (document.isDirty) {
+    return false
+  }
+  try {
+    const bytes = await vscode.workspace.fs.readFile(document.uri)
+    return document.getText() === new TextDecoder().decode(bytes)
+  } catch {
+    // A file that cannot be read cannot be compared: it stays "not checked".
+    return false
+  }
 }
 
 /** Closes the tabs the loop opened, unless the user has since changed their text. */
@@ -287,6 +362,7 @@ async function closeOpened(deps: VerifyEditorDeps, opened: readonly OpenedTab[])
 /** One file shown and read once its server settles, or why it was not read. */
 async function settledDiagnostics(
   deps: VerifyEditorDeps,
+  reportLog: ReportLog,
   file: EditedFile,
   signal: AbortSignal,
   opened: OpenedTab[],
@@ -301,7 +377,12 @@ async function settledDiagnostics(
     if (!shown.ok) {
       return { file, entries: [], unchecked: shown.reason }
     }
-    const isSettled = await reports.settle(deps.settle ?? SETTLE_TIMING, signal)
+    // A file an editor already showed may have been reported on before the
+    // wait began, and showing it again brings no new report.
+    const hasEarlierReport = shown.wasVisible && (await isReportedSinceWrite(file, key, reportLog))
+    const isSettled =
+      (await reports.settle(deps.settle ?? SETTLE_TIMING, signal, hasEarlierReport)) ||
+      (shown.wasVisible && !isStopped(signal) && (await isShowingDiskText(shown.document)))
     if (isStopped(signal)) {
       return { file, entries: [], unchecked: 'stopped' }
     }
@@ -320,6 +401,7 @@ async function settledDiagnostics(
 /** Each file in turn, then the tabs opened for them closed. */
 async function readFiles(
   deps: VerifyEditorDeps,
+  reportLog: ReportLog,
   files: readonly EditedFile[],
   signal: AbortSignal,
 ): Promise<readonly FileDiagnostics[]> {
@@ -327,7 +409,7 @@ async function readFiles(
   const results: FileDiagnostics[] = []
   try {
     for (const file of files) {
-      results.push(await settledDiagnostics(deps, file, signal, opened))
+      results.push(await settledDiagnostics(deps, reportLog, file, signal, opened))
     }
   } finally {
     await closeOpened(deps, opened)
@@ -343,6 +425,7 @@ async function readFiles(
  */
 async function toolFileDiagnostics(
   deps: VerifyEditorDeps,
+  reportLog: ReportLog,
   absolutePath: string,
   signal: AbortSignal,
 ): Promise<readonly DiagnosticEntry[] | undefined> {
@@ -357,6 +440,7 @@ async function toolFileDiagnostics(
   }
   const [result] = await readFiles(
     deps,
+    reportLog,
     [{ relative: resolved.relative, absolute: resolved.checkedAbsolute }],
     signal,
   )
@@ -449,25 +533,64 @@ async function formatAfterEdit(
   return formatted === expected ? undefined : `${hasBom ? BOM : ''}${formatted}`
 }
 
+/** True once `waited` settles, false when the caller stops first. */
+function reachedBeforeStop(waited: Promise<void>, signal: AbortSignal): Promise<boolean> {
+  if (signal.aborted) {
+    return Promise.resolve(false)
+  }
+  const reached = Promise.withResolvers<boolean>()
+  const onAbort = () => {
+    reached.resolve(false)
+  }
+  signal.addEventListener('abort', onAbort, { once: true })
+  void (async () => {
+    await waited
+    signal.removeEventListener('abort', onAbort)
+    reached.resolve(true)
+  })()
+  return reached.promise
+}
+
+async function afterBoth(first: Promise<void>, second: Promise<unknown>): Promise<void> {
+  await first
+  await second
+}
+
 export function createVerifyEditor(deps: VerifyEditorDeps): VerifyEditor {
+  const reportLog = logReports(deps.platform)
   // One queue for every caller: files are shown and read one batch at a time,
-  // each batch starting once the one before it ended, however that ended.
+  // each batch starting once every one before it ended, however that ended.
+  // A caller that stops while it waits leaves at once (the Codex review of
+  // PR #54); the next one still waits for those ahead of it.
   let tail: Promise<void> = Promise.resolve()
-  const enqueue = async <T>(work: () => Promise<T>): Promise<T> => {
+  const enqueue = async <T>(
+    signal: AbortSignal,
+    stopped: () => T,
+    work: () => Promise<T>,
+  ): Promise<T> => {
     const previous = tail
     const done = Promise.withResolvers<undefined>()
-    tail = done.promise
+    tail = afterBoth(previous, done.promise)
     try {
-      await previous
-      return await work()
+      return (await reachedBeforeStop(previous, signal)) ? await work() : stopped()
     } finally {
       done.resolve(undefined)
     }
   }
   return {
-    diagnosticsAfterEdit: (files, signal) => enqueue(() => readFiles(deps, files, signal)),
+    diagnosticsAfterEdit: (files, signal) =>
+      enqueue(
+        signal,
+        () => files.map((file) => ({ file, entries: [], unchecked: 'stopped' as const })),
+        () => readFiles(deps, reportLog, files, signal),
+      ),
     settleFile: (absolutePath, signal = NEVER_STOPPED) =>
-      enqueue(() => toolFileDiagnostics(deps, absolutePath, signal)),
+      enqueue(signal, NOTHING_READ, () =>
+        toolFileDiagnostics(deps, reportLog, absolutePath, signal),
+      ),
     formatAfterEdit: (absolutePath, text) => formatAfterEdit(deps, absolutePath, text),
+    dispose: () => {
+      reportLog.dispose()
+    },
   }
 }

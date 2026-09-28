@@ -3874,7 +3874,11 @@ export class ModelApiSession implements AgentSession {
     }
   }
 
-  /** The checks in order; a stop ends the run with what finished. */
+  /**
+   * The checks in order; a Stop ends the run, and a hook that ended the turn
+   * (`continue: false`) ends it with what finished (the Codex review of PR
+   * #54): the checks after it do not run.
+   */
   private async runChecks(
     itemId: string,
     checks: readonly CheckCommandSetting[],
@@ -3887,6 +3891,9 @@ export class ModelApiSession implements AgentSession {
     for (const check of checks) {
       if (isAbortRequested(signal)) {
         throw new AbortedError()
+      }
+      if (effects.stopReason !== undefined) {
+        break
       }
       runs.push(await this.runCheck(itemId, check, paths, signal, effects, maxChars))
     }
@@ -4822,7 +4829,15 @@ export class ModelApiSession implements AgentSession {
     const alreadyRun = new Set(turn.checksSinceEdit)
     const { verify } = this.deps
     const { signal } = turn.abort
-    if (isLastRound || verify === undefined || edited.length === 0 || isAbortRequested(signal)) {
+    if (verify === undefined || isAbortRequested(signal)) {
+      return undefined
+    }
+    if (isLastRound || edited.length === 0) {
+      // The round's run_checks still count for the fix loop, edits or not
+      // (the Codex review of PR #54).
+      if (this.countFixRound(earlierRuns)) {
+        this.noteFixLoopStopped(turn.turnId, [])
+      }
       return undefined
     }
     const state = this.verifyState

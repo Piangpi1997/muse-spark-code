@@ -790,6 +790,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     workspaceRoot,
     realPath: canonicalPath,
   })
+  context.subscriptions.push(verifyEditor)
   const diagnostics = diagnosticsTool({
     getDiagnostics: collectDiagnostics,
     workspaceRoot,

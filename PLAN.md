@@ -6569,7 +6569,12 @@ timeoutSeconds? }`, at most 8, names unique, 300 s unless set, 600 s at
     test rerun on both versions. That run caught a regression the tab
     cleanup made: the JSON server clears a file's diagnostics when its tab
     closes, so `settleFile` now returns what it read while the file showed
-    and the diagnostics tool answers with that.
+    and the diagnostics tool answers with that. Codex's review of PR #54
+    added four, fixed with drills R41 to R46: a hook's stop ends the
+    remaining checks; a queued editor caller stops while it waits; an
+    already shown file's report since the write, or a shown document that
+    holds the disk text, counts; `run_checks` rounds without edits count for
+    the fix loop.
   - **Open for the owner**: the side editor group, the upstream MSP ask, and
     the `diagnosticsAfterEdits` default (on).
 

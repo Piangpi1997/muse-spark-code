@@ -640,7 +640,9 @@ describe('run_checks (the model’s own call)', () => {
     const t = setup({
       files: { 'src/a.ts': 'const a = 1\n', 'src/b.ts': 'const b = 1\n' },
       checks: [LINT, TEST],
-      shell: lintShell(),
+      // The whole project lints clean; a changed file does not. (Three failing
+      // rounds in a row would stop the checks: run_checks rounds count too.)
+      shell: (command) => (command === LINT.command ? passed() : lintShell()(command)),
       isDiagnosticsOn: false,
     })
     const { events, turn } = await start(t, 'allowAll')
@@ -671,7 +673,7 @@ describe('run_checks (the model’s own call)', () => {
     const [first] = completedRows(events, 'run_checks')
     expect(first).toMatchObject({
       status: 'completed',
-      verifySummary: { files: [], checks: [{ name: 'lint', outcome: 'failed' }] },
+      verifySummary: { files: [], checks: [{ name: 'lint', outcome: 'passed' }] },
     })
     expect(outputs(t.api.responseBodies()[1])[0]).toContain(MODEL_TEXT.runChecksLead)
   })
@@ -1073,8 +1075,10 @@ describe('the user’s hooks see then_run and the checks as shell calls', () => 
       }),
     )
 
+    // The Codex review of PR #54: the checks after the stop do not run,
+    // automatic or run_checks.
     const stopping = setup({
-      checks: [LINT],
+      checks: [LINT, TEST],
       isDiagnosticsOn: false,
       hooks: hooksOn('PostToolUse'),
       runHook: hookAnswers((_event, payload) =>
@@ -1084,9 +1088,17 @@ describe('the user’s hooks see then_run and the checks as shell calls', () => 
     const second = await start(stopping, 'allowAll')
     stopping.api.script({ calls: [editCall('1', '2')] }, { text: 'never' })
     await second.turn()
-    expect(stopping.io.shellCalls).toHaveLength(1)
+    expect(stopping.io.shellCalls.map((call) => call.command)).toEqual([
+      "npm run lint -- 'src/a.ts'",
+    ])
     expect(stopping.api.responseBodies()).toHaveLength(1)
-    expect(completedRows(second.events, 'verify_edits')[0]?.status).toBe('completed')
+    const [row] = completedRows(second.events, 'verify_edits')
+    expect(row?.status).toBe('completed')
+    expect(row?.verifySummary?.checks).toEqual([{ name: 'lint', outcome: 'passed' }])
+    stopping.api.script({ calls: [{ name: 'run_checks', arguments: '{}' }] }, { text: 'never' })
+    await second.turn('run them')
+    expect(stopping.io.shellCalls).toHaveLength(2)
+    expect(stopping.api.responseBodies()).toHaveLength(2)
   })
 
   it('tells a PermissionRequest hook’s denial from the user’s Reject, and asks again later', async () => {
@@ -1184,6 +1196,22 @@ describe('the checks’ state since the user’s message', () => {
     expect(completedRows(second.events, 'run_checks')[0]?.verifySummary?.checks).toEqual([
       { name: 'lint', outcome: 'notRun', skip: 'stopped' },
     ])
+  })
+
+  // The Codex review of PR #54: rounds of run_checks alone count too.
+  it('counts failing run_checks rounds without edits toward the fix loop', async () => {
+    const t = setup({ checks: [LINT], isDiagnosticsOn: false, shell: lintShell() })
+    const { events, turn } = await start(t, 'allowAll')
+    const runChecks: ScriptedReply = { calls: [{ name: 'run_checks', arguments: '{}' }] }
+    t.api.script(...Array.from({ length: CHECK_FIX_MAX_ROUNDS + 1 }, () => runChecks), {
+      text: 'ok',
+    })
+    await turn()
+    expect(lintRuns(t)).toBe(CHECK_FIX_MAX_ROUNDS)
+    expect(completedRows(events, 'run_checks').at(-1)?.verifySummary?.checks).toEqual([
+      { name: 'lint', outcome: 'notRun', skip: 'stopped' },
+    ])
+    expect(events.filter((event) => event.type === 'backendNotice')).toHaveLength(1)
   })
 
   it('does not run a check again after the round when the model ran it since the edit', async () => {
