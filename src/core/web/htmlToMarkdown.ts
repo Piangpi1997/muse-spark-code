@@ -63,11 +63,16 @@ const VOID = new Set([
   'track',
   'wbr',
 ])
-// HTML's scopes (the parsing algorithm's "has an element in scope"): open
-// inside an element a page may leave open, these keep it open.
-const BUTTON_SCOPE: ReadonlySet<string> = new Set([
+// What the converter follows of HTML's tree construction (the WHATWG parsing
+// algorithm), as far as it decides what is hidden or left out: which
+// elements are open, what closes them without an end tag, and which end
+// tags are ignored. Every set below is named as the algorithm names it.
+
+const HEADING_NAMES = ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']
+const HEADING_SET: ReadonlySet<string> = new Set(HEADING_NAMES)
+// "Has an element in scope": open above the element, these hide it.
+const DEFAULT_SCOPE: ReadonlySet<string> = new Set([
   'applet',
-  'button',
   'caption',
   'html',
   'marquee',
@@ -77,40 +82,161 @@ const BUTTON_SCOPE: ReadonlySet<string> = new Set([
   'template',
   'th',
 ])
+const BUTTON_SCOPE: ReadonlySet<string> = new Set([...DEFAULT_SCOPE, 'button'])
+const LIST_ITEM_SCOPE: ReadonlySet<string> = new Set([...DEFAULT_SCOPE, 'ol', 'ul'])
 const TABLE_SCOPE: ReadonlySet<string> = new Set(['html', 'table', 'template'])
-// HTML's special elements but address, div and p: a new list item's search
-// for the open one stops at them (nested lists, sections, tables).
-const LIST_SCOPE: ReadonlySet<string> = new Set([
+// Inside these a table is not restarted by another `<table>`.
+const TABLE_RESTART_BARRIERS: ReadonlySet<string> = new Set(['caption', 'td', 'th', 'template'])
+// The "special" category: an end tag that is not one of the listed ones
+// closes nothing past these; a list item's search stops at them but for
+// address, div and p.
+const SPECIAL: ReadonlySet<string> = new Set([
+  'address',
   'applet',
+  'area',
   'article',
   'aside',
+  'base',
+  'basefont',
+  'bgsound',
   'blockquote',
   'body',
+  'br',
   'button',
   'caption',
   'center',
+  'col',
   'colgroup',
   'dd',
   'details',
   'dir',
+  'div',
+  'dl',
+  'dt',
+  'embed',
+  'fieldset',
+  'figcaption',
+  'figure',
+  'footer',
+  'form',
+  'frame',
+  'frameset',
+  ...HEADING_NAMES,
+  'head',
+  'header',
+  'hgroup',
+  'hr',
+  'html',
+  'iframe',
+  'img',
+  'input',
+  'keygen',
+  'li',
+  'link',
+  'listing',
+  'main',
+  'marquee',
+  'menu',
+  'meta',
+  'nav',
+  'noembed',
+  'noframes',
+  'noscript',
+  'object',
+  'ol',
+  'p',
+  'param',
+  'plaintext',
+  'pre',
+  'script',
+  'search',
+  'section',
+  'select',
+  'source',
+  'style',
+  'summary',
+  'table',
+  'tbody',
+  'td',
+  'template',
+  'textarea',
+  'tfoot',
+  'th',
+  'thead',
+  'title',
+  'tr',
+  'track',
+  'ul',
+  'wbr',
+  'xmp',
+])
+const LIST_SCOPE: ReadonlySet<string> = new Set(
+  [...SPECIAL].filter((name) => name !== 'address' && name !== 'div' && name !== 'p'),
+)
+// What "generate implied end tags" closes: ruby's parts close only through these.
+const GENERATED_ENDS: ReadonlySet<string> = new Set([
+  'dd',
+  'dt',
+  'li',
+  'optgroup',
+  'option',
+  'p',
+  'rb',
+  'rp',
+  'rt',
+  'rtc',
+])
+// Elements whose closing clears the formatting elements opened inside them.
+const FORMATTING_MARKERS: ReadonlySet<string> = new Set([
+  'applet',
+  'caption',
+  'marquee',
+  'object',
+  'td',
+  'template',
+  'th',
+])
+// Formatting elements: closed by the adoption agency, and reopened after an
+// element around them closed, until their own end tag.
+const FORMATTING: ReadonlySet<string> = new Set([
+  'a',
+  'b',
+  'big',
+  'code',
+  'em',
+  'font',
+  'i',
+  'nobr',
+  's',
+  'small',
+  'strike',
+  'strong',
+  'tt',
+  'u',
+])
+// End tags that close an element in scope; any other name closes nothing
+// past a special element.
+const SCOPED_ENDS: ReadonlySet<string> = new Set([
+  'address',
+  'applet',
+  'article',
+  'aside',
+  'blockquote',
+  'button',
+  'center',
+  'dd',
+  'details',
+  'dialog',
+  'dir',
+  'div',
   'dl',
   'dt',
   'fieldset',
   'figcaption',
   'figure',
   'footer',
-  'form',
-  'h1',
-  'h2',
-  'h3',
-  'h4',
-  'h5',
-  'h6',
-  'head',
   'header',
   'hgroup',
-  'html',
-  'li',
   'listing',
   'main',
   'marquee',
@@ -118,24 +244,81 @@ const LIST_SCOPE: ReadonlySet<string> = new Set([
   'nav',
   'object',
   'ol',
-  'plaintext',
   'pre',
   'search',
   'section',
-  'select',
   'summary',
+  'ul',
+])
+const TABLE_ENDS: ReadonlySet<string> = new Set([
+  'caption',
+  'colgroup',
   'table',
   'tbody',
   'td',
-  'template',
   'tfoot',
   'th',
   'thead',
   'tr',
-  'ul',
 ])
-// The start tags that close an open `<p>`. A table does only outside quirks
-// mode, so it is left out: a hidden paragraph then hides it too.
+// Foreign content (SVG, MathML): its own rules until a breakout tag, except
+// inside an integration point, where HTML's rules apply again.
+const FOREIGN_ROOTS: ReadonlySet<string> = new Set(['svg', 'math'])
+const INTEGRATION_POINTS: ReadonlySet<string> = new Set([
+  'annotation-xml',
+  'desc',
+  'foreignobject',
+  'mi',
+  'mn',
+  'mo',
+  'ms',
+  'mtext',
+  'title',
+])
+const BREAKOUT: ReadonlySet<string> = new Set([
+  'b',
+  'big',
+  'blockquote',
+  'body',
+  'br',
+  'center',
+  'code',
+  'dd',
+  'div',
+  'dl',
+  'dt',
+  'em',
+  'embed',
+  ...HEADING_NAMES,
+  'head',
+  'hr',
+  'i',
+  'img',
+  'li',
+  'listing',
+  'menu',
+  'meta',
+  'nobr',
+  'ol',
+  'p',
+  'pre',
+  'ruby',
+  's',
+  'small',
+  'span',
+  'strong',
+  'strike',
+  'sub',
+  'sup',
+  'table',
+  'tt',
+  'u',
+  'ul',
+  'var',
+])
+const FONT_BREAKOUT_ATTRIBUTES = ['color', 'face', 'size']
+// The start tags that close an open `<p>` (a table does only outside quirks
+// mode, so it is left out: a hidden paragraph then hides it too).
 const PARAGRAPH_CLOSERS: ReadonlySet<string> = new Set([
   'address',
   'article',
@@ -154,12 +337,7 @@ const PARAGRAPH_CLOSERS: ReadonlySet<string> = new Set([
   'figure',
   'footer',
   'form',
-  'h1',
-  'h2',
-  'h3',
-  'h4',
-  'h5',
-  'h6',
+  ...HEADING_NAMES,
   'header',
   'hgroup',
   'hr',
@@ -176,40 +354,61 @@ const PARAGRAPH_CLOSERS: ReadonlySet<string> = new Set([
   'section',
   'summary',
   'ul',
+  'xmp',
 ])
 const TABLE_SECTIONS = ['thead', 'tbody', 'tfoot']
-const NOTHING: ReadonlySet<string> = new Set()
+const TABLE_CONTEXT_STARTS = ['caption', 'col', 'colgroup']
 
 /**
- * An element a page may leave open (`<p>`, `<li>`, `<td>`): the start tags
- * that close it without its end tag, and what, open inside it, keeps it open.
+ * What, open above an element, keeps a start tag from closing it: an
+ * element of a scope's set, anything at all (it closes only as the current
+ * node), or anything "generate implied end tags" would not close.
  */
+type Barrier =
+  | { readonly kind: 'set'; readonly names: ReadonlySet<string> }
+  | { readonly kind: 'anything' }
+  | { readonly kind: 'notGenerated' }
+
+/** The start tags that close an element without its end tag, and what keeps it open. */
 interface ImpliedEnd {
   readonly closedBy: ReadonlySet<string>
-  readonly barriers: ReadonlySet<string>
+  readonly barrier: Barrier
 }
 
-const ITEM_END: ImpliedEnd = { closedBy: new Set(['li']), barriers: LIST_SCOPE }
-const TERM_END: ImpliedEnd = { closedBy: new Set(['dt', 'dd']), barriers: LIST_SCOPE }
-const CELL_END: ImpliedEnd = {
-  closedBy: new Set(['td', 'th', 'tr', ...TABLE_SECTIONS]),
-  barriers: TABLE_SCOPE,
+const ANYTHING: Barrier = { kind: 'anything' }
+const IN_TABLE: Barrier = { kind: 'set', names: TABLE_SCOPE }
+const ITEM_END: ImpliedEnd = {
+  closedBy: new Set(['li']),
+  barrier: { kind: 'set', names: LIST_SCOPE },
 }
-const SECTION_END: ImpliedEnd = { closedBy: new Set(TABLE_SECTIONS), barriers: TABLE_SCOPE }
+const TERM_END: ImpliedEnd = {
+  closedBy: new Set(['dt', 'dd']),
+  barrier: { kind: 'set', names: LIST_SCOPE },
+}
+const CELL_END: ImpliedEnd = {
+  closedBy: new Set(['td', 'th', 'tr', ...TABLE_SECTIONS, ...TABLE_CONTEXT_STARTS]),
+  barrier: IN_TABLE,
+}
+const SECTION_END: ImpliedEnd = {
+  closedBy: new Set([...TABLE_SECTIONS, ...TABLE_CONTEXT_STARTS]),
+  barrier: IN_TABLE,
+}
 const RUBY_END: ImpliedEnd = {
   closedBy: new Set(['rb', 'rt', 'rp', 'rtc']),
-  barriers: BUTTON_SCOPE,
+  barrier: { kind: 'notGenerated' },
 }
-// Only an end tag, or the end of the page, closes these.
-const EXPLICIT_END: ImpliedEnd = { closedBy: NOTHING, barriers: NOTHING }
+const HEADING_END: ImpliedEnd = { closedBy: HEADING_SET, barrier: ANYTHING }
 const IMPLIED_ENDS: ReadonlyMap<string, ImpliedEnd> = new Map([
-  ['p', { closedBy: PARAGRAPH_CLOSERS, barriers: BUTTON_SCOPE }],
+  ['p', { closedBy: PARAGRAPH_CLOSERS, barrier: { kind: 'set', names: BUTTON_SCOPE } }],
   ['li', ITEM_END],
   ['dt', TERM_END],
   ['dd', TERM_END],
-  ['option', { closedBy: new Set(['option', 'optgroup', 'hr']), barriers: BUTTON_SCOPE }],
-  ['optgroup', { closedBy: new Set(['optgroup', 'hr']), barriers: BUTTON_SCOPE }],
-  ['tr', { closedBy: new Set(['tr', ...TABLE_SECTIONS]), barriers: TABLE_SCOPE }],
+  ['option', { closedBy: new Set(['option', 'optgroup', 'hr']), barrier: ANYTHING }],
+  ['optgroup', { closedBy: new Set(['optgroup', 'hr']), barrier: ANYTHING }],
+  [
+    'tr',
+    { closedBy: new Set(['tr', ...TABLE_SECTIONS, ...TABLE_CONTEXT_STARTS]), barrier: IN_TABLE },
+  ],
   ['td', CELL_END],
   ['th', CELL_END],
   ['thead', SECTION_END],
@@ -219,23 +418,48 @@ const IMPLIED_ENDS: ReadonlyMap<string, ImpliedEnd> = new Map([
     'caption',
     {
       closedBy: new Set(['caption', 'col', 'colgroup', 'tr', 'td', 'th', ...TABLE_SECTIONS]),
-      barriers: TABLE_SCOPE,
+      barrier: IN_TABLE,
     },
   ],
   [
     'colgroup',
     {
       closedBy: new Set(['caption', 'colgroup', 'tr', 'td', 'th', ...TABLE_SECTIONS]),
-      barriers: TABLE_SCOPE,
+      barrier: IN_TABLE,
     },
+  ],
+  [
+    'table',
+    { closedBy: new Set(['table']), barrier: { kind: 'set', names: TABLE_RESTART_BARRIERS } },
   ],
   ['rb', RUBY_END],
   ['rt', RUBY_END],
   ['rp', RUBY_END],
-  ['head', { closedBy: new Set(['body']), barriers: NOTHING }],
-  ['body', EXPLICIT_END],
-  ['html', EXPLICIT_END],
+  ['rtc', RUBY_END],
+  ...HEADING_NAMES.map((name): [string, ImpliedEnd] => [name, HEADING_END]),
+  ['button', { closedBy: new Set(['button']), barrier: { kind: 'set', names: DEFAULT_SCOPE } }],
+  ['nobr', { closedBy: new Set(['nobr']), barrier: { kind: 'set', names: DEFAULT_SCOPE } }],
+  ['a', { closedBy: new Set(['a']), barrier: { kind: 'set', names: FORMATTING_MARKERS } }],
+  [
+    'select',
+    {
+      closedBy: new Set(['select', 'input', 'keygen', 'textarea']),
+      barrier: { kind: 'set', names: new Set() },
+    },
+  ],
 ])
+// For a start tag: the elements it may close.
+const CLOSED_BY: ReadonlyMap<string, readonly string[]> = (() => {
+  const closers = new Map<string, string[]>()
+  for (const [name, end] of IMPLIED_ENDS) {
+    for (const closer of end.closedBy) {
+      closers.set(closer, [...(closers.get(closer) ?? []), name])
+    }
+  }
+  return closers
+})()
+const NOTHING: ReadonlySet<string> = new Set()
+
 const BLOCKS = new Set([
   'address',
   'article',
@@ -317,6 +541,14 @@ const COMMENT_OPEN = '<!--'
 const COMMENT_CLOSE = '-->'
 const CDATA_OPEN = '<![CDATA['
 const CDATA_CLOSE = ']]>'
+// `<!-->` and `<!--->` close a comment at once; so does `--!>`.
+const SHORT_COMMENT_CLOSE = '->'
+const BANG_COMMENT_CLOSE = '--!>'
+// `<!--` in a script opens an escape whose two dashes a `>` may close.
+const ESCAPE_DASHES = 2
+const SCRIPT = 'script'
+const IMAGE = 'image'
+const PLAINTEXT = 'plaintext'
 const SELF_CLOSE = '/'
 const ASSIGN = '='
 const QUOTES = new Set(['"', "'"])
@@ -429,8 +661,9 @@ function readTag(html: string, start: number): Tag | undefined {
   let isSelfClosing = false
   while (index < html.length && html[index] !== TAG_CLOSE) {
     index = skipSpace(html, index)
+    // A slash marks the tag self-closing only right before its `>`.
     if (html[index] === SELF_CLOSE) {
-      isSelfClosing = true
+      isSelfClosing = html[index + 1] === TAG_CLOSE
       index += 1
       continue
     }
@@ -438,11 +671,11 @@ function readTag(html: string, start: number): Tag | undefined {
       break
     }
     const attributeStart = index
-    while (!isNameEnd(html[index]) && html[index] !== ASSIGN) {
+    // A name may begin with `=`, which it keeps (HTML reads it so).
+    if (html[index] === ASSIGN) {
       index += 1
     }
-    // A stray `=` before any name is read as a one-character name.
-    if (index === attributeStart) {
+    while (!isNameEnd(html[index]) && html[index] !== ASSIGN) {
       index += 1
     }
     const attributeName = html.slice(attributeStart, index).toLowerCase()
@@ -456,7 +689,6 @@ function readTag(html: string, start: number): Tag | undefined {
     if (!attributes.has(attributeName)) {
       attributes.set(attributeName, decodeHTMLAttribute(value))
     }
-    isSelfClosing = false
   }
   return { name, isEnd, isSelfClosing, attributes, next: Math.min(index + 1, html.length) }
 }
@@ -470,6 +702,53 @@ function rawTextEnd(html: string, from: number, name: string): number {
       return index
     }
     index = html.indexOf(END_TAG, index + END_TAG.length)
+  }
+  return html.length
+}
+
+/** Whether `script`, then the end of a tag name, is at `at` (any case). */
+function isScriptName(html: string, at: number): boolean {
+  return (
+    html.slice(at, at + SCRIPT.length).toLowerCase() === SCRIPT &&
+    isNameEnd(html[at + SCRIPT.length])
+  )
+}
+
+/**
+ * Where a script's text ends (the index of its `</script`), as HTML's
+ * script data states read it: after `<!--`, a `<script` opens a nested one
+ * whose `</script>` does not end the script, until `-->` closes the escape.
+ */
+function scriptEnd(html: string, from: number): number {
+  let state: 'data' | 'escaped' | 'doubleEscaped' = 'data'
+  let index = from
+  while (index < html.length) {
+    if (state === 'data') {
+      if (html.startsWith(COMMENT_OPEN, index)) {
+        state = 'escaped'
+        // The dashes stay: a `>` right after them closes the escape.
+        index += COMMENT_OPEN.length - ESCAPE_DASHES
+        continue
+      }
+    } else if (html.startsWith(COMMENT_CLOSE, index)) {
+      state = 'data'
+      index += COMMENT_CLOSE.length
+      continue
+    }
+    if (html.startsWith(END_TAG, index) && isScriptName(html, index + END_TAG.length)) {
+      if (state !== 'doubleEscaped') {
+        return index
+      }
+      state = 'escaped'
+      index += END_TAG.length + SCRIPT.length
+      continue
+    }
+    if (state === 'escaped' && html[index] === TAG_OPEN && isScriptName(html, index + 1)) {
+      state = 'doubleEscaped'
+      index += TAG_OPEN.length + SCRIPT.length
+      continue
+    }
+    index += 1
   }
   return html.length
 }
@@ -1062,12 +1341,12 @@ class MarkdownWriter {
 }
 
 /** Where a markup construct that is not a tag (a comment, a doctype, CDATA) ends. */
-function skipMarkup(html: string, start: number): number {
+function skipMarkup(html: string, start: number, isForeign: boolean): number {
   if (html.startsWith(COMMENT_OPEN, start)) {
-    const end = html.indexOf(COMMENT_CLOSE, start + COMMENT_OPEN.length)
-    return end === -1 ? html.length : end + COMMENT_CLOSE.length
+    return commentEnd(html, start + COMMENT_OPEN.length)
   }
-  if (html.startsWith(CDATA_OPEN, start)) {
+  // CDATA is a section only in SVG or MathML; in HTML it is a bogus comment.
+  if (isForeign && html.startsWith(CDATA_OPEN, start)) {
     const end = html.indexOf(CDATA_CLOSE, start + CDATA_OPEN.length)
     return end === -1 ? html.length : end + CDATA_CLOSE.length
   }
@@ -1076,106 +1355,166 @@ function skipMarkup(html: string, start: number): number {
 }
 
 /**
- * Open elements by name. Membership and barriers are counted, so neither a
- * check nor a close walks a hostile page's nesting: each element is pushed
- * and popped once.
+ * Where a comment whose text begins at `body` ends: `<!-->` and `<!--->`
+ * close at once, otherwise the first `-->` or `--!>` does.
+ */
+function commentEnd(html: string, body: number): number {
+  if (html.startsWith(TAG_CLOSE, body)) {
+    return body + TAG_CLOSE.length
+  }
+  if (html.startsWith(SHORT_COMMENT_CLOSE, body)) {
+    return body + SHORT_COMMENT_CLOSE.length
+  }
+  const close = html.indexOf(COMMENT_CLOSE, body)
+  const bang = html.indexOf(BANG_COMMENT_CLOSE, body)
+  if (bang !== -1 && (close === -1 || bang < close)) {
+    return bang + BANG_COMMENT_CLOSE.length
+  }
+  return close === -1 ? html.length : close + COMMENT_CLOSE.length
+}
+
+const TOMBSTONE = ''
+// The element sets whose innermost open member the tree rules ask for.
+const TRACKED_SETS = [
+  DEFAULT_SCOPE,
+  BUTTON_SCOPE,
+  LIST_ITEM_SCOPE,
+  TABLE_SCOPE,
+  TABLE_RESTART_BARRIERS,
+  SPECIAL,
+  LIST_SCOPE,
+  FORMATTING_MARKERS,
+  INTEGRATION_POINTS,
+] as const
+
+/**
+ * The open elements, innermost last. Each name's positions and each tracked
+ * set's positions are kept as stacks, so every question the tree rules ask
+ * (is it open, is it in scope, is a barrier above it) is answered without
+ * walking a hostile page's nesting: each element is pushed and popped once.
  */
 class OpenElements {
   private readonly names: string[] = []
-  private readonly counts = new Map<string, number>()
-  private barrierCount = 0
+  private readonly positions = new Map<string, number[]>()
+  private readonly memberPositions = new Map<ReadonlySet<string>, number[]>(
+    TRACKED_SETS.map((set) => [set, []]),
+  )
+  // Open elements "generate implied end tags" would not close, for ruby.
+  private readonly notGenerated: number[] = []
 
-  public constructor(private readonly barriers: ReadonlySet<string> = NOTHING) {}
+  public get length(): number {
+    return this.names.length
+  }
 
   public get top(): string | undefined {
     return this.names.at(-1)
   }
 
-  /** Whether an element that keeps the enclosing one open is open here. */
-  public get hasBarrier(): boolean {
-    return this.barrierCount > 0
+  /** Where the innermost open `name` is; -1 when none is open. */
+  public lastOf(name: string): number {
+    return this.positions.get(name)?.at(-1) ?? -1
   }
 
-  public has(name: string): boolean {
-    return (this.counts.get(name) ?? 0) > 0
+  /** Where the innermost open member of a tracked set is; -1 when none is. */
+  public lastIn(set: ReadonlySet<string>): number {
+    return this.memberPositions.get(set)?.at(-1) ?? -1
   }
 
   public push(name: string): void {
+    const index = this.names.length
     this.names.push(name)
-    this.counts.set(name, (this.counts.get(name) ?? 0) + 1)
-    if (this.barriers.has(name)) {
-      this.barrierCount += 1
+    const own = this.positions.get(name)
+    if (own === undefined) {
+      this.positions.set(name, [index])
+    } else {
+      own.push(index)
+    }
+    for (const [set, stack] of this.memberPositions) {
+      if (set.has(name)) {
+        stack.push(index)
+      }
+    }
+    if (!GENERATED_ENDS.has(name)) {
+      this.notGenerated.push(index)
     }
   }
 
-  public pop(): void {
-    const name = this.names.pop()
-    if (name === undefined) {
+  /** Closes the element at `index` and every element opened inside it. */
+  public popTo(index: number): void {
+    while (this.names.length > Math.max(index, 0)) {
+      const at = this.names.length - 1
+      const name = this.names.pop()
+      if (name !== undefined && name !== TOMBSTONE) {
+        this.positions.get(name)?.pop()
+      }
+      for (const stack of [...this.memberPositions.values(), this.notGenerated]) {
+        while ((stack.at(-1) ?? -1) >= at) {
+          stack.pop()
+        }
+      }
+    }
+  }
+
+  /**
+   * Takes the innermost `name` out while what was opened inside it stays
+   * open (the adoption agency's result for a block inside a formatting
+   * element). Its slot stays, empty, so no other position moves.
+   */
+  public remove(index: number): void {
+    const name = this.names[index]
+    if (name === undefined || name === TOMBSTONE) {
       return
     }
-    this.counts.set(name, (this.counts.get(name) ?? 1) - 1)
-    if (this.barriers.has(name)) {
-      this.barrierCount -= 1
-    }
+    this.names[index] = TOMBSTONE
+    this.positions.get(name)?.pop()
   }
 
-  /** Closes the innermost `name` and all opened inside it; false when none is open. */
-  public closeTo(name: string): boolean {
-    if (!this.has(name)) {
-      return false
-    }
-    while (this.top !== name) {
-      this.pop()
-    }
-    this.pop()
-    return true
-  }
-
-  /** Closes the elements on top that a new `name` start tag ends without their end tags. */
-  public closeImplied(name: string): void {
-    for (let top = this.top; top !== undefined; top = this.top) {
-      if (IMPLIED_ENDS.get(top)?.closedBy.has(name) !== true) {
-        return
+  /** Whether an element that keeps the one at `index` open against a start tag is open above it. */
+  public isBarredAbove(index: number, barrier: Barrier): boolean {
+    switch (barrier.kind) {
+      case 'anything': {
+        return this.names.length - 1 > index
       }
-      this.pop()
+      case 'notGenerated': {
+        return (this.notGenerated.at(-1) ?? -1) > index
+      }
+      case 'set': {
+        return this.lastIn(barrier.names) > index
+      }
     }
+  }
+
+  /** Whether the innermost `name` is open with no element of `scope` above it. */
+  public isInScope(name: string, scope: ReadonlySet<string>): boolean {
+    const at = this.lastOf(name)
+    return at !== -1 && this.lastIn(scope) <= at
+  }
+
+  /** Whether a marker element is open at `from` or above, below `to`. */
+  public hasMarkerBetween(from: number, to: number): boolean {
+    const markers = this.memberPositions.get(FORMATTING_MARKERS) ?? []
+    for (let index = markers.length - 1; index >= 0; index -= 1) {
+      const at = markers[index] ?? -1
+      if (at < from) {
+        return false
+      }
+      if (at < to) {
+        return true
+      }
+    }
+    return false
   }
 }
 
 /**
- * A hidden or skipped subtree being passed over: its root, what is open
- * inside it, and, for an element a page may leave open, what ends it.
+ * A hidden or left-out element being passed over: where it is open, what
+ * kind it is, and whether it is a formatting element, which HTML reopens
+ * after an element around it closed, until its own end tag.
  */
 interface Skip {
-  readonly root: string
-  readonly isHidden: boolean
-  readonly inner: OpenElements
-  readonly implied: ImpliedEnd | undefined
-}
-
-/**
- * What a tag does to a skip: stays inside it, closes its root (`closed`),
- * or ends it and is then read as usual (`after`): a start tag that closes
- * an element a page may leave open, or the end tag of an element open
- * around the hidden one, which closes it too.
- */
-function skipStep(skip: Skip, tag: Tag, open: OpenElements): 'inside' | 'closed' | 'after' {
-  if (!tag.isEnd) {
-    if (skip.implied?.closedBy.has(tag.name) === true && !skip.inner.hasBarrier) {
-      return 'after'
-    }
-    if (!VOID.has(tag.name)) {
-      skip.inner.push(tag.name)
-    }
-    return 'inside'
-  }
-  if (skip.inner.closeTo(tag.name)) {
-    return 'inside'
-  }
-  if (tag.name === skip.root) {
-    return 'closed'
-  }
-  return skip.isHidden && open.has(tag.name) ? 'after' : 'inside'
+  readonly index: number
+  readonly name: string
+  readonly kind: 'hidden' | 'skipped' | 'foreign'
 }
 
 /**
@@ -1190,45 +1529,318 @@ function isHiddenElement(tag: Tag): boolean {
   )
 }
 
+/** What a start tag that opens an element makes of its content: hidden, left out, or shown. */
+function kindOf(tag: Tag): Skip['kind'] | undefined {
+  if (FOREIGN_ROOTS.has(tag.name)) {
+    return tag.isSelfClosing ? undefined : 'foreign'
+  }
+  if (SKIPPED.has(tag.name)) {
+    return 'skipped'
+  }
+  return isHiddenElement(tag) ? 'hidden' : undefined
+}
+
+/** A foreign start tag that ends SVG or MathML: most HTML block and phrasing tags. */
+function isBreakout(tag: Tag): boolean {
+  return (
+    BREAKOUT.has(tag.name) ||
+    (tag.name === 'font' &&
+      FONT_BREAKOUT_ATTRIBUTES.some((attribute) => tag.attributes.has(attribute)))
+  )
+}
+
 /**
- * A container whose content is left out: skipped by kind, or hidden. A
- * self-closing slash means nothing on an HTML element, so a hidden one
- * still hides what follows up to its end.
+ * The tree as HTML's parser builds it, reduced to what decides visibility:
+ * which elements are open, and whether the text being read is inside a
+ * hidden or left-out one.
  */
-function skipOf(tag: Tag): Skip | undefined {
-  if (tag.isEnd || VOID.has(tag.name)) {
+class Tree {
+  private readonly open = new OpenElements()
+  private skip: Skip | undefined
+  private formPointer = false
+  /** `<html>` and `<body>` attributes, merged as the parser merges them (first wins). */
+  public readonly pageAttributes = new Map<string, string>()
+
+  /** The element at `index` and those inside it closed; a skip they held ends, or reopens. */
+  private closeTo(index: number, isOwnEnd = false): void {
+    const { skip } = this
+    if (skip === undefined || index > skip.index) {
+      this.open.popTo(index)
+      return
+    }
+    const isReopened =
+      skip.kind === 'hidden' &&
+      FORMATTING.has(skip.name) &&
+      !(isOwnEnd && index === skip.index) &&
+      !this.open.hasMarkerBetween(index, skip.index)
+    this.open.popTo(index)
+    this.skip = undefined
+    if (!isReopened) {
+      return
+    }
+    this.open.push(skip.name)
+    this.skip = { ...skip, index: this.open.length - 1 }
+  }
+
+  /** The adoption agency, reduced: a block inside stays open; otherwise all inside closes. */
+  private adopt(index: number, isOwnEnd: boolean): void {
+    if (this.open.lastIn(SPECIAL) > index) {
+      this.open.remove(index)
+      if (this.skip?.index === index) {
+        this.skip = undefined
+      }
+      return
+    }
+    this.closeTo(index, isOwnEnd)
+  }
+
+  /** Closes what a start tag ends without an end tag (a paragraph, an item, a cell). */
+  private closeImplied(name: string): void {
+    let lowest = -1
+    let isFormatting = false
+    const candidates = CLOSED_BY.get(name) ?? []
+    for (const candidate of candidates) {
+      const at = this.open.lastOf(candidate)
+      const end = IMPLIED_ENDS.get(candidate)
+      const isOpen = at !== -1 && end !== undefined && !this.open.isBarredAbove(at, end.barrier)
+      if (!(isOpen && (lowest === -1 || at < lowest))) {
+        continue
+      }
+      lowest = at
+      isFormatting = FORMATTING.has(candidate)
+    }
+    if (lowest === -1) {
+      return
+    }
+    if (isFormatting) {
+      this.adopt(lowest, true)
+    } else {
+      this.closeTo(lowest, true)
+    }
+  }
+
+  /**
+   * Once what was opened inside a removed element has closed, it is gone
+   * too; a skip it held ends.
+   */
+  private settle(): void {
+    while (this.open.top === TOMBSTONE) {
+      this.open.popTo(this.open.length - 1)
+    }
+    if (this.skip !== undefined && this.open.length <= this.skip.index) {
+      this.skip = undefined
+    }
+  }
+
+  private startTag(tag: Tag): string | undefined {
+    if (this.isForeign) {
+      if (!isBreakout(tag)) {
+        if (!tag.isSelfClosing) {
+          this.open.push(tag.name)
+        }
+        return undefined
+      }
+      this.closeTo(this.skip?.index ?? 0)
+    }
+    const name = tag.name === IMAGE ? 'img' : tag.name
+    if (name === 'html' || name === 'body') {
+      for (const [attribute, value] of tag.attributes) {
+        if (!this.pageAttributes.has(attribute)) {
+          this.pageAttributes.set(attribute, value)
+        }
+      }
+      return undefined
+    }
+    if (name === 'head' || (name === 'form' && this.formPointer)) {
+      return undefined
+    }
+    // A `<select>` inside a select only closes it.
+    const isSelectAgain = name === 'select' && this.open.lastOf('select') !== -1
+    this.closeImplied(name)
+    if (isSelectAgain) {
+      return undefined
+    }
+    if (VOID.has(name)) {
+      // A hidden image says nothing, not even its text alternative.
+      return this.isShown && !isHiddenElement(tag) ? name : undefined
+    }
+    if (name === 'form') {
+      this.formPointer = true
+    }
+    if (FOREIGN_ROOTS.has(name) && tag.isSelfClosing) {
+      return this.isShown ? name : undefined
+    }
+    const kind = this.isShown ? kindOf({ ...tag, name }) : undefined
+    this.open.push(name)
+    if (kind !== undefined) {
+      this.skip = { index: this.open.length - 1, name, kind }
+      return undefined
+    }
+    return this.isShown ? name : undefined
+  }
+
+  private endTag(name: string): void {
+    const { skip } = this
+    if (skip !== undefined && this.isForeign) {
+      if (name === 'p' || name === 'br') {
+        this.closeTo(skip.index)
+      } else if (this.open.lastOf(name) >= skip.index) {
+        this.closeTo(this.open.lastOf(name), true)
+        return
+      }
+    }
+    this.endInHtml(name)
+  }
+
+  private endInHtml(name: string): void {
+    if (name === 'form') {
+      this.formPointer = false
+      const at = this.open.lastOf('form')
+      if (at !== -1 && this.open.isInScope('form', DEFAULT_SCOPE)) {
+        this.endForm(at)
+      }
+      return
+    }
+    if (HEADING_SET.has(name)) {
+      const at = Math.max(...HEADING_NAMES.map((heading) => this.open.lastOf(heading)))
+      if (at !== -1 && this.open.lastIn(DEFAULT_SCOPE) <= at) {
+        this.closeTo(at, true)
+      }
+      return
+    }
+    if (FORMATTING.has(name)) {
+      const at = this.open.lastOf(name)
+      if (at !== -1 && this.open.lastIn(DEFAULT_SCOPE) <= at) {
+        this.adopt(at, true)
+      }
+      return
+    }
+    const scope = this.scopeOfEnd(name)
+    if (scope === undefined) {
+      // Any other end tag closes its element only if no special element is inside it.
+      const at = this.open.lastOf(name)
+      if (at !== -1 && this.open.lastIn(SPECIAL) <= at) {
+        this.closeTo(at, true)
+      }
+      return
+    }
+    if (this.open.isInScope(name, scope)) {
+      this.closeTo(this.open.lastOf(name), true)
+    }
+  }
+
+  /** The scope an end tag's element must be in to close, or undefined for "any other" end tags. */
+  private scopeOfEnd(name: string): ReadonlySet<string> | undefined {
+    if (name === 'p') {
+      return BUTTON_SCOPE
+    }
+    if (name === 'li') {
+      return LIST_ITEM_SCOPE
+    }
+    if (TABLE_ENDS.has(name)) {
+      return TABLE_SCOPE
+    }
+    if (name === 'template' || name === 'select') {
+      return NOTHING
+    }
+    return SCOPED_ENDS.has(name) ? DEFAULT_SCOPE : undefined
+  }
+
+  /**
+   * `</form>` takes the form out while what was opened inside it stays open:
+   * a hidden form's content stays hidden until those elements close.
+   */
+  private endForm(at: number): void {
+    if (this.open.length - 1 === at) {
+      this.closeTo(at, true)
+      return
+    }
+    this.open.remove(at)
+  }
+
+  /** Whether text read now is shown. */
+  public get isShown(): boolean {
+    return this.skip === undefined
+  }
+
+  /** Whether the text being read is SVG or MathML, whose rules differ. */
+  public get isForeign(): boolean {
+    const { skip } = this
+    return skip?.kind === 'foreign' && this.open.lastIn(INTEGRATION_POINTS) <= skip.index
+  }
+
+  /** The hidden or left-out element being passed over, if any. */
+  public get skipName(): string | undefined {
+    return this.skip?.name
+  }
+
+  /** A raw-text element (script, style, textarea, title): it closes what it ends, and holds no tags. */
+  public startRaw(name: string): void {
+    this.closeImplied(name)
+    this.settle()
+  }
+
+  /**
+   * Reads a start tag; returns the name the writer is given for an element
+   * shown, or undefined for one hidden, left out or dropped.
+   */
+  public start(tag: Tag): string | undefined {
+    const shown = this.startTag(tag)
+    this.settle()
+    return shown
+  }
+
+  /**
+   * Reads an end tag; returns whether the writer sees it: when it was read
+   * in shown text, or closed an element around a hidden one (not the hidden
+   * element's own end).
+   */
+  public end(name: string): boolean {
+    const wasShown = this.isShown
+    const hiddenName = this.skip?.name
+    const hiddenAt = this.skip?.index ?? -1
+    const target = this.open.lastOf(name)
+    this.endTag(name)
+    this.settle()
+    return (
+      wasShown ||
+      (target !== -1 && target < hiddenAt) ||
+      (this.skip === undefined && name !== hiddenName)
+    )
+  }
+}
+
+/**
+ * Where `html` resumes after a `</` that starts no end tag: `</>` is
+ * dropped, `</` before anything but a letter opens a bogus comment up to
+ * the next `>`, and `</` at the very end is text (undefined).
+ */
+function strayEndTagEnd(html: string, lt: number): number | undefined {
+  const after = lt + END_TAG.length
+  if (after >= html.length) {
     return undefined
   }
-  const isSkipped = SKIPPED.has(tag.name) && !tag.isSelfClosing
-  const isHiddenRoot = !SKIPPED.has(tag.name) && isHiddenElement(tag)
-  if (!isSkipped && !isHiddenRoot) {
-    return undefined
+  if (html[after] === TAG_CLOSE) {
+    return after + TAG_CLOSE.length
   }
-  const implied = IMPLIED_ENDS.get(tag.name)
-  return {
-    root: tag.name,
-    isHidden: isHiddenRoot,
-    inner: new OpenElements(implied?.barriers),
-    implied,
-  }
+  const close = html.indexOf(TAG_CLOSE, after)
+  return close === -1 ? html.length : close + TAG_CLOSE.length
 }
 
 /**
  * The page as Markdown; links and images made absolute against `base`. The
  * conversion stops once the Markdown passes `maxChars` (a hostile page can
- * expand, a relative link into a long absolute one), and says so.
+ * expand, a relative link into a long absolute one), and says so. What is
+ * hidden or left out follows HTML's own parsing rules (`Tree`).
  */
 export function htmlToMarkdown(html: string, base: URL, maxChars: number): MarkdownPage {
   const writer = new MarkdownWriter(base, maxChars)
-  // What is open around the text being read, for an end tag that closes a
-  // hidden element too.
-  const open = new OpenElements()
-  let skip: Skip | undefined
+  const tree = new Tree()
   let index = 0
   while (index < html.length && !writer.isFull) {
     const lt = html.indexOf(TAG_OPEN, index)
     const textEnd = lt === -1 ? html.length : lt
-    if (skip === undefined && textEnd > index) {
+    if (tree.isShown && textEnd > index) {
       writer.text(html.slice(index, textEnd))
     }
     if (lt === -1) {
@@ -1236,21 +1848,33 @@ export function htmlToMarkdown(html: string, base: URL, maxChars: number): Markd
     }
     const next = html[lt + 1]
     if (next === '!' || next === '?') {
-      index = skipMarkup(html, lt)
+      index = skipMarkup(html, lt, tree.isForeign)
+      continue
+    }
+    if (next === SELF_CLOSE && !isAsciiLetter(html[lt + END_TAG.length])) {
+      const resume = strayEndTagEnd(html, lt)
+      if (resume === undefined) {
+        if (tree.isShown) {
+          writer.text(END_TAG)
+        }
+        break
+      }
+      index = resume
       continue
     }
     const tag = readTag(html, lt)
     if (tag === undefined) {
-      if (skip === undefined) {
+      if (tree.isShown) {
         writer.text(TAG_OPEN)
       }
       index = lt + 1
       continue
     }
     index = tag.next
-    if (!tag.isEnd && RAW_TEXT.has(tag.name)) {
-      const end = rawTextEnd(html, index, tag.name)
-      if (skip === undefined && tag.name === 'title' && writer.title === undefined) {
+    if (!tag.isEnd && !tree.isForeign && RAW_TEXT.has(tag.name)) {
+      tree.startRaw(tag.name)
+      const end = tag.name === 'script' ? scriptEnd(html, index) : rawTextEnd(html, index, tag.name)
+      if (tag.name === 'title' && writer.title === undefined) {
         const title = html.slice(index, Math.min(end, index + MAX_TITLE_SOURCE_CHARS))
         writer.title = collapse(decodeHTML(title)).trim() || undefined
       }
@@ -1258,39 +1882,32 @@ export function htmlToMarkdown(html: string, base: URL, maxChars: number): Markd
       index = close === -1 || end >= html.length ? html.length : close + 1
       continue
     }
-    if (skip !== undefined) {
-      const step = skipStep(skip, tag, open)
-      if (step !== 'inside') {
-        skip = undefined
-      }
-      if (step !== 'after') {
-        continue
-      }
-    }
-    // A hidden image says nothing, not even its text alternative.
-    if (!tag.isEnd && VOID.has(tag.name) && isHiddenElement(tag)) {
-      continue
-    }
-    if (!tag.isEnd) {
-      open.closeImplied(tag.name)
-    }
-    skip = skipOf(tag)
-    if (skip !== undefined) {
-      continue
-    }
     if (tag.isEnd) {
-      open.closeTo(tag.name)
-      writer.endTag(tag.name)
-    } else {
-      writer.startTag(tag.name, tag.attributes)
-      if (tag.isSelfClosing && !VOID.has(tag.name)) {
+      if (tree.end(tag.name)) {
         writer.endTag(tag.name)
-      } else if (!VOID.has(tag.name)) {
-        open.push(tag.name)
       }
+      continue
+    }
+    // Everything after `<plaintext>` is its text: no tag ends it.
+    const isPlaintext = tag.name === PLAINTEXT && !tree.isForeign
+    const shown = tree.start(tag)
+    if (shown !== undefined) {
+      writer.startTag(shown, tag.attributes)
+    }
+    if (isPlaintext) {
+      if (shown !== undefined) {
+        writer.text(html.slice(index))
+      }
+      break
+    }
+    if (shown === undefined) {
+      continue
+    }
+    if (tag.isSelfClosing && FOREIGN_ROOTS.has(shown)) {
+      writer.endTag(shown)
     }
   }
   const isTruncated = writer.isFull
-  const markdown = writer.finish()
+  const markdown = isHidden(tree.pageAttributes) ? '' : writer.finish()
   return { title: writer.title, markdown, isTruncated }
 }

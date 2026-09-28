@@ -6588,6 +6588,21 @@ harness scenario, which is what the accessibility gate checks (D32).
     browser ends it, tracking what is open inside and around it, and, from
     the sweep, a hidden image's alt text, a self-closed hidden element, an
     unopened dialog, ruby's `rp` and `datalist`.
+  - **PR #52 fourth review** (Codex, a self-closed `<template/>` shown):
+    the converter's hiding now follows the WHATWG parsing algorithm as a
+    whole: one stack of open elements with the algorithm's scopes, special
+    and formatting elements, implied ends, the adoption agency (a hidden
+    formatting element reopens until its own end tag), `</form>`, foreign
+    content (breakouts, integration points, CDATA), select, tables,
+    headings and `<body>` attribute merging; the tokenizer ends comments
+    (`<!-->`, `--!>`), bogus comments (`</ x>`), CDATA and script escapes as
+    HTML does, honours a slash only right before `>` and only on void and
+    foreign elements, and keeps attribute names that begin with `=`.
+    parse5 8.0.1 (MIT, already in the tree through jsdom) was measured and
+    not adopted: quadratic on hostile nesting (40,000 nested `<div>` in 25 s,
+    40,000 nested lists in 73 s, where the converter takes 34 and 127 ms), so
+    a 5 MiB page could hold the extension host for hours; no dependency
+    changes.
   - **Left**: a machine-scoped switch to turn web fetch off entirely,
     whether Muse Code's "Always allow this MCP tool" should also silence the
     extension's own modal, and whether Plan should allow fetches as reads,

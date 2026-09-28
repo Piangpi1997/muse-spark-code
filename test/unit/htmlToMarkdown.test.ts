@@ -128,6 +128,97 @@ describe('htmlToMarkdown (M69)', () => {
     expect(performance.now() - started).toBeLessThan(2000)
   })
 
+  it('ignores a slash on an HTML element, honouring it only on void and SVG or MathML ones', () => {
+    // The slash on `<template/>` is ignored: what follows is inside it.
+    expect(markdown('<template/>secret</template><p>shown')).toBe('shown')
+    expect(markdown('<button/>Copy</button><p>shown')).toBe('shown')
+    expect(markdown('<p>a<svg/>b</p>')).toBe('ab')
+    expect(markdown('<p><i class="icon"/>Text</p>')).toBe('*Text*')
+    // Only right before `>`: `<div/hidden>` is a hidden div.
+    expect(markdown('<div/hidden>secret</div><p>shown')).toBe('shown')
+    expect(markdown('<svg / >drawing</svg><p>after')).toBe('after')
+  })
+
+  it('reads SVG and MathML by their own rules until HTML breaks out', () => {
+    expect(markdown('<svg><p>shown</p></svg>')).toBe('shown')
+    // Inside SVG a style holds tags, and CDATA is a section.
+    expect(markdown('<svg><style></svg><p>after')).toBe('after')
+    expect(markdown('<svg><![CDATA[</svg><p>inside]]></svg><p>after')).toBe('after')
+    expect(markdown('<svg><foreignObject><p>drawn</p></foreignObject></svg><p>after')).toBe('after')
+    expect(markdown('<math><mi><p>in math</p></mi></math><p>after')).toBe('after')
+  })
+
+  it('ends comments, bogus comments and scripts where HTML ends them', () => {
+    expect(markdown('<!-->shown')).toBe('shown')
+    expect(markdown('<!--->shown')).toBe('shown')
+    expect(markdown('<!-- x --!>shown')).toBe('shown')
+    expect(markdown('</ secret>shown')).toBe('shown')
+    expect(markdown('</>x')).toBe('x')
+    // CDATA outside SVG or MathML is a bogus comment, ended by the first `>`.
+    expect(markdown('<![CDATA[x>shown]]>')).toBe('shown]]>')
+    // A `<script>` inside `<!--` in a script: its `</script>` ends only that one.
+    expect(markdown('<script><!--<script></script>hidden text</script><p>shown')).toBe('shown')
+    expect(markdown('<script><!--</script><p>shown')).toBe('shown')
+  })
+
+  it('reads attributes as HTML does: the first of a name, references decoded, `=` kept', () => {
+    expect(markdown('<div aria-hidden="true" aria-hidden="false">x</div><p>y')).toBe('y')
+    expect(markdown('<div aria-hidden="&#116;rue">x</div><p>y')).toBe('y')
+    expect(markdown('<div style="display&#58;none">x</div><p>y')).toBe('y')
+    // `=hidden` is an attribute of that name, not `hidden`.
+    expect(markdown('<div =hidden>shown</div>')).toBe('shown')
+  })
+
+  it('reopens a hidden formatting element after an element around it closed, until its end', () => {
+    expect(markdown('<p><b hidden>x</p><p>y</p></b><p>z')).toBe('z')
+    expect(markdown('<i><b hidden>x</i>y</b>z')).toBe('z')
+    // A block inside a formatting element outlives its end tag.
+    const moved = markdown('<b>x<div hidden>y</b>z</div><p>w')
+    expect(moved).toBe('**x**\n\nw')
+    expect(markdown('<b hidden>x<div>y</b>z</div>')).toBe('z')
+    // A cell's end clears it.
+    expect(markdown('<table><tr><td><b hidden>x</td><td>y</td></tr></table>')).toBe(
+      '|  | y |\n| --- | --- |',
+    )
+  })
+
+  it('follows the end tags HTML ignores or reads its own way', () => {
+    // `</form>` takes the form out; what is open inside stays open.
+    expect(markdown('<form hidden><div>x</form>y</div>z')).toBe('z')
+    // A later `<body>` lends its attributes to the page's body.
+    expect(markdown('<p>a</p><body hidden><p>b')).toBe('')
+    expect(markdown('<h2 hidden>x<h3>y</h3>')).toBe('### y')
+    expect(markdown('<h2 hidden>x</h3>y')).toBe('y')
+    // An end tag closes nothing past a table cell, nor past a special element.
+    expect(markdown('<table><tr><td><span hidden>x</div>y</td></tr></table>')).toBe('|  |\n| --- |')
+    expect(markdown('<ul><li><span>s<li hidden>secret</span>still secret</ul>')).toBe('- s')
+    expect(markdown('<span><div hidden>x</span>y</div>z')).toBe('z')
+    expect(markdown('<select><option>x<input>shown')).toBe('shown')
+    expect(markdown('<div><video>fallback</div>after')).toBe('after')
+    expect(markdown('<div><object>fallback</div>after')).toBe('')
+    expect(markdown('<p>a</p><plaintext><b>b</b>')).toBe('a\n\n<b>b</b>')
+    expect(markdown('<image hidden alt="secret" src="x.png"><image alt="pic" src="x.png">')).toBe(
+      '![pic](https://docs.example.com/guide/x.png)',
+    )
+  })
+
+  it('stays linear on hostile nesting, misnesting and formatting', () => {
+    const pages = [
+      '<div>'.repeat(200_000),
+      '<ul><li>'.repeat(100_000),
+      '<b><i>'.repeat(40_000) + '</b>x'.repeat(40_000),
+      '<a href="/x">'.repeat(40_000) + '<div>'.repeat(40_000) + '</a>'.repeat(40_000),
+      '<table><tr><td>'.repeat(40_000),
+      '<p><b hidden>x</p>'.repeat(40_000),
+      '<svg>' + '<g>'.repeat(100_000) + '</p>',
+    ]
+    for (const page of pages) {
+      const started = performance.now()
+      markdown(page)
+      expect(performance.now() - started, page.slice(0, 40)).toBeLessThan(3000)
+    }
+  })
+
   it('reads text the way a browser does: entities, white space, stray brackets', () => {
     // `&not` is one of HTML's legacy references, read even without its `;`.
     expect(

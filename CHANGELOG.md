@@ -49,7 +49,9 @@ happened, not what was planned; superseded entries are kept.
     is discovered (RFC 7050), and while it cannot be learned no IPv6 answer
     is used (only a DNS answer proves there is none); hidden elements a page
     leaves open, hidden images, self-closed hidden elements and unopened
-    dialogs stay out of the Markdown; a hook's "allow" no longer replaces
+    dialogs stay out of the Markdown, as HTML's own parsing rules place
+    them (implied ends, misnested and self-closed tags, SVG and MathML,
+    comments and scripts); a hook's "allow" no longer replaces
     the per-host card; trust
     and the mode are asked again after the card, before each request and
     before the page reaches the model; damaged compression and unknown charsets are
