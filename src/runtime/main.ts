@@ -106,6 +106,8 @@ function runtimeFor(options: ServeOptions, log: Logger) {
 
 async function serve(options: ServeOptions, log: Logger): Promise<number> {
   const runtime = runtimeFor(options, log)
+  // "Allow always" lapses for a paid feature started without its flag (M58).
+  await runtime.paid.forgetUnflagged()
   const agent = createAcpAgent({
     backend: runtime.backend,
     version: packageVersion(),

@@ -1,10 +1,12 @@
 import * as acp from '@agentclientprotocol/sdk'
 import { describe, expect, it, vi } from 'vitest'
 import { type AcpAgentDeps, type BackendReadiness, createAcpAgent } from '../../src/acp/agent'
-import { AcpPaidFeatures } from '../../src/acp/paid'
+import { AcpPaidUse } from '../../src/acp/paid'
 import type { AgentEvent, ApprovalChoice, ItemSnapshot } from '../../src/shared/agentEvents'
 import { type AcpPaidFeature, UI_TEXT } from '../../src/shared/constants'
+import type { PaidUseRequest } from '../../src/shared/paid'
 import { FakeAgentHost, type FakeAgentSession } from './helpers/fakeAgent'
+import { memoryPaidGrants } from './helpers/paidGrants'
 
 // M63 (PLAN.md D62): the agent driven by the ACP SDK's own client, in
 // process, against a scripted backend.
@@ -30,7 +32,8 @@ type PermissionAnswer = (
 
 interface Harness {
   readonly host: FakeAgentHost
-  readonly paid: AcpPaidFeatures
+  readonly paid: AcpPaidUse
+  readonly grants: ReturnType<typeof memoryPaidGrants>
   readonly updates: acp.SessionUpdate[]
   readonly permissions: acp.RequestPermissionRequest[]
   readonly elicitations: acp.CreateElicitationRequest[]
@@ -46,6 +49,8 @@ interface HarnessOptions {
   readonly allowsContributorModels?: boolean
   readonly kind?: 'museCode' | 'modelApi'
   readonly paid?: readonly AcpPaidFeature[]
+  /** `--trust-workspace`: "Allow always" is offered and kept (M58). */
+  readonly isTrusted?: boolean
 }
 
 function harness(options: HarnessOptions = {}): Harness {
@@ -56,7 +61,13 @@ function harness(options: HarnessOptions = {}): Harness {
   const permissions: acp.RequestPermissionRequest[] = []
   const elicitations: acp.CreateElicitationRequest[] = []
   const log = { trace: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }
-  const paid = new AcpPaidFeatures(options.paid ?? [], log)
+  const grants = memoryPaidGrants()
+  const paid = new AcpPaidUse({
+    flagged: options.paid ?? [],
+    canRemember: () => options.isTrusted === true,
+    grants,
+    log,
+  })
   const deps: AcpAgentDeps = {
     backend: {
       kind,
@@ -99,6 +110,7 @@ function harness(options: HarnessOptions = {}): Harness {
   return {
     host,
     paid,
+    grants,
     updates,
     permissions,
     elicitations,
@@ -779,130 +791,138 @@ describe('the ACP agent (M63)', () => {
   })
 })
 
-const accept: PermissionAnswer = () => ({
-  outcome: { outcome: 'selected', optionId: 'paid-accept' },
-})
-const decline: PermissionAnswer = () => ({
-  outcome: { outcome: 'selected', optionId: 'paid-decline' },
-})
+/** Answers a permission prompt with the option of that id. */
+function choose(optionId: string): PermissionAnswer {
+  return () => ({ outcome: { outcome: 'selected', optionId } })
+}
 
-describe('paid features in the agent (M63c)', () => {
-  it('asks nothing when no paid flag was given', async () => {
-    const h = harness({ kind: 'modelApi', answer: accept })
-    await h.run(async (client) => {
-      const { sessionId } = await start(client)
-      await turn(h, client, sessionId, () => undefined)
-    })
+const WEB_SEARCH = { feature: 'webSearch' } as const
+const IMAGE = {
+  feature: 'imageGeneration',
+  kind: 'generate',
+  path: 'logo.png',
+  sources: [],
+  prompt: 'a logo',
+} as const
+const SUBAGENT_TASK = {
+  feature: 'subagents',
+  task: { role: 'explorer', objective: 'Map files', modelId: 'muse-spark-1.3', attemptLimit: 4 },
+} as const
+
+/** A session, then the backend's question before each use in it, in turn (M58). */
+async function answersInOneSession(
+  h: Harness,
+  requests: readonly PaidUseRequest[],
+): Promise<boolean[]> {
+  return await h.run(async (client) => {
+    const { sessionId } = await start(client)
+    const answers: boolean[] = []
+    for (const request of requests) {
+      answers.push(await h.paid.allows(CWD, sessionId, request, false))
+    }
+    return answers
+  })
+}
+
+describe('paid features in the agent (M63c, M58)', () => {
+  it('denies without asking a feature it has no flag for, and subagents always', async () => {
+    const h = harness({ kind: 'modelApi', paid: ['webSearch'], answer: choose('paid-allow-once') })
+    expect(await answersInOneSession(h, [IMAGE, SUBAGENT_TASK])).toEqual([false, false])
     expect(h.permissions).toEqual([])
-    expect(h.paid.isOn('webSearch')).toBe(false)
   })
 
-  it('names the price at the first prompt, and turns the feature on only when accepted', async () => {
-    const h = harness({ kind: 'modelApi', paid: ['webSearch'], answer: accept })
-    await h.run(async (client) => {
-      const { sessionId } = await start(client)
-      const session = h.host.sessions[0]!
-      const response = prompt(client, sessionId)
-      await until(() => session.sendTurn.mock.calls.length > 0)
-      // The turn starts only after the answer: the backend sees the feature on.
-      expect(h.paid.isOn('webSearch')).toBe(true)
-      session.emit({ type: 'turnCompleted', turnId: 'turn-1', terminal: 'completed' })
-      await response
-      await turn(h, client, sessionId, () => undefined)
-    })
-    expect(h.permissions).toHaveLength(1)
+  it('asks before each use in its session, naming the price; Allow once allows that use only', async () => {
+    const h = harness({ kind: 'modelApi', paid: ['webSearch'], answer: choose('paid-allow-once') })
+    expect(await answersInOneSession(h, [WEB_SEARCH, WEB_SEARCH])).toEqual([true, true])
+    expect(h.permissions).toHaveLength(2)
     const [asked] = h.permissions
     expect(asked?.toolCall).toMatchObject({
-      toolCallId: 'paid-feature-webSearch',
-      title: 'Turn on Web search?',
+      toolCallId: 'paid-use-1',
+      title: 'Let Muse search the web for this prompt?',
     })
+    expect(JSON.stringify(asked?.toolCall.content)).toContain('$2.50 per 1,000 searches')
+    // Not trusted: "Allow always" is neither offered nor kept.
     expect(asked?.options).toEqual([
-      { optionId: 'paid-accept', name: 'Turn on', kind: 'allow_always' },
-      { optionId: 'paid-decline', name: 'Keep off', kind: 'reject_always' },
+      { optionId: 'paid-allow-once', name: 'Allow once', kind: 'allow_once' },
+      { optionId: 'paid-deny', name: 'Deny', kind: 'reject_once' },
     ])
+    expect(h.permissions[1]?.toolCall.toolCallId).toBe('paid-use-2')
     const row = h.updates.find(
-      (update) =>
-        update.sessionUpdate === 'tool_call' && update.toolCallId === 'paid-feature-webSearch',
+      (update) => update.sessionUpdate === 'tool_call' && update.toolCallId === 'paid-use-1',
     )
     expect(JSON.stringify(row)).toContain('$2.50 per 1,000 searches')
     expect(h.updates).toContainEqual({
       sessionUpdate: 'tool_call_update',
-      toolCallId: 'paid-feature-webSearch',
+      toolCallId: 'paid-use-1',
       status: 'completed',
     })
+    expect(h.grants.byFolder.size).toBe(0)
   })
 
-  it('keeps a declined feature off and does not ask again', async () => {
-    const h = harness({ kind: 'modelApi', paid: ['webSearch', 'imageGeneration'], answer: decline })
-    await h.run(async (client) => {
-      const { sessionId } = await start(client)
-      await turn(h, client, sessionId, () => undefined)
-      await turn(h, client, sessionId, () => undefined)
-    })
-    expect(h.permissions.map((request) => request.toolCall.toolCallId)).toEqual([
-      'paid-feature-webSearch',
-      'paid-feature-imageGeneration',
-    ])
-    expect(h.paid.isOn('webSearch')).toBe(false)
-    expect(h.paid.isOn('imageGeneration')).toBe(false)
-    expect(h.updates).toContainEqual({
-      sessionUpdate: 'tool_call_update',
-      toolCallId: 'paid-feature-imageGeneration',
-      status: 'failed',
-    })
-  })
-
-  it('keeps it off when the client cannot answer', async () => {
+  it('stops asking in a trusted folder allowed always, and keeps that for the folder', async () => {
     const h = harness({
       kind: 'modelApi',
-      paid: ['imageGeneration'],
+      paid: ['webSearch', 'imageGeneration'],
+      isTrusted: true,
+      answer: choose('paid-allow-always'),
+    })
+    const answers = await answersInOneSession(h, [WEB_SEARCH, WEB_SEARCH, IMAGE])
+    expect(answers).toEqual([true, true, true])
+    // The second search asked nothing; the image is a feature of its own.
+    expect(h.permissions.map((request) => request.toolCall.title)).toEqual([
+      'Let Muse search the web for this prompt?',
+      'Muse wants to create the image logo.png',
+    ])
+    expect(h.permissions[0]?.options.map((option) => option.kind)).toEqual([
+      'allow_once',
+      'allow_always',
+      'reject_once',
+    ])
+    expect(h.grants.byFolder.get(CWD)).toEqual(new Set(['webSearch', 'imageGeneration']))
+    expect(h.paid.isRemembered(CWD, 'webSearch')).toBe(true)
+  })
+
+  it.each([
+    ['Deny', choose('paid-deny')],
+    ['a cancel', (() => ({ outcome: { outcome: 'cancelled' } })) satisfies PermissionAnswer],
+    ['an option it was not offered', choose('paid-allow-always')],
+    ['an unknown option', choose('turn-on')],
+  ])('denies on %s, and keeps nothing', async (_name, answer: PermissionAnswer) => {
+    const h = harness({ kind: 'modelApi', paid: ['imageGeneration'], answer })
+    expect(await answersInOneSession(h, [IMAGE])).toEqual([false])
+    expect(h.permissions).toHaveLength(1)
+    expect(h.updates).toContainEqual({
+      sessionUpdate: 'tool_call_update',
+      toolCallId: 'paid-use-1',
+      status: 'failed',
+    })
+    expect(h.grants.byFolder.size).toBe(0)
+  })
+
+  it('denies when the client cannot answer, or the session is not one the agent holds', async () => {
+    const h = harness({
+      kind: 'modelApi',
+      paid: ['webSearch'],
       answer: () => {
         throw new Error('no permission prompts here')
       },
     })
-    await h.run(async (client) => {
-      const { sessionId } = await start(client)
-      await turn(h, client, sessionId, () => undefined)
-    })
-    expect(h.paid.isOn('imageGeneration')).toBe(false)
+    expect(await answersInOneSession(h, [WEB_SEARCH])).toEqual([false])
+    expect(await h.paid.allows(CWD, 'not-a-session', WEB_SEARCH, false)).toBe(false)
+    expect(h.permissions).toHaveLength(1)
     expect(h.log.warn).toHaveBeenCalledWith(
-      expect.stringContaining('Paid feature imageGeneration: the price could not be asked'),
+      expect.stringContaining('the paid-use question failed, denying'),
+    )
+    expect(h.log.warn).toHaveBeenCalledWith(
+      'Paid use of webSearch: no editor session not-a-session to ask in, so it is denied',
     )
   })
 
-  it('ends the prompt cancelled, without a turn, when cancelled while the price is asked', async () => {
-    let release: (() => void) | undefined
-    const h = harness({
-      kind: 'modelApi',
-      paid: ['webSearch'],
-      answer: () =>
-        new Promise((resolve) => {
-          release = () => {
-            resolve({ outcome: { outcome: 'cancelled' } })
-          }
-        }),
-    })
-    const stop = await h.run(async (client) => {
-      const { sessionId } = await start(client)
-      const response = prompt(client, sessionId)
-      await until(() => release !== undefined)
-      await client.notify('session/cancel', { sessionId })
-      await until(() =>
-        h.log.info.mock.calls.some(([line]) => String(line).includes('cancelled before its turn')),
-      )
-      release?.()
-      return await response
-    })
-    expect(stop).toEqual({ stopReason: 'cancelled' })
-    expect(h.host.sessions[0]?.sendTurn).not.toHaveBeenCalled()
-    expect(h.paid.isOn('webSearch')).toBe(false)
-  })
-
-  it('names the price on a paid approval and a paid row', async () => {
-    const h = harness({ kind: 'modelApi', answer: () => ({ outcome: { outcome: 'cancelled' } }) })
+  it('names the price on a paid row', async () => {
+    const h = harness({ kind: 'modelApi' })
     await h.run(async (client) => {
       const { sessionId } = await start(client)
-      await turn(h, client, sessionId, async (session) => {
+      await turn(h, client, sessionId, (session) => {
         session.emit({
           type: 'itemStarted',
           item: {
@@ -915,16 +935,6 @@ describe('paid features in the agent (M63c)', () => {
             paid: 'webSearch',
           },
         })
-        session.emit(
-          approval({
-            itemId: 'image-1',
-            toolName: 'generate_image',
-            rawArgs: JSON.stringify({ path: 'logo.png', prompt: 'a logo' }),
-            subject: { kind: 'tool', toolName: 'generate_image', paidFeature: 'imageGeneration' },
-            availableChoices: [CHOICES[0]!, CHOICES[2]!],
-          }),
-        )
-        await until(() => h.permissions.length === 1)
       })
     })
     const row = h.updates.find(
@@ -933,8 +943,5 @@ describe('paid features in the agent (M63c)', () => {
     expect(row).toMatchObject({
       title: expect.stringContaining('(Billed to your Model API key: $2.50 per 1,000 searches)'),
     })
-    expect(h.permissions[0]?.toolCall.title).toContain(
-      '(Billed to your Model API key: $0.01 per image)',
-    )
   })
 })

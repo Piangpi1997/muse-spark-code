@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 // Bundle-size gate. The budgets below are the record (PLAN.md section 2, D6,
 // mirrors them) and change only with a CHANGELOG entry. Exits 1 when any production artifact exceeds
-// its budget.
+// its budget or is missing.
 
-import { statSync } from 'node:fs'
+import { existsSync, statSync } from 'node:fs'
 
 const BYTES_PER_KIB = 1024
 
@@ -12,6 +12,9 @@ const BYTES_PER_KIB = 1024
  */
 const BUDGETS = [
   { path: 'dist/extension.js', budgetKiB: 600 },
+  // The Model API backend, loaded when it first starts (M57): 295.6 KiB when
+  // split out, plus about a third for the Model API work already planned.
+  { path: 'dist/modelApi.js', budgetKiB: 400 },
   { path: 'dist/searchWorker.js', budgetKiB: 50 },
   { path: 'dist/webview/main.js', budgetKiB: 900 },
   // The ACP agent (M63, PLAN.md D62): the engine without the webview, plus
@@ -21,6 +24,11 @@ const BUDGETS = [
 
 let hasFailure = false
 for (const { path, budgetKiB } of BUDGETS) {
+  if (!existsSync(path)) {
+    hasFailure = true
+    console.log(`MISS ${path}: not built (budget ${budgetKiB} KiB)`)
+    continue
+  }
   const sizeKiB = statSync(path).size / BYTES_PER_KIB
   const status = sizeKiB <= budgetKiB ? 'ok  ' : 'OVER'
   if (sizeKiB > budgetKiB) {
@@ -30,6 +38,6 @@ for (const { path, budgetKiB } of BUDGETS) {
 }
 
 if (hasFailure) {
-  console.error('bundle size budget exceeded; see PLAN.md section 2 (D6)')
+  console.error('bundle size budget exceeded or a bundle is missing; see PLAN.md section 2 (D6)')
   process.exit(1)
 }

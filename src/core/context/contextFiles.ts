@@ -8,7 +8,7 @@
 // workspace by canonical path (D24): a link or junction that leads outside it
 // is refused. Pure: the host supplies the file system.
 
-import { confineWorkspacePath } from '../backends/modelapi/tools'
+import { confineWorkspacePath } from '../workspacePath'
 
 export interface ContextIo {
   /** The file's bytes; undefined when it does not exist. */

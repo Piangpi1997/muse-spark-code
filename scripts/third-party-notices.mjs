@@ -13,7 +13,7 @@
 //   node scripts/third-party-notices.mjs --write  regenerate it (npm run notices)
 //   node scripts/third-party-notices.mjs --acp <file>
 //                                                 the ACP agent's package (M63,
-//                                                 PLAN.md D62): its two bundles'
+//                                                 PLAN.md D62): its three bundles'
 //                                                 packages, written to <file>
 //                                                 by scripts/package-acp.mjs
 //
@@ -27,9 +27,11 @@ import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 
 const METAFILE_DIR = path.join('dist', 'meta')
-// The ACP agent ships acp.js and the search worker (scripts/build.mjs).
+// The ACP agent ships acp.js, the Model API backend's bundle it loads (M57)
+// and the search worker (scripts/build.mjs, scripts/package-acp.mjs).
 const ACP_METAFILES = [
   path.join('dist', 'meta-acp', 'acp.json'),
+  path.join(METAFILE_DIR, 'modelApi.json'),
   path.join(METAFILE_DIR, 'searchWorker.json'),
 ]
 const ACP_FLAG = '--acp'
@@ -51,12 +53,12 @@ const THIN_RULE = '-'.repeat(72)
 const HEADER = `THIRD-PARTY SOFTWARE NOTICES
 Muse Spark Code (Unofficial)
 
-The extension's bundles (dist/extension.js, dist/searchWorker.js,
-dist/webview/main.js and dist/webview/main.css) include code from the
-packages below, each under its own licence, reproduced here as the package
-ships it. The macOS dictation helper links only Apple's system frameworks
-and the Windows helper is a PowerShell script of this project; neither
-includes third-party code.
+The extension's bundles (dist/extension.js, dist/modelApi.js,
+dist/searchWorker.js, dist/webview/main.js and dist/webview/main.css)
+include code from the packages below, each under its own licence,
+reproduced here as the package ships it. The macOS dictation helper links
+only Apple's system frameworks and the Windows helper is a PowerShell
+script of this project; neither includes third-party code.
 
 Generated from the production build by scripts/third-party-notices.mjs;
 "npm run notices" regenerates this file.
@@ -66,9 +68,9 @@ const ACP_HEADER = `THIRD-PARTY SOFTWARE NOTICES
 muse-spark-code-acp, Muse Spark Code (Unofficial) for editors that speak the
 Agent Client Protocol
 
-The agent's bundles (dist/acp.js and dist/searchWorker.js) include code
-from the packages below, each under its own licence, reproduced here as
-the package ships it. The keyring binding (@napi-rs/keyring) is installed
+The agent's bundles (dist/acp.js, dist/modelApi.js and
+dist/searchWorker.js) include code from the packages below, each under its
+own licence, reproduced here as the package ships it. The keyring binding (@napi-rs/keyring) is installed
 beside it as a dependency, with its own licence.
 
 Generated from the production build by scripts/third-party-notices.mjs.

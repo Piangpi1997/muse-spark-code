@@ -9,7 +9,7 @@ import * as vscode from 'vscode'
 import * as z from 'zod/mini'
 import type { AgentHost, BackendKind } from './core/agent/agentBackend'
 import { environmentValue } from './core/backends/musecode/launch'
-import { confineWorkspacePath } from './core/backends/modelapi/tools'
+import { confineWorkspacePath } from './core/workspacePath'
 import { selectBackend } from './core/backendSelection'
 import { personalSkillsRoot } from './core/context/skills'
 import { memoryDataRoot } from './core/memory/memoryLocation'
@@ -39,7 +39,7 @@ import { type ProcessResult, SandboxSetup } from './host/backend/sandboxSetup'
 import { fileContextIo } from './host/backend/contextIo'
 import { describeEnvironment } from './host/backend/environment'
 import { createFileSessionStore } from './host/backend/fileSessionStore'
-import { createModelApiMcpServers } from './host/backend/mcpServers'
+import { modelApiMcpPoolDeps } from './host/backend/mcpServers'
 import { type JobHelper, jobSourceReader } from './host/backend/jobSource'
 import { mcpJobExecutable } from './host/backend/mcpJobExecutable'
 import { createMemoryIo, systemPath } from './host/backend/memoryIo'
@@ -98,12 +98,8 @@ import type { WebviewHostContext } from './host/views/webviewSetup'
 import { loadUiTable } from './host/l10n'
 import { createInsightsReader } from './host/usage/traceLogs'
 import { createDictationSetup, createMuseVoiceSetup } from './host/voice/dictationHost'
-import {
-  createPaidFeatures,
-  isImagePurchaseConfirmed,
-  isScheduledRunConfirmed,
-  isSubagentTaskConfirmed,
-} from './host/paid/paidHost'
+import { createPaidFeatures } from './host/paid/paidHost'
+import { imageUseRequest } from './core/backends/modelapi/imageGeneration'
 import {
   BACKEND_SETTING,
   BYPASS_SETTING,
@@ -122,6 +118,7 @@ import {
   DICTATION_HELPER_DIR,
   FIND_FILES_GLOB,
   MODEL_API_BASE_URL,
+  MODEL_API_BUNDLE_FILE,
   MODEL_API_SCHEDULES_DIR,
   MODEL_API_SESSIONS_DIR,
   PAID_FEATURE_SETTINGS,
@@ -509,8 +506,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   let isKeyStored = false
   const paid = createPaidFeatures({
     globalState: context.globalState,
+    workspaceState: context.workspaceState,
     isSettingOn: (feature) => currentSettings()[PAID_FEATURE_SETTINGS[feature]],
     isKeyStored: () => isKeyStored,
+    // "Allow always in this workspace" (M58) needs a workspace to keep it,
+    // and never in Restricted Mode.
+    canRememberPaidUse: () =>
+      vscode.workspace.isTrusted && (vscode.workspace.workspaceFolders?.length ?? 0) > 0,
     log,
   })
   // Muse Voice (M35): the paid engine's recorder, used only while it is
@@ -817,7 +819,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             ? undefined
             : { workspaceRoot, platform: process.platform, io: toolIo },
         client: keyClient,
-        confirm: isImagePurchaseConfirmed,
+        confirm: async (plan) => await paid.consent.allows(imageUseRequest(plan)),
         onBilled: () => {
           paid.usage.add('imageGeneration', 1)
         },
@@ -999,24 +1001,30 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     // Muse Code's MCP servers, run by this window for the Model API backend
     // (M50, PLAN.md D42): started in a trusted workspace only, stopped with
     // the host.
-    createMcpServers: async (root) =>
-      createModelApiMcpServers({
-        workspaceRoot: root,
-        settingsPath: () => museSettingsPath(museConfig()),
-        isWorkspaceTrusted: () => vscode.workspace.isTrusted,
-        clientVersion: version,
-        platform: process.platform,
-        jobExecutablePath: await windowsMcpJob?.(),
-        env: () => process.env,
-        fetch: globalThis.fetch.bind(globalThis),
-        log,
-      }),
+    createMcpServers: async (root, newPool) =>
+      newPool(
+        modelApiMcpPoolDeps({
+          workspaceRoot: root,
+          settingsPath: () => museSettingsPath(museConfig()),
+          isWorkspaceTrusted: () => vscode.workspace.isTrusted,
+          clientVersion: version,
+          platform: process.platform,
+          jobExecutablePath: await windowsMcpJob?.(),
+          env: () => process.env,
+          fetch: globalThis.fetch.bind(globalThis),
+          log,
+        }),
+      ),
     ideTools,
-    confirmSubagentTask: isSubagentTaskConfirmed,
+    allowsPaidUse: async (request, requiresAsking) =>
+      await paid.consent.allows(request, requiresAsking),
+    isPaidUseRemembered: (feature) => paid.consent.isRemembered(feature),
     noteSubagentUsage: (modelId, usage) => {
       paid.usage.addSubagentUsage(modelId, usage)
     },
     memory,
+    // Its own bundle, loaded when this backend first starts (M57, PLAN.md D6).
+    bundlePath: vscode.Uri.joinPath(context.extensionUri, 'dist', MODEL_API_BUNDLE_FILE).fsPath,
   })
   const watchedHosts = new WeakSet<AgentHost>()
   let chosenBackend: BackendKind | undefined
@@ -1339,7 +1347,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         isWorkspaceTrusted: () => vscode.workspace.isTrusted,
         onForegroundTasksChanged: refreshTaskContext,
         isScheduledPaidOn: () => paid.gate.isOn('scheduledPrompts'),
-        confirmScheduledRun: isScheduledRunConfirmed,
+        confirmScheduledRun: async (job, modelId) =>
+          await paid.consent.allows({ feature: 'scheduledPrompts', prompt: job.prompt, modelId }),
+        allowsPaidUse: async (request) => await paid.consent.allows(request),
+        forgetPaidUse: async () => {
+          await paid.consent.forget()
+        },
         now: () => Date.now(),
         log,
       })
@@ -1436,6 +1449,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   void paid.gate.review().catch(logRejection(log, 'paid feature review'))
   context.subscriptions.push(
     { dispose: paid.gate.onDidChange(broadcastPaidState) },
+    { dispose: paid.consent.onDidChange(broadcastPaidState) },
     { dispose: paid.usage.onDidChange(broadcastPaidState) },
     vscode.window.onDidChangeWindowState((state) => {
       if (state.focused) {
@@ -1528,6 +1542,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       mentions.invalidate()
       void restartBackend('the workspace was trusted').catch(logRejection(log, 'backend restart'))
       registry.broadcast({ type: 'notice', level: 'info', text: UI_TEXT.trustGrantedNotice })
+      // "Allow always in this workspace" counts only in a trusted one (M58).
+      broadcastPaidState()
     }),
     // Editor-tab conversations come back after a window reload (D15).
     vscode.window.registerWebviewPanelSerializer(CHAT_PANEL_VIEW_TYPE, {

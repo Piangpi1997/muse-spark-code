@@ -1,71 +1,169 @@
-// The paid Model API features in the agent (M63c, PLAN.md D30, D62): "opt in
-// and loud", as in the panel. A feature is off unless the editor started the
-// agent with its flag, and then until the user accepts its price in the
-// editor, asked at the first prompt that follows. The answer holds until
-// the agent stops; a refusal, a cancelled question or a client that cannot
-// ask all leave it off, and it is not asked again.
+// The paid Model API features in the agent (M63c, M58; PLAN.md D30, D48,
+// D62): "opt in and loud", as in the panel. A feature is off unless the
+// editor started the agent with its flag. Every use then asks in the editor,
+// as the panel's popup does (D48): a permission prompt that names what is
+// about to be billed and its price, with Allow once, Allow always in this
+// workspace and Deny. "Always" is offered and kept only with
+// `--trust-workspace`, as the panel offers it only in a trusted workspace;
+// it is kept per folder in the agent's data folder (runtime/paidGrants.ts)
+// and lapses when the agent starts without the feature's flag, so turning
+// the flag on again asks again. A use with no session to ask in (no client,
+// or a conversation the agent does not hold) is denied, and so is every
+// feature the agent has no flag for: subagents, Muse Voice and scheduled
+// runs.
 
+import type { PermissionOption, RequestPermissionResponse } from '@agentclientprotocol/sdk'
+import { PaidUseConsent, type PaidUseAnswer } from '../core/paid/paidConsent'
 import type { CoreLogger } from '../core/logging'
-import type { AcpPaidFeature, PaidFeature } from '../shared/constants'
+import {
+  ACP_PAID_FEATURES,
+  ACP_PAID_OPTIONS,
+  type AcpPaidFeature,
+  type PaidFeature,
+  UI_TEXT,
+} from '../shared/constants'
+import type { PaidUseRequest } from '../shared/paid'
 
-/** Asks the user, naming the price; true only when they turned the feature on. */
-export type PriceQuestion = (feature: AcpPaidFeature) => Promise<boolean>
+/** Where "Allow always in this workspace" is kept, per folder. */
+export interface PaidGrantStore {
+  readonly read: (workspaceRoot: string) => ReadonlySet<PaidFeature>
+  readonly write: (workspaceRoot: string, grants: ReadonlySet<PaidFeature>) => Promise<void>
+  /** Takes these features out of every folder's grants. */
+  readonly forget: (features: readonly PaidFeature[]) => Promise<void>
+}
 
-export class AcpPaidFeatures {
-  private readonly accepted = new Set<PaidFeature>()
-  private readonly declined = new Set<PaidFeature>()
-  /** A question on screen now: another prompt waits for its answer, never asks twice. */
-  private readonly asking = new Map<AcpPaidFeature, Promise<void>>()
+/** The question in one of the client's sessions; the agent attaches it (agent.ts). */
+export type PaidUseAsker = (
+  sessionId: string,
+  request: PaidUseRequest,
+  canRemember: boolean,
+) => Promise<PaidUseAnswer>
+
+export interface AcpPaidUseDeps {
+  /** The features whose flags the editor gave. */
+  readonly flagged: readonly AcpPaidFeature[]
+  /** `--trust-workspace`: where "always" is offered and honoured. */
+  readonly canRemember: () => boolean
+  readonly grants: PaidGrantStore
+  readonly log: CoreLogger
+}
+
+function describe(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
+/** The prompt's options: the popup's answers (D48), "always" only where it is kept. */
+export function paidUseOptions(canRemember: boolean): PermissionOption[] {
+  const always: PermissionOption = {
+    optionId: ACP_PAID_OPTIONS.allowAlways,
+    name: UI_TEXT.paidAllowAlways,
+    kind: 'allow_always',
+  }
+  return [
+    { optionId: ACP_PAID_OPTIONS.allowOnce, name: UI_TEXT.allowOnce, kind: 'allow_once' },
+    ...(canRemember ? [always] : []),
+    { optionId: ACP_PAID_OPTIONS.deny, name: UI_TEXT.paidDeny, kind: 'reject_once' },
+  ]
+}
+
+/**
+ * The client's answer. A cancel, or an option the prompt did not offer, is
+ * Deny: nothing is billed by a translation default (D62).
+ */
+export function paidUseAnswer(
+  response: RequestPermissionResponse,
+  canRemember: boolean,
+): PaidUseAnswer {
+  const { outcome } = response
+  if (outcome.outcome !== 'selected') {
+    return 'deny'
+  }
+  if (outcome.optionId === ACP_PAID_OPTIONS.allowOnce) {
+    return 'once'
+  }
+  return canRemember && outcome.optionId === ACP_PAID_OPTIONS.allowAlways ? 'always' : 'deny'
+}
+
+export class AcpPaidUse {
+  private asker: PaidUseAsker | undefined
   private readonly used = new Map<PaidFeature, number>()
 
-  public constructor(
-    private readonly requested: readonly AcpPaidFeature[],
-    private readonly log: CoreLogger,
-  ) {}
+  public constructor(private readonly deps: AcpPaidUseDeps) {}
 
-  private async ask(feature: AcpPaidFeature, isPriceAccepted: PriceQuestion): Promise<void> {
-    try {
-      await this.answer(feature, isPriceAccepted)
-    } finally {
-      this.asking.delete(feature)
+  private async ask(
+    sessionId: string,
+    request: PaidUseRequest,
+    canRemember: boolean,
+  ): Promise<PaidUseAnswer> {
+    const { asker } = this
+    if (asker === undefined) {
+      this.deps.log.warn(`Paid use of ${request.feature}: no editor to ask, so it is denied`)
+      return 'deny'
     }
-  }
-
-  private async answer(feature: AcpPaidFeature, isPriceAccepted: PriceQuestion): Promise<void> {
-    let isAccepted = false
     try {
-      isAccepted = await isPriceAccepted(feature)
+      return await asker(sessionId, request, canRemember)
     } catch (error: unknown) {
-      this.log.warn(
-        `Paid feature ${feature}: the price could not be asked, so it stays off: ${error instanceof Error ? error.message : String(error)}`,
+      this.deps.log.warn(
+        `Paid use of ${request.feature}: the editor could not be asked, so it is denied: ${describe(error)}`,
       )
-    }
-    if (isAccepted) {
-      this.accepted.add(feature)
-      this.log.info(`Paid feature ${feature} turned on; the user accepted its price`)
-    } else {
-      this.declined.add(feature)
-      this.log.info(`Paid feature ${feature} left off; its price was not accepted`)
+      return 'deny'
     }
   }
 
-  /** Whether the backend may use the feature: its flag given and its price accepted. */
+  /** Whether the backend may use the feature at all: its flag given. */
   public isOn(feature: PaidFeature): boolean {
-    return this.accepted.has(feature)
+    const flagged: readonly PaidFeature[] = this.deps.flagged
+    return flagged.includes(feature)
   }
 
-  /** Asks, one at a time, for every flagged feature not answered yet. */
-  public async settle(isPriceAccepted: PriceQuestion): Promise<void> {
-    for (const feature of this.requested) {
-      if (this.accepted.has(feature) || this.declined.has(feature)) {
-        continue
-      }
-      let asked = this.asking.get(feature)
-      if (asked === undefined) {
-        asked = this.ask(feature, isPriceAccepted)
-        this.asking.set(feature, asked)
-      }
-      await asked
+  /** The agent's way to ask; until it is attached, every use is denied. */
+  public attach(asker: PaidUseAsker): void {
+    this.asker = asker
+  }
+
+  /** The popup before a use in the folder's conversation `sessionId` (D48). */
+  public async allows(
+    workspaceRoot: string,
+    sessionId: string,
+    request: PaidUseRequest,
+    requiresAsking: boolean,
+  ): Promise<boolean> {
+    const consent = new PaidUseConsent({
+      isOn: (feature) => this.isOn(feature),
+      canRemember: this.deps.canRemember,
+      readGrants: () => this.deps.grants.read(workspaceRoot),
+      writeGrants: (grants) => this.deps.grants.write(workspaceRoot, grants),
+      ask: (asked, canRemember) => this.ask(sessionId, asked, canRemember),
+      log: this.deps.log,
+    })
+    return await consent.allows(request, requiresAsking)
+  }
+
+  /** Whether the feature is on and allowed always in the folder, so it asks nothing. */
+  public isRemembered(workspaceRoot: string, feature: PaidFeature): boolean {
+    return (
+      this.isOn(feature) &&
+      this.deps.canRemember() &&
+      this.deps.grants.read(workspaceRoot).has(feature)
+    )
+  }
+
+  /**
+   * At start: a feature without its flag loses "always" in every folder, so
+   * turning the flag on again asks again. A file that cannot be written is
+   * logged; the grant is still never honoured while the flag is off.
+   */
+  public async forgetUnflagged(): Promise<void> {
+    const unflagged = ACP_PAID_FEATURES.filter((feature) => !this.isOn(feature))
+    if (unflagged.length === 0) {
+      return
+    }
+    try {
+      await this.deps.grants.forget(unflagged)
+    } catch (error: unknown) {
+      this.deps.log.warn(
+        `Paid uses allowed always could not be forgotten for ${unflagged.join(', ')}: ${describe(error)}`,
+      )
     }
   }
 
@@ -73,7 +171,7 @@ export class AcpPaidFeatures {
   public noteUse(feature: PaidFeature, units: number): void {
     const total = (this.used.get(feature) ?? 0) + units
     this.used.set(feature, total)
-    this.log.info(
+    this.deps.log.info(
       `Paid use of ${feature}: ${String(units)}, ${String(total)} since the agent started`,
     )
   }

@@ -4,12 +4,13 @@ import {
   ModelApiBackendManager,
   type ModelApiBackendManagerDeps,
 } from '../../src/host/backend/modelApiBackendManager'
+import * as modelApiEntry from '../../src/host/backend/modelApiEntry'
 import { fakeMcpSource } from './helpers/fakeMcpSource'
 import { FakeLogOutputChannel } from './helpers/fakes'
 import { fakeModelApi } from './helpers/fakeModelApi'
 import { memoryContextIo } from './helpers/fakeContextIo'
 import { noopToolIo } from './helpers/fakeToolIo'
-import { disabledPaidFeatures } from './helpers/fakePaidFeatures'
+import { fakeManagerDeps } from './helpers/modelApiManager'
 import type { ToolIo } from '../../src/core/backends/modelapi/tools'
 
 interface HookFixture {
@@ -30,28 +31,22 @@ function managerOn(
   return {
     api,
     log,
-    manager: new ModelApiBackendManager({
-      log,
-      getApiKey: () => Promise.resolve('LLM|1|secret'),
-      workspaceRoot,
-      io: hooks === undefined ? noopToolIo : { ...noopToolIo, runHook: hooks.runHook },
-      contextIo: memoryContextIo(hooks?.files ?? new Map()),
-      fetch: api.fetch,
-      newId: () => 'id',
-      now: () => 0,
-      sleep: () => Promise.resolve(),
-      random: () => 0,
-      personalSkillsRoot: undefined,
-      isWorkspaceTrusted: () => true,
-      store,
-      describeEnvironment: () => Promise.resolve({ git: undefined }),
-      ...disabledPaidFeatures,
-      promptCacheRetention: () => '24h',
-      hookSettingsPath: '/cfg/muse/settings.json',
-      isHooksEnabled: () => hooks?.enabled ?? false,
-      memory: undefined,
-      ...mcp,
-    }),
+    manager: new ModelApiBackendManager(
+      fakeManagerDeps(api, log, {
+        workspaceRoot,
+        store,
+        ...(hooks !== undefined && {
+          io: { ...noopToolIo, runHook: hooks.runHook },
+          contextIo: memoryContextIo(hooks.files),
+          isHooksEnabled: () => hooks.enabled,
+        }),
+        // The bundle's source module, imported rather than built (M57): the
+        // built dist/modelApi.js is modelApiBundle.test.ts's.
+        bundlePath: 'src/host/backend/modelApiEntry.ts',
+        loadBundle: () => modelApiEntry,
+        ...mcp,
+      }),
+    ),
   }
 }
 
@@ -105,6 +100,25 @@ describe('ModelApiBackendManager', () => {
     })
     expect(runHook).toHaveBeenCalledOnce()
   })
+
+  it('logs a hook file the loader refuses, under Hooks (M51)', async () => {
+    const log = new FakeLogOutputChannel()
+    const m = managerOn('/ws', undefined, log, {
+      enabled: true,
+      files: new Map([['/cfg/muse/settings.json', '{ not json']]),
+      runHook: vi.fn(),
+    })
+    const host = await m.manager.ensureHost()
+    await host.startSession({
+      workspaceRoot: '/ws',
+      modelId: 'muse-spark-1.3',
+      approvalMode: 'onRequest',
+    })
+    expect(log.warn).toHaveBeenCalledWith(
+      'Hooks: settings.json: invalid JSON; user and managed hooks are off',
+    )
+  })
+
   it('creates one host per window, lists its models, and forgets it on dispose', async () => {
     const m = manager('/ws')
     expect(m.manager.isRunning).toBe(false)
@@ -142,6 +156,28 @@ describe('ModelApiBackendManager', () => {
     expect(servers.isClosed).toBe(true)
   })
 
+  it("makes the host's MCP servers with the bundle's own pool (M50, M57)", async () => {
+    const m = managerOn('/ws', undefined, new FakeLogOutputChannel(), undefined, {
+      createMcpServers: (root, newPool) =>
+        newPool({
+          readSettings: () => ({ status: 'missing' }),
+          lookupEnv: () => undefined,
+          isWorkspaceTrusted: () => true,
+          workspaceRoot: root,
+          platform: 'linux',
+          spawn: () => {
+            throw new Error('no server is configured')
+          },
+          fetch: () => Promise.reject(new Error('no server is configured')),
+          clientVersion: '0.0.0',
+          log: new FakeLogOutputChannel(),
+        }),
+    })
+    await m.manager.ensureHost()
+    expect(m.manager.mcpSnapshot()).toEqual({ isStarted: false, fault: undefined, servers: [] })
+    await m.manager.dispose()
+  })
+
   it('refuses to start without a workspace', async () => {
     await expect(manager(undefined).manager.ensureHost()).rejects.toThrow('Open a folder first')
   })
@@ -177,6 +213,34 @@ describe('ModelApiBackendManager', () => {
     expect(m.isRunning).toBe(false)
     isBroken = false
     await expect(m.ensureHost()).resolves.toBeDefined()
+  })
+
+  it('closes a host whose build a dispose overtook, and builds anew after (D25)', async () => {
+    const listed = Promise.withResolvers<[]>()
+    const servers = fakeMcpSource([])
+    const m = managerOn(
+      '/ws',
+      {
+        list: () => listed.promise,
+        load: () => Promise.resolve(undefined),
+        save: () => Promise.resolve(),
+        remove: () => Promise.resolve(),
+      },
+      new FakeLogOutputChannel(),
+      undefined,
+      { createMcpServers: () => servers },
+    )
+    const overtaken = m.manager.ensureHost()
+    await m.manager.dispose()
+    expect(m.manager.isRunning).toBe(false)
+    listed.resolve([])
+    await expect(overtaken).rejects.toThrow('stopped while it was starting')
+    expect(servers.isClosed).toBe(true)
+    expect(m.manager.isRunning).toBe(false)
+    await m.manager.refreshSkills()
+    const host = await m.manager.ensureHost()
+    await expect(m.manager.ensureHost()).resolves.toBe(host)
+    await m.manager.refreshSkills()
   })
 })
 

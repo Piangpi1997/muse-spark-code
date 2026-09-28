@@ -1,7 +1,9 @@
 // Secret redaction for anything that reaches a log. Pure; no `vscode` import.
 //
 // Patterns cover the credential shapes this extension can encounter:
-//   - Meta Model API keys: `LLM|<numeric id>|<secret>`
+//   - Meta Model API keys: `LLM_` and at least 16 of `[A-Za-z0-9_-]` (the
+//     current shape), or the older `LLM|<numeric id>|<secret>`; the same
+//     shapes `MODEL_API_KEY_PATTERN` accepts
 //   - HTTP bearer and basic credentials: `Bearer <token>`, `Basic <base64>`
 //   - JSON Web Tokens (the CLI's OAuth access tokens are JWT-shaped):
 //     three base64url parts, the first two starting `eyJ`
@@ -16,7 +18,7 @@
 // replacement rejects computed replacements because `$` sequences in them are
 // interpreted by replaceAll.
 
-const META_MODEL_API_KEY = /LLM\|\d+\|[\w+./=-]+/g
+const META_MODEL_API_KEY = /LLM_[\w-]{16,}|LLM\|\d+\|[\w+./=-]+/g
 const BEARER_TOKEN = /(\bBearer\s+)[\w+./=~-]+/gi
 const BASIC_CREDENTIALS = /(\bBasic\s+)[\w+/=]{8,}/gi
 const JSON_WEB_TOKEN = /\beyJ[\w-]+\.eyJ[\w-]+\.[\w-]+/g

@@ -3,12 +3,11 @@ import {
   APPROVAL_CHOICE_IDS,
   choicesFor,
   isKnownChoice,
-  isProtectedPath,
-  paidChoices,
   PermissionEngine,
   type ToolClass,
   verdictFor,
 } from '../../src/core/backends/modelapi/permissions'
+import { isProtectedPath } from '../../src/core/protectedPaths'
 import { APPROVAL_MODES, type ApprovalMode } from '../../src/shared/permissionModes'
 
 const CLASSES: readonly ToolClass[] = [
@@ -218,13 +217,9 @@ describe('paid calls (M34, PLAN.md D30)', () => {
     )
   })
 
-  it('are never answered by a session rule, and offer no "always allow"', () => {
+  it('are never answered by a session rule', () => {
     const engine = new PermissionEngine('allowAll')
     engine.allowForSession('generate_image')
     expect(engine.verdict({ toolName: 'generate_image', toolClass: 'paid' })).toBe('ask')
-    expect(paidChoices().map((choice) => choice.choiceId)).toEqual([
-      APPROVAL_CHOICE_IDS.allowOnce,
-      APPROVAL_CHOICE_IDS.abort,
-    ])
   })
 })

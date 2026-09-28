@@ -122,6 +122,25 @@ export default tseslint.config(
   },
 
   {
+    // M57 (PLAN.md D6): the Model API host runs from a bundle of its own with
+    // its own copies of the errors a host throws to the conversation
+    // controller, so `instanceof` misses one it threw. The `is…` guards in
+    // src/core/agent/agentBackend.ts read the name and the field instead.
+    files: ['src/**/*.{ts,tsx}'],
+    rules: {
+      'no-restricted-syntax': [
+        'error',
+        {
+          selector:
+            "BinaryExpression[operator='instanceof'][right.name=/^(SessionNotLoadedError|PromptSettledError|GoalRefusedError)$/]",
+          message:
+            'A host error may come from the Model API bundle, whose classes are its own copies: use isSessionNotLoadedError, isPromptSettledError or isGoalRefusedError (src/core/agent/agentBackend.ts).',
+        },
+      ],
+    },
+  },
+
+  {
     // The constants module is the one place literals belong; the rule would be
     // unsatisfiable here.
     files: ['src/shared/constants.ts'],

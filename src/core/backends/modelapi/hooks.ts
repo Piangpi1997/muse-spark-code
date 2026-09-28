@@ -32,7 +32,8 @@ import {
   PROJECT_HOOKS_SEGMENTS,
 } from '../../../shared/constants'
 import { type ContextIo, decodeContextText } from '../../context/contextFiles'
-import { confineWorkspacePath, type ShellResult, type ToolIo } from './tools'
+import { confineWorkspacePath } from '../../workspacePath'
+import type { ShellResult, ToolIo } from './tools'
 
 export const HOOK_EVENTS = [
   'SessionStart',
@@ -182,8 +183,16 @@ async function readHookText(
   }
 }
 
-/** Sources stay in Muse Code's managed, user, project order for one session. */
+/**
+ * Sources stay in Muse Code's managed, user, project order for one session.
+ * An untrusted workspace loads none of them: a user or managed hook commonly
+ * runs the workspace's own tools (a formatter, `npm test`), and Restricted
+ * Mode promises that no shell command runs.
+ */
 export async function loadHookDefinitions(deps: HookLoadDeps): Promise<readonly HookDefinition[]> {
+  if (!deps.isWorkspaceTrusted()) {
+    return []
+  }
   const settingsText = await readHookText(deps, deps.settingsPath, undefined)
   let settings: HookRecord | undefined
   let managedNames: readonly string[] = []
@@ -216,10 +225,8 @@ export async function loadHookDefinitions(deps: HookLoadDeps): Promise<readonly 
   if (settings?.hooks !== undefined) {
     sources.push({ source: 'user', text: settingsText })
   }
-  if (deps.isWorkspaceTrusted()) {
-    const project = path.join(deps.workspaceRoot, ...PROJECT_HOOKS_SEGMENTS)
-    sources.push({ source: 'project', text: await readHookText(deps, project, deps.workspaceRoot) })
-  }
+  const project = path.join(deps.workspaceRoot, ...PROJECT_HOOKS_SEGMENTS)
+  sources.push({ source: 'project', text: await readHookText(deps, project, deps.workspaceRoot) })
   const hooks: HookDefinition[] = []
   for (const { source, text } of sources) {
     const parsed = parseHookConfig(text, source, deps.platform)

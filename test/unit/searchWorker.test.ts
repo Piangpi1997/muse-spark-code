@@ -5,6 +5,7 @@
 import { mkdtemp, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
+import { Worker } from 'node:worker_threads'
 import { buildSync } from 'esbuild'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { searchOnWorker } from '../../src/host/backend/toolIo'
@@ -98,6 +99,25 @@ describe('searchOnWorker', () => {
       isPartial: true,
     })
     expect(Date.now() - started).toBeLessThan(10_000)
+  }, 30_000)
+
+  it('parses its job and reports a malformed one instead of searching', async () => {
+    // Straight to the worker: `searchOnWorker` only sends well-typed jobs.
+    const worker = new Worker(paths.worker, {
+      workerData: { ...job('^alpha'), maxHits: 'many' },
+    })
+    try {
+      const message: unknown = await new Promise((resolve, reject) => {
+        worker.once('message', resolve)
+        worker.once('error', reject)
+      })
+      expect(message).toMatchObject({
+        type: 'done',
+        outcome: { ok: false, reason: expect.stringContaining('maxHits') },
+      })
+    } finally {
+      await worker.terminate()
+    }
   }, 30_000)
 
   it('reports a worker that cannot start', async () => {

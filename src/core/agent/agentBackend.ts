@@ -32,6 +32,21 @@ export interface HostExit {
   readonly isPersistent: boolean
 }
 
+// The three errors below cross from a host to the conversation controller.
+// The Model API host runs from a bundle of its own, loaded on first use
+// (M57, PLAN.md D6), which carries its own copy of these classes, so
+// `instanceof` misses an error that host threw. Callers test with the
+// `is…` guards instead, which read the name and the field every copy sets;
+// the lint config refuses `instanceof` on these classes in src/.
+const SESSION_NOT_LOADED_ERROR = 'SessionNotLoadedError'
+const PROMPT_SETTLED_ERROR = 'PromptSettledError'
+const GOAL_REFUSED_ERROR = 'GoalRefusedError'
+
+/** An `Error` of either bundle carrying the given name. */
+function isNamedError(error: unknown, name: string): error is Error {
+  return error instanceof Error && error.name === name
+}
+
 /**
  * A command named a session the host no longer holds (MSP `sessionNotLoaded`:
  * evicted, or closed by the host). The caller resumes it and retries.
@@ -42,12 +57,27 @@ export class SessionNotLoadedError extends Error {
     message: string,
   ) {
     super(message)
-    this.name = 'SessionNotLoadedError'
+    this.name = SESSION_NOT_LOADED_ERROR
   }
+}
+
+/** Whether a host refused a command for a session it no longer holds. */
+export function isSessionNotLoadedError(error: unknown): error is SessionNotLoadedError {
+  return (
+    isNamedError(error, SESSION_NOT_LOADED_ERROR) &&
+    'sessionId' in error &&
+    typeof error.sessionId === 'string'
+  )
 }
 
 /** Why the host refused a decision or answer that arrived too late (PLAN.md D26). */
 export type PromptSettledReason = 'alreadySettled' | 'movedOn' | 'gone'
+
+const PROMPT_SETTLED_REASONS: readonly unknown[] = [
+  'alreadySettled',
+  'movedOn',
+  'gone',
+] satisfies readonly PromptSettledReason[]
 
 /**
  * The prompt was answered elsewhere, advanced to another stage, or is no
@@ -60,8 +90,17 @@ export class PromptSettledError extends Error {
     message: string,
   ) {
     super(message)
-    this.name = 'PromptSettledError'
+    this.name = PROMPT_SETTLED_ERROR
   }
+}
+
+/** Whether a host refused a decision or answer because its prompt had settled. */
+export function isPromptSettledError(error: unknown): error is PromptSettledError {
+  return (
+    isNamedError(error, PROMPT_SETTLED_ERROR) &&
+    'reason' in error &&
+    PROMPT_SETTLED_REASONS.includes(error.reason)
+  )
 }
 
 /**
@@ -72,14 +111,25 @@ export class PromptSettledError extends Error {
  */
 export type GoalRefusal = 'noGoal' | 'wrongState'
 
+const GOAL_REFUSALS: readonly unknown[] = ['noGoal', 'wrongState'] satisfies readonly GoalRefusal[]
+
 export class GoalRefusedError extends Error {
   public constructor(
     public readonly refusal: GoalRefusal,
     message: string,
   ) {
     super(message)
-    this.name = 'GoalRefusedError'
+    this.name = GOAL_REFUSED_ERROR
   }
+}
+
+/** Whether a host refused a goal command (a `GoalRefusedError` of either bundle). */
+export function isGoalRefusedError(error: unknown): error is GoalRefusedError {
+  return (
+    isNamedError(error, GOAL_REFUSED_ERROR) &&
+    'refusal' in error &&
+    GOAL_REFUSALS.includes(error.refusal)
+  )
 }
 
 /** A goal command (M45): MSP `goal/<verb>`; `set` and `edit` carry the objective. */

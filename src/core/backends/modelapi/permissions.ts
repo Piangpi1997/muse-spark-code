@@ -12,9 +12,11 @@
 //                      Edit-automatically mode, as it does for Muse Code
 //   denyUnmatched    → reads run, everything else is refused (Plan)
 //
-// A paid call (M34, PLAN.md D30: image generation) asks in every mode,
-// Bypass included, with no "always allow"; Plan refuses it, since it writes
-// a file. The price is the user's to accept each time.
+// A paid call (M34, PLAN.md D30: image generation; M48: a child task) asks
+// in every mode, Bypass included, never through a card or a session rule:
+// the paid-use popup asks (M58, PLAN.md D48), whose "Allow always in this
+// workspace" is the only way it stops asking. Plan refuses it, since it
+// writes a file or starts an agent.
 //
 // A protected write (PLAN.md D24) asks in every mode but Bypass and Plan,
 // session rules included: a file that configures or runs code outside the
@@ -33,7 +35,7 @@
 // and Edit automatically write, and Plan refuses, as for any edit.
 
 import type { ApprovalChoice } from '../../../shared/agentEvents'
-import { PROTECTED_PATH_SEGMENTS, PROTECTED_FILE_NAMES, UI_TEXT } from '../../../shared/constants'
+import { UI_TEXT } from '../../../shared/constants'
 import type { ApprovalMode } from '../../../shared/permissionModes'
 
 export type ToolClass = 'read' | 'edit' | 'shell' | 'interactive' | 'paid' | 'mcp' | 'spawn'
@@ -53,27 +55,6 @@ const KNOWN_CHOICE_IDS: ReadonlySet<string> = new Set(Object.values(APPROVAL_CHO
 /** Whether a card's choice id is one this engine offered (anything else is refused). */
 export function isKnownChoice(choiceId: string): boolean {
   return KNOWN_CHOICE_IDS.has(choiceId)
-}
-
-/**
- * Whether a workspace-relative path (forward slashes, links resolved) is a
- * protected write. Case is ignored: Windows and macOS file systems fold it.
- */
-export function isProtectedPath(canonicalRelative: string): boolean {
-  const segments = canonicalRelative.toLowerCase().split('/')
-  const name = segments.at(-1) ?? ''
-  if (PROTECTED_FILE_NAMES.has(name)) {
-    return true
-  }
-  // The run may sit anywhere (a nested repository's `.git`) and may be the
-  // file itself (a `.git` file points git at another directory).
-  return segments.some((_segment, index) =>
-    PROTECTED_PATH_SEGMENTS.some(
-      (protectedSegments) =>
-        protectedSegments.length <= segments.length - index &&
-        protectedSegments.every((part, offset) => segments[index + offset] === part),
-    ),
-  )
 }
 
 /** An MCP server's tool: a shell command's rules, eased for one its server marks read-only. */
@@ -155,11 +136,6 @@ export function choicesFor(toolName: string, command?: string): readonly Approva
       acceptsFeedback: true,
     },
   ]
-}
-
-/** The choices for a paid call (M34): this once, or not at all; never for the session. */
-export function paidChoices(): readonly ApprovalChoice[] {
-  return choicesFor('').filter((choice) => choice.choiceId !== APPROVAL_CHOICE_IDS.allowSession)
 }
 
 /** One call as the engine judges it. */

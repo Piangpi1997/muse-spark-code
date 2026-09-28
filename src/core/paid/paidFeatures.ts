@@ -2,7 +2,7 @@
 // which are on, and what this window has used of them.
 //
 // A feature is on only when its setting is on AND the user accepted its
-// price in the confirmation. Turning the setting on anywhere (the palette,
+// price in the confirmation; each use then asks again (paidConsent.ts, M58). Turning the setting on anywhere (the palette,
 // the Settings editor, settings.json) asks once, naming the price; a
 // declined confirmation turns the setting back off, and turning the setting
 // off forgets the acceptance, so the next time asks again. The confirmation
@@ -248,6 +248,12 @@ export function paidStateOf(
   gate: PaidFeatureGate,
   usage: PaidUsage,
   isKeyStored: boolean,
+  alwaysAllowed: readonly PaidFeature[],
 ): PaidState {
-  return { features: [...gate.features()], tally: usage.current, isKeyStored }
+  return {
+    features: [...gate.features()],
+    tally: usage.current,
+    isKeyStored,
+    alwaysAllowed: [...alwaysAllowed],
+  }
 }

@@ -1018,6 +1018,16 @@
             detail: 'muse was not found on PATH (searched 12 directories).',
           })
         },
+        // The same gate as the host sends it since M55, with Meta's install
+        // command: Install Muse Code first, the Model API key beside it.
+        'signin-install': () => {
+          send({
+            type: 'authState',
+            status: 'noCli',
+            detail: 'muse was not found on PATH (searched 12 directories).',
+            installCommand: 'irm https://dev.meta.ai/install.ps1 | iex',
+          })
+        },
         'signin-waiting': () => {
           send({ type: 'authState', status: 'signingIn' })
         },
@@ -1060,6 +1070,7 @@
               features: [],
               tally: { webSearches: 0, images: 0, voiceSeconds: 0 },
               isKeyStored: true,
+              alwaysAllowed: [],
             },
           })
           click('Commands')
@@ -1489,6 +1500,7 @@
             features: ['webSearch', 'imageGeneration'],
             tally: { webSearches: 3, images: 1, voiceSeconds: 0, scheduledRuns: 0 },
             isKeyStored: true,
+            alwaysAllowed: [],
           }
           send({ type: 'authState', status: 'signedIn', backend: 'modelApi' })
           send({ type: 'paidState', state: window.harnessPaid })
@@ -1523,6 +1535,13 @@
           })
           event({ type: 'turnCompleted', turnId: 't1', terminal: 'completed' })
         },
+        // --- M58: features allowed always in this workspace, and "Ask again" ---
+        'paid-always': () => {
+          steps.paid()
+          window.harnessPaid = { ...window.harnessPaid, alwaysAllowed: ['webSearch'] }
+          send({ type: 'paidState', state: window.harnessPaid })
+          whenFound('.paid-badge', (badge) => badge.click())
+        },
         'paid-usage': () => {
           steps.paid()
           whenFound('.paid-badge', (badge) => badge.click())
@@ -1542,6 +1561,7 @@
               subagentCostUsd: 1.455,
             },
             isKeyStored: true,
+            alwaysAllowed: [],
           }
           send({ type: 'authState', status: 'signedIn', backend: 'modelApi' })
           send({ type: 'paidState', state: window.harnessPaid })
@@ -1570,27 +1590,6 @@
               paid: 'subagents',
             },
           })
-          event({
-            type: 'approvalRequested',
-            approvalId: 'paid-child-approval',
-            itemId: 'paid-child-call',
-            toolName: 'subagent_spawn',
-            rawArgs: args,
-            requirementId: { approvalId: 'paid-child-approval', sourceIndex: 0 },
-            subject: {
-              kind: 'paidTool',
-              paidFeature: 'subagents',
-              toolName: 'subagent_spawn',
-              modelId: 'muse-spark-1.3',
-              requestLimit: 4,
-            },
-            availableChoices: [
-              { choiceId: 'allow_once', label: 'Allow once', decision: 'approved', scope: 'once' },
-              { choiceId: 'abort', label: 'Reject', decision: 'abort', scope: 'once' },
-            ],
-            isJudgeEscalated: false,
-            isProtectedWrite: false,
-          })
         },
         'paid-subagent-usage': () => {
           steps['paid-subagent-approval']()
@@ -1607,13 +1606,14 @@
             item: { itemId: 'sa2', kind: 'subagent', status: 'completed', paid: 'subagents' },
           })
         },
-        // --- M34: an image asks first, naming its price, in every mode ---
+        // --- M34, M58: an image's row while the paid-use popup asks first ---
         'paid-image': () => {
           window.harnessBackend = 'modelApi'
           window.harnessPaid = {
             features: ['imageGeneration'],
             tally: { webSearches: 0, images: 0, voiceSeconds: 0, scheduledRuns: 0 },
             isKeyStored: true,
+            alwaysAllowed: [],
           }
           send({ type: 'authState', status: 'signedIn', backend: 'modelApi' })
           send({ type: 'paidState', state: window.harnessPaid })
@@ -1635,40 +1635,15 @@
               paid: 'imageGeneration',
             },
           })
-          event({
-            type: 'approvalRequested',
-            approvalId: 'i1',
-            itemId: 'img1',
-            toolName: 'generate_image',
-            rawArgs: args,
-            requirementId: { approvalId: 'i1', sourceIndex: 0 },
-            subject: {
-              kind: 'paidTool',
-              toolName: 'generate_image',
-              path: 'media/lighthouse.png',
-              paidFeature: 'imageGeneration',
-            },
-            availableChoices: [
-              { choiceId: 'allow_once', label: 'Allow once', decision: 'approved', scope: 'once' },
-              {
-                choiceId: 'abort',
-                label: 'Reject',
-                decision: 'abort',
-                scope: 'once',
-                acceptsFeedback: true,
-              },
-            ],
-            isJudgeEscalated: false,
-            isProtectedWrite: false,
-          })
         },
-        // --- M44: an image edit's card names the images it starts from ---
+        // --- M44, M58: an image edit's row while the paid-use popup asks first ---
         'paid-edit': () => {
           window.harnessBackend = 'modelApi'
           window.harnessPaid = {
             features: ['imageGeneration'],
             tally: { webSearches: 0, images: 2, voiceSeconds: 0, scheduledRuns: 0 },
             isKeyStored: true,
+            alwaysAllowed: [],
           }
           send({ type: 'authState', status: 'signedIn', backend: 'modelApi' })
           send({ type: 'paidState', state: window.harnessPaid })
@@ -1691,32 +1666,6 @@
               paid: 'imageGeneration',
             },
           })
-          event({
-            type: 'approvalRequested',
-            approvalId: 'e1',
-            itemId: 'ed1',
-            toolName: 'edit_image',
-            rawArgs: args,
-            requirementId: { approvalId: 'e1', sourceIndex: 0 },
-            subject: {
-              kind: 'paidTool',
-              toolName: 'edit_image',
-              path: 'media/fox-hat.png',
-              paidFeature: 'imageGeneration',
-            },
-            availableChoices: [
-              { choiceId: 'allow_once', label: 'Allow once', decision: 'approved', scope: 'once' },
-              {
-                choiceId: 'abort',
-                label: 'Reject',
-                decision: 'abort',
-                scope: 'once',
-                acceptsFeedback: true,
-              },
-            ],
-            isJudgeEscalated: false,
-            isProtectedWrite: false,
-          })
         },
         // --- M44: an image the ide server made for Muse Code, marked paid ---
         'paid-image-cli': () => {
@@ -1724,6 +1673,7 @@
             features: ['imageGeneration'],
             tally: { webSearches: 0, images: 1, voiceSeconds: 0, scheduledRuns: 0 },
             isKeyStored: true,
+            alwaysAllowed: [],
           }
           send({ type: 'authState', status: 'signedIn', backend: 'museCode' })
           send({ type: 'paidState', state: window.harnessPaid })
@@ -1750,6 +1700,7 @@
             features: ['voice'],
             tally: { webSearches: 0, images: 0, voiceSeconds: 42, scheduledRuns: 0 },
             isKeyStored: true,
+            alwaysAllowed: [],
           }
           send({ type: 'authState', status: 'signedIn', backend: 'modelApi' })
           send({ type: 'paidState', state: window.harnessPaid })
@@ -1761,6 +1712,7 @@
             features: ['voice'],
             tally: { webSearches: 0, images: 0, voiceSeconds: 0, scheduledRuns: 0 },
             isKeyStored: true,
+            alwaysAllowed: [],
           }
           send({ type: 'authState', status: 'signedIn', backend: 'modelApi' })
           send({ type: 'paidState', state: window.harnessPaid })
@@ -2417,6 +2369,7 @@
             features: ['scheduledPrompts'],
             tally: { webSearches: 0, images: 0, voiceSeconds: 0, scheduledRuns: 1 },
             isKeyStored: true,
+            alwaysAllowed: [],
           }
           send({ type: 'authState', status: 'signedIn', backend: 'modelApi' })
           send({ type: 'paidState', state: window.harnessPaid })

@@ -330,16 +330,23 @@ async function afterGate(
   if (signal?.aborted === true) {
     throw new DOMException('aborted', 'AbortError')
   }
-  const aborted = Promise.withResolvers<never>()
-  const onAbort = () => {
-    aborted.reject(new DOMException('aborted', 'AbortError'))
-  }
-  signal?.addEventListener('abort', onAbort, { once: true })
+  // Not `Promise.withResolvers`: the integration tests load this helper in
+  // VS Code 1.99, whose Node 20.18 lacks it (PLAN.md M62).
+  const listening = new AbortController()
+  const aborted = new Promise<never>((_resolve, reject) => {
+    signal?.addEventListener(
+      'abort',
+      () => {
+        reject(new DOMException('aborted', 'AbortError'))
+      },
+      { once: true, signal: listening.signal },
+    )
+  })
   try {
-    await Promise.race([gate, aborted.promise])
+    await Promise.race([gate, aborted])
     return response
   } finally {
-    signal?.removeEventListener('abort', onAbort)
+    listening.abort()
   }
 }
 

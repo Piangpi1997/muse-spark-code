@@ -7,8 +7,8 @@
 // with a choice the backend offered, and one the client did not answer is
 // denied (D62); "Edit automatically" answers only what the panel's rule
 // allows (`editAutomaticallyChoice`, D24); a paid feature is on only with
-// its flag and its price accepted in the editor (M63c, paid.ts). Every
-// update of a turn goes out before the turn's response.
+// its flag, and each use asks in the editor first, naming its price (M58,
+// paid.ts). Every update of a turn goes out before the turn's response.
 
 import path from 'node:path'
 import {
@@ -24,6 +24,7 @@ import {
   type McpServer,
   PROTOCOL_VERSION,
   RequestError,
+  type RequestPermissionRequest,
   type RequestPermissionResponse,
   type SessionConfigOption,
   type SessionModeState,
@@ -33,7 +34,7 @@ import {
 import {
   type AgentHost,
   type AgentSession,
-  PromptSettledError,
+  isPromptSettledError,
   type ModelSummary,
   type SessionMcpServer,
   type SkillSummary,
@@ -41,15 +42,14 @@ import {
 } from '../core/agent/agentBackend'
 import { editAutomaticallyChoice } from '../core/agent/approvalRules'
 import type { CoreLogger } from '../core/logging'
+import { type PaidUseAnswer, paidUseQuestion } from '../core/paid/paidConsent'
 import type { AgentEvent } from '../shared/agentEvents'
 import {
   ACP_AGENT_NAME,
   ACP_AGENT_TITLE,
   ACP_CONFIG_IDS,
-  ACP_PAID_OPTIONS,
   ACP_PAID_TOOL_CALL_PREFIX,
   ACP_SESSION_LIST_LIMIT,
-  type AcpPaidFeature,
   type AcpBackendKind,
   CONTRIBUTOR_MODEL_SUFFIX,
   DEFAULT_EFFORT,
@@ -61,13 +61,13 @@ import {
 import { effortForThinking, effortLabel, effortLevelsFor, isEffortLevel } from '../shared/effort'
 import { fill } from '../shared/l10n/text'
 import { parseSkillInvocation } from '../shared/mentions'
-import { paidFeatureName, paidFeaturePrice } from '../shared/paid'
+import type { PaidUseRequest } from '../shared/paid'
 import {
   approvalModeFor,
   availablePermissionModes,
   permissionModeDetail,
 } from '../shared/permissionModes'
-import type { AcpPaidFeatures } from './paid'
+import { type AcpPaidUse, paidUseAnswer, paidUseOptions } from './paid'
 import { formAnswers, questionForm, questionsText } from './questions'
 import {
   approvalToolCall,
@@ -122,8 +122,8 @@ export interface AcpAgentDeps {
   readonly signIn: SignInMethod
   /** The folder a `session/list` without one lists (the agent's own). */
   readonly defaultCwd: string
-  /** The flagged paid features, asked for at the first prompt (M63c). */
-  readonly paid: AcpPaidFeatures
+  /** The flagged paid features; the agent asks before each use (M63c, M58). */
+  readonly paid: AcpPaidUse
   readonly log: CoreLogger
 }
 
@@ -145,13 +145,6 @@ const EARLY_FINISHES_KEPT = 8
 
 function describe(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
-}
-
-/** What turning the feature on means and costs, in the display language. */
-function paidConfirmationText(feature: AcpPaidFeature): string {
-  const text =
-    feature === 'webSearch' ? UI_TEXT.acpPaidConfirmWebSearch : UI_TEXT.acpPaidConfirmImage
-  return fill(text, { price: paidFeaturePrice(feature) })
 }
 
 function isContributorModel(modelId: string): boolean {
@@ -181,8 +174,8 @@ class AcpSession {
   private readonly earlyFinishes = new Map<string, TurnCompleted>()
   private outbox: Promise<void> = Promise.resolve()
   private pending: PendingPrompt | undefined
-  /** A prompt asking its paid features' prices, before its turn starts (M63c). */
-  private preparing: { isCancelled: boolean } | undefined
+  /** Paid-use questions asked in this session, which number their rows (M58). */
+  private paidQuestions = 0
   private skills: readonly SkillSummary[] = []
   private areCommandsAnnounced = false
   private effort: EffortLevel = DEFAULT_EFFORT
@@ -401,58 +394,11 @@ class AcpSession {
         requirementId: event.requirementId,
       })
     } catch (error: unknown) {
-      const level = error instanceof PromptSettledError ? 'info' : 'warn'
+      const level = isPromptSettledError(error) ? 'info' : 'warn'
       this.deps.log[level](
         `ACP session ${this.sessionId}: approval ${event.approvalId}: ${describe(error)}`,
       )
     }
-  }
-
-  /**
-   * The price confirmation for a flagged paid feature (M63c): a row naming
-   * the feature and its price, and a permission prompt on it; only "Turn on"
-   * turns it on.
-   */
-  private async confirmPaid(feature: AcpPaidFeature): Promise<boolean> {
-    const toolCallId = `${ACP_PAID_TOOL_CALL_PREFIX}${feature}`
-    const title = fill(UI_TEXT.paidConfirmTitle, { feature: paidFeatureName(feature) })
-    const text = paidConfirmationText(feature)
-    this.send({
-      sessionUpdate: 'tool_call',
-      toolCallId,
-      title,
-      kind: 'other',
-      status: 'pending',
-      content: [{ type: 'content', content: { type: 'text', text } }],
-    })
-    let isAccepted = false
-    try {
-      await this.outbox
-      const { outcome } = await this.client.request('session/request_permission', {
-        sessionId: this.sessionId,
-        toolCall: { toolCallId, title, status: 'pending' },
-        options: [
-          {
-            optionId: ACP_PAID_OPTIONS.accept,
-            name: UI_TEXT.paidConfirmAccept,
-            kind: 'allow_always',
-          },
-          {
-            optionId: ACP_PAID_OPTIONS.decline,
-            name: UI_TEXT.acpPaidDecline,
-            kind: 'reject_always',
-          },
-        ],
-      })
-      isAccepted = outcome.outcome === 'selected' && outcome.optionId === ACP_PAID_OPTIONS.accept
-    } finally {
-      this.send({
-        sessionUpdate: 'tool_call_update',
-        toolCallId,
-        status: isAccepted ? 'completed' : 'failed',
-      })
-    }
-    return isAccepted
   }
 
   private async ask(event: QuestionRequest): Promise<void> {
@@ -482,6 +428,47 @@ class AcpSession {
         `ACP session ${this.sessionId}: question ${event.userInputId}: ${describe(error)}`,
       )
     }
+  }
+
+  /**
+   * The question before a paid use (M58, PLAN.md D48): a row naming what is
+   * about to be billed and its price, and a permission prompt on it with the
+   * popup's answers. Anything but Allow once or Allow always is Deny.
+   */
+  public async askPaidUse(request: PaidUseRequest, canRemember: boolean): Promise<PaidUseAnswer> {
+    this.paidQuestions += 1
+    const toolCallId = `${ACP_PAID_TOOL_CALL_PREFIX}${String(this.paidQuestions)}`
+    const { title, detail } = paidUseQuestion(request)
+    const content = [{ type: 'content' as const, content: { type: 'text' as const, text: detail } }]
+    this.send({
+      sessionUpdate: 'tool_call',
+      toolCallId,
+      title,
+      kind: 'other',
+      status: 'pending',
+      content,
+    })
+    let answer: PaidUseAnswer = 'deny'
+    try {
+      await this.outbox
+      const params: RequestPermissionRequest = {
+        sessionId: this.sessionId,
+        toolCall: { toolCallId, title, status: 'pending', content },
+        options: paidUseOptions(canRemember),
+      }
+      const response = await this.client.request('session/request_permission', params)
+      answer = paidUseAnswer(response, canRemember)
+    } catch (error: unknown) {
+      this.deps.log.warn(
+        `ACP session ${this.sessionId}: the paid-use question failed, denying: ${describe(error)}`,
+      )
+    }
+    this.send({
+      sessionUpdate: 'tool_call_update',
+      toolCallId,
+      status: answer === 'deny' ? 'failed' : 'completed',
+    })
+    return answer
   }
 
   public modes(): SessionModeState {
@@ -577,23 +564,12 @@ class AcpSession {
   }
 
   public async prompt(blocks: readonly ContentBlock[]): Promise<StopReason> {
-    if (this.pending !== undefined || this.preparing !== undefined) {
+    if (this.pending !== undefined) {
       throw RequestError.invalidRequest(undefined, UI_TEXT.acpPromptBusy)
     }
     const parsed = promptParts(blocks, this.cwd)
     if (!parsed.ok) {
       throw RequestError.invalidParams(undefined, parsed.reason)
-    }
-    const preparing = { isCancelled: false }
-    this.preparing = preparing
-    try {
-      await this.deps.paid.settle((feature) => this.confirmPaid(feature))
-    } finally {
-      this.preparing = undefined
-    }
-    if (preparing.isCancelled) {
-      await this.outbox
-      return 'cancelled'
     }
     await this.announceCommands()
     const finished = new Promise<StopReason>((resolve, reject) => {
@@ -615,11 +591,6 @@ class AcpSession {
   }
 
   public async cancel(): Promise<void> {
-    if (this.preparing !== undefined) {
-      this.preparing.isCancelled = true
-      this.deps.log.info(`ACP session ${this.sessionId}: cancelled before its turn started`)
-      return
-    }
     if (this.pending === undefined) {
       return
     }
@@ -861,11 +832,30 @@ class AgentState {
     this.session(sessionId).dispose()
     this.sessions.delete(sessionId)
   }
+
+  /** A paid use asked in the session it is for; one the agent does not hold is denied (M58). */
+  public async askPaidUse(
+    sessionId: string,
+    request: PaidUseRequest,
+    canRemember: boolean,
+  ): Promise<PaidUseAnswer> {
+    const acp = this.sessions.get(sessionId)
+    if (acp === undefined) {
+      this.deps.log.warn(
+        `Paid use of ${request.feature}: no editor session ${sessionId} to ask in, so it is denied`,
+      )
+      return 'deny'
+    }
+    return await acp.askPaidUse(request, canRemember)
+  }
 }
 
 /** The agent: register it on a stream with `connect`. */
 export function createAcpAgent(deps: AcpAgentDeps): AgentApp {
   const state = new AgentState(deps)
+  deps.paid.attach((sessionId, request, canRemember) =>
+    state.askPaidUse(sessionId, request, canRemember),
+  )
   return acpAgent({ name: ACP_AGENT_NAME })
     .onRequest('initialize', (context) => state.initialize(context.params.clientCapabilities))
     .onRequest('authenticate', () => state.authenticate())

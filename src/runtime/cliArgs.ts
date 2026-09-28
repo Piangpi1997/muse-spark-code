@@ -27,7 +27,7 @@ export interface ServeOptions {
   readonly shellSandbox: ShellSandboxMode
   readonly canBypass: boolean
   readonly allowsContributorModels: boolean
-  /** The paid features the user may turn on at the first prompt (M63c); Model API only. */
+  /** The paid features whose flags were given (M63c); each use asks first (M58). Model API only. */
   readonly paidFeatures: readonly AcpPaidFeature[]
   /** The finest log detail on stderr. */
   readonly isVerbose: boolean

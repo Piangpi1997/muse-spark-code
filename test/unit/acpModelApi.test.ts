@@ -2,31 +2,41 @@ import * as acp from '@agentclientprotocol/sdk'
 import { mkdtempSync, readFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { afterAll, describe, expect, it, vi } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { createAcpAgent } from '../../src/acp/agent'
 import { createRuntimeBackend } from '../../src/runtime/backends'
+import { paidGrantsFile, workspaceKey } from '../../src/runtime/dataFolder'
 import { type AcpPaidFeature, SECRET_KEYS } from '../../src/shared/constants'
 import { memorySecrets } from './helpers/fakes'
 import { fakeModelApi } from './helpers/fakeModelApi'
+import { buildModelApiBundle } from './helpers/modelApiBundle'
 import { removeFolder } from './helpers/temporaryFolders'
 
 // M63 (PLAN.md D61, D62): the agent on the Model API backend, end to end in
 // process: the ACP SDK's client, the agent, the runtime's backend with its
-// real tool harness and session store on disk, and the fake Model API. The
-// stdio suite cannot run this backend, because the agent reads the key only
-// from the OS credential store.
+// real tool harness and session store on disk, the backend loaded from a
+// built dist/modelApi.js as the package ships it (M57, D6), and the fake
+// Model API. The stdio suite cannot run this backend, because the agent
+// reads the key only from the OS credential store.
 
 // The one key the fake Model API accepts.
 const KEY = 'LLM|1|secret'
 const POLL_MS = 5
 const WAIT_MS = 5000
 const folders: string[] = []
+const dist = { folder: '' }
 
 function folder(): string {
   const created = mkdtempSync(path.join(tmpdir(), 'acp-model-api-'))
   folders.push(created)
   return created
 }
+
+// The agent's dist/ folder: the Model API backend's own bundle, required by path.
+beforeAll(() => {
+  dist.folder = folder()
+  buildModelApiBundle(dist.folder)
+})
 
 afterAll(async () => {
   await Promise.all(folders.map((created) => removeFolder(created)))
@@ -50,12 +60,13 @@ function setup(
   answer: (request: acp.RequestPermissionRequest) => acp.RequestPermissionResponse,
   paidFeatures: readonly AcpPaidFeature[] = [],
   isTrusted = false,
+  // A later agent on the same computer and folder shares these.
+  shared?: { readonly data: string; readonly workspace: string },
 ) {
   const api = fakeModelApi()
   const secrets = memorySecrets()
   secrets.values.set(SECRET_KEYS.modelApiKey, KEY)
-  const data = folder()
-  const workspace = folder()
+  const { data, workspace } = shared ?? { data: folder(), workspace: folder() }
   const log = { trace: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }
   const runtime = createRuntimeBackend({
     options: {
@@ -69,7 +80,7 @@ function setup(
       isVerbose: false,
     },
     version: '0.0.0-test',
-    distDir: data,
+    distDir: dist.folder,
     platform: process.platform,
     env: { XDG_DATA_HOME: data, LOCALAPPDATA: data },
     homeDir: data,
@@ -107,6 +118,7 @@ function setup(
   return {
     api,
     log,
+    data,
     workspace,
     runtime,
     updates,
@@ -123,6 +135,18 @@ function allowOnce(request: acp.RequestPermissionRequest): acp.RequestPermission
         ? { outcome: 'cancelled' }
         : { outcome: 'selected', optionId: option.optionId },
   }
+}
+
+/** Answers a paid-use question with `optionId` (M58), and anything else with an unknown option. */
+function answerPaid(optionId: string) {
+  return (request: acp.RequestPermissionRequest): acp.RequestPermissionResponse => ({
+    outcome: {
+      outcome: 'selected',
+      optionId: request.options.some((option) => option.optionId === optionId)
+        ? optionId
+        : 'reject',
+    },
+  })
 }
 
 type MessageChunk = Extract<
@@ -156,6 +180,14 @@ async function promptOnce(client: acp.ClientContext, cwd: string) {
     prompt: [{ type: 'text', text: 'write the notes' }],
   })
   return { created, stopReason: response.stopReason }
+}
+
+/** A second prompt in the session. */
+async function promptAgain(client: acp.ClientContext, sessionId: string) {
+  return await client.request('session/prompt', {
+    sessionId,
+    prompt: [{ type: 'text', text: 'and again' }],
+  })
 }
 
 describe('the ACP agent on the Model API backend (M63)', () => {
@@ -211,29 +243,6 @@ describe('the ACP agent on the Model API backend (M63)', () => {
     await t.runtime.close()
   })
 
-  it('offers web search once its price is accepted, and tallies each search (M63c)', async () => {
-    const t = setup(
-      (request) => ({
-        outcome: {
-          outcome: 'selected',
-          optionId: request.options.some((option) => option.optionId === 'paid-accept')
-            ? 'paid-accept'
-            : 'reject',
-        },
-      }),
-      ['webSearch'],
-    )
-    t.api.script({ searches: [{ queries: ['acp registry'] }], text: 'Found it.' })
-    const { stopReason } = await t.run((client) => promptOnce(client, t.workspace))
-    expect(stopReason).toBe('end_turn')
-    expect(t.permissions.map((request) => request.toolCall.toolCallId)).toEqual([
-      'paid-feature-webSearch',
-    ])
-    expect(JSON.stringify(t.api.responseBodies()[0]?.['tools'])).toContain('web_search')
-    expect(t.log.info).toHaveBeenCalledWith('Paid use of webSearch: 1, 1 since the agent started')
-    await t.runtime.close()
-  })
-
   it('offers Muse Code’s memory tools in a trusted folder, and never paid subagents (M48, M49)', async () => {
     const t = setup(allowOnce, [], true)
     t.api.script({ text: 'Noted.' })
@@ -246,18 +255,76 @@ describe('the ACP agent on the Model API backend (M63)', () => {
     await t.runtime.close()
   })
 
-  it('offers neither paid tool when their prices are declined (M63c)', async () => {
-    const t = setup(
-      () => ({ outcome: { outcome: 'selected', optionId: 'paid-decline' } }),
-      ['webSearch', 'imageGeneration'],
+  it('asks before each prompt that may search the web, and tallies each search (M58)', async () => {
+    const t = setup(answerPaid('paid-allow-once'), ['webSearch'])
+    t.api.script(
+      { searches: [{ queries: ['acp registry'] }], text: 'Found it.' },
+      { text: 'Nothing to search.' },
     )
+    await t.run(async (client) => {
+      const { created } = await promptOnce(client, t.workspace)
+      await promptAgain(client, created.sessionId)
+    })
+    expect(t.permissions.map((request) => request.toolCall.title)).toEqual([
+      'Let Muse search the web for this prompt?',
+      'Let Muse search the web for this prompt?',
+    ])
+    for (const body of t.api.responseBodies()) {
+      expect(JSON.stringify(body['tools'])).toContain('web_search')
+    }
+    expect(t.log.info).toHaveBeenCalledWith('Paid use of webSearch: 1, 1 since the agent started')
+    await t.runtime.close()
+  })
+
+  it('sends the prompt without web search when its question is denied (M58)', async () => {
+    const t = setup(answerPaid('paid-deny'), ['webSearch'])
     t.api.script({ text: 'No search.' })
     await t.run((client) => promptOnce(client, t.workspace))
-    expect(t.permissions).toHaveLength(2)
-    const offered = JSON.stringify(t.api.responseBodies()[0]?.['tools'])
-    for (const paid of ['web_search', 'generate_image', 'edit_image']) {
-      expect(offered).not.toContain(paid)
-    }
+    expect(t.permissions).toHaveLength(1)
+    expect(JSON.stringify(t.api.responseBodies()[0]?.['tools'])).not.toContain('web_search')
     await t.runtime.close()
+  })
+
+  it('keeps "Allow always" for a trusted folder until the agent starts without the flag (M58)', async () => {
+    const first = setup(answerPaid('paid-allow-always'), ['webSearch'], true)
+    first.api.script({ text: 'One.' }, { text: 'Two.' })
+    await first.run(async (client) => {
+      const { created } = await promptOnce(client, first.workspace)
+      await promptAgain(client, created.sessionId)
+    })
+    expect(first.permissions).toHaveLength(1)
+    const file = paidGrantsFile({
+      platform: process.platform,
+      env: { XDG_DATA_HOME: first.data, LOCALAPPDATA: first.data },
+      homeDir: first.data,
+    })
+    expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual({
+      [workspaceKey(first.workspace)]: ['webSearch'],
+    })
+    await first.runtime.close()
+
+    // Started again with the flag, the folder still asks nothing.
+    const again = setup(answerPaid('paid-deny'), ['webSearch'], true, first)
+    await again.runtime.paid.forgetUnflagged()
+    again.api.script({ text: 'Three.' })
+    await again.run((client) => promptOnce(client, again.workspace))
+    expect(again.permissions).toEqual([])
+    expect(JSON.stringify(again.api.responseBodies()[0]?.['tools'])).toContain('web_search')
+    await again.runtime.close()
+
+    // Started without it, the grant lapses, so with it again the folder asks again.
+    const without = setup(answerPaid('paid-deny'), [], true, first)
+    await without.runtime.paid.forgetUnflagged()
+    expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual({})
+    await without.runtime.close()
+    const flaggedAgain = setup(answerPaid('paid-deny'), ['webSearch'], true, first)
+    await flaggedAgain.runtime.paid.forgetUnflagged()
+    flaggedAgain.api.script({ text: 'Four.' })
+    await flaggedAgain.run((client) => promptOnce(client, flaggedAgain.workspace))
+    expect(flaggedAgain.permissions).toHaveLength(1)
+    expect(JSON.stringify(flaggedAgain.api.responseBodies()[0]?.['tools'])).not.toContain(
+      'web_search',
+    )
+    await flaggedAgain.runtime.close()
   })
 })

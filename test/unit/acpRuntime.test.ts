@@ -3,12 +3,16 @@ import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { PassThrough } from 'node:stream'
-import { afterAll, describe, expect, it, vi } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import type { LaunchResolution } from '../../src/core/backends/musecode/launch'
 import { authClear, authSet, authStatus, login } from '../../src/runtime/authCommands'
 import { createRuntimeBackend } from '../../src/runtime/backends'
 import { parseCommandLine, type ServeOptions } from '../../src/runtime/cliArgs'
-import { agentDataFolder, workspaceSessionsFolder } from '../../src/runtime/dataFolder'
+import {
+  agentDataFolder,
+  paidGrantsFile,
+  workspaceSessionsFolder,
+} from '../../src/runtime/dataFolder'
 import { walkFiles } from '../../src/runtime/fileWalk'
 import { readSecretLine } from '../../src/runtime/hiddenInput'
 import {
@@ -22,6 +26,7 @@ import { webReadable } from '../../src/runtime/webStreams'
 import { SECRET_KEYS, UI_TEXT } from '../../src/shared/constants'
 import { memorySecrets } from './helpers/fakes'
 import { fakeModelApi } from './helpers/fakeModelApi'
+import { buildModelApiBundle } from './helpers/modelApiBundle'
 import { removeFolder } from './helpers/temporaryFolders'
 
 // M63 (PLAN.md D61, D62): the agent's process, sign-in commands and key store.
@@ -435,15 +440,22 @@ describe('stderrLogger', () => {
 
 describe('createRuntimeBackend', () => {
   const log = { trace: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }
+  // The agent's dist/ folder, with the Model API backend's own bundle (M57).
+  const dist = { folder: '' }
+  beforeAll(() => {
+    dist.folder = folder()
+    buildModelApiBundle(dist.folder)
+  })
   function backend(
     options: Partial<ServeOptions>,
     secrets = memorySecrets(),
     env: NodeJS.ProcessEnv = {},
+    distDir = dist.folder,
   ) {
     return createRuntimeBackend({
       options: { ...DEFAULTS, ...options },
       version: '0.0.0-test',
-      distDir: folder(),
+      distDir,
       platform: process.platform,
       env,
       homeDir: folder(),
@@ -500,6 +512,30 @@ describe('createRuntimeBackend', () => {
     expect(host.info.kind).toBe('modelApi')
     expect(await runtime.backend.hostFor(root)).toBe(host)
     await runtime.close()
+  })
+
+  it('loads the Model API backend from dist/modelApi.js beside the agent, and says so when it is missing (M57)', async () => {
+    const secrets = memorySecrets()
+    secrets.values.set(SECRET_KEYS.modelApiKey, KEY)
+    const empty = folder()
+    const runtime = backend({ backend: 'modelApi' }, secrets, {}, empty)
+    await expect(runtime.backend.hostFor(folder())).rejects.toThrow(
+      UI_TEXT.modelApiBundleUnavailable,
+    )
+    expect(log.error).toHaveBeenCalledWith(
+      expect.stringContaining(`The Model API bundle ${path.join(empty, 'modelApi.js')}`),
+    )
+  })
+
+  it('keeps paid-use grants in the agent’s data folder (M58)', () => {
+    const home = folder()
+    const input = { platform: 'linux' as const, env: { XDG_DATA_HOME: home }, homeDir: home }
+    expect(paidGrantsFile(input)).toBe(
+      path.posix.join(home, 'muse-spark-code', 'acp', 'paid-uses.json'),
+    )
+    expect(
+      paidGrantsFile({ platform: 'win32', env: { LOCALAPPDATA: String.raw`C:\L` }, homeDir: 'C:' }),
+    ).toBe(String.raw`C:\L\Muse Spark Code\acp\paid-uses.json`)
   })
 })
 

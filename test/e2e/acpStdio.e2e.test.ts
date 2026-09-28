@@ -5,7 +5,9 @@
 // driven over its stdio by the ACP SDK's own client, on the fake Muse Code
 // CLI of fake-muse/serve.mjs. A reply streamed, a tool call allowed and one
 // denied, a cancel, the session listed, sign-in asked for, and the key never
-// on the wire.
+// on the wire. The Model API backend, which reads its key only from the OS
+// credential store, is loaded from the package's own dist/modelApi.js (M57)
+// in this process.
 
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
@@ -15,8 +17,14 @@ import { Writable } from 'node:stream'
 import * as acp from '@agentclientprotocol/sdk'
 import { EXPECTED_SCHEMA_FINGERPRINT } from '@muse-code/sdk'
 import { build } from 'esbuild'
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
+import type { AgentEvent } from '../../src/shared/agentEvents'
+import { createRuntimeBackend } from '../../src/runtime/backends'
 import { webReadable } from '../../src/runtime/webStreams'
+import { SECRET_KEYS } from '../../src/shared/constants'
+import { memorySecrets } from '../unit/helpers/fakes'
+import { fakeModelApi } from '../unit/helpers/fakeModelApi'
+import { buildModelApiBundle } from '../unit/helpers/modelApiBundle'
 import { removeFolder } from '../unit/helpers/temporaryFolders'
 import { installFakeCredential, installFakeMuse } from './fakeMuse'
 
@@ -35,6 +43,7 @@ const fake = installFakeMuse()
 const signedIn = installFakeCredential()
 const signedOut = mkdtempSync(path.join(tmpdir(), 'fake-muse-none-'))
 const workspace = mkdtempSync(path.join(tmpdir(), 'acp-e2e-ws-'))
+const dataHome = mkdtempSync(path.join(tmpdir(), 'acp-e2e-data-'))
 const children: ChildProcessWithoutNullStreams[] = []
 
 beforeAll(async () => {
@@ -52,6 +61,7 @@ beforeAll(async () => {
     external: ['@napi-rs/keyring'],
     logLevel: 'silent',
   })
+  buildModelApiBundle(path.dirname(AGENT))
   writeFileSync(path.join(PACKAGE, 'package.json'), JSON.stringify({ version: LAID_OUT_VERSION }))
   cpSync(path.join(ROOT, 'l10n'), path.join(PACKAGE, 'l10n'), { recursive: true })
 })
@@ -60,7 +70,7 @@ afterAll(async () => {
   for (const child of children) {
     child.kill()
   }
-  const made = [fake.installDir, signedIn, signedOut, workspace]
+  const made = [fake.installDir, signedIn, signedOut, workspace, dataHome]
   await Promise.all(
     [...made, ...(INSTALLED === undefined ? [PACKAGE] : [])].map((folder) => removeFolder(folder)),
   )
@@ -209,5 +219,54 @@ describe('the ACP agent over stdio (M63)', { timeout: TEST_TIMEOUT_MS }, () => {
       (error: { code?: number }) => error.code === -32_000 || error.code === -32_603,
     )
     expect(modelApi.wire.join('')).not.toMatch(/LLM\|/)
+  })
+
+  it('ships the Model API backend beside the agent, where the runtime loads it (M57)', async () => {
+    const api = fakeModelApi()
+    api.script({ text: 'From the bundle.' })
+    const secrets = memorySecrets()
+    secrets.values.set(SECRET_KEYS.modelApiKey, 'LLM|1|secret')
+    const log = { trace: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }
+    const runtime = createRuntimeBackend({
+      options: {
+        backend: 'modelApi',
+        trustWorkspace: false,
+        museBinary: '',
+        shellSandbox: 'off',
+        canBypass: false,
+        allowsContributorModels: false,
+        paidFeatures: [],
+        isVerbose: false,
+      },
+      version: LAID_OUT_VERSION,
+      distDir: path.dirname(AGENT),
+      platform: process.platform,
+      env: { XDG_DATA_HOME: dataHome, LOCALAPPDATA: dataHome },
+      homeDir: dataHome,
+      secrets,
+      runGit: () => Promise.reject(new Error('no git')),
+      fetch: api.fetch,
+      log,
+    })
+    try {
+      const host = await runtime.backend.hostFor(workspace)
+      const session = await host.startSession({
+        workspaceRoot: workspace,
+        modelId: 'muse-spark-1.3',
+        approvalMode: 'promptUnmatched',
+      })
+      const events: AgentEvent[] = []
+      session.onEvent((event) => {
+        events.push(event)
+      })
+      await session.sendTurn([{ type: 'text', text: 'hello' }], 'hello')
+      await vi.waitFor(() => {
+        expect(events.some((event) => event.type === 'turnCompleted')).toBe(true)
+      })
+      expect(JSON.stringify(events)).toContain('From the bundle.')
+      expect(log.error).not.toHaveBeenCalled()
+    } finally {
+      await runtime.close()
+    }
   })
 })

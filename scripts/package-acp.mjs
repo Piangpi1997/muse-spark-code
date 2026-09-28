@@ -2,7 +2,10 @@
 // The ACP agent's npm package (M63, PLAN.md D62): `muse-spark-code-acp`,
 // laid out in dist/acp-package/ and packed with `npm pack` into
 // dist/muse-spark-code-acp-<version>.tgz, which each GitHub Release carries
-// and `npm install -g` installs. The bundles come from the production build;
+// and `npm install -g` installs. The bundles come from the production build:
+// the agent, the Model API backend it loads when that backend first starts
+// (the extension's own dist/modelApi.js, M57, PLAN.md D6), and the search
+// worker;
 // the package's manifest is written here, with the extension's version, the
 // agent's command and the one dependency it does not bundle, the native
 // keyring binding (D61), at the version this repository locks.
@@ -24,7 +27,7 @@ import path from 'node:path'
 import process from 'node:process'
 
 const STAGE = path.join('dist', 'acp-package')
-const BUNDLES = ['acp.js', 'searchWorker.js']
+const BUNDLES = ['acp.js', 'modelApi.js', 'searchWorker.js']
 // The C# of the shell tool's Windows job (M27), compiled on first use, as
 // the extension ships it (PLAN.md D6): its own file and the half it shares.
 const JOB_SOURCES = [

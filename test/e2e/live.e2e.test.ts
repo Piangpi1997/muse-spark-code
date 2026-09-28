@@ -14,10 +14,10 @@
 import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import path from 'node:path'
-import { afterAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import type { AgentEvent } from '../../src/shared/agentEvents'
 import { MuseCodeBackendManager } from '../../src/host/backend/museCodeBackendManager'
-import { DEFAULT_MODEL_ID } from '../../src/shared/constants'
+import { CONTRIBUTOR_MODEL_SUFFIX, DEFAULT_MODEL_ID } from '../../src/shared/constants'
 import { FakeLogOutputChannel } from '../unit/helpers/fakes'
 
 const IS_ENABLED = process.env['MUSE_LIVE_E2E'] === '1'
@@ -29,6 +29,9 @@ const ATTEMPT_BUDGET = 60
 const LOG_WAIT_MS = 30_000
 const LOG_POLL_MS = 250
 const PROMPT = 'Reply with exactly the word OK and nothing else.'
+// The owner's rule for live tests (2026-09-24): the contributor tier, on
+// throwaway content only.
+const LIVE_MODEL_ID = `${DEFAULT_MODEL_ID}${CONTRIBUTOR_MODEL_SUFFIX}`
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => {
@@ -67,14 +70,8 @@ function countAttempts(log: string): number {
   return log.match(ATTEMPT_LINE)?.length ?? 0
 }
 
-const workspaceRoot = mkdtempSync(path.join(tmpdir(), 'muse-live-e2e-'))
-
-afterAll(() => {
-  rmSync(workspaceRoot, { recursive: true, force: true })
-})
-
 /** One turn on the real CLI: the session id and the streamed reply text. */
-async function runDrill(): Promise<{ sessionId: string; text: string }> {
+async function runDrill(workspaceRoot: string): Promise<{ sessionId: string; text: string }> {
   const backend = new MuseCodeBackendManager({
     log: new FakeLogOutputChannel(),
     extensionVersion: '0.0.0-live-e2e',
@@ -92,7 +89,7 @@ async function runDrill(): Promise<{ sessionId: string; text: string }> {
     const host = await backend.ensureHost()
     const session = await host.startSession({
       workspaceRoot,
-      modelId: DEFAULT_MODEL_ID,
+      modelId: LIVE_MODEL_ID,
       approvalMode: 'denyUnmatched',
     })
     const done = new Promise<AgentEvent>((resolve) => {
@@ -115,13 +112,25 @@ async function runDrill(): Promise<{ sessionId: string; text: string }> {
 }
 
 describe.skipIf(!IS_ENABLED)('live Muse Code conversation (MUSE_LIVE_E2E=1)', () => {
+  // Made here, not at import, so a skipped drill leaves no empty folder.
+  let workspaceRoot = ''
+  beforeAll(() => {
+    workspaceRoot = mkdtempSync(path.join(tmpdir(), 'muse-live-e2e-'))
+  })
+  afterAll(() => {
+    rmSync(workspaceRoot, { recursive: true, force: true })
+  })
+
   it(
     'runs one reply-only turn on the real CLI within the attempt budget',
     async () => {
-      const { sessionId, text } = await runDrill()
+      const { sessionId, text } = await runDrill(workspaceRoot)
       const attempts = countAttempts(await sessionLog(sessionId))
-      // The count is the record the certification quotes; vitest shows stderr.
-      console.warn(`live e2e: reply ${JSON.stringify(text)}; model attempts ${String(attempts)}`)
+      // The count is the record the certification quotes. Vitest 5 hides a
+      // passing test's console output but not a direct stderr write.
+      process.stderr.write(
+        `live e2e: reply ${JSON.stringify(text)}; model attempts ${String(attempts)}\n`,
+      )
       expect(text).toContain('OK')
       expect(attempts).toBeGreaterThan(0)
       expect(attempts).toBeLessThanOrEqual(ATTEMPT_BUDGET)

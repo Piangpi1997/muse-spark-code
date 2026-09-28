@@ -30,7 +30,6 @@ import {
   MUSE_EXIT_PERSISTENT_CODES,
   type SubagentAction,
   UI_TEXT,
-  WINDOWS_SESSION_EDITS_LIMITED_MAX_VERSION,
 } from '../../../shared/constants'
 import { fill } from '../../../shared/l10n/text'
 import { withDeadline } from '../../timeouts'
@@ -80,7 +79,6 @@ import {
   type WireNotification,
 } from './mapNotification'
 import { PromptLedger } from './promptLedger'
-import { isVersionAtMost } from './sandbox'
 import {
   historyOutcome,
   sessionClosedSchema,
@@ -848,10 +846,12 @@ export class MuseCodeHost implements AgentHost {
       serverVersion,
       museHome: parsed.museHome,
       grantedCapabilities: parsed.grantedCapabilities ?? [],
-      canEditSessions: !(
-        parsed.platformOs === WINDOWS_OS &&
-        isVersionAtMost(serverVersion, WINDOWS_SESSION_EDITS_LIMITED_MAX_VERSION)
-      ),
+      // Muse Code refuses `session/rename` and `session/fork` on Windows
+      // (meta-models/muse-code-sdk#30, #31): verified on 1.3.0 (2026-09-22)
+      // and 1.4.0 (2026-09-27). No release has fixed them, so every version
+      // is limited there until one is verified (D26). A 1.3.0 ceiling showed
+      // the failing actions again on 1.4.0 (0.9.1, release-0.9.1.md).
+      canEditSessions: parsed.platformOs !== WINDOWS_OS,
     }
     this.log.info(
       `MSP host on ${parsed.platformOs ?? 'an unreported OS'}, schema v${String(parsed.schema?.version ?? 'unreported')} ${parsed.schema?.fingerprint ?? ''}, sessions ${parsed.sessionDurability ?? DURABLE_SESSIONS}`,

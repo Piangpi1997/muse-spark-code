@@ -328,6 +328,17 @@ function projectHooksItem(deps: MuseConfigDeps): PickItem {
   }
 }
 
+/**
+ * On the Model API backend no hook source loads in an untrusted workspace, so
+ * a configured user or managed source says it waits for trust, as the project
+ * source does. Muse Code applies its own rules, so its view is unchanged.
+ */
+function withTrustNote(deps: MuseConfigDeps, detail: string): string {
+  return deps.modelApiHooks !== undefined && !deps.isWorkspaceTrusted()
+    ? `${detail} · ${UI_TEXT.hooksProjectUntrusted}`
+    : detail
+}
+
 export async function showHooks(deps: MuseConfigDeps): Promise<void> {
   const read = settingsText(deps)
   if (read.error !== undefined) {
@@ -337,7 +348,9 @@ export async function showHooks(deps: MuseConfigDeps): Promise<void> {
   const managed = sources.managedHooksPath
   let managedDetail: string = UI_TEXT.hooksManagedNotSet
   if (managed !== undefined) {
-    managedDetail = deps.fileExists(managed) ? UI_TEXT.hooksManagedSet : UI_TEXT.hooksManagedMissing
+    managedDetail = deps.fileExists(managed)
+      ? withTrustNote(deps, UI_TEXT.hooksManagedSet)
+      : UI_TEXT.hooksManagedMissing
   }
   const choice = await deps.pick(
     [
@@ -359,7 +372,7 @@ export async function showHooks(deps: MuseConfigDeps): Promise<void> {
         detail:
           sources.userHookCount === undefined
             ? UI_TEXT.hooksUserNone
-            : plural(UI_TEXT.hooksUserCount, sources.userHookCount),
+            : withTrustNote(deps, plural(UI_TEXT.hooksUserCount, sources.userHookCount)),
       },
       {
         id: MANAGED_HOOKS,

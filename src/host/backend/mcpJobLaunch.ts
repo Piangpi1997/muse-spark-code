@@ -89,7 +89,7 @@ export function spawnMcpJob(launch: McpJobLaunch): ChildProcessWithoutNullStream
   setEnvironmentVariable(helperEnv, 'win32', MCP_JOB_CONFIG_VARIABLE, payload)
   try {
     child = spawn(
-      // nosemgrep: javascript.lang.security.detect-child-process.detect-child-process -- this executable is compiled from fixed M50 source into extension storage; configured MCP input stays in a private environment value (PLAN.md §8).
+      // nosemgrep: javascript.lang.security.detect-child-process.detect-child-process -- this executable is compiled from the packaged native/windows/MuseSparkMcpLauncher.cs and MuseSparkMcpJob.cs into a digest-named file in extension storage; configured MCP input stays in a private environment value (PLAN.md §8).
       launch.executablePath,
       [],
       {

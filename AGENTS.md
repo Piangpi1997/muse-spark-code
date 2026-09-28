@@ -53,8 +53,9 @@ them, the milestone plan, and the certification checklist.
 8. **Secrets never leave SecretStorage.** No API keys in settings, logs,
    telemetry, tests, or fixtures. The pasted Model API key is never passed to
    any child process: the Muse Code CLI signs in on its own, and the
-   extension only checks that its credential file exists. Log through the
-   `LogOutputChannel`; never `console.log` in the host.
+   extension only checks that its credential file exists and when it last
+   changed, never its contents. Log through the `LogOutputChannel`; never
+   `console.log` in the host.
 9. **Dependencies are deliberate.** Before adding one: check peer ranges
    against the pins in `PLAN.md` §2 D3 (`npm info <pkg> peerDependencies`),
    check `npm audit`, pin the exact version (`.npmrc` enforces `save-exact`),
@@ -73,8 +74,13 @@ them, the milestone plan, and the certification checklist.
     billed to the Model API key: offered on the Model API backend, and on
     the Muse Code backend only while a key is stored and only through the
     extension itself (the `ide` server, M44; the key never reaches
-    `muse serve`). One that can ask first does, in every mode, Bypass
-    included. The subscription never pays for one.
+    `muse serve`). Every use asks first in the paid-use popup (M58, D48:
+    `PaidUseConsent` in `src/core/paid/paidConsent.ts`, Allow once / Allow
+    always in this workspace / Deny), in every mode, Bypass included; a
+    paid call never gets an approval card or a session rule. In the ACP
+    agent (D62) a feature is on only with its flag, and the same question
+    is the editor's permission prompt (`src/acp/paid.ts`). The
+    subscription never pays for one.
 13. **Wire shapes come from a live capture.** A row, parser or schema for
     something Muse Code or the Model API sends is written from a captured
     frame (the certification record names the capture, its workspace and its
@@ -86,8 +92,10 @@ them, the milestone plan, and the certification checklist.
 
 ```
 src/extension.ts      activation: the view, the panel, the commands, the openers
-src/host/**           VS Code adapters (views, conversation, backend managers and
-                      the search worker, commands, auth, settings, mentions,
+src/host/**           VS Code adapters (views, conversation, backend managers,
+                      the Model API bundle's entry (dist/modelApi.js, loaded
+                      when that backend first starts) and the search worker,
+                      commands, auth, settings, mentions,
                       editor tracking, usage trace logs, voice, the diagnostics
                       MCP server, the MCP servers' spawner, the network posture)
 src/core/**           backend-agnostic logic; must not import `vscode`
@@ -116,16 +124,19 @@ native/darwin/**      Dictation.swift, Info.plist, build.sh, check-disclaim.sh:
 resources/            the walkthrough
 test/unit/**          vitest (node + jsdom via docblock); `vscode` is mocked
 test/e2e/**           the fake Muse Code CLI driven through the real backend;
-                      the opt-in live drill
+                      the opt-in live drills (the Muse Code CLI; the Model
+                      API sweep, which bills the owner's key)
 test/integration/**   @vscode/test-cli, runs inside VS Code
 test/harness/         the webview behind a fake host, for screenshots and the
                       accessibility gate; themes/ holds VS Code's four themes
 test/hosts/           the extension and the ACP agent in other editors
                       against the fake CLI, one script per host (hosts.yml)
-scripts/**            esbuild build; bundle-size, host-globals, notices, audit,
-                      PSScriptAnalyzer, accessibility and localization gates;
-                      theme capture, the pseudo-locale, harness screenshots,
-                      image rendering, changelog notes
+scripts/**            esbuild build; bundle-size, bundle-split, host-globals,
+                      notices, audit, PSScriptAnalyzer, semgrep, accessibility,
+                      localization and host API gates; theme capture, the
+                      pseudo-locale, harness screenshots, image rendering,
+                      changelog notes, VS Code versions for CI, the ACP
+                      agent's package
 docs/certification/   per-milestone gate-fire records and screenshots
 docs/ide-compatibility.md, docs/ide-compatibility/
                       the plan for editors beyond VS Code (D60), the

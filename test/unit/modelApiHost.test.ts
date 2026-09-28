@@ -22,7 +22,7 @@ import {
 import type { AgentSession, DocumentPart, TurnPart } from '../../src/core/agent/agentBackend'
 import { AttachmentStore } from '../../src/core/attachments'
 import { ModelApiClient } from '../../src/core/backends/modelapi/client'
-import type { SubagentTaskConfirmation } from '../../src/shared/paid'
+import type { PaidUseRequest } from '../../src/shared/paid'
 import {
   ModelApiHost,
   ModelApiSession,
@@ -88,6 +88,17 @@ function hooksFor(event: string, command: string): readonly HookDefinition[] {
 
 function permitHook() {
   return hookReply(JSON.stringify({ decision: { behavior: 'allow' } }))
+}
+
+function denyHook() {
+  return hookReply(
+    JSON.stringify({
+      hookSpecificOutput: {
+        hookEventName: 'PermissionRequest',
+        decision: { behavior: 'deny', message: 'policy denied' },
+      },
+    }),
+  )
 }
 
 function hookReply(stdout = '{}') {
@@ -172,7 +183,10 @@ function setup(
     describeEnvironment?: ModelApiHostDeps['describeEnvironment']
     /** The paid features that are on (M33–M35); none unless a test says so. */
     paid?: readonly PaidFeature[]
-    confirmSubagentTask?: ModelApiHostDeps['confirmSubagentTask']
+    /** The paid-use popup (M58); every use is allowed unless a test says otherwise. */
+    allowsPaidUse?: ModelApiHostDeps['allowsPaidUse']
+    /** The features allowed always in this workspace (M58). */
+    remembered?: readonly PaidFeature[]
     apiKey?: () => Promise<string | undefined>
     /** The tools' files and shell, when a test needs its own (M46: a held shell). */
     io?: MemoryToolIo
@@ -196,6 +210,10 @@ function setup(
   } = {},
 ) {
   const paidUses: { readonly feature: PaidFeature; readonly units: number }[] = []
+  // What the paid-use popup was asked (M58), in order, and whether it had to ask.
+  const paidRequests: { readonly request: PaidUseRequest; readonly requiresAsking: boolean }[] = []
+  // The conversation each question was asked in, in the same order.
+  const paidSessions: string[] = []
   const subagentUsage: {
     readonly modelId: string
     readonly inputTokens: number
@@ -264,7 +282,13 @@ function setup(
     }),
     mcpServers: options.mcpServers,
     ideTools: options.ideTools,
-    confirmSubagentTask: options.confirmSubagentTask ?? (() => Promise.resolve(true)),
+    allowsPaidUse: async (request, requiresAsking, sessionId) => {
+      paidRequests.push({ request, requiresAsking })
+      paidSessions.push(sessionId)
+      return await (options.allowsPaidUse?.(request, requiresAsking, sessionId) ??
+        Promise.resolve(true))
+    },
+    isPaidUseRemembered: (feature) => options.remembered?.includes(feature) === true,
     noteSubagentUsage: (modelId, usage) => {
       subagentUsage.push({ modelId, ...usage })
     },
@@ -282,6 +306,8 @@ function setup(
     files: io.files,
     shellCalls: io.shellCalls,
     paidUses,
+    paidRequests,
+    paidSessions,
     advanceClock: (ms: number) => {
       clock += ms
     },
@@ -336,6 +362,34 @@ async function approvalRequest(
     throw new Error('expected an approval request')
   }
   return request
+}
+
+/**
+ * A paid-use popup (M58) that allows every use at once until `hold` is
+ * called; from then on each use waits until the test settles the answer
+ * `hold` returned, as a user would while the popup is open.
+ */
+function paidPopup() {
+  let held: PromiseWithResolvers<boolean> | undefined
+  return {
+    allowsPaidUse: (): Promise<boolean> => held?.promise ?? Promise.resolve(true),
+    hold: (): PromiseWithResolvers<boolean> => {
+      held = Promise.withResolvers<boolean>()
+      return held
+    },
+  }
+}
+
+/** Waits until the paid-use popup has been asked `count` times in all. */
+async function paidPopupAsked(t: ReturnType<typeof setup>, count: number): Promise<void> {
+  await vi.waitFor(() => {
+    expect(t.paidRequests).toHaveLength(count)
+  })
+}
+
+/** Whether any approval card was shown: a paid call never gets one (M58). */
+function hasApprovalCard(events: readonly AgentEvent[]): boolean {
+  return events.some((event) => event.type === 'approvalRequested')
 }
 
 /** One plain turn: "first", answered "first reply". */
@@ -3476,18 +3530,7 @@ describe('ModelApiSession: hook boundaries (M51)', () => {
   })
 
   it('lets a PermissionRequest hook deny without showing an approval card', async () => {
-    const t = setup({
-      hooks: hooksFor('PermissionRequest', 'deny'),
-      runHook: () =>
-        hookReply(
-          JSON.stringify({
-            hookSpecificOutput: {
-              hookEventName: 'PermissionRequest',
-              decision: { behavior: 'deny', message: 'policy denied' },
-            },
-          }),
-        ),
-    })
+    const t = setup({ hooks: hooksFor('PermissionRequest', 'deny'), runHook: denyHook })
     const events = await completeUnpromptedWrite(t)
     expect(t.files.has(`${ROOT}/notes.txt`)).toBe(false)
     expect(
@@ -3506,7 +3549,7 @@ describe('ModelApiSession: hook boundaries (M51)', () => {
     expect(t.files.get(`${ROOT}/notes.txt`)).toBe('x')
   })
 
-  it('keeps protected writes and paid calls on user cards despite hook allow', async () => {
+  it('keeps protected writes on cards and paid calls on the popup despite hook allow', async () => {
     const protectedWrite = setup({
       hooks: hooksFor('PermissionRequest', 'allow'),
       runHook: permitHook,
@@ -3539,20 +3582,51 @@ describe('ModelApiSession: hook boundaries (M51)', () => {
       paid: ['imageGeneration'],
       hooks: hooksFor('PermissionRequest', 'allow'),
       runHook: permitHook,
+      allowsPaidUse: () => Promise.resolve(false),
     })
     const second = await startSession(paid, 'allowAll')
     paid.api.script({ calls: [imageCall({ prompt: 'one', path: 'one.png' })] }, { text: 'done' })
     await second.session.sendTurn([{ type: 'text', text: 'draw' }])
-    const paidCard = await approvalRequest(second.events, 0)
-    expect(paidCard.subject).toMatchObject({ kind: 'paidTool', paidFeature: 'imageGeneration' })
-    await second.session.decideApproval({
-      approvalId: paidCard.approvalId,
-      choiceId: 'abort',
-      requirementId: paidCard.requirementId,
-    })
     await second.turnDone()
+    expect(paid.paidRequests).toEqual([
+      {
+        request: {
+          feature: 'imageGeneration',
+          kind: 'generate',
+          path: 'one.png',
+          sources: [],
+          prompt: 'one',
+        },
+        requiresAsking: false,
+      },
+    ])
+    expect(second.events.some((event) => event.type === 'approvalRequested')).toBe(false)
     expect(paid.paidUses).toEqual([])
     expect(paid.io.binaries.has(`${ROOT}/one.png`)).toBe(false)
+  })
+
+  it('lets a PermissionRequest hook deny a paid image before the popup asks (M58)', async () => {
+    const t = setup({
+      paid: ['imageGeneration'],
+      hooks: hooksFor('PermissionRequest', 'deny'),
+      runHook: denyHook,
+    })
+    const { session, events, turnDone } = await startSession(t, 'allowAll')
+    t.api.script({ calls: [imageCall({ prompt: 'one', path: 'one.png' })] }, { text: 'done' })
+    await session.sendTurn([{ type: 'text', text: 'draw' }])
+    await turnDone()
+    expect(t.paidRequests).toEqual([])
+    expect(hasApprovalCard(events)).toBe(false)
+    expect(
+      events.find(
+        (event) => event.type === 'itemCompleted' && event.item.tool === 'generate_image',
+      ),
+    ).toMatchObject({
+      item: { status: 'rejected', failureReason: 'generate_image rejected by a hook' },
+    })
+    expect(t.api.imageBodies()).toEqual([])
+    expect(t.paidUses).toEqual([])
+    expect(t.io.binaries.has(`${ROOT}/one.png`)).toBe(false)
   })
 
   it('emits success, failure, batch and stop hook payloads at their boundaries', async () => {
@@ -4749,35 +4823,45 @@ function setupSubagents(options: Parameters<typeof setup>[0] = {}) {
   return setup({ ...options, paid: [...(options.paid ?? []), 'subagents'] })
 }
 
+/**
+ * A Bypass session whose spawns the paid-use popup allows (M58): the
+ * harness's popup allows every use unless a test says otherwise.
+ */
 async function startApprovedSubagentSession(t: ReturnType<typeof setup>) {
-  const started = await startSession(t, 'allowAll')
-  started.session.onEvent((event) => {
-    if (event.type === 'approvalRequested' && event.subject.paidFeature === 'subagents') {
-      void started.session.decideApproval({
-        approvalId: event.approvalId,
-        choiceId: 'allow_once',
-        requirementId: event.requirementId,
-      })
-    }
-  })
-  return started
+  return await startSession(t, 'allowAll')
 }
 
-async function refusePaidSpawnDecision(
+/** The turn of a spawn the popup refused ends with no child and nothing billed. */
+async function expectRefusedSpawn(
   t: ReturnType<typeof setup>,
   session: ModelApiSession,
-  approval: Extract<AgentEvent, { type: 'approvalRequested' }>,
   turnDone: () => Promise<void>,
-  choiceId: 'abort' | 'allow_session',
 ): Promise<void> {
-  await session.decideApproval({
-    approvalId: approval.approvalId,
-    choiceId,
-    requirementId: approval.requirementId,
-  })
   await turnDone()
   expect(session.history().items.some((item) => item.kind === 'subagent')).toBe(false)
   expect(t.paidUses).toEqual([])
+}
+
+/** One `subagent_spawn` call for an explorer to map files, then the parent's reply. */
+function scriptExplorerSpawn(t: ReturnType<typeof setup>, callId: string): void {
+  t.api.script(
+    {
+      calls: [
+        {
+          name: 'subagent_spawn',
+          arguments: '{"role":"explorer","objective":"Map files"}',
+          callId,
+        },
+      ],
+    },
+    { text: 'Parent continues.' },
+  )
+}
+
+/** The popup request for an explorer's "Map files" task on the default model. */
+const MAP_FILES_REQUEST: PaidUseRequest = {
+  feature: 'subagents',
+  task: { role: 'explorer', objective: 'Map files', modelId: 'muse-spark-1.3', attemptLimit: 4 },
 }
 
 /** A settled first child, so follow-up consent tests have no parent race. */
@@ -4827,85 +4911,68 @@ describe('ModelApiSession subagents (M48)', () => {
   })
 
   it('asks once for a bounded BYOK child task even in Bypass', async () => {
-    const t = setup({ paid: ['subagents'] })
+    const popup = paidPopup()
+    const t = setup({ paid: ['subagents'], allowsPaidUse: popup.allowsPaidUse })
     const { session, events, turnDone } = await startSession(t, 'allowAll')
-    t.api.script(
-      {
-        calls: [
-          {
-            name: 'subagent_spawn',
-            arguments: '{"role":"explorer","objective":"Map files"}',
-            callId: 'paid_spawn',
-          },
-        ],
-      },
-      { text: 'Parent continues.' },
-    )
+    const answer = popup.hold()
+    scriptExplorerSpawn(t, 'paid_spawn')
     await session.sendTurn([{ type: 'text', text: 'delegate' }])
-    const approval = await approvalRequest(events, 0)
-    expect(approval.subject).toMatchObject({
-      paidFeature: 'subagents',
-      modelId: 'muse-spark-1.3',
-      requestLimit: 4,
-    })
-    expect(approval.availableChoices.map((choice) => choice.choiceId)).toEqual([
-      'allow_once',
-      'abort',
-    ])
+    await paidPopupAsked(t, 1)
+    expect(t.paidRequests).toEqual([{ request: MAP_FILES_REQUEST, requiresAsking: false }])
+    expect(hasApprovalCard(events)).toBe(false)
     expect(t.api.responseBodies()).toHaveLength(1)
     expect(session.history().items.some((item) => item.kind === 'subagent')).toBe(false)
-    await refusePaidSpawnDecision(t, session, approval, turnDone, 'abort')
-  })
-
-  it('rejects a forged session-wide decision on a one-use child card', async () => {
-    const t = setupSubagents()
-    const { session, events, turnDone } = await startSession(t, 'allowAll')
-    t.api.script(
-      {
-        calls: [
-          {
-            name: 'subagent_spawn',
-            arguments: '{"role":"explorer","objective":"Map files"}',
-            callId: 'forged_session_spawn',
-          },
-        ],
-      },
-      { text: 'Parent continues.' },
-    )
-    await session.sendTurn([{ type: 'text', text: 'delegate' }])
-    const approval = await approvalRequest(events, 0)
-    expect(approval.availableChoices.some((choice) => choice.choiceId === 'allow_session')).toBe(
-      false,
-    )
-    await refusePaidSpawnDecision(t, session, approval, turnDone, 'allow_session')
-  })
-
-  it('expires a pending paid spawn card when the parent switches to Plan', async () => {
-    const t = setupSubagents()
-    const { session, events, turnDone } = await startSession(t, 'allowAll')
-    t.api.script(
-      {
-        calls: [
-          {
-            name: 'subagent_spawn',
-            arguments: '{"role":"explorer","objective":"Map files"}',
-            callId: 'spawn_before_plan',
-          },
-        ],
-      },
-      { text: 'Parent continues.' },
-    )
-    await session.sendTurn([{ type: 'text', text: 'delegate' }])
-    const approval = await approvalRequest(events, 0)
-    await session.setApprovalMode('denyUnmatched')
-    await session.decideApproval({
-      approvalId: approval.approvalId,
-      choiceId: 'allow_once',
-      requirementId: approval.requirementId,
+    answer.resolve(false)
+    await expectRefusedSpawn(t, session, turnDone)
+    expect(outputFor(t.api.responseBodies()[1], 'paid_spawn')).toMatchObject({
+      output: `Error: ${MODEL_TEXT.subagentConsentDeclined}`,
     })
+  })
+
+  it('asks a paid spawn only in the popup, leaving no card a forged decision could answer', async () => {
+    const popup = paidPopup()
+    const t = setupSubagents({ allowsPaidUse: popup.allowsPaidUse })
+    const { session, events, turnDone } = await startSession(t, 'allowAll')
+    const answer = popup.hold()
+    scriptExplorerSpawn(t, 'forged_session_spawn')
+    await session.sendTurn([{ type: 'text', text: 'delegate' }])
+    await paidPopupAsked(t, 1)
+    expect(hasApprovalCard(events)).toBe(false)
+    const spawnRow = events.find(
+      (event) => event.type === 'itemStarted' && event.item.tool === 'subagent_spawn',
+    )
+    if (spawnRow?.type !== 'itemStarted') {
+      throw new Error('expected the spawn row')
+    }
+    // A session-wide answer forged for the spawn's own row finds nothing pending.
+    const forgedId = spawnRow.item.itemId
+    await expect(
+      session.decideApproval({
+        approvalId: forgedId,
+        choiceId: 'allow_session',
+        requirementId: { approvalId: forgedId, sourceIndex: 0 },
+      }),
+    ).rejects.toThrow('is not pending')
+    answer.resolve(false)
+    await expectRefusedSpawn(t, session, turnDone)
+  })
+
+  it('expires a pending paid spawn popup when the parent switches to Plan', async () => {
+    const popup = paidPopup()
+    const t = setupSubagents({ allowsPaidUse: popup.allowsPaidUse })
+    const { session, turnDone } = await startSession(t, 'allowAll')
+    const answer = popup.hold()
+    scriptExplorerSpawn(t, 'spawn_before_plan')
+    await session.sendTurn([{ type: 'text', text: 'delegate' }])
+    await paidPopupAsked(t, 1)
+    await session.setApprovalMode('denyUnmatched')
+    answer.resolve(true)
     await turnDone()
     expect(session.history().items.some((item) => item.kind === 'subagent')).toBe(false)
     expect(t.api.responseBodies()).toHaveLength(2)
+    expect(outputFor(t.api.responseBodies()[1], 'spawn_before_plan')).toMatchObject({
+      output: `Error: ${MODEL_TEXT.subagentPlanMode}`,
+    })
     expect(t.paidUses).toEqual([])
   })
 
@@ -4997,16 +5064,22 @@ describe('ModelApiSession subagents (M48)', () => {
   it.each(['stop', 'dispose'] as const)(
     'does not revive a closed child after %s while reopen consent waits',
     async (action) => {
-      const pending = Promise.withResolvers<boolean>()
-      const confirm = vi.fn(() => pending.promise)
-      const t = setupSubagents({ confirmSubagentTask: confirm })
+      const popup = paidPopup()
+      const t = setupSubagents({ allowsPaidUse: popup.allowsPaidUse })
       const { session } = await startApprovedSubagentSession(t)
       const before = await completePaidChild(t, session, `spawn_before_${action}`)
       await session.controlSubagent('subagent-1', 'readResult')
       const attempts = t.paidUses.filter((use) => use.feature === 'subagents').length
+      // The spawn asked once; the reopen's popup stays open.
+      const pending = popup.hold()
       const reopening = session.controlSubagent('subagent-1', 'reopen')
-      await vi.waitFor(() => {
-        expect(confirm).toHaveBeenCalledTimes(1)
+      await paidPopupAsked(t, 2)
+      expect(t.paidRequests[1]).toEqual({
+        request: {
+          feature: 'subagents',
+          task: expect.objectContaining({ role: 'explorer', attemptLimit: 4 }),
+        },
+        requiresAsking: false,
       })
       if (action === 'stop') {
         await session.controlSubagent('subagent-1', 'stop')
@@ -5069,17 +5142,9 @@ describe('ModelApiSession subagents (M48)', () => {
     const store = memorySessionStore()
     const t = setupSubagents({ store })
     const { session, events } = await startSession(t, 'promptUnmatched')
-    // Only the spawn consent is answered; the child's own tool approval waits.
-    session.onEvent((event) => {
-      if (event.type === 'approvalRequested' && event.subject.paidFeature === 'subagents') {
-        void session.decideApproval({
-          approvalId: event.approvalId,
-          choiceId: 'allow_once',
-          requirementId: event.requirementId,
-        })
-      }
-    })
+    // The popup allows the spawn; the child's own tool approval waits on its card.
     await completePaidChild(t, session, 'spawn_persist')
+    expect(hasApprovalCard(events)).toBe(false)
     // A follow-up starts a second child turn while the parent stays idle, so
     // only the child consumes the scripted calls below.
     t.api.script(
@@ -5148,14 +5213,7 @@ describe('ModelApiSession subagents (M48)', () => {
           pendingMessages: ['Retained note B'],
         })),
       })
-      const confirmed: SubagentTaskConfirmation[] = []
-      const second = setupSubagents({
-        store,
-        confirmSubagentTask: (task) => {
-          confirmed.push(task)
-          return Promise.resolve(true)
-        },
-      })
+      const second = setupSubagents({ store })
       await second.host.load()
       const restored = await second.host.resumeSession(session.sessionId, 'muse-spark-1.3')
       second.api.script({ text: 'Child resumed.' })
@@ -5168,8 +5226,20 @@ describe('ModelApiSession subagents (M48)', () => {
         action === 'resume'
           ? `Retained note B\n\n${MODEL_TEXT.subagentResume}`
           : 'Retained note B\n\nFollow-up C'
-      expect(confirmed).toHaveLength(1)
-      expect(confirmed[0]?.objective).toBe(expected)
+      expect(second.paidRequests).toEqual([
+        {
+          request: {
+            feature: 'subagents',
+            task: {
+              role: 'explorer',
+              objective: expected,
+              modelId: 'muse-spark-1.3',
+              attemptLimit: 4,
+            },
+          },
+          requiresAsking: false,
+        },
+      ])
       await vi.waitFor(() => {
         expect(second.api.responseBodies()).toHaveLength(1)
       })
@@ -5246,11 +5316,77 @@ describe('ModelApiSession subagents (M48)', () => {
     expect(t.paidUses.filter((use) => use.feature === 'subagents')).toEqual([])
   })
 
-  it('leaves UI follow-up and reopen stopped when their new price modal is declined', async () => {
-    const confirm = vi.fn((_task: SubagentTaskConfirmation) => Promise.resolve(false))
-    const t = setupSubagents({ confirmSubagentTask: confirm })
+  it('gives a child of a prompt whose web search was denied no search, never asking itself (M58)', async () => {
+    const t = setupSubagents({
+      paid: ['webSearch'],
+      allowsPaidUse: (request) => Promise.resolve(request.feature !== 'webSearch'),
+    })
+    const { session } = await startApprovedSubagentSession(t)
+    await completePaidChild(t, session, 'spawn_after_denied_search')
+    const bodies = t.api.responseBodies()
+    const childBodies = bodies.filter((body) => isChildRequest(body))
+    expect(childBodies).toHaveLength(1)
+    for (const body of bodies) {
+      expect(webSearchTools(body)).toEqual([])
+      expect(body['include']).toEqual(['reasoning.encrypted_content'])
+    }
+    // The parent's web search popup, then the spawn's; the child asked nothing.
+    expect(t.paidRequests).toEqual([
+      { request: { feature: 'webSearch' }, requiresAsking: false },
+      {
+        request: {
+          feature: 'subagents',
+          task: {
+            role: 'explorer',
+            objective: 'First task',
+            modelId: 'muse-spark-1.3',
+            attemptLimit: 4,
+          },
+        },
+        requiresAsking: false,
+      },
+    ])
+  })
+
+  it.each([
+    ['allowed always', ['webSearch']],
+    ['asked each prompt', []],
+  ] as const)(
+    'gives a UI follow-up web search only when it is %s in this workspace (M58)',
+    async (_label, remembered) => {
+      const t = setupSubagents({ paid: ['webSearch'], remembered: [...remembered] })
+      const { session } = await startApprovedSubagentSession(t)
+      const before = await completePaidChild(t, session, 'spawn_before_ui_search')
+      // The prompt allowed search, so its own child searched.
+      const firstChild = t.api.responseBodies().find((body) => isChildRequest(body))
+      expect(webSearchTools(firstChild)).toEqual([{ type: 'web_search' }])
+      t.api.script({ text: 'Second task done.' })
+      await session.messageSubagent('subagent-1', 'Second task', true)
+      await vi.waitFor(() => {
+        expect(session.history().items.find((item) => item.kind === 'subagent')).toMatchObject({
+          controlStatus: 'resultReady',
+          result: { summary: 'Second task done.' },
+        })
+      })
+      expect(t.api.responseBodies()).toHaveLength(before + 1)
+      // No prompt is running: the follow-up searches only if search is allowed always.
+      expect(webSearchTools(t.api.responseBodies()[before])).toEqual(
+        remembered.length > 0 ? [{ type: 'web_search' }] : [],
+      )
+      expect(t.paidRequests.map(({ request }) => request.feature)).toEqual([
+        'webSearch',
+        'subagents',
+        'subagents',
+      ])
+    },
+  )
+
+  it('leaves UI follow-up and reopen stopped when their paid-use popup is declined', async () => {
+    let isAllowed = true
+    const t = setupSubagents({ allowsPaidUse: () => Promise.resolve(isAllowed) })
     const { session } = await startApprovedSubagentSession(t)
     const before = await completePaidChild(t, session, 'spawn_for_ui_decline')
+    isAllowed = false
     await expect(session.messageSubagent('subagent-1', 'Second task', true)).rejects.toThrow(
       UI_TEXT.subagentConsentDeclined,
     )
@@ -5258,31 +5394,44 @@ describe('ModelApiSession subagents (M48)', () => {
     await expect(session.controlSubagent('subagent-1', 'reopen')).rejects.toThrow(
       UI_TEXT.subagentConsentDeclined,
     )
-    expect(confirm).toHaveBeenCalledTimes(2)
-    expect(confirm.mock.calls[0]?.[0]).toMatchObject({
-      role: 'explorer',
-      objective: 'Second task',
-      modelId: 'muse-spark-1.3',
-      attemptLimit: 4,
+    // The spawn's popup, then one for each of the two owner tasks.
+    expect(t.paidRequests).toHaveLength(3)
+    expect(t.paidRequests[1]).toEqual({
+      request: {
+        feature: 'subagents',
+        task: {
+          role: 'explorer',
+          objective: 'Second task',
+          modelId: 'muse-spark-1.3',
+          attemptLimit: 4,
+        },
+      },
+      requiresAsking: false,
+    })
+    expect(t.paidRequests[2]).toMatchObject({
+      request: { feature: 'subagents' },
+      requiresAsking: false,
     })
     expect(t.api.responseBodies()).toHaveLength(before)
     expect(t.paidUses.filter((use) => use.feature === 'subagents')).toHaveLength(1)
   })
 
   it.each(['gate', 'key', 'missingKey', 'model'] as const)(
-    'expires a UI child-task consent when %s changes while its modal is open',
+    'expires a UI child-task consent when %s changes while its popup is open',
     async (variant) => {
       const paid: PaidFeature[] = ['subagents']
       let key: string | undefined = 'LLM|1|secret'
-      const pending = Promise.withResolvers<boolean>()
-      const confirm = vi.fn(() => pending.promise)
-      const t = setup({ paid, apiKey: () => Promise.resolve(key), confirmSubagentTask: confirm })
-      const { session } = await startApprovedSubagentSession(t)
-      const before = await completePaidChild(t, session, `spawn_modal_${variant}`)
-      const continuation = session.messageSubagent('subagent-1', 'Second task', true)
-      await vi.waitFor(() => {
-        expect(confirm).toHaveBeenCalledTimes(1)
+      const popup = paidPopup()
+      const t = setup({
+        paid,
+        apiKey: () => Promise.resolve(key),
+        allowsPaidUse: popup.allowsPaidUse,
       })
+      const { session } = await startApprovedSubagentSession(t)
+      const before = await completePaidChild(t, session, `spawn_popup_${variant}`)
+      const pending = popup.hold()
+      const continuation = session.messageSubagent('subagent-1', 'Second task', true)
+      await paidPopupAsked(t, 2)
       switch (variant) {
         case 'gate': {
           paid.length = 0
@@ -5416,8 +5565,10 @@ describe('ModelApiSession subagents (M48)', () => {
 
   it('asks before spawning in Manual and keeps a child transcript after session disposal', async () => {
     const store = memorySessionStore()
-    const t = setupSubagents({ store })
+    const popup = paidPopup()
+    const t = setupSubagents({ store, allowsPaidUse: popup.allowsPaidUse })
     const { session, events } = await startSession(t)
+    const answer = popup.hold()
     t.api.script(
       {
         calls: [
@@ -5432,18 +5583,24 @@ describe('ModelApiSession subagents (M48)', () => {
       { text: 'Reviewed files' },
     )
     await session.sendTurn([{ type: 'text', text: 'delegate' }])
-    const approval = await approvalRequest(events, 0)
-    expect(approval.subject).toMatchObject({
-      kind: 'paidTool',
-      toolName: 'subagent_spawn',
-      paidFeature: 'subagents',
-    })
+    await paidPopupAsked(t, 1)
+    expect(t.paidRequests).toEqual([
+      {
+        request: {
+          feature: 'subagents',
+          task: {
+            role: 'reviewer',
+            objective: 'Review files',
+            modelId: 'muse-spark-1.3',
+            attemptLimit: 4,
+          },
+        },
+        requiresAsking: false,
+      },
+    ])
+    expect(hasApprovalCard(events)).toBe(false)
     expect(session.history().items.some((item) => item.kind === 'subagent')).toBe(false)
-    await session.decideApproval({
-      approvalId: approval.approvalId,
-      choiceId: 'allow_once',
-      requirementId: approval.requirementId,
-    })
+    answer.resolve(true)
     await vi.waitFor(() => {
       expect(session.history().items.find((item) => item.kind === 'subagent')?.controlStatus).toBe(
         'resultReady',
@@ -5463,7 +5620,7 @@ describe('ModelApiSession subagents (M48)', () => {
       'not held by this window',
     )
     const confirmRestored = vi.fn(() => Promise.resolve(false))
-    const second = setupSubagents({ store, confirmSubagentTask: confirmRestored })
+    const second = setupSubagents({ store, allowsPaidUse: confirmRestored })
     await second.host.load()
     const restored = await second.host.resumeSession(session.sessionId, 'muse-spark-1.3')
     expect(restored.history.items.find((item) => item.kind === 'subagent')).toMatchObject({
@@ -5481,6 +5638,12 @@ describe('ModelApiSession subagents (M48)', () => {
       UI_TEXT.subagentConsentDeclined,
     )
     expect(confirmRestored).toHaveBeenCalledOnce()
+    expect(second.paidRequests).toEqual([
+      {
+        request: { feature: 'subagents', task: expect.objectContaining({ role: 'reviewer' }) },
+        requiresAsking: false,
+      },
+    ])
     expect(second.api.responseBodies()).toEqual([])
   })
 
@@ -5501,18 +5664,18 @@ describe('ModelApiSession subagents (M48)', () => {
       { text: 'Parent continues.' },
     )
     await session.sendTurn([{ type: 'text', text: 'delegate the write' }])
-    const spawn = await approvalRequest(events, 0)
-    expect(spawn.subject).toMatchObject({
-      kind: 'paidTool',
-      toolName: 'subagent_spawn',
-      paidFeature: 'subagents',
-    })
-    await session.decideApproval({
-      approvalId: spawn.approvalId,
-      choiceId: 'allow_once',
-      requirementId: spawn.requirementId,
-    })
+    // The spawn asks in the popup (allowed), never on a card.
     await waitForChildReady(t, session)
+    expect(t.paidRequests).toEqual([
+      {
+        request: {
+          feature: 'subagents',
+          task: expect.objectContaining({ role: 'writer', objective: 'Write child-note.txt' }),
+        },
+        requiresAsking: false,
+      },
+    ])
+    expect(hasApprovalCard(events)).toBe(false)
     const childSessionId = session
       .history()
       .items.find((item) => item.kind === 'subagent')?.childSessionId
@@ -5532,7 +5695,7 @@ describe('ModelApiSession subagents (M48)', () => {
       { text: 'Child finished.' },
     )
     await session.messageSubagent('subagent-1', 'Write child-note.txt now', true)
-    const write = await approvalRequest(events, 1)
+    const write = await approvalRequest(events, 0)
     expect(write.subject).toMatchObject({ kind: 'fileWrite', path: 'child-note.txt' })
     expect(
       events.find((event) => event.type === 'itemStarted' && event.item.itemId === write.itemId),
@@ -5556,6 +5719,60 @@ describe('ModelApiSession subagents (M48)', () => {
     await vi.waitFor(() => {
       expect(t.files.get(`${ROOT}/child-note.txt`)).toBe('from child')
     })
+  })
+
+  it('asks each paid use in its conversation, a child’s in its parent’s (M58, PLAN.md D62)', async () => {
+    const t = setupSubagents({
+      paid: ['webSearch', 'imageGeneration'],
+      allowsPaidUse: (request) => Promise.resolve(request.feature !== 'imageGeneration'),
+    })
+    const other = await startSession(t)
+    await answerFirst(t, other.session, other.turnDone)
+    const { session } = await startSession(t)
+    t.api.script(
+      {
+        calls: [
+          {
+            name: 'subagent_spawn',
+            arguments: '{"role":"designer","objective":"Draw the logo"}',
+            callId: 'spawn',
+          },
+        ],
+      },
+      { text: 'Child ready.' },
+      { text: 'Parent continues.' },
+    )
+    await session.sendTurn([{ type: 'text', text: 'delegate the logo' }])
+    await waitForChildReady(t, session)
+    t.api.script(
+      {
+        calls: [
+          {
+            name: 'generate_image',
+            arguments: '{"path":"logo.png","prompt":"a logo"}',
+            callId: 'child_image',
+          },
+        ],
+      },
+      { text: 'Child finished.' },
+    )
+    await session.messageSubagent('subagent-1', 'Draw it now', true)
+    await paidPopupAsked(t, 5)
+    // Web search in each conversation, the spawn, the owner's follow-up, then
+    // the child's image: the host serves both conversations, and the child
+    // asks in its parent's.
+    expect(t.paidRequests.map(({ request }) => request.feature)).toEqual([
+      'webSearch',
+      'webSearch',
+      'subagents',
+      'subagents',
+      'imageGeneration',
+    ])
+    expect(t.paidSessions).toEqual([
+      other.session.sessionId,
+      ...Array.from({ length: 4 }, () => session.sessionId),
+    ])
+    expect(other.session.sessionId).not.toBe(session.sessionId)
   })
 
   it('reuses the same child when a spawn command id is retried', async () => {
@@ -5941,9 +6158,7 @@ describe('ModelApiSession subagents (M48)', () => {
     const t = setupSubagents()
     const { session, events } = await startApprovedSubagentSession(t)
     await completePaidChild(t, session, 'spawn_before_model_followup')
-    const priorApprovals = events.filter(
-      (event) => event.type === 'approvalRequested' && event.subject.paidFeature === 'subagents',
-    ).length
+    const priorAsks = t.paidRequests.length
     t.api.script(
       {
         calls: [
@@ -5959,17 +6174,25 @@ describe('ModelApiSession subagents (M48)', () => {
     )
     await session.sendTurn([{ type: 'text', text: 'give the child another task' }])
     await vi.waitFor(() => {
-      expect(
-        events.filter(
-          (event) =>
-            event.type === 'approvalRequested' && event.subject.paidFeature === 'subagents',
-        ),
-      ).toHaveLength(priorApprovals + 1)
+      expect(t.paidRequests).toHaveLength(priorAsks + 1)
       expect(t.paidUses.filter((use) => use.feature === 'subagents')).toHaveLength(2)
       expect(session.history().items.find((item) => item.kind === 'subagent')).toMatchObject({
         controlStatus: 'resultReady',
       })
     })
+    expect(t.paidRequests.at(-1)).toEqual({
+      request: {
+        feature: 'subagents',
+        task: {
+          role: 'explorer',
+          objective: 'Next task',
+          modelId: 'muse-spark-1.3',
+          attemptLimit: 4,
+        },
+      },
+      requiresAsking: false,
+    })
+    expect(hasApprovalCard(events)).toBe(false)
   })
 
   it('lets a running-child note use its existing grant without renewing consent', async () => {
@@ -5991,9 +6214,7 @@ describe('ModelApiSession subagents (M48)', () => {
     )
     try {
       await delegateAndWaitForChild(session, { controlStatus: 'running' }, true)
-      const priorApprovals = events.filter(
-        (event) => event.type === 'approvalRequested' && event.subject.paidFeature === 'subagents',
-      ).length
+      const priorAsks = t.paidRequests.length
       const priorAttempts = t.paidUses.filter((use) => use.feature === 'subagents').length
       t.api.script(
         {
@@ -6011,12 +6232,9 @@ describe('ModelApiSession subagents (M48)', () => {
       await vi.waitFor(() => {
         expect(session.status).toBe('idle')
       })
-      expect(
-        events.filter(
-          (event) =>
-            event.type === 'approvalRequested' && event.subject.paidFeature === 'subagents',
-        ),
-      ).toHaveLength(priorApprovals)
+      expect(priorAsks).toBe(1)
+      expect(t.paidRequests).toHaveLength(priorAsks)
+      expect(hasApprovalCard(events)).toBe(false)
       expect(t.paidUses.filter((use) => use.feature === 'subagents')).toHaveLength(priorAttempts)
     } finally {
       holdChild.resolve(undefined)
@@ -6277,8 +6495,12 @@ describe('ModelApiSession: child hook boundaries (M51 with M48)', () => {
         isCancelled: false,
       }),
     )
-    const t = setupSubagents({ hooks: hooksFor('SubagentStart', 'announce'), runHook })
-    const { session, events, turnDone } = await startSession(t, 'allowAll')
+    const t = setupSubagents({
+      hooks: hooksFor('SubagentStart', 'announce'),
+      runHook,
+      allowsPaidUse: () => Promise.resolve(false),
+    })
+    const { session, turnDone } = await startSession(t, 'allowAll')
     t.api.script(
       {
         calls: [
@@ -6292,13 +6514,13 @@ describe('ModelApiSession: child hook boundaries (M51 with M48)', () => {
       { text: 'Parent continues.' },
     )
     await session.sendTurn([{ type: 'text', text: 'delegate' }])
-    const approval = await approvalRequest(events, 0)
-    await session.decideApproval({
-      approvalId: approval.approvalId,
-      choiceId: 'abort',
-      requirementId: approval.requirementId,
-    })
     await turnDone()
+    expect(t.paidRequests).toEqual([
+      {
+        request: { feature: 'subagents', task: expect.objectContaining({ role: 'explorer' }) },
+        requiresAsking: false,
+      },
+    ])
     expect(runHook).not.toHaveBeenCalled()
     expect(t.paidUses.filter((use) => use.feature === 'subagents')).toHaveLength(0)
   })
@@ -6384,11 +6606,17 @@ describe('ModelApiSession: child hook boundaries (M51 with M48)', () => {
     ])
     expect(t.api.responseBodies().filter((body) => isChildRequest(body))).toHaveLength(2)
     expect(t.paidUses.filter((use) => use.feature === 'subagents')).toHaveLength(2)
-    expect(
-      events.filter(
-        (event) => event.type === 'approvalRequested' && event.subject.paidFeature === 'subagents',
-      ),
-    ).toHaveLength(1)
+    // The continuation spends the spawn's grant: the popup asked once, for the spawn.
+    expect(t.paidRequests).toEqual([
+      {
+        request: {
+          feature: 'subagents',
+          task: expect.objectContaining({ role: 'explorer', objective: 'Review files' }),
+        },
+        requiresAsking: false,
+      },
+    ])
+    expect(hasApprovalCard(events)).toBe(false)
   })
 
   it('lets SubagentStop block only within the four-request child grant', async () => {
@@ -6672,6 +6900,12 @@ function completedSearchRows(events: readonly AgentEvent[]) {
   )
 }
 
+/** The web search tools a request body offered (M33). */
+function webSearchTools(body: Record<string, unknown> | undefined): readonly unknown[] {
+  const tools = z.array(z.record(z.string(), z.unknown())).parse(body?.['tools'])
+  return tools.filter((tool) => tool['type'] === 'web_search')
+}
+
 /** The first request of a plain turn with these paid features on (M33). */
 async function firstRequest(paid: readonly PaidFeature[]) {
   const t = setup({ paid })
@@ -6695,6 +6929,49 @@ describe('ModelApiSession: web search, paid and loud (M33)', () => {
     const { tools, include } = await firstRequest(['webSearch'])
     expect(tools.filter((tool) => tool['type'] === 'web_search')).toEqual([{ type: 'web_search' }])
     expect(include).toEqual(['reasoning.encrypted_content', 'web_search_call.results'])
+  })
+
+  it('asks in the popup once per prompt, however many requests the prompt makes (M58)', async () => {
+    const t = setup({ paid: ['webSearch'], files: { 'a.txt': 'alpha' } })
+    const { session, events, turnDone } = await startSession(t)
+    await readAlphaTurn(t, session, turnDone)
+    await answerFirst(t, session, turnDone)
+    expect(t.api.responseBodies()).toHaveLength(3)
+    expect(t.paidRequests).toEqual([
+      { request: { feature: 'webSearch' }, requiresAsking: false },
+      { request: { feature: 'webSearch' }, requiresAsking: false },
+    ])
+    expect(hasApprovalCard(events)).toBe(false)
+    for (const body of t.api.responseBodies()) {
+      expect(webSearchTools(body)).toEqual([{ type: 'web_search' }])
+    }
+  })
+
+  it('sends a prompt whose popup was denied without the search tool or its results (M58)', async () => {
+    let isAllowed = false
+    const t = setup({ paid: ['webSearch'], allowsPaidUse: () => Promise.resolve(isAllowed) })
+    const { session, turnDone } = await startSession(t)
+    await answerFirst(t, session, turnDone)
+    isAllowed = true
+    await answerFirst(t, session, turnDone)
+    const [denied, allowed] = t.api.responseBodies()
+    expect(webSearchTools(denied)).toEqual([])
+    expect(denied?.['include']).toEqual(['reasoning.encrypted_content'])
+    expect(webSearchTools(allowed)).toEqual([{ type: 'web_search' }])
+    expect(allowed?.['include']).toEqual(['reasoning.encrypted_content', 'web_search_call.results'])
+    expect(t.paidRequests).toEqual([
+      { request: { feature: 'webSearch' }, requiresAsking: false },
+      { request: { feature: 'webSearch' }, requiresAsking: false },
+    ])
+  })
+
+  it('never asks about web search while it is off (M58)', async () => {
+    const t = setup({ paid: ['imageGeneration', 'subagents'] })
+    const { session, turnDone } = await startSession(t)
+    await answerFirst(t, session, turnDone)
+    await answerFirst(t, session, turnDone)
+    expect(t.paidRequests).toEqual([])
+    expect(webSearchTools(t.api.responseBodies()[0])).toEqual([])
   })
 
   it('shows a search as a paid row with its query and results, counts it, cites, and replays it without results', async () => {
@@ -6862,7 +7139,7 @@ function toolOutput(t: ReturnType<typeof setup>, callId: string): string | undef
 }
 
 describe('ModelApiSession: image generation, paid and asked every time (M34)', () => {
-  it('offers no image tool while it is off, and refuses one called anyway without a card', async () => {
+  it('offers no image tool while it is off, and refuses one called anyway without asking', async () => {
     const t = setup()
     const { session, events, turnDone } = await startSession(t, 'allowAll')
     t.api.script({ calls: [imageCall({ prompt: 'a cat', path: 'cat.png' })] }, { text: 'ok' })
@@ -6870,45 +7147,46 @@ describe('ModelApiSession: image generation, paid and asked every time (M34)', (
     await turnDone()
     const tools = t.api.responseBodies()[0]?.['tools'] as readonly Record<string, unknown>[]
     expect(tools.some((tool) => tool['name'] === 'generate_image')).toBe(false)
-    expect(events.some((event) => event.type === 'approvalRequested')).toBe(false)
+    expect(hasApprovalCard(events)).toBe(false)
+    expect(t.paidRequests).toEqual([])
     expect(t.api.imageBodies()).toEqual([])
     expect(toolOutput(t, 'call_img')).toContain('image generation is off')
     expect(t.paidUses).toEqual([])
   })
 
   it('asks before the image, naming it paid, then writes the PNG and counts it', async () => {
-    const t = setup({ paid: ['imageGeneration'] })
+    const popup = paidPopup()
+    const t = setup({ paid: ['imageGeneration'], allowsPaidUse: popup.allowsPaidUse })
     const { session, events, turnDone } = await startSession(t)
+    const answer = popup.hold()
     t.api.images.push({ revisedPrompt: 'a calm tabby cat' })
     t.api.script(
       { calls: [imageCall({ prompt: 'a cat', path: 'art/cat.png', aspect: 'landscape' })] },
       { text: 'Done.' },
     )
     await session.sendTurn([{ type: 'text', text: 'draw a cat' }])
-    const request = await approvalRequest(events, 0)
+    await paidPopupAsked(t, 1)
     const tools = t.api.responseBodies()[0]?.['tools'] as readonly Record<string, unknown>[]
     expect(tools.filter((tool) => tool['name'] === 'generate_image')).toEqual([
       expect.objectContaining({
         parameters: expect.objectContaining({ required: ['prompt', 'path'] }),
       }),
     ])
-    expect(request.subject).toEqual({
-      kind: 'paidTool',
-      toolName: 'generate_image',
-      paidFeature: 'imageGeneration',
-      path: 'art/cat.png',
-    })
-    // This once or not at all: never "always allow".
-    expect(request.availableChoices.map((choice) => choice.choiceId)).toEqual([
-      'allow_once',
-      'abort',
+    expect(t.paidRequests).toEqual([
+      {
+        request: {
+          feature: 'imageGeneration',
+          kind: 'generate',
+          path: 'art/cat.png',
+          sources: [],
+          prompt: 'a cat',
+        },
+        requiresAsking: false,
+      },
     ])
+    expect(hasApprovalCard(events)).toBe(false)
     expect(t.api.imageBodies()).toEqual([])
-    await session.decideApproval({
-      approvalId: request.approvalId,
-      choiceId: 'allow_once',
-      requirementId: request.requirementId,
-    })
+    answer.resolve(true)
     await turnDone()
     expect(t.api.imageBodies()).toEqual([
       {
@@ -6949,15 +7227,21 @@ describe('ModelApiSession: image generation, paid and asked every time (M34)', (
         { text: 'ok' },
       )
       await session.sendTurn([{ type: 'text', text: 'two images' }])
-      for (const index of [0, 1]) {
-        const request = await approvalRequest(events, index)
-        await session.decideApproval({
-          approvalId: request.approvalId,
-          choiceId: 'allow_once',
-          requirementId: request.requirementId,
-        })
-      }
       await turnDone()
+      // One popup per image, the first allowed or not.
+      expect(t.paidRequests).toEqual(
+        ['one', 'two'].map((name) => ({
+          request: {
+            feature: 'imageGeneration',
+            kind: 'generate',
+            path: `${name}.png`,
+            sources: [],
+            prompt: name,
+          },
+          requiresAsking: false,
+        })),
+      )
+      expect(hasApprovalCard(events)).toBe(false)
       expect(t.api.imageBodies()).toHaveLength(2)
       expect(t.paidUses).toHaveLength(2)
     }
@@ -6966,12 +7250,13 @@ describe('ModelApiSession: image generation, paid and asked every time (M34)', (
     plan.api.script({ calls: [imageCall({ prompt: 'a', path: 'a.png' })] }, { text: 'ok' })
     await session.sendTurn([{ type: 'text', text: 'draw' }])
     await turnDone()
-    expect(events.some((event) => event.type === 'approvalRequested')).toBe(false)
+    expect(hasApprovalCard(events)).toBe(false)
+    expect(plan.paidRequests).toEqual([])
     expect(plan.api.imageBodies()).toEqual([])
     expect(toolOutput(plan, 'call_img')).toContain('refused by the permission mode')
   })
 
-  it('refuses before the card what could not be saved, so nothing is asked or billed', async () => {
+  it('refuses before the popup what could not be saved, so nothing is asked or billed', async () => {
     const cases: readonly [Record<string, unknown>, string][] = [
       [{ prompt: 'a', path: 'cat.jpg' }, 'must end in .png'],
       [{ prompt: 'a', path: 'taken.png' }, 'already exists'],
@@ -6986,15 +7271,22 @@ describe('ModelApiSession: image generation, paid and asked every time (M34)', (
       t.api.script({ calls: [imageCall(args)] }, { text: 'ok' })
       await session.sendTurn([{ type: 'text', text: 'draw' }])
       await turnDone()
-      expect(events.some((event) => event.type === 'approvalRequested')).toBe(false)
+      expect(hasApprovalCard(events)).toBe(false)
+      expect(t.paidRequests).toEqual([])
       expect(t.api.imageBodies()).toEqual([])
       expect(toolOutput(t, 'call_img')?.toLowerCase()).toContain(reason)
     }
   })
 
-  it('calls nothing when the card is rejected, and counts a billed image that was not a PNG', async () => {
-    const t = setup({ paid: ['imageGeneration'] })
-    const { session, events, turnDone } = await startSession(t)
+  it('calls nothing when the popup is denied, and counts a billed image that was not a PNG', async () => {
+    // Deny for the first image; the second's popup stays open.
+    const second = Promise.withResolvers<boolean>()
+    const t = setup({
+      paid: ['imageGeneration'],
+      allowsPaidUse: (request) =>
+        'path' in request && request.path === 'no.png' ? Promise.resolve(false) : second.promise,
+    })
+    const { session, turnDone } = await startSession(t)
     t.api.images.push({ b64: Buffer.from('GIF89a…').toString('base64') })
     t.api.script(
       {
@@ -7006,20 +7298,15 @@ describe('ModelApiSession: image generation, paid and asked every time (M34)', (
       { text: 'ok' },
     )
     await session.sendTurn([{ type: 'text', text: 'draw' }])
-    const first = await approvalRequest(events, 0)
-    await session.decideApproval({
-      approvalId: first.approvalId,
-      choiceId: 'abort',
-      requirementId: first.requirementId,
-    })
-    const second = await approvalRequest(events, 1)
+    await paidPopupAsked(t, 2)
+    expect(t.paidRequests.map(({ request }) => 'path' in request && request.path)).toEqual([
+      'no.png',
+      'odd.png',
+    ])
     expect(t.api.imageBodies()).toEqual([])
-    await session.decideApproval({
-      approvalId: second.approvalId,
-      choiceId: 'allow_once',
-      requirementId: second.requirementId,
-    })
+    second.resolve(true)
     await turnDone()
+    expect(toolOutput(t, 'c1')).toContain(`generate_image ${MODEL_TEXT.toolRejectedByUser}`)
     expect(t.api.imageBodies()).toHaveLength(1)
     expect(t.io.binaries.size).toBe(0)
     expect(t.paidUses).toEqual([{ feature: 'imageGeneration', units: 1 }])
@@ -7032,13 +7319,9 @@ describe('ModelApiSession: image generation, paid and asked every time (M34)', (
     t.api.images.push({ isEmpty: true })
     t.api.script({ calls: [imageCall({ prompt: 'x', path: 'none.png' })] }, { text: 'ok' })
     await session.sendTurn([{ type: 'text', text: 'draw' }])
-    const request = await approvalRequest(events, 0)
-    await session.decideApproval({
-      approvalId: request.approvalId,
-      choiceId: 'allow_once',
-      requirementId: request.requirementId,
-    })
     await turnDone()
+    expect(t.paidRequests).toHaveLength(1)
+    expect(hasApprovalCard(events)).toBe(false)
     expect(t.api.imageBodies()).toHaveLength(1)
     expect(t.paidUses).toEqual([])
     expect(t.io.binaries.size).toBe(0)
@@ -7051,14 +7334,21 @@ describe('ModelApiSession: image generation, paid and asked every time (M34)', (
     t.api.images.push({ httpError: { status: 400, message: 'prompt rejected by moderation' } })
     t.api.script({ calls: [imageCall({ prompt: 'x', path: '.vscode/icon.png' })] }, { text: 'ok' })
     await session.sendTurn([{ type: 'text', text: 'draw' }])
-    const request = await approvalRequest(events, 0)
-    expect(request.isProtectedWrite).toBe(true)
-    await session.decideApproval({
-      approvalId: request.approvalId,
-      choiceId: 'allow_once',
-      requirementId: request.requirementId,
-    })
     await turnDone()
+    // A protected target asks even when the feature is allowed always.
+    expect(t.paidRequests).toEqual([
+      {
+        request: {
+          feature: 'imageGeneration',
+          kind: 'generate',
+          path: '.vscode/icon.png',
+          sources: [],
+          prompt: 'x',
+        },
+        requiresAsking: true,
+      },
+    ])
+    expect(hasApprovalCard(events)).toBe(false)
     expect(t.paidUses).toEqual([])
     expect(events).toContainEqual({
       type: 'itemCompleted',
@@ -7071,31 +7361,36 @@ describe('ModelApiSession: image generation, paid and asked every time (M34)', (
   })
 })
 
-/** One image call in Bypass, its card approved once `beforeApproval` has run. */
+/** Image generation on while `paid` says so, with a popup a test can hold open. */
+function imagePopupSetup(paid: PaidFeature[] = ['imageGeneration']) {
+  const popup = paidPopup()
+  return { t: setup({ paid, allowsPaidUse: popup.allowsPaidUse }), popup }
+}
+
+/** One image call in Bypass, its popup allowed once `beforeApproval` has run. */
 async function approvedImage(
-  t: ReturnType<typeof setup>,
+  { t, popup }: ReturnType<typeof imagePopupSetup>,
   path: string,
   beforeApproval: () => void = () => undefined,
 ) {
   const { session, events, turnDone } = await startSession(t, 'allowAll')
+  const answer = popup.hold()
   t.api.script({ calls: [imageCall({ prompt: 'x', path })] }, { text: 'ok' })
   await session.sendTurn([{ type: 'text', text: 'draw' }])
-  const request = await approvalRequest(events, 0)
+  await paidPopupAsked(t, 1)
   beforeApproval()
-  await session.decideApproval({
-    approvalId: request.approvalId,
-    choiceId: 'allow_once',
-    requirementId: request.requirementId,
-  })
+  answer.resolve(true)
   await turnDone()
+  expect(hasApprovalCard(events)).toBe(false)
   return toolOutput(t, 'call_img')
 }
 
 describe('ModelApiSession: image generation, the review of PR #27 (M34)', () => {
-  it('buys nothing when the feature is turned off while the card is open', async () => {
+  it('buys nothing when the feature is turned off while the popup is open', async () => {
     const paid: PaidFeature[] = ['imageGeneration']
-    const t = setup({ paid })
-    const output = await approvedImage(t, 'off.png', () => {
+    const held = imagePopupSetup(paid)
+    const { t } = held
+    const output = await approvedImage(held, 'off.png', () => {
       paid.length = 0
     })
     expect(t.api.imageBodies()).toEqual([])
@@ -7103,9 +7398,10 @@ describe('ModelApiSession: image generation, the review of PR #27 (M34)', () => 
     expect(output).toContain('image generation is off')
   })
 
-  it('buys nothing when the path is taken while the card is open', async () => {
-    const t = setup({ paid: ['imageGeneration'] })
-    const output = await approvedImage(t, 'late.png', () => {
+  it('buys nothing when the path is taken while the popup is open', async () => {
+    const held = imagePopupSetup()
+    const { t } = held
+    const output = await approvedImage(held, 'late.png', () => {
       t.files.set(`${ROOT}/late.png`, 'someone else')
     })
     expect(t.api.imageBodies()).toEqual([])
@@ -7118,9 +7414,10 @@ describe('ModelApiSession: image generation, the review of PR #27 (M34)', () => 
       { networkError: 'socket hang up' },
       { httpError: { status: 500, message: 'boom' } },
     ]) {
-      const t = setup({ paid: ['imageGeneration'] })
+      const held = imagePopupSetup()
+      const { t } = held
       t.api.images.push(image, {})
-      await approvedImage(t, 'once.png')
+      await approvedImage(held, 'once.png')
       expect(t.api.imageBodies()).toHaveLength(1)
       // The reserved file goes when no image came.
       expect(t.io.binaries.has(`${ROOT}/once.png`)).toBe(false)
@@ -7129,9 +7426,10 @@ describe('ModelApiSession: image generation, the review of PR #27 (M34)', () => 
   })
 
   it('retries a rate limit, which Meta refused before any work', async () => {
-    const t = setup({ paid: ['imageGeneration'] })
+    const held = imagePopupSetup()
+    const { t } = held
     t.api.images.push({ httpError: { status: 429, message: 'slow down' } }, {})
-    await approvedImage(t, 'later.png')
+    await approvedImage(held, 'later.png')
     expect(t.api.imageBodies()).toHaveLength(2)
     expect(t.paidUses).toEqual([{ feature: 'imageGeneration', units: 1 }])
     expect(t.io.binaries.get(`${ROOT}/later.png`)?.length).toBeGreaterThan(0)
@@ -7299,8 +7597,15 @@ function editCall(args: Record<string, unknown>, callId = 'call_edit') {
 }
 
 /** A session with `sources` as workspace images and paid image generation on. */
-function editSetup(sources: Readonly<Record<string, Uint8Array>> = {}) {
-  const t = setup({ paid: ['imageGeneration'], files: { 'notes.txt': 'x', 'taken.png': 'x' } })
+function editSetup(
+  sources: Readonly<Record<string, Uint8Array>> = {},
+  allowsPaidUse?: ModelApiHostDeps['allowsPaidUse'],
+) {
+  const t = setup({
+    paid: ['imageGeneration'],
+    files: { 'notes.txt': 'x', 'taken.png': 'x' },
+    ...(allowsPaidUse !== undefined && { allowsPaidUse }),
+  })
   for (const [name, bytes] of Object.entries(sources)) {
     t.io.binaries.set(`${ROOT}/${name}`, bytes)
   }
@@ -7309,43 +7614,44 @@ function editSetup(sources: Readonly<Record<string, Uint8Array>> = {}) {
 
 const SOURCE_PNG = Buffer.from(TINY_PNG_BASE64, 'base64')
 
-/** Hold a paid image edit at its card so a workspace link can change. */
-async function pendingEditApproval(
+/** Hold a paid image edit at its popup so a workspace link can change. */
+async function pendingEditPopup(
   t: ReturnType<typeof setup>,
+  popup: ReturnType<typeof paidPopup>,
   args: Record<string, unknown>,
   callId: string,
 ) {
   const { session, events, turnDone } = await startSession(t, 'allowAll')
+  const answer = popup.hold()
   t.api.script({ calls: [editCall(args, callId)] }, { text: 'ok' })
   await session.sendTurn([{ type: 'text', text: 'edit' }])
-  const request = await approvalRequest(events, 0)
-  return { session, turnDone, request }
+  await paidPopupAsked(t, 1)
+  expect(hasApprovalCard(events)).toBe(false)
+  return { turnDone, answer }
 }
 
-/** Answer a paid card and wait until its call has finished. */
-async function acceptImageApproval(pending: Awaited<ReturnType<typeof pendingEditApproval>>) {
-  await pending.session.decideApproval({
-    approvalId: pending.request.approvalId,
-    choiceId: 'allow_once',
-    requirementId: pending.request.requirementId,
-  })
+/** Allow a paid image popup and wait until its call has finished. */
+async function allowImagePopup(pending: Awaited<ReturnType<typeof pendingEditPopup>>) {
+  pending.answer.resolve(true)
   await pending.turnDone()
 }
 
 describe('ModelApiSession: image edits, paid and asked every time (M44)', () => {
-  it('refuses an edit when a source link changes while the paid card is open', async () => {
+  it('refuses an edit when a source link changes while the paid popup is open', async () => {
     const links: Record<string, string> = { 'source.png': `${ROOT}/safe.png` }
     const io = memoryToolIo({}, ROOT, undefined, links)
     io.binaries.set(`${ROOT}/safe.png`, SOURCE_PNG)
     io.binaries.set(`${ROOT}/.muse/private.png`, SOURCE_PNG)
-    const t = setup({ io, paid: ['imageGeneration'] })
-    const pending = await pendingEditApproval(
+    const popup = paidPopup()
+    const t = setup({ io, paid: ['imageGeneration'], allowsPaidUse: popup.allowsPaidUse })
+    const pending = await pendingEditPopup(
       t,
+      popup,
       { prompt: 'edit', images: ['source.png'], path: 'out.png' },
       'source_race',
     )
     links['source.png'] = `${ROOT}/.muse/private.png`
-    await acceptImageApproval(pending)
+    await allowImagePopup(pending)
     expect(t.api.editBodies()).toEqual([])
     expect(t.paidUses).toEqual([])
     expect(toolOutput(t, 'source_race')).toContain('path changed after approval')
@@ -7354,15 +7660,30 @@ describe('ModelApiSession: image edits, paid and asked every time (M44)', () => 
   it('refuses an image output whose link changes to a protected target during approval', async () => {
     const links: Record<string, string> = { 'output.png': `${ROOT}/safe-output.png` }
     const io = memoryToolIo({}, ROOT, undefined, links)
-    const t = setup({ io, paid: ['imageGeneration'] })
+    const popup = paidPopup()
+    const t = setup({ io, paid: ['imageGeneration'], allowsPaidUse: popup.allowsPaidUse })
     io.binaries.set(`${ROOT}/source.png`, SOURCE_PNG)
-    const pending = await pendingEditApproval(
+    const pending = await pendingEditPopup(
       t,
+      popup,
       { prompt: 'edit', images: ['source.png'], path: 'output.png' },
       'output_race',
     )
+    // Asked about a safe target, so the popup did not have to ask.
+    expect(t.paidRequests).toEqual([
+      {
+        request: {
+          feature: 'imageGeneration',
+          kind: 'edit',
+          path: 'output.png',
+          sources: ['source.png'],
+          prompt: 'edit',
+        },
+        requiresAsking: false,
+      },
+    ])
     links['output.png'] = `${ROOT}/.muse/output.png`
-    await acceptImageApproval(pending)
+    await allowImagePopup(pending)
     expect(t.api.editBodies()).toEqual([])
     expect(t.paidUses).toEqual([])
     expect(t.io.binaries.has(`${ROOT}/.muse/output.png`)).toBe(false)
@@ -7382,8 +7703,13 @@ describe('ModelApiSession: image edits, paid and asked every time (M44)', () => 
   })
 
   it('asks with the sources named, then sends them inline and writes the new PNG', async () => {
-    const t = editSetup({ 'art/fox.png': SOURCE_PNG, 'art/hat.webp': SOURCE_PNG })
+    const popup = paidPopup()
+    const t = editSetup(
+      { 'art/fox.png': SOURCE_PNG, 'art/hat.webp': SOURCE_PNG },
+      popup.allowsPaidUse,
+    )
     const { session, events, turnDone } = await startSession(t, 'allowAll')
+    const answer = popup.hold()
     const args = {
       prompt: 'put the hat on the fox',
       images: ['art/fox.png', 'art/hat.webp'],
@@ -7391,20 +7717,22 @@ describe('ModelApiSession: image edits, paid and asked every time (M44)', () => 
     }
     t.api.script({ calls: [editCall(args)] }, { text: 'Done.' })
     await session.sendTurn([{ type: 'text', text: 'give the fox a hat' }])
-    const request = await approvalRequest(events, 0)
-    expect(request.subject).toEqual({
-      kind: 'paidTool',
-      toolName: 'edit_image',
-      paidFeature: 'imageGeneration',
-      path: 'art/fox-hat.png',
-    })
-    expect(JSON.parse(request.rawArgs)).toEqual(args)
+    await paidPopupAsked(t, 1)
+    expect(t.paidRequests).toEqual([
+      {
+        request: {
+          feature: 'imageGeneration',
+          kind: 'edit',
+          path: 'art/fox-hat.png',
+          sources: ['art/fox.png', 'art/hat.webp'],
+          prompt: 'put the hat on the fox',
+        },
+        requiresAsking: false,
+      },
+    ])
+    expect(hasApprovalCard(events)).toBe(false)
     expect(t.api.editBodies()).toEqual([])
-    await session.decideApproval({
-      approvalId: request.approvalId,
-      choiceId: 'allow_once',
-      requirementId: request.requirementId,
-    })
+    answer.resolve(true)
     await turnDone()
     expect(t.api.editBodies()).toEqual([
       {
@@ -7432,7 +7760,7 @@ describe('ModelApiSession: image edits, paid and asked every time (M44)', () => 
     )
   })
 
-  it('refuses before the card a source it could not send or a result it could not save', async () => {
+  it('refuses before the popup a source it could not send or a result it could not save', async () => {
     const big = new Uint8Array(10 * 1024 * 1024 + 1)
     const cases: readonly [Record<string, unknown>, string][] = [
       [{ prompt: 'a', images: ['missing.png'], path: 'out.png' }, 'does not exist'],
@@ -7454,13 +7782,14 @@ describe('ModelApiSession: image edits, paid and asked every time (M44)', () => 
       t.api.script({ calls: [editCall(args)] }, { text: 'ok' })
       await session.sendTurn([{ type: 'text', text: 'edit' }])
       await turnDone()
-      expect(events.some((event) => event.type === 'approvalRequested')).toBe(false)
+      expect(hasApprovalCard(events)).toBe(false)
+      expect(t.paidRequests).toEqual([])
       expect(t.api.editBodies()).toEqual([])
       expect(toolOutput(t, 'call_edit')?.toLowerCase()).toContain(reason)
     }
   })
 
-  it('is refused in Plan, and with image generation off, without a card', async () => {
+  it('is refused in Plan, and with image generation off, without asking', async () => {
     const plan = editSetup({ 'a.png': SOURCE_PNG })
     const planned = await startSession(plan, 'denyUnmatched')
     plan.api.script(
@@ -7470,6 +7799,8 @@ describe('ModelApiSession: image edits, paid and asked every time (M44)', () => 
     await planned.session.sendTurn([{ type: 'text', text: 'edit' }])
     await planned.turnDone()
     expect(toolOutput(plan, 'call_edit')).toContain('refused by the permission mode')
+    expect(hasApprovalCard(planned.events)).toBe(false)
+    expect(plan.paidRequests).toEqual([])
     const off = setup()
     const { session, events, turnDone } = await startSession(off, 'allowAll')
     off.api.script(
@@ -7478,7 +7809,8 @@ describe('ModelApiSession: image edits, paid and asked every time (M44)', () => 
     )
     await session.sendTurn([{ type: 'text', text: 'edit' }])
     await turnDone()
-    expect(events.some((event) => event.type === 'approvalRequested')).toBe(false)
+    expect(hasApprovalCard(events)).toBe(false)
+    expect(off.paidRequests).toEqual([])
     expect(toolOutput(off, 'call_edit')).toContain('image generation is off')
     expect(off.api.editBodies()).toEqual([])
   })
@@ -8769,6 +9101,36 @@ describe('ModelApiSession: an explanation instead of an answer (M46)', () => {
         output: `${MODEL_TEXT.clarificationLead}\nNeither: I prefer green.`,
       }),
     )
+  })
+
+  it('takes an answer given as the card arrives: the question is pending before it is shown', async () => {
+    // The live Model API sweep's answerer replies inside the event (2026-09-27):
+    // the card was announced before it was pending, so the answer was refused
+    // "not pending" and the turn waited for ever. Approvals were already ordered.
+    const t = setup()
+    const { session, events, turnDone } = await startSession(t)
+    const refusals: string[] = []
+    session.onEvent((event) => {
+      if (event.type === 'questionRequested') {
+        void session.clarifyQuestions(event.userInputId, 'Green.').catch((error: unknown) => {
+          refusals.push(String(error))
+        })
+      }
+    })
+    t.api.script({ calls: [ASK_USER_CALL] }, { text: 'Green, then.' })
+    const done = turnDone()
+    await session.sendTurn([{ type: 'text', text: 'go' }])
+    await vi.waitFor(() => {
+      expect(refusals.length > 0 || events.some((event) => event.type === 'questionSettled')).toBe(
+        true,
+      )
+    })
+    expect(refusals).toEqual([])
+    await done
+    expect(events.find((event) => event.type === 'questionSettled')).toMatchObject({
+      outcome: 'clarified',
+      clarification: 'Green.',
+    })
   })
 })
 

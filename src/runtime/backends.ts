@@ -2,13 +2,16 @@
 // given in this process what VS Code gives them in the extension, one per
 // workspace folder. Muse Code signs in on its own and the subscription
 // pays; the Model API backend reads the key from the OS credential store
-// (D61). Paid features are off (D60), and nothing here sees an editor's
-// unsaved buffers until file access goes through the client (M63c).
+// (D61) and is the extension's own bundle, dist/modelApi.js beside acp.js,
+// loaded the first time that backend starts (M57, PLAN.md D6). Its paid
+// features are the agent's flags, each use asked in the editor (M58, D48),
+// and nothing here sees an editor's unsaved buffers until file access goes
+// through the client (M63c).
 
 import { randomUUID } from 'node:crypto'
 import path from 'node:path'
 import type { AcpBackend, BackendReadiness } from '../acp/agent'
-import { AcpPaidFeatures } from '../acp/paid'
+import { AcpPaidUse } from '../acp/paid'
 import type { AgentHost } from '../core/agent/agentBackend'
 import { environmentValue } from '../core/backends/musecode/launch'
 import { personalSkillsRoot } from '../core/context/skills'
@@ -28,6 +31,7 @@ import type { Logger } from '../host/logger'
 import { createWorkspaceFileLister } from '../host/mention/workspaceFiles'
 import {
   MENTION_INDEX_LIMIT,
+  MODEL_API_BUNDLE_FILE,
   SEARCH_WORKER_FILE,
   SECRET_KEYS,
   SETTING_DEFAULTS,
@@ -35,13 +39,19 @@ import {
 } from '../shared/constants'
 import { fill } from '../shared/l10n/text'
 import type { ServeOptions } from './cliArgs'
-import { agentDataFolder, type DataFolderInput, workspaceSessionsFolder } from './dataFolder'
+import {
+  agentDataFolder,
+  type DataFolderInput,
+  paidGrantsFile,
+  workspaceSessionsFolder,
+} from './dataFolder'
 import { walkFiles } from './fileWalk'
+import { paidGrantFile } from './paidGrants'
 
 export interface RuntimeBackendDeps {
   readonly options: ServeOptions
   readonly version: string
-  /** The folder holding `acp.js` and `searchWorker.js`. */
+  /** The folder holding `acp.js`, `modelApi.js` and `searchWorker.js`. */
   readonly distDir: string
   readonly platform: NodeJS.Platform
   readonly env: NodeJS.ProcessEnv
@@ -57,8 +67,8 @@ export interface RuntimeBackend {
   readonly backend: AcpBackend
   /** Muse Code's launch and environment, for `login`. */
   readonly museCode: MuseCodeBackendManager
-  /** The flagged paid features and the user's answers, shared with the agent (M63c). */
-  readonly paid: AcpPaidFeatures
+  /** The flagged paid features and their questions, shared with the agent (M63c, M58). */
+  readonly paid: AcpPaidUse
   readonly close: () => Promise<void>
 }
 
@@ -104,7 +114,7 @@ function modelApiManager(
   credentials: CredentialStore,
   workspaceRoot: string,
   homes: MuseHomes,
-  paid: AcpPaidFeatures,
+  paid: AcpPaidUse,
 ): ModelApiBackendManager {
   const { options, log, platform } = deps
   const isWorkspaceTrusted = () => options.trustWorkspace
@@ -192,13 +202,17 @@ function modelApiManager(
     },
     // The panel's default (M56); the agent has no setting for the longer retention.
     promptCacheRetention: () => SETTING_DEFAULTS.modelApiPromptCacheRetention,
-    // Child tasks are paid (M48, PLAN.md D45) and the agent's paid features are
-    // its two flags (D62), so `subagents` is never on here and no task is agreed.
-    confirmSubagentTask: () => Promise.resolve(false),
+    // Each use asked in the editor's session (M58, PLAN.md D48). Child tasks
+    // are paid (M48, D45) and the agent's paid features are its two flags
+    // (D62), so `subagents` is never on here and every task is denied.
+    allowsPaidUse: (request, requiresAsking, sessionId) =>
+      paid.allows(workspaceRoot, sessionId, request, requiresAsking),
+    isPaidUseRemembered: (feature) => paid.isRemembered(workspaceRoot, feature),
     noteSubagentUsage: (modelId) => {
       log.warn(`A subagent's usage on ${modelId} was reported, but the agent runs no subagents`)
     },
     memory,
+    bundlePath: path.join(deps.distDir, MODEL_API_BUNDLE_FILE),
   })
 }
 
@@ -210,7 +224,16 @@ export function createRuntimeBackend(deps: RuntimeBackendDeps): RuntimeBackend {
   const credentials = new CredentialStore(deps.secrets, (message) => {
     deps.log.warn(message)
   })
-  const paid = new AcpPaidFeatures(deps.options.paidFeatures, deps.log)
+  const paid = new AcpPaidUse({
+    flagged: deps.options.paidFeatures,
+    canRemember: () => deps.options.trustWorkspace,
+    grants: paidGrantFile({
+      file: paidGrantsFile({ platform: deps.platform, env: deps.env, homeDir: deps.homeDir }),
+      log: deps.log,
+      sleep,
+    }),
+    log: deps.log,
+  })
   const museEnvironment = museCode.childEnvironment()
   const homes: MuseHomes = {
     xdgConfigHome: environmentValue(museEnvironment, deps.platform, 'XDG_CONFIG_HOME'),

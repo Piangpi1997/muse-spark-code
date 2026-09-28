@@ -60,6 +60,12 @@ export const GLOBAL_STATE_KEYS = {
    */
   paidConfirmations: 'museSpark.paidConfirmations',
   subagentPriceAcceptance: 'museSpark.subagentPriceAcceptance',
+  /**
+   * Each paid feature's grant generation (M58): every change to its price
+   * acceptance counts it up, so an "Allow always in this workspace" given
+   * before the change is void in every workspace.
+   */
+  paidGrantGenerations: 'museSpark.paidGrantGenerations',
 } as const
 
 // VS Code `when`-clause context keys the extension maintains.
@@ -309,8 +315,9 @@ export const HOOK_FORBIDDEN_ENV_NAMES: ReadonlySet<string> = new Set([
 // --- Paid features on the Model API backend (M33–M35, PLAN.md D30) ---
 
 // Each is off by default, confirmed with its price when turned on, named in
-// the composer's badge while on, shown per use and tallied (the owner's rule:
-// "opt in and loud"). They are used on the Model API backend only.
+// the composer's badge while on, asked about before each use (M58: Allow
+// once, Allow always in this workspace, or Deny), shown per use and tallied
+// (the owner's rule: "opt in and loud").
 export const PAID_FEATURES = [
   'webSearch',
   'imageGeneration',
@@ -361,6 +368,8 @@ export const SESSION_RESTORE_WINDOW_MS = 10 * 60 * 1000
 export const WORKSPACE_STATE_KEYS = {
   archivedSessions: 'museSpark.archivedSessions',
   lastSession: 'museSpark.lastSession',
+  /** The paid features allowed always in this workspace, with their grant generation (M58). */
+  paidWorkspaceGrants: 'museSpark.paidWorkspaceGrants',
 } as const
 
 // Webview bundle layout produced by scripts/build.mjs.
@@ -910,6 +919,9 @@ export const SEARCH_MAX_HITS = 5000
 export const SEARCH_MAX_CANDIDATES = 50_000
 export const SEARCH_PATTERN_MAX_LENGTH = 512
 export const SEARCH_WORKER_FILE = 'searchWorker.js'
+// The Model API backend's bundle (M57, PLAN.md D6), beside dist/extension.js:
+// loaded when that backend first starts, not at activation.
+export const MODEL_API_BUNDLE_FILE = 'modelApi.js'
 // A glob is matched by a table over pattern × path (no regular expression,
 // PLAN.md D24); the length cap bounds that table.
 export const GLOB_MAX_LENGTH = 256
@@ -985,8 +997,8 @@ export const ACP_AUTH_METHODS = {
 } as const
 export const ACP_CONFIG_IDS = { model: 'model', effort: 'effort' } as const
 // The paid Model API features the agent can use (M63c, PLAN.md D30): each
-// only with its flag, and once the user accepts its price in the editor.
-// Muse Voice needs the panel's microphone, so the agent has none.
+// only with its flag, and each use asked in the editor (M58, D48). Muse
+// Voice needs the panel's microphone, so the agent has none.
 export const ACP_PAID_FEATURES = [
   'webSearch',
   'imageGeneration',
@@ -996,9 +1008,14 @@ export const ACP_PAID_FLAGS = {
   webSearch: 'web-search',
   imageGeneration: 'image-generation',
 } as const satisfies Readonly<Record<AcpPaidFeature, string>>
-// The price confirmation: its tool call row (the feature appended) and answers.
-export const ACP_PAID_TOOL_CALL_PREFIX = 'paid-feature-'
-export const ACP_PAID_OPTIONS = { accept: 'paid-accept', decline: 'paid-decline' } as const
+// The question before each paid use (M58, PLAN.md D48): its tool call row (a
+// count appended) and its answers.
+export const ACP_PAID_TOOL_CALL_PREFIX = 'paid-use-'
+export const ACP_PAID_OPTIONS = {
+  allowOnce: 'paid-allow-once',
+  allowAlways: 'paid-allow-always',
+  deny: 'paid-deny',
+} as const
 // A tool's output as the client sees it; the full text stays with the backend.
 export const ACP_TOOL_OUTPUT_MAX_CHARS = 20_000
 export const ACP_SESSION_LIST_LIMIT = 50
@@ -1011,6 +1028,9 @@ export const ACP_DATA_FOLDER = {
 } as const
 export const ACP_SESSIONS_SUBFOLDER = 'acp'
 export const ACP_WORKSPACE_HASH_CHARS = 16
+// "Allow always in this workspace" for paid uses (M58), every folder's in one
+// file beside the folders' own, keyed by the same hash.
+export const ACP_PAID_GRANTS_FILE = 'paid-uses.json'
 // The file walk that stands in for VS Code's file search when git cannot
 // list a folder: what it never descends into.
 export const FILE_WALK_SKIPPED: ReadonlySet<string> = new Set(['.git', 'node_modules'])
@@ -1273,10 +1293,15 @@ export const MSP_ATTACHMENT_FRAME_BUDGET_BYTES =
   MSP_FRAME_LIMIT_BYTES - MSP_ATTACHMENT_FRAME_HEADROOM_BYTES
 // `session/list` refuses a larger page (msp.d.ts SessionListParams.limit).
 export const MSP_SESSION_LIST_MAX_LIMIT = 200
-// Muse Code versions that refuse `session/rename` and `session/fork` on
-// Windows (meta-models/muse-code-sdk#30 and #31, verified live 2026-09-22 on
-// 1.3.0): the panel does not offer either there (D26).
-export const WINDOWS_SESSION_EDITS_LIMITED_MAX_VERSION = '1.3.0'
+// MSP schema fingerprints Muse Code has served beyond the one
+// `@muse-code/sdk` 1.3.0 pins, each an additive change (1.4.0's schema export
+// diffed against 1.3.0's; Meta's release manifests carry the same values).
+// Such a host is logged at info with its build; any other mismatch stays a
+// warning (docs/certification/release-0.9.1.md).
+export const MSP_KNOWN_SCHEMA_FINGERPRINTS: Readonly<Record<string, string>> = {
+  'sha256:36466f634c8c78a812462ec941187fd4547b232ee06153e5feb2a1482f0d3d7f': '1.4.0-R4161.1',
+  'sha256:99a7458c70a670dda3dda45512bdd1e270aba156f46a1324515de45dce95a658': '1.4.0-R4302.1',
+}
 // Muse Code's documented exit codes (SDK `classifyExit`) after which a
 // restart cannot help; what each code means is `UI_TEXT.museExitMeanings`.
 export const MUSE_EXIT_PERSISTENT_CODES: ReadonlySet<number> = new Set([2, 3, 5])
@@ -1408,10 +1433,6 @@ export const HTTP_STATUS = {
   internalServerError: 500,
 } as const
 
-// Muse Code versions whose Windows sandbox cannot enter C:\Users\<user>, so a
-// workspace under the profile runs shell commands in PowerShell's own folder
-// (verified live 2026-09-22 on 1.3.0 through the panel and `muse exec`).
-export const SANDBOX_PROFILE_LIMITED_MAX_VERSION = '1.3.0'
 // Link schemes the transcript opens; anything else is refused with a notice.
 export const ALLOWED_LINK_SCHEMES: ReadonlySet<string> = new Set(['http:', 'https:', 'mailto:'])
 // A code block's Copy button reads "Copied" for this long.
@@ -1576,8 +1597,11 @@ export const EXPORT_TITLE_MAX_CHARS = 60
 // for the credential file, and how often it looks.
 export const CREDENTIAL_POLL_INTERVAL_MS = 2000
 export const CREDENTIAL_POLL_TIMEOUT_MS = 5 * 60 * 1000
-// Model API key shape: `LLM|<numeric id>|<secret>`.
-export const MODEL_API_KEY_PATTERN = /^LLM\|\d+\|\S+$/
+// Model API key shapes. Meta's current keys are `LLM_` and at least 16
+// letters, digits, `_` or `-` (a key issued 2026-09-27 had 44 after the
+// prefix, no `|`); older keys were `LLM|<numeric id>|<secret>`. The log
+// redactor (`src/core/redact.ts`) matches the same two shapes.
+export const MODEL_API_KEY_PATTERN = /^(?:LLM_[\w-]{16,}|LLM\|\d+\|\S+)$/
 export const SECRET_KEYS = {
   modelApiKey: 'museSpark.modelApiKey',
 } as const

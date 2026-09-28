@@ -131,7 +131,7 @@ export function toolName(tool: string): string {
     : fill(UI_TEXT.mcpToolLabel, { server: mcp[1] ?? '', tool: mcp[2] ?? '' })
 }
 
-/** A billed call's title names what the key pays for it (M63c, "opt in and loud"). */
+/** A billed row's title names what the key pays for it (M63c, "opt in and loud"). */
 function withPrice(title: string, paid: PaidFeature | undefined): string {
   return paid === undefined
     ? title
@@ -466,10 +466,9 @@ export function approvalToolCall(
   const name = toolName(event.toolName)
   return {
     toolCallId: event.itemId,
-    title: withPrice(
-      detail === undefined ? toolTitle(event.toolName, args) : `${name}: ${detail}`,
-      event.subject.paidFeature,
-    ),
+    // A paid call never gets an approval (M58, PLAN.md D48): its price is in
+    // the paid-use question (paid.ts) and on its row.
+    title: detail === undefined ? toolTitle(event.toolName, args) : `${name}: ${detail}`,
     kind: toolKind(event.toolName),
     status: 'pending',
     locations: toolLocations(args, cwd),

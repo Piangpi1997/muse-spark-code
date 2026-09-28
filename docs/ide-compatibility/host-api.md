@@ -37,7 +37,7 @@ The VS Code adapter: 13 files. Everything else reaches VS Code only through them
 | `src/host/cliFeatures.ts`              | 26                |
 | `src/host/memoryFeatures.ts`           | 17                |
 | `src/host/mention/mentionQuickPick.ts` | 10                |
-| `src/host/paid/paidHost.ts`            | 9                 |
+| `src/host/paid/paidHost.ts`            | 11                |
 | `src/host/popups.ts`                   | 2                 |
 | `src/host/quickPick.ts`                | 5                 |
 | `src/host/views/ChatViewProvider.ts`   | 11                |
@@ -60,12 +60,13 @@ These never reach `vscode` through their imports, type-only ones included; the g
 - `src/host/auth/credentialStore.ts`
 - `src/host/backend/fileSessionStore.ts`
 - `src/host/backend/modelApiBackendManager.ts`
+- `src/host/backend/modelApiEntry.ts`
 - `src/host/backend/museCodeBackendManager.ts`
 - `src/host/backend/toolIo.ts`
 - `src/host/conversation/conversationController.ts`
 - `src/host/ide/ideMcpServer.ts`
 
-## VS Code API used at run time (198)
+## VS Code API used at run time (200)
 
 Functions, variables, classes, enums and members declared in `@types/vscode`; the members of a VS Code interface the code implements (a provider, an options object); and the members of a VS Code object handed to code that takes it by shape.
 
@@ -114,6 +115,8 @@ Functions, variables, classes, enums and members declared in `@types/vscode`; th
 | `LogOutputChannel.warn`                                                              | `src/extension.ts`                                                                                                                         |
 | `Memento.get`                                                                        | `src/extension.ts`                                                                                                                         |
 | `Memento.update`                                                                     | `src/extension.ts`                                                                                                                         |
+| `MessageItem.isCloseAffordance`                                                      | `src/host/paid/paidHost.ts`                                                                                                                |
+| `MessageItem.title`                                                                  | `src/host/paid/paidHost.ts`                                                                                                                |
 | `MessageOptions.detail`                                                              | `src/extension.ts`, `src/host/cliFeatures.ts`, `src/host/memoryFeatures.ts`, `src/host/paid/paidHost.ts`, `src/host/worktreeFeatures.ts`   |
 | `MessageOptions.modal`                                                               | `src/extension.ts`, `src/host/cliFeatures.ts`, `src/host/memoryFeatures.ts`, `src/host/paid/paidHost.ts`, `src/host/worktreeFeatures.ts`   |
 | `OpenDialogOptions.canSelectMany`                                                    | `src/extension.ts`                                                                                                                         |
@@ -270,16 +273,17 @@ Functions, variables, classes, enums and members declared in `@types/vscode`; th
 | `workspace.textDocuments`                                                            | `src/extension.ts`                                                                                                                         |
 | `workspace.workspaceFolders`                                                         | `src/extension.ts`                                                                                                                         |
 
-## Node built-ins the host imports (16)
+## Node built-ins the host imports (17)
 
 | Module                | Files |
 | --------------------- | ----- |
 | `node:buffer`         | 17    |
 | `node:child_process`  | 8     |
 | `node:crypto`         | 13    |
-| `node:fs`             | 11    |
+| `node:fs`             | 12    |
 | `node:fs/promises`    | 15    |
 | `node:http`           | 1     |
+| `node:module`         | 1     |
 | `node:net`            | 1     |
 | `node:os`             | 4     |
 | `node:path`           | 44    |

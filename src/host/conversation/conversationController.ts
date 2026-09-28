@@ -6,32 +6,30 @@
 import path from 'node:path'
 import { Buffer } from 'node:buffer'
 import { AttachmentStore } from '../../core/attachments'
-import { isProtectedPath } from '../../core/backends/modelapi/permissions'
+import { isProtectedPath } from '../../core/protectedPaths'
 import {
   type AgentHost,
   type AgentSession,
   type BackendKind,
   type GoalCommand,
   type GoalRefusal,
-  GoalRefusedError,
   type HostExit,
+  isGoalRefusedError,
+  isPromptSettledError,
+  isSessionNotLoadedError,
   type LoadedSession,
-  PromptSettledError,
+  type PromptSettledError,
   type PromptSettledReason,
   type SessionHistoryOutcome,
   type SessionListEvent,
   type SessionMcpHttpServer,
-  SessionNotLoadedError,
   type SessionRecord,
   type TurnPart,
   type TurnSubmission,
 } from '../../core/agent/agentBackend'
 import { editAutomaticallyChoice } from '../../core/agent/approvalRules'
 import { toSessionRow } from '../../core/agent/sessionRows'
-import {
-  isProfileWorkspaceLimited,
-  type ShellSandboxPosture,
-} from '../../core/backends/musecode/sandbox'
+import { isProfileWorkspace, type ShellSandboxPosture } from '../../core/backends/musecode/sandbox'
 import { chatReferenceText } from '../../core/chatReference'
 import { textFileDisplay } from '../../shared/textFileDisplay'
 import { type EditorContext, editorContextText } from '../../core/editorContext'
@@ -81,6 +79,7 @@ import {
 import { effortForThinking, effortLevelsFor, isEffortLevel } from '../../shared/effort'
 import type { AgentEvent, ApprovalChoice, ItemSnapshot } from '../../shared/agentEvents'
 import { fill, plural } from '../../shared/l10n/text'
+import type { PaidUseRequest } from '../../shared/paid'
 import type { ScheduleCadence, ScheduledPrompt } from '../../shared/schedule'
 import { formatMention, parseSkillInvocation } from '../../shared/mentions'
 import { approvalModeFor } from '../../shared/permissionModes'
@@ -271,9 +270,16 @@ export interface ConversationDeps {
    * running here (M46): the keybinding's context key follows.
    */
   readonly onForegroundTasksChanged: () => void
-  /** A separate yes for each due Model API turn, naming prompt and token price (M52). */
+  /**
+   * A separate yes for each due Model API turn, naming prompt and token price
+   * (M52): the paid-use popup (M58).
+   */
   readonly confirmScheduledRun?: (job: ScheduledPrompt, modelId: string) => Promise<boolean>
   readonly isScheduledPaidOn?: () => boolean
+  /** The paid-use popup (M58, PLAN.md D48): before each Muse Voice recording. */
+  readonly allowsPaidUse: (request: PaidUseRequest) => Promise<boolean>
+  /** Account & usage's "Ask again": every paid feature asks again in this workspace (M58). */
+  readonly forgetPaidUse: () => Promise<void>
   readonly now: () => number
   readonly log: Logger
 }
@@ -525,6 +531,11 @@ export class ConversationController {
    * the transcript of what it already sent arrives or the panel closes.
    */
   private retiredDictation: DictationHandle | undefined
+  /**
+   * Counts every microphone press (M58): a Muse Voice start waits for the
+   * paid-use popup, and a stop pressed meanwhile cancels it.
+   */
+  private dictationPresses = 0
   /** Approvals "Edit automatically" answered itself (D24): their resolution is labelled so. */
   private readonly autoApproved = new Set<string>()
   /** The remote-window Bypass confirmation, given once per conversation (D24). */
@@ -1189,18 +1200,17 @@ export class ConversationController {
    * turned it off for a Windows profile workspace, or the user forced it on
    * where the CLI cannot run commands in the workspace.
    */
-  private noteShellSandbox(workspaceRoot: string, serverVersion: string): void {
+  private noteShellSandbox(workspaceRoot: string): void {
     const posture = this.deps.shellSandbox()
     if (posture.reason === 'profileWorkspace') {
       this.notice('info', UI_TEXT.sandboxOffProfileNotice)
       return
     }
-    const isLimited = isProfileWorkspaceLimited({
-      platform: this.deps.platform,
+    const isLimited = isProfileWorkspace(
+      this.deps.platform,
       workspaceRoot,
-      userProfileDir: this.deps.userProfileDir,
-      serverVersion,
-    })
+      this.deps.userProfileDir,
+    )
     if (isLimited && posture.isSandboxed) {
       this.notice('warning', UI_TEXT.sandboxProfileNotice)
     }
@@ -1252,7 +1262,7 @@ export class ConversationController {
         ...(message.feedback !== undefined && { feedback: message.feedback }),
       })
     } catch (error: unknown) {
-      if (error instanceof PromptSettledError) {
+      if (isPromptSettledError(error)) {
         this.promptSettled(error, { approvalId: message.approvalId })
         return
       }
@@ -1288,7 +1298,7 @@ export class ConversationController {
     try {
       await this.session.cancelQuestions(userInputId)
     } catch (error: unknown) {
-      if (error instanceof PromptSettledError) {
+      if (isPromptSettledError(error)) {
         this.promptSettled(error, { userInputId })
         return
       }
@@ -1305,7 +1315,7 @@ export class ConversationController {
     try {
       await this.session.answerQuestions(message.userInputId, message.answers)
     } catch (error: unknown) {
-      if (error instanceof PromptSettledError) {
+      if (isPromptSettledError(error)) {
         this.promptSettled(error, { userInputId: message.userInputId })
         return
       }
@@ -1324,7 +1334,7 @@ export class ConversationController {
     try {
       await this.session.clarifyQuestions(message.userInputId, text)
     } catch (error: unknown) {
-      if (error instanceof PromptSettledError) {
+      if (isPromptSettledError(error)) {
         this.promptSettled(error, { userInputId: message.userInputId })
         return
       }
@@ -1850,7 +1860,7 @@ export class ConversationController {
     if (host.info.kind === 'modelApi') {
       this.notice('info', UI_TEXT.modelApiBackendNotice)
     } else {
-      this.noteShellSandbox(workspaceRoot, host.info.serverVersion)
+      this.noteShellSandbox(workspaceRoot)
     }
     return session
   }
@@ -2388,7 +2398,7 @@ export class ConversationController {
             // Muse Code's fork keeps the parent's goal until cleared.
             await loaded.session.controlGoal({ verb: 'clear' })
           } catch (error: unknown) {
-            if (!(error instanceof GoalRefusedError && error.refusal === 'noGoal')) {
+            if (!(isGoalRefusedError(error) && error.refusal === 'noGoal')) {
               throw error
             }
           }
@@ -2677,7 +2687,7 @@ export class ConversationController {
     try {
       return await run(session)
     } catch (error: unknown) {
-      if (!(error instanceof SessionNotLoadedError) || this.deps.workspaceRoot === undefined) {
+      if (!isSessionNotLoadedError(error) || this.deps.workspaceRoot === undefined) {
         throw error
       }
       // A late refusal from an old session must not replace the session
@@ -2764,7 +2774,7 @@ export class ConversationController {
       ) {
         return
       }
-      if (error instanceof GoalRefusedError) {
+      if (isGoalRefusedError(error)) {
         this.deps.log.info(`Goal ${verb} refused: ${error.message}`)
         this.say('warning', goalRefusalText(verb, error.refusal))
         result(false)
@@ -3594,7 +3604,18 @@ export class ConversationController {
     return this.dictation
   }
 
-  private handleDictation(action: DictationAction): void {
+  private async handleDictation(action: DictationAction): Promise<void> {
+    this.dictationPresses += 1
+    const press = this.dictationPresses
+    const choice = this.dictationChoice()
+    if (action === 'start' && choice.engine === 'museVoice' && choice.setup.isAvailable) {
+      // Each Muse Voice recording is paid: the popup first (M58, PLAN.md D48).
+      const isAllowed = await this.deps.allowsPaidUse({ feature: 'voice' })
+      if (!isAllowed || press !== this.dictationPresses) {
+        this.postDictationState()
+        return
+      }
+    }
     const driver = this.dictationDriver()
     if (driver === undefined) {
       // The button is disabled with the reason; a stray press re-sends it.
@@ -3901,7 +3922,7 @@ export class ConversationController {
         break
       }
       case 'dictation': {
-        this.handleDictation(message.action)
+        await this.handleDictation(message.action)
         break
       }
       case 'readUsage': {
@@ -3910,6 +3931,10 @@ export class ConversationController {
       }
       case 'setPaidFeature': {
         await this.deps.setPaidFeature(message.feature, message.isOn)
+        break
+      }
+      case 'forgetPaidUse': {
+        await this.deps.forgetPaidUse()
         break
       }
     }

@@ -2,7 +2,8 @@
 // makes one PNG from a prompt, `edit_image` changes or combines workspace
 // images by a prompt, and either writes a new file. Both are offered only
 // while paid image generation is on, and the caller asks before every call,
-// naming the price, in every permission mode (Bypass included). Everything
+// naming the price, in every permission mode (Bypass included), unless the
+// user allowed images always in this workspace (M58). Everything
 // that can be checked is checked before that question (`prepareImageCall`),
 // so nothing is asked or billed for an image that could not be made or
 // saved: the arguments, the output path (confined like any write, a `.png`,
@@ -29,11 +30,13 @@ import {
   MODEL_TEXT,
   PNG_SIGNATURE,
 } from '../../../shared/constants'
+import type { PaidUseRequest } from '../../../shared/paid'
 import { pathModule } from '../../workspaceRoot'
 import type { ModelApiClient } from './client'
 import { IMAGE_ASPECTS } from './imageToolDefinitions'
 import type { ImagesResponse } from './schemas'
-import { confineWorkspacePath, type FileReservation, type ToolIo, type ToolOutcome } from './tools'
+import { confineWorkspacePath } from '../../workspacePath'
+import type { FileReservation, ToolIo, ToolOutcome } from './tools'
 
 const DEFAULT_ASPECT: ImageAspect = 'square'
 const BYTES_PER_KIB = 1024
@@ -89,6 +92,17 @@ export interface ImagePlan {
 
 export type ImagePlanResult =
   { readonly ok: true; readonly plan: ImagePlan } | { readonly ok: false; readonly reason: string }
+
+/** The call as the paid-use popup names it (M58): workspace-relative paths and the prompt. */
+export function imageUseRequest(plan: ImagePlan): PaidUseRequest {
+  return {
+    feature: 'imageGeneration',
+    kind: plan.kind,
+    path: plan.target.relative,
+    sources: plan.sources.map((source) => source.relative),
+    prompt: plan.prompt,
+  }
+}
 
 export interface ImageWorkspace {
   readonly workspaceRoot: string

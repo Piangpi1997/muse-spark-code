@@ -190,8 +190,8 @@ Creator's ACP Client, sublime-acp, Devin Desktop's custom agents).
 | `--shell-sandbox auto\|muse\|off`      | Muse Code's shell sandbox, as the extension's `museSpark.shellSandbox` setting                                          |
 | `--allow-dangerously-skip-permissions` | Offer the Bypass permissions mode                                                                                       |
 | `--allow-contributor-models`           | List contributor-tier models, whose content Meta may train on; they are hidden otherwise                                |
-| `--web-search`                         | Offer paid web search (Model API backend only), once you accept its price in the editor                                 |
-| `--image-generation`                   | Offer paid image generation (Model API backend only), once you accept its price in the editor                           |
+| `--web-search`                         | Offer paid web search (Model API backend only); each prompt asks in the editor first, naming the price                  |
+| `--image-generation`                   | Offer paid image generation (Model API backend only); each image asks in the editor first, naming the price             |
 | `--verbose`                            | Log every detail to stderr (the editor's agent log)                                                                     |
 
 ## What the editor sees
@@ -218,14 +218,26 @@ Creator's ACP Client, sublime-acp, Devin Desktop's custom agents).
 Web search ($2.50 per 1,000 searches) and image generation ($0.01 per
 image) cost money on top of tokens and are billed to your Model API key.
 They are off unless the editor starts the agent with `--web-search` or
-`--image-generation` (with `--backend modelApi`). Then the first prompt
-asks, in the editor, whether to turn each on, naming what it does and
-its price; only "Turn on" does. The answer holds until the agent stops;
-"Keep off", a cancelled question or an editor that cannot ask leaves the
-feature off and it is not asked again. Every image is still asked for
-one by one, and every paid row and approval names its price. The agent
-log counts each billed use. Muse Voice needs the VS Code panel's
-microphone, so the agent has none.
+`--image-generation` (with `--backend modelApi`). Then every use asks
+first in the editor's permission prompt, as the VS Code panel's popup
+does, naming what is about to be billed and its price: each prompt that
+may search the web (Meta runs the searches inside the reply, so the
+question comes once per prompt, not per search) and each image. The
+answers are **Allow once**, **Allow always in this workspace** and
+**Deny**; Deny sends the prompt without web search, or makes no image.
+A cancelled prompt, an answer the prompt did not offer, or an editor
+that cannot ask counts as Deny.
+
+**Allow always in this workspace** is offered only when the agent runs
+with `--trust-workspace`. It is kept for that folder in the agent's data
+folder (`paid-uses.json` under `%LOCALAPPDATA%\Muse Spark Code\acp`,
+`~/Library/Application Support/Muse Spark Code/acp` or
+`$XDG_DATA_HOME/muse-spark-code/acp`), holding feature names only, and
+it lapses in every folder when the agent starts without that feature's
+flag, so turning the flag on again asks again. Every paid row names its
+price, and the agent log counts each billed use. Subagents, scheduled
+prompts and Muse Voice are not offered: the agent has no flag for them
+(Muse Voice needs the VS Code panel's microphone).
 
 ## Not yet
 

@@ -56,13 +56,15 @@ const WEBVIEW_ROOT = 'src/webview'
 // and the ACP agent with its process (M63, D62), which run with no VS Code.
 const PORTABLE_ROOTS = ['src/core', 'src/shared', 'src/webview', 'src/acp', 'src/runtime']
 // Host modules another adapter reuses (D60, M61): the conversation, both
-// backends and their tool harness, the credential store, the session
-// store, the `ide` MCP server.
+// backends and their tool harness, the Model API backend's own bundle, which
+// the ACP agent loads as the extension does (M57, D6), the credential store,
+// the session store, the `ide` MCP server.
 const PORTABLE_HOST = [
   'src/host/auth/authService.ts',
   'src/host/auth/credentialStore.ts',
   'src/host/backend/fileSessionStore.ts',
   'src/host/backend/modelApiBackendManager.ts',
+  'src/host/backend/modelApiEntry.ts',
   'src/host/backend/museCodeBackendManager.ts',
   'src/host/backend/toolIo.ts',
   'src/host/conversation/conversationController.ts',
