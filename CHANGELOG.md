@@ -49,33 +49,62 @@ happened, not what was planned; superseded entries are kept.
     stayed on "Sign-out is in progress or credentials remain" until a new
     browser sign-in.
   - **Reading the file.** The extension now reads only its structure: the
-    schema version, whether it names a provider, and whether it points to
-    the macOS Keychain. Every other value, the token included, is dropped
-    as the file is parsed.
+    schema version, which providers it names, and whether Muse Code's own
+    (`meta`) points to the macOS Keychain. Every other value, the token
+    included, is dropped as the file is parsed. Another entry alone, such
+    as the one Muse Code's bundled Slack connector reads, is not taken for
+    a Muse sign-in.
   - **Asking Muse Code.** When the structure cannot say, the extension asks
     Muse Code itself (`account/read` on a short-lived host). It keeps the
-    answer until the file changes. On macOS it asks only after a click in
-    the panel.
+    answer until the file changes, or until you sign in, sign out or choose
+    **Check again**, which always asks afresh. On macOS it asks only when
+    you act: a click in the panel, or the **Sign Out** or **Diagnostics**
+    command.
   - **Signing out.** Sign-out uses Muse Code's own `account/logout` and
-    confirms it with `account/read`. `muse logout` in a terminal remains
-    the fallback.
+    confirms it with `account/read`. Only when Muse Code still reads signed
+    in afterwards does it open `muse logout` in a terminal. With
+    `META_API_KEY` set, a sign-out no longer opens that terminal every
+    time.
+  - **Check again after a sign-out.** A sign-out that must wait for the
+    terminal, or for `META_API_KEY` to go, now offers **Check again**,
+    which its message asks for.
 - **Browser sign-in waits as long as the code lives, and ends at once when
   Muse Code ends it.**
   - **The code's lifetime.** A code lasts ten minutes (captured on
     1.4.0-R4302.1). The panel now waits that long and says when the code
     expired. Before, it gave up after five minutes and cancelled a code
     that could still be approved.
-  - **Other endings.** Any other way Muse Code ends the sign-in is shown in
-    Muse Code's own word.
-  - **Cancel.** It works at once, even when Muse Code stops answering.
+  - **Other endings.** A denied code and a sign-in Muse Code could not save
+    each have a message of their own. An ending Muse Code has not been
+    seen to send is shown in its own word.
+  - **Cancel.** It works at once, even when Muse Code stops answering. If
+    the browser approved just before, the panel follows what Muse Code
+    saved instead of saying the sign-in was cancelled.
   - **Success.** It is taken from Muse Code's `account/read` turning
     signed in, or from a new credential file it does not contradict.
+  - **A host that exits.** The sign-in fails at once instead of waiting
+    out the eleven-minute limit.
+  - **Sign-out and closing the window** no longer wait on Muse Code's
+    answer to a sign-in that had just finished or failed. Closing the
+    window cancels the sign-in and closes its host and every short-lived
+    account host.
 - **A macOS `auth.json` copied to Windows or Linux is named** as the reason
   Muse Code cannot start, instead of a host that exits at every message.
+  That covers an empty version-2 file too, which Muse Code 1.4.0 on
+  Windows refuses as well.
+- **The CLI's terminals get `museSpark.environmentVariables`.** The
+  terminals for `muse logout`, MCP sign-in and **Open in Terminal** now run
+  with them, as `muse serve` does, so with `XDG_CONFIG_HOME` moved they use
+  the same config home.
 - **Muse Spark: Diagnostics** describes the CLI's credential file by its
   structure and gives the CLI's sign-in state. On macOS it also says whether
-  the login Keychain holds Muse Code's item, looked up by attribute only:
-  no secret and no prompt.
+  the login Keychain holds Muse Code's item, looked up by attribute only,
+  which reads no secret and shows no prompt. Its question to Muse Code
+  about the sign-in may still show the Keychain's prompt, as Muse Code
+  reads the Keychain to answer.
+- **The log.** When Muse Code could not save a browser sign-in, its message
+  names a folder in your profile; the log now says only that saving
+  failed.
 
 ## [0.9.1] - 2026-09-27
 

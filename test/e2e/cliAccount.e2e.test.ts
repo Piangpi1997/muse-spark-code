@@ -17,9 +17,13 @@ import { CliAccount, readCredentialFile } from '../../src/host/auth/cliAccount'
 import { runDeviceSignIn } from '../../src/host/auth/deviceSignIn'
 import { MuseCodeBackendManager } from '../../src/host/backend/museCodeBackendManager'
 import { CAPTURES_FOLDER } from '../unit/helpers/accountLoginCapture'
+import {
+  DEVICE_LOGIN_FILE,
+  LOGOUT_SHELL,
+  SLACK_CONNECTOR_ONLY,
+} from '../unit/helpers/credentialShapes'
 import { FakeLogOutputChannel } from '../unit/helpers/fakes'
 import {
-  FAKE_STORED_SIGN_IN,
   fakeCredentialFile,
   installFakeCredential,
   installFakeMuse,
@@ -32,9 +36,10 @@ const TEST_TIMEOUT_MS = 30_000
 const ENDING_AFTER_MS = 300
 // "At once": well under the 30 s an unanswered account/read would take.
 const PROMPT_MS = 5000
-// A schema no build has written: only the CLI can say what it holds.
+// Synthetic: a schema no build has written; only the CLI can say what it holds.
 const UNPLACEABLE = '{"schema_version": 9, "providers": {"meta": {}}}'
-const LOGOUT_SHELL = '{\n  "schema_version": 1,\n  "providers": {}\n}'
+// A signal nothing aborts: the window stays open.
+const OPEN = new AbortController().signal
 
 const fake = installFakeMuse()
 const workspaceRoot = mkdtempSync(path.join(tmpdir(), 'fake-muse-ws-'))
@@ -63,9 +68,9 @@ function setup(fakeEnvironment: readonly { name: string; value: string }[] = [])
     getProxySettings: () => ({ proxy: '', noProxy: [] }),
   })
   managers.push(backend)
-  const connect = () =>
-    connectAccountSession(backend, '0.0.0-e2e', log, workspaceRoot, new AbortController().signal)
-  const probe = vi.fn(() => probeAccount(connect, log))
+  const connect = (signal: AbortSignal) =>
+    connectAccountSession(backend, '0.0.0-e2e', log, workspaceRoot, signal)
+  const probe = vi.fn(() => probeAccount(connect, log, OPEN))
   const account = new CliAccount({
     platform: process.platform,
     credentialFilePath: () => backend.credentialFilePath(),
@@ -96,7 +101,7 @@ describe('The CLI’s sign-in against a real child process', { timeout: TEST_TIM
     await expect(t.account.signIn(false)).resolves.toBe('signedIn')
     expect(t.probe).toHaveBeenCalledOnce()
 
-    await expect(logOutAccount(t.connect, t.log)).resolves.toBe('confirmed')
+    await expect(logOutAccount(t.connect, t.log, OPEN)).resolves.toBe('confirmed')
     // The file stays, emptied, as `muse logout` leaves it; its structure alone
     // now says signed out, and no host is started to say so.
     expect(readFileSync(fakeCredentialFile(configHome), 'utf8')).toBe(LOGOUT_SHELL)
@@ -109,10 +114,18 @@ describe('The CLI’s sign-in against a real child process', { timeout: TEST_TIM
   })
 
   it('reads a stored sign-in from the file alone', async () => {
-    writeFakeCredential(configHome, FAKE_STORED_SIGN_IN)
+    writeFakeCredential(configHome, DEVICE_LOGIN_FILE)
     const t = setup()
     await expect(t.account.signIn(true)).resolves.toBe('signedIn')
     expect(t.probe).not.toHaveBeenCalled()
+  })
+
+  // Only `meta` speaks for the sign-in (the review of PR #49).
+  it('asks the CLI about a file naming another provider alone', async () => {
+    writeFakeCredential(configHome, SLACK_CONNECTOR_ONLY)
+    const t = setup()
+    await expect(t.account.signIn(false)).resolves.toBe('signedOut')
+    expect(t.probe).toHaveBeenCalledOnce()
   })
 })
 
@@ -120,7 +133,12 @@ describe('The CLI’s sign-in against a real child process', { timeout: TEST_TIM
 function signIn(fakeEnvironment: readonly { name: string; value: string }[], signal: AbortSignal) {
   writeFakeCredential(configHome, LOGOUT_SHELL)
   const t = setup([{ name: 'MUSE_FAKE_CAPTURES', value: CAPTURES_FOLDER }, ...fakeEnvironment])
-  const onCode = vi.fn()
+  // When the code was shown: "at once" is timed from here, not from the
+  // spawn, which a slow machine may take seconds over (the review of PR #49).
+  const shown = { at: NaN }
+  const onCode = vi.fn(() => {
+    shown.at = Date.now()
+  })
   const outcome = runDeviceSignIn({
     connect: (flowSignal) =>
       connectAccountSession(t.backend, '0.0.0-e2e', t.log, workspaceRoot, flowSignal),
@@ -134,20 +152,22 @@ function signIn(fakeEnvironment: readonly { name: string; value: string }[], sig
     onCode,
     log: t.log,
   })
-  return { ...t, onCode, outcome }
+  return { ...t, onCode, outcome, shown }
+}
+
+/** The fake sends the named capture's ending, and what came with it, after loginStart. */
+function endingAfterStart(name: string): { name: string; value: string }[] {
+  return [
+    { name: 'MUSE_FAKE_LOGIN_ENDING', value: name },
+    { name: 'MUSE_FAKE_LOGIN_ENDING_MS', value: String(ENDING_AFTER_MS) },
+  ]
 }
 
 // The device sign-in against the fake CLI replaying the frames captured on
 // 1.4.0-R4302.1 (test/fixtures/msp; PR #49 P1 and P2).
 describe('The device sign-in against a real child process', { timeout: TEST_TIMEOUT_MS }, () => {
   it('ends on the captured expired ending, shown the code as captured', async () => {
-    const t = signIn(
-      [
-        { name: 'MUSE_FAKE_LOGIN_ENDING', value: 'expired' },
-        { name: 'MUSE_FAKE_LOGIN_ENDING_MS', value: String(ENDING_AFTER_MS) },
-      ],
-      new AbortController().signal,
-    )
+    const t = signIn(endingAfterStart('expired'), OPEN)
     await expect(t.outcome).resolves.toBe('expired')
     expect(t.onCode).toHaveBeenCalledWith(
       'https://auth.meta.com/oauth/device/?code=AAAA-AAAA',
@@ -162,14 +182,42 @@ describe('The device sign-in against a real child process', { timeout: TEST_TIME
     const t = signIn(
       [
         { name: 'MUSE_FAKE_ACCOUNT_READ', value: 'silentAfterStart' },
-        { name: 'MUSE_FAKE_LOGIN_ENDING', value: 'expired' },
-        { name: 'MUSE_FAKE_LOGIN_ENDING_MS', value: String(ENDING_AFTER_MS) },
+        ...endingAfterStart('expired'),
       ],
-      new AbortController().signal,
+      OPEN,
     )
-    const started = Date.now()
     await expect(t.outcome).resolves.toBe('expired')
-    expect(Date.now() - started).toBeLessThan(PROMPT_MS)
+    expect(Date.now() - t.shown.at).toBeLessThan(PROMPT_MS)
+  })
+
+  // The captured success: the file written, `account/changed`, then
+  // `granted` (the review of PR #49).
+  it('signs in on the captured granted sequence', async () => {
+    const t = signIn(endingAfterStart('granted'), OPEN)
+    await expect(t.outcome).resolves.toBe('signedIn')
+    expect(readCredentialFile(t.backend.credentialFilePath(), process.platform)?.verdict).toBe(
+      'inline',
+    )
+    expect(t.log.info).toHaveBeenCalledWith('Muse Code sign-in ended: granted')
+    expect(everythingLogged(t.log)).not.toContain('person@example.com')
+  })
+
+  // `failed`'s captured message names the credential file's path.
+  it.each([
+    ['denied', 'login failed: the request was denied'],
+    ['failed', 'saving the credential failed'],
+  ])('ends on the captured %s, and logs no path', async (outcome, logged) => {
+    const t = signIn(endingAfterStart(outcome), OPEN)
+    await expect(t.outcome).resolves.toBe(outcome)
+    expect(t.log.info).toHaveBeenCalledWith(`Muse Code sign-in ended: ${outcome}: ${logged}`)
+    expect(everythingLogged(t.log)).not.toContain('<throwaway>')
+  })
+
+  // A host that dies mid-flow fails the sign-in at once (the review of PR #49).
+  it('fails at once when the host exits during the flow', async () => {
+    const t = signIn([{ name: 'MUSE_FAKE_LOGIN_EXIT_MS', value: String(ENDING_AFTER_MS) }], OPEN)
+    await expect(t.outcome).rejects.toThrow('exited')
+    expect(Date.now() - t.shown.at).toBeLessThan(PROMPT_MS)
   })
 
   it('cancels at once while account/read goes unanswered, and the CLI ends its flow', async () => {

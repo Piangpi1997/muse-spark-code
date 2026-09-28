@@ -8,7 +8,7 @@ import path from 'node:path'
 import * as vscode from 'vscode'
 import * as z from 'zod/mini'
 import type { AgentHost, BackendKind } from './core/agent/agentBackend'
-import { environmentValue } from './core/backends/musecode/launch'
+import { environmentValue, terminalEnvironment } from './core/backends/musecode/launch'
 import { confineWorkspacePath } from './core/workspacePath'
 import { selectBackend } from './core/backendSelection'
 import { personalSkillsRoot } from './core/context/skills'
@@ -29,7 +29,7 @@ import {
   rootRelativePath,
 } from './core/workspaceRoot'
 import { keychainItemPresence } from './core/backends/musecode/credentialFile'
-import { connectAccountSession, logOutAccount, probeAccount } from './host/auth/accountHost'
+import { AccountHosts, connectAccountSession } from './host/auth/accountHost'
 import { AuthService } from './host/auth/authService'
 import { CliAccount, isCliSignedIn } from './host/auth/cliAccount'
 import { runDeviceSignIn } from './host/auth/deviceSignIn'
@@ -281,12 +281,13 @@ function modifiedAt(fsPath: string): number | undefined {
  * shell is pinned so the call syntax is known (PLAN.md D25): Windows
  * PowerShell on Windows (the CLI's own shim shell), `/bin/sh` elsewhere (a
  * default shell of pwsh or nushell would not run `"path" login` as a
- * command).
+ * command). `env` is added to the terminal's own environment.
  */
 function runInTerminal(
   cliPath: string,
   args: readonly string[],
   options: TerminalLaunchOptions,
+  env: Record<string, string>,
 ): void {
   const isWindows = process.platform === 'win32'
   const systemRoot = process.env['SystemRoot']
@@ -297,6 +298,7 @@ function runInTerminal(
     name: options.name,
     ...(options.cwd !== undefined && { cwd: options.cwd }),
     ...(shellPath !== undefined && { shellPath }),
+    env,
   })
   terminal.show(true)
   // The path and each argument single-quoted for the pinned shell (M31):
@@ -602,7 +604,23 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     )
     await Promise.all([backend.dispose(), modelApi.dispose()])
   }
-  lifecycle.shutdown = () => restartBackend('the window is closing', true)
+  /**
+   * The CLI in a terminal (`muse logout`, `muse mcp login`, Open in
+   * Terminal), with `museSpark.environmentVariables` as `muse serve` gets
+   * them, so it reads the same config home (the review of PR #49).
+   */
+  const runCliInTerminal = (
+    cliPath: string,
+    args: readonly string[],
+    options: TerminalLaunchOptions,
+  ): void => {
+    runInTerminal(
+      cliPath,
+      args,
+      options,
+      terminalEnvironment(currentSettings().environmentVariables, process.platform),
+    )
+  }
   // Skills, imports and export (M30): the CLI by absolute path, in the
   // environment `muse serve` gets, from the workspace root.
   const cliFeatures = createCliFeatures({
@@ -624,7 +642,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       if (!resolution.ok) {
         return false
       }
-      runInTerminal(resolution.launch.cliPath, args, { name: terminalName, cwd: workspaceRoot })
+      runCliInTerminal(resolution.launch.cliPath, args, { name: terminalName, cwd: workspaceRoot })
       return true
     },
     museSettingsPath: () => museSettingsPath(museConfig()),
@@ -663,10 +681,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // D26): the device sign-in, `account/read` and `account/logout`.
   const connectAccountHost = (signal: AbortSignal) =>
     connectAccountSession(backend, version, log, workspaceRoot, signal)
+  // The short-lived account/read and account/logout hosts end with the window.
+  const accountHosts = new AccountHosts(connectAccountHost, log)
   const cliAccount = new CliAccount({
     platform: process.platform,
     credentialFilePath: () => backend.credentialFilePath(),
-    probe: () => probeAccount(() => connectAccountHost(new AbortController().signal), log),
+    probe: () => accountHosts.probe(),
     log,
   })
   /** The CLI's own credential without a question to the CLI on macOS: META_API_KEY or its sign-in. */
@@ -686,17 +706,19 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             }
       },
       cliSignIn: (isUserAction) => cliAccount.signIn(isUserAction),
+      abandonCliProbe: () => {
+        cliAccount.abandonProbe()
+      },
       forgetCliAnswers: () => {
         cliAccount.forgetAnswers()
       },
       credentialFilePath: () => backend.credentialFilePath(),
+      credentialFileModifiedAt: () => modifiedAt(backend.credentialFilePath()),
       hasEnvironmentKey: () => backend.hasEnvironmentKey(),
       getBackendMode: () => currentSettings().backend,
       restartBackend: (isConversationEnding) =>
         restartBackend('authentication changed', isConversationEnding),
-      logOutCli: async () =>
-        (await logOutAccount(() => connectAccountHost(new AbortController().signal), log)) ===
-        'confirmed',
+      logOutCli: async () => (await accountHosts.logOut()) === 'confirmed',
     },
     credentials,
     logoutHold: {
@@ -704,7 +726,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       set: (isHeld) => context.globalState.update(GLOBAL_STATE_KEYS.cliLogoutHold, isHeld),
     },
     runInTerminal: (cliPath, args) => {
-      runInTerminal(cliPath, args, { name: UI_TEXT.museLoginTerminalName, cwd: undefined })
+      runCliInTerminal(cliPath, args, { name: UI_TEXT.museLoginTerminalName, cwd: undefined })
     },
     installCommand:
       process.platform === 'win32' ? MUSE_INSTALL_COMMANDS.win32 : MUSE_INSTALL_COMMANDS.posix,
@@ -759,6 +781,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     now: () => Date.now(),
     log,
   })
+  // The window closing ends the account hosts, then the browser sign-in
+  // (awaited, so its host is closed too), then the backends (the review of
+  // PR #49).
+  lifecycle.shutdown = async () => {
+    accountHosts.close()
+    await auth.stopSignIn()
+    await restartBackend('the window is closing', true)
+  }
 
   const editorContext = new EditorContextTracker({
     broadcast: (summary) => {
@@ -1595,7 +1625,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     registerLoggedCommand(log, COMMAND_IDS.openInTerminal, () => {
       openMuseTerminal({
         resolveCli,
-        runInTerminal,
+        runInTerminal: runCliInTerminal,
         workspaceRoot,
         showWarning: (message) => {
           void vscode.window.showWarningMessage(message)

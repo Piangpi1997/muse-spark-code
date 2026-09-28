@@ -71,7 +71,7 @@ export interface SupportFacts {
   /**
    * What the CLI's credential file's structure says, never a value from it:
    * `absent`, `empty` (no sign-in), `inline` (holds one), `keychain` (a macOS
-   * pointer), `keychainElsewhere` (a macOS pointer where `muse serve` cannot
+   * pointer), `unsupportedHere` (a macOS file where `muse serve` cannot
    * start with it) or `unrecognized`.
    */
   readonly cliCredentialFile: CredentialFileVerdict | 'absent'

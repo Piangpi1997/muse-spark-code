@@ -10,12 +10,11 @@ import {
   readCredentialFile,
 } from '../../src/host/auth/cliAccount'
 import { MUSE_CREDENTIAL_FILE_MAX_BYTES } from '../../src/shared/constants'
+import { DEVICE_LOGIN_FILE, LOGOUT_SHELL, SLACK_CONNECTOR_ONLY } from './helpers/credentialShapes'
 import { FakeLogOutputChannel } from './helpers/fakes'
 
-// What Muse Code 1.3.0 and 1.4.0 write (isolated homes, 2026-09-27) and
-// macOS's pointer (aonia §2.3); placeholders, never a token.
-const LOGOUT_SHELL = '{\n  "schema_version": 1,\n  "providers": {}\n}'
-const STORED_SIGN_IN = '{"schema_version":1,"providers":{"meta":{"mechanism":"oauth"}}}'
+// Not captured here: macOS's pointer as a third party observed it (aonia
+// §2.3). Synthetic: a file cut short, which only the CLI can place.
 const MAC_POINTER =
   '{"schema_version":2,"providers":{"meta":{"mechanism":"oauth","storage":"keychain"}}}'
 const MALFORMED = '{"schema_version": 1, "providers": '
@@ -123,7 +122,7 @@ describe('cliSignInFromAccount', () => {
     expect(isCliSignedIn('signedIn')).toBe(true)
     expect(isCliSignedIn('unknown')).toBe(true)
     expect(isCliSignedIn('signedOut')).toBe(false)
-    expect(isCliSignedIn('keychainElsewhere')).toBe(false)
+    expect(isCliSignedIn('unsupportedHere')).toBe(false)
   })
 })
 
@@ -141,7 +140,7 @@ describe('CliAccount', () => {
 
   it('reads a stored sign-in as signed in without asking', async () => {
     const home = configHome()
-    home.write(STORED_SIGN_IN)
+    home.write(DEVICE_LOGIN_FILE)
     const t = account('linux', home.file, [])
     await expect(t.checker.signIn(false)).resolves.toBe('signedIn')
     expect(t.probe).not.toHaveBeenCalled()
@@ -151,7 +150,7 @@ describe('CliAccount', () => {
     const home = configHome()
     home.write(MAC_POINTER)
     const t = account('win32', home.file, [])
-    await expect(t.checker.signIn(true)).resolves.toBe('keychainElsewhere')
+    await expect(t.checker.signIn(true)).resolves.toBe('unsupportedHere')
     expect(t.probe).not.toHaveBeenCalled()
   })
 
@@ -235,7 +234,7 @@ describe('CliAccount', () => {
     const probe = vi.fn(() => answers.shift() ?? Promise.resolve(undefined))
     const checker = linuxChecker(home.file, probe)
     const abandoned = checker.signIn(true)
-    checker.forgetAnswers()
+    checker.abandonProbe()
     await expect(checker.signIn(true)).resolves.toBe('signedOut')
     expect(probe).toHaveBeenCalledTimes(2)
     // The first probe answers late: it settles its own caller only.
@@ -243,5 +242,30 @@ describe('CliAccount', () => {
     await expect(abandoned).resolves.toBe('signedIn')
     await expect(checker.signIn(false)).resolves.toBe('signedOut')
     expect(probe).toHaveBeenCalledTimes(2)
+  })
+
+  // Cancel abandons a probe but keeps what the CLI already said; a sign-out,
+  // a new sign-in or Check again forgets it (the review of PR #49).
+  it('keeps a remembered answer when a probe is abandoned, and asks afresh once forgotten', async () => {
+    const home = configHome()
+    home.write(MALFORMED)
+    const t = account('linux', home.file, [SIGNED_IN, LOGGED_OUT])
+    await expect(t.checker.signIn(true)).resolves.toBe('signedIn')
+    t.checker.abandonProbe()
+    await expect(t.checker.signIn(true)).resolves.toBe('signedIn')
+    expect(t.probe).toHaveBeenCalledOnce()
+    t.checker.forgetAnswers()
+    await expect(t.checker.signIn(true)).resolves.toBe('signedOut')
+    expect(t.probe).toHaveBeenCalledTimes(2)
+  })
+
+  // The bundled Slack connector's own entry says nothing about the Muse
+  // sign-in (the review of PR #49): the CLI is asked.
+  it('asks the CLI about a file naming another provider alone', async () => {
+    const home = configHome()
+    home.write(SLACK_CONNECTOR_ONLY)
+    const t = account('win32', home.file, [LOGGED_OUT])
+    await expect(t.checker.signIn(false)).resolves.toBe('signedOut')
+    expect(t.probe).toHaveBeenCalledOnce()
   })
 })

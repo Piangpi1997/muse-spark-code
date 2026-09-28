@@ -199,29 +199,42 @@ fields, never raw configuration or failed-command output.
   is in your login Keychain (item `ai.meta.dev.credentials`, account
   `meta`), and `auth.json` only points to it.
 - To tell whether the CLI is signed in, the extension reads only the
-  structure of `auth.json`: its schema version, whether it names a
-  provider, and whether it points to the Keychain.
+  structure of `auth.json`: its schema version, which providers it names
+  (only Muse Code's own, `meta`, speaks for the sign-in), and whether that
+  one points to the Keychain.
   - Every other value in the file, the token included, is dropped while the
     file is parsed. Nothing from it is stored, logged or passed on.
   - When that structure cannot say, the extension asks the CLI itself
     (`account/read` on a short-lived `muse serve` that owns no
-    conversation). It keeps the answer until the file changes.
-  - The CLI's answer carries your account's e-mail address as a label. The
-    extension discards it without logging or showing it.
-  - On macOS it asks only after you click something in the panel, since
-    the CLI may read the Keychain to answer.
+    conversation). It keeps the answer until the file changes, or until
+    you sign in, sign out or choose **Check again**.
+  - The CLI's answer carries your account's e-mail address as a label, and
+    the address of your account picture. The extension discards both
+    without logging or showing them.
+  - On macOS it asks only when you act, since the CLI may read the
+    Keychain to answer: a click in the panel (sign-in, sign-out, **Check
+    again**), or the **Sign Out** or **Diagnostics** command.
   - It also uses the file's size and modification time, to notice a new
     sign-in.
+- When Muse Code ends a browser sign-in, the log gets the word it ended
+  with. Its message goes to the log only for a code that expired or was
+  denied, whose captured messages name nothing personal. When Muse Code
+  could not save the sign-in, its message names a folder in your profile,
+  so the log says only that saving failed.
 - **Muse Spark: Diagnostics** on macOS looks up the Keychain item by its
   attributes only, with `security find-generic-password` and no `-g` or
-  `-w`. That reads no secret and shows no prompt. The report says whether
-  the item is there.
+  `-w`. That lookup reads no secret and shows no prompt, and the report
+  says whether the item is there. Diagnostics also asks the CLI for its
+  sign-in (`account/read`); on macOS the CLI may read the Keychain to
+  answer, which can show the Keychain's own prompt.
 - **Sign out** in the panel (the same action as `/logout` and **Muse Spark:
   Sign Out**) does three things:
   - It deletes the pasted key from secret storage.
   - It signs the CLI out when the CLI is signed in, through the CLI's own
-    `account/logout` on a short-lived `muse serve`. If that cannot run, it
-    runs `muse logout` in a terminal instead.
+    `account/logout` on a short-lived `muse serve`. If the CLI still reads
+    signed in afterwards, it runs `muse logout` in a terminal instead, with
+    your `museSpark.environmentVariables`, so the same config home is
+    signed out.
   - It records in VS Code's extension state (no credential) that you signed
     out, so an old CLI credential cannot sign the window back in until you
     sign in again.

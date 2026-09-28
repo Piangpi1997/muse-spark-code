@@ -86,7 +86,7 @@ export function cliSignInFromAccount(account: AccountState | undefined): CliSign
 const FILE_SIGN_IN: Partial<Record<CredentialFileVerdict, CliSignIn>> = {
   empty: 'signedOut',
   inline: 'signedIn',
-  keychainElsewhere: 'keychainElsewhere',
+  unsupportedHere: 'unsupportedHere',
 }
 
 /** Signed in, or possibly: the estimate the gate and the backend choice use. */
@@ -156,13 +156,24 @@ export class CliAccount {
   }
 
   /**
-   * Forgets what the CLI said (Cancel, sign-out; the review of PR #49): an
-   * unanswered probe is left behind, and a remembered answer is dropped, so
-   * the next question asks afresh. A logout that leaves the file as it was
-   * (a Keychain sign-in) would otherwise keep reading as signed in.
+   * Leaves an unanswered probe behind (Cancel; the review of PR #49): the
+   * next question asks afresh instead of joining it, and its late answer is
+   * not remembered. A remembered answer stands, so what Cancel shows next
+   * needs no new question.
+   */
+  public abandonProbe(): void {
+    this.asking = undefined
+  }
+
+  /**
+   * Forgets everything the CLI said (after a sign-out, a new sign-in or
+   * Check again; the review of PR #49): the unanswered probe too, and the
+   * remembered answer, so the next question asks afresh. A change that
+   * leaves the file as it was (a Keychain sign-in or sign-out) would
+   * otherwise keep reading as before.
    */
   public forgetAnswers(): void {
-    this.asking = undefined
+    this.abandonProbe()
     this.answered = undefined
   }
 

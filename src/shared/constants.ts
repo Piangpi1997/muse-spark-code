@@ -1403,15 +1403,17 @@ export const MUSE_ACCOUNT_STATES = {
   accountLogin: 'accountLogin',
 } as const
 // `AccountLoginOutcome` (`account/loginCompleted`): how a device sign-in
-// ended. `cancelled` and `expired` were captured live (1.4.0-R4302.1,
-// 2026-09-27; `cancelled` also on 1.3.0). `granted` is the schema's word for
-// success, not captured: it is not taken for a sign-in, and it is the one
-// word that does not end the flow. The schema calls the vocabulary open, so
-// any other word ends the flow as the CLI named it (AGENTS.md rule 13).
+// ended, every word captured live (1.4.0-R4302.1, 2026-09-27; `cancelled`
+// also on 1.3.0). `granted` came after the file was written and
+// `account/read` already said `accountLogin`, so those decide and it is the
+// one word that does not end the flow. The schema calls the vocabulary open,
+// so any other word ends the flow as the CLI named it (AGENTS.md rule 13).
 export const MUSE_LOGIN_OUTCOMES = {
   granted: 'granted',
   expired: 'expired',
   cancelled: 'cancelled',
+  denied: 'denied',
+  failed: 'failed',
 } as const
 // An outcome word the panel shows as it came is cut at this length.
 export const MUSE_LOGIN_OUTCOME_SHOWN_MAX_CHARS = 40
@@ -1419,12 +1421,18 @@ export const MUSE_LOGIN_OUTCOME_SHOWN_MAX_CHARS = 40
 // anyway (captured: answered within 4 ms, after the `cancelled` ending).
 export const MUSE_LOGIN_CANCEL_TIMEOUT_MS = 2000
 // The CLI's credential file (`auth.json`), read for its structure only: its
-// schema version and whether a provider's `storage` points to the macOS
-// Keychain. Version 1 holds the credential itself (Windows, Linux, and macOS
-// with TBH_CREDENTIAL_BACKEND=file); version 2 is macOS's token-free pointer.
+// schema version, whether it names the Muse provider, and whether that
+// provider's `storage` points to the macOS Keychain. Version 1 holds the
+// credential itself (Windows, Linux, and macOS with
+// TBH_CREDENTIAL_BACKEND=file); version 2 is macOS's token-free pointer,
+// which `muse serve` on Windows refuses whatever it holds.
 export const MUSE_CREDENTIAL_INLINE_SCHEMA = 1
 export const MUSE_CREDENTIAL_POINTER_SCHEMA = 2
 export const MUSE_CREDENTIAL_KEYCHAIN_STORAGE = 'keychain'
+// The provider the CLI keeps its own sign-in under. Other entries share the
+// file (1.4.0-R4302.1's bundled Slack connector reads
+// `providers.slack_connector`), so only this one speaks for the sign-in.
+export const MUSE_CREDENTIAL_PROVIDER = 'meta'
 /** A larger file is not read (the CLI's own is under 1 KiB). */
 export const MUSE_CREDENTIAL_FILE_MAX_BYTES = 64 * 1024
 // Looks at the credential file when it changes while the CLI answers about it:

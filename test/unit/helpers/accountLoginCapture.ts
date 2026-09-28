@@ -1,9 +1,9 @@
 // Muse Code 1.4.0-R4302.1's device sign-in as captured live on 2026-09-27 in
-// a throwaway home (test/fixtures/msp/account-login-*.json;
+// throwaway homes (test/fixtures/msp/account-login-*.json;
 // docs/certification/sign-in-detection.md, "Live capture"; 0 model
 // attempts). The unit tests and the fake CLI (test/e2e/fake-muse/serve.mjs)
 // replay these frames, not guesses (AGENTS.md rule 13). The user code is its
-// shape, AAAA-AAAA.
+// shape, AAAA-AAAA; the account's label and avatar are stand-ins.
 
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
@@ -37,7 +37,7 @@ const captureSchema = z.object({
   ),
 })
 
-type CaptureName = 'expired' | 'cancelled'
+type CaptureName = 'expired' | 'cancelled' | 'granted' | 'denied' | 'failed'
 type CapturedNotification = Parameters<NotificationHandler>[0]
 
 function framesOf(name: CaptureName) {
@@ -45,16 +45,25 @@ function framesOf(name: CaptureName) {
   return captureSchema.parse(JSON.parse(readFileSync(file, 'utf8'))).frames
 }
 
+/** What the captured host answered each time it was asked `method`, in order. */
+function answersOf(name: CaptureName, method: string): Record<string, unknown>[] {
+  const frames = framesOf(name)
+  return frames
+    .filter((entry) => entry.dir === 'out' && entry.frame.method === method)
+    .flatMap((asked): Record<string, unknown>[] => {
+      const answer = frames.find((entry) => entry.dir === 'in' && entry.frame.id === asked.frame.id)
+        ?.frame.result
+      return answer === undefined ? [] : [answer]
+    })
+}
+
 /** What the captured host answered the first time it was asked `method`. */
 function answerOf(name: CaptureName, method: string): Record<string, unknown> {
-  const frames = framesOf(name)
-  const asked = frames.find((entry) => entry.dir === 'out' && entry.frame.method === method)
-  const result = frames.find((entry) => entry.dir === 'in' && entry.frame.id === asked?.frame.id)
-    ?.frame.result
-  if (result === undefined) {
+  const [first] = answersOf(name, method)
+  if (first === undefined) {
     throw new Error(`the ${name} capture has no answer to ${method}`)
   }
-  return result
+  return first
 }
 
 /** The captured `account/loginCompleted` frame, as it arrived. */
@@ -84,23 +93,53 @@ function codeLifetimeMs(): number {
   return ended.atMs - started.atMs
 }
 
+/** The first `account/read` answer in the granted capture that shows the sign-in. */
+function signedInAnswer(): Record<string, unknown> {
+  const signedIn = answersOf('granted', 'account/read').find(
+    (answer) => answer['state'] === 'accountLogin' && answer['label'] !== undefined,
+  )
+  if (signedIn === undefined) {
+    throw new Error('the granted capture has no signed-in account/read answer')
+  }
+  return signedIn
+}
+
 export const CAPTURED_CODE_LIFETIME_MS = codeLifetimeMs()
 /** `account/loginStart {type: "deviceCode"}`: `{verificationUrl, userCode}`. */
 export const CAPTURED_LOGIN_START = answerOf('cancelled', 'account/loginStart')
 /** `account/read` with nothing stored: `{state: "loggedOut", credentialRequired: true}`. */
 export const CAPTURED_LOGGED_OUT = answerOf('expired', 'account/read')
+/**
+ * `account/read` once the browser approved: `{state: "accountLogin", label,
+ * avatarUrl, credentialRequired: true}`; the label is an e-mail address in
+ * real life (a stand-in here), and `avatarUrl` is not in the MSP schema.
+ */
+export const CAPTURED_SIGNED_IN = signedInAnswer()
 /** 600 s after loginStart: `{outcome: "expired", message: "login failed: the request expired"}`. */
 export const CAPTURED_EXPIRED_ENDING = endingOf('expired')
 /** Sent before the loginCancel answer: `{outcome: "cancelled"}`, no message. */
 export const CAPTURED_CANCELLED_ENDING = endingOf('cancelled')
+/**
+ * `{outcome: "granted"}`, no message: after the file was written and
+ * `account/read` already said `accountLogin` (205 ms after `account/changed`).
+ */
+export const CAPTURED_GRANTED_ENDING = endingOf('granted')
+/** Deny clicked: `{outcome: "denied", message: "login failed: the request was denied"}`. */
+export const CAPTURED_DENIED_ENDING = endingOf('denied')
+/**
+ * Approved, but the file could not be written: `{outcome: "failed", message:
+ * "login succeeded but saving failed: failed to write credential file at
+ * <path>: …"}`; the message names a path under the user's profile.
+ */
+export const CAPTURED_FAILED_ENDING = endingOf('failed')
 /** `account/loginCancel` with a flow pending: `{cancelled: true}`. */
 export const CAPTURED_CANCEL_ANSWER = answerOf('cancelled', 'account/loginCancel')
 /** `account/loginCancel` after the flow ended: `{cancelled: false}`. */
 export const CAPTURED_CANCEL_AFTER_ENDING = answerOf('expired', 'account/loginCancel')
 
 /**
- * The captured ending frame carrying a word no capture covers (`denied`,
- * `failed`, a future one): as the `cancelled` capture, the outcome alone.
+ * The captured ending frame carrying a word no capture covers (a future
+ * one): as the `cancelled` capture, the outcome alone.
  */
 export function endingNamed(outcome: string): CapturedNotification {
   return { ...CAPTURED_CANCELLED_ENDING, params: { outcome } }

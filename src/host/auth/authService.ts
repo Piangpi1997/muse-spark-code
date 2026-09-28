@@ -11,6 +11,7 @@
 import { selectBackend } from '../../core/backendSelection'
 import type { BackendKind } from '../../core/agent/agentBackend'
 import type { CliSignIn } from '../../core/backends/musecode/credentialFile'
+import { unlessAborted } from '../../core/timeouts'
 import {
   type BackendMode,
   MUSE_INSTALL_POLL_INTERVAL_MS,
@@ -22,7 +23,7 @@ import { fill } from '../../shared/l10n/text'
 import type { AuthStatus, HostToWebviewMessage, SignInMethod } from '../../shared/protocol'
 import type { Logger } from '../logger'
 import { isCliSignedIn } from './cliAccount'
-import type { DeviceSignInEnded, DeviceSignInOutcome } from './deviceSignIn'
+import type { CapturedSignInEnding, DeviceSignInEnded, DeviceSignInOutcome } from './deviceSignIn'
 import type { CredentialStore } from './credentialStore'
 
 export interface AuthBackendFacts {
@@ -36,10 +37,20 @@ export interface AuthBackendFacts {
    * too (its host reads the Keychain); otherwise it does not.
    */
   readonly cliSignIn: (isUserAction: boolean) => Promise<CliSignIn>
-  /** Drops what the CLI said: an unanswered probe, and a remembered answer. */
+  /**
+   * Leaves an unanswered probe behind (Cancel): the next question asks
+   * afresh, and a remembered answer stands.
+   */
+  readonly abandonCliProbe: () => void
+  /**
+   * Drops everything the CLI said, the remembered answer too (a sign-out, a
+   * new sign-in, Check again): the next question asks afresh.
+   */
   readonly forgetCliAnswers: () => void
   /** Where the CLI keeps its sign-in, named when the file stops it starting. */
   readonly credentialFilePath: () => string
+  /** The credential file's modification time; undefined when there is none. */
+  readonly credentialFileModifiedAt: () => number | undefined
   readonly hasEnvironmentKey: () => boolean
   /** `museSpark.backend`. */
   readonly getBackendMode: () => BackendMode
@@ -50,7 +61,10 @@ export interface AuthBackendFacts {
   readonly restartBackend: (isConversationEnding: boolean) => Promise<void>
   /**
    * The CLI's own sign-out, MSP `account/logout` on a short-lived host: true
-   * once `account/read` shows no stored credential in use. Never rejects.
+   * only when `account/read` then gives the captured signed-out answer. A
+   * host that could not start or refused, `envKey` (META_API_KEY hides the
+   * stored lane), a stored credential or a state never captured is false.
+   * Never rejects.
    */
   readonly logOutCli: () => Promise<boolean>
 }
@@ -106,6 +120,7 @@ export type AuthPort = Pick<
   | 'cancelSignIn'
   | 'signOut'
   | 'refresh'
+  | 'checkAgain'
   | 'markAuthRequired'
   | 'markBackendError'
 >
@@ -123,39 +138,40 @@ function signInLine(snapshot: AuthSnapshot): string {
 
 /**
  * Why a device sign-in the host ended did not sign in (read when shown, D33):
- * the captured `expired` in its own words, any other ending as Muse Code
- * named it (AGENTS.md rule 13).
+ * each captured ending in its own words, any other as Muse Code named it
+ * (AGENTS.md rule 13).
  */
-function endedSignInText(ending: 'expired' | DeviceSignInEnded): string {
-  return ending === 'expired'
-    ? UI_TEXT.signInExpired
-    : fill(UI_TEXT.signInEnded, { outcome: ending.endedAs })
+function endedSignInText(
+  ending: Exclude<CapturedSignInEnding, 'cancelled'> | DeviceSignInEnded,
+): string {
+  switch (ending) {
+    case 'expired': {
+      return UI_TEXT.signInExpired
+    }
+    case 'denied': {
+      return UI_TEXT.signInDenied
+    }
+    case 'failed': {
+      return UI_TEXT.signInSaveFailed
+    }
+    default: {
+      return fill(UI_TEXT.signInEnded, { outcome: ending.endedAs })
+    }
+  }
 }
 
-/** The listener `unlessAborted` replaces once its promise is made. */
-const IGNORE_ABORT = (): void => undefined
-
-/**
- * `work`'s value, or undefined as soon as `signal` aborts. `work` runs on
- * (a probe's answer is still cached); its failure after the abort is
- * handled by the race.
- */
-async function unlessAborted<T>(work: Promise<T>, signal: AbortSignal): Promise<T | undefined> {
-  if (signal.aborted) {
-    return undefined
-  }
-  let onAbort = IGNORE_ABORT
-  const aborted = new Promise<undefined>((resolve) => {
-    onAbort = () => {
-      resolve(undefined)
-    }
-    signal.addEventListener('abort', onAbort, { once: true })
-  })
-  try {
-    return await Promise.race([work, aborted])
-  } finally {
-    signal.removeEventListener('abort', onAbort)
-  }
+/** One browser sign-in, as its steps see it. */
+interface CliSignInFlow {
+  /** What the panel showed when the flow began. */
+  readonly initial: AuthSnapshot
+  readonly epoch: number
+  readonly wasLogoutHeld: boolean
+  /** Aborted by Cancel and by a sign-out. */
+  readonly abort: AbortController
+  /** Aborted when a sign-out starts; Cancel leaves it. */
+  readonly signOut: AbortSignal
+  /** The credential file's modification time when the flow began. */
+  readonly fileBefore: number | undefined
 }
 
 export class AuthService {
@@ -166,8 +182,13 @@ export class AuthService {
   /** Every panel joins one sign-out; the hold cannot be released by an earlier caller. */
   private signOutPromise: Promise<AuthSnapshot> | undefined
   private deviceAbort: AbortController | undefined
-  /** A sign-out invalidates key prompts already open in any surface. */
+  /**
+   * A sign-out invalidates key prompts already open in any surface, and
+   * refreshes begun before it ended (it moves on as it starts and ends).
+   */
   private signOutEpoch = 0
+  /** Aborted as a sign-out starts: a finishing sign-in stops waiting on the CLI. */
+  private signOutStarts = new AbortController()
   /** Invalidates selectors across a same-kind sign-out/sign-in or key replacement. */
   private admissionGenerationValue = 0
   /** Sign-out waits for accepted key writes and backend restarts before ending sessions. */
@@ -219,19 +240,21 @@ export class AuthService {
 
   /**
    * The CLI's own credential as the gate counts it: `META_API_KEY` in its
-   * environment (no file is looked at then), or its sign-in, including one
-   * only the CLI could confirm.
+   * environment, or its sign-in, including one only the CLI could confirm.
+   * With the key set no file is looked at: `muse serve` then starts even
+   * with a version-2 file it refuses otherwise, and uses the key (captured
+   * 2026-09-27, docs/certification/sign-in-detection.md).
    */
   private async cliCredential(
     isUserAction: boolean,
-  ): Promise<{ readonly hasCliSession: boolean; readonly isKeychainElsewhere: boolean }> {
+  ): Promise<{ readonly hasCliSession: boolean; readonly isUnsupportedFile: boolean }> {
     if (this.deps.backend.hasEnvironmentKey()) {
-      return { hasCliSession: true, isKeychainElsewhere: false }
+      return { hasCliSession: true, isUnsupportedFile: false }
     }
     const signIn = await this.deps.backend.cliSignIn(isUserAction)
     return {
       hasCliSession: isCliSignedIn(signIn),
-      isKeychainElsewhere: signIn === 'keychainElsewhere',
+      isUnsupportedFile: signIn === 'unsupportedHere',
     }
   }
 
@@ -243,11 +266,11 @@ export class AuthService {
   /** The backend selection from the current facts. */
   private async choose(isUserAction: boolean) {
     const cli = this.deps.backend.resolveCli()
-    const { hasCliSession, isKeychainElsewhere } = await this.cliCredential(isUserAction)
+    const { hasCliSession, isUnsupportedFile } = await this.cliCredential(isUserAction)
     return {
       cli,
       hasCliSession,
-      isKeychainElsewhere,
+      isUnsupportedFile,
       choice: selectBackend({
         setting: this.deps.backend.getBackendMode(),
         hasCli: cli.ok,
@@ -257,9 +280,11 @@ export class AuthService {
     }
   }
 
-  /** A macOS Keychain pointer on Windows or Linux: `muse serve` exits at startup. */
-  private keychainElsewhereText(): string {
-    return fill(UI_TEXT.cliKeychainElsewhere, { path: this.deps.backend.credentialFilePath() })
+  /** A macOS credential file on Windows or Linux: `muse serve` exits at startup. */
+  private unsupportedFileText(): string {
+    return fill(UI_TEXT.cliCredentialUnsupported, {
+      path: this.deps.backend.credentialFilePath(),
+    })
   }
 
   /** One device-code sign-in process, however often the button is pressed (D25). */
@@ -276,15 +301,20 @@ export class AuthService {
   }
 
   private async signInWithCli(): Promise<AuthSnapshot> {
-    const initial = this.snapshot
-    const epoch = this.signOutEpoch
-    const wasLogoutHeld = this.isLogoutHeld
+    const flow: CliSignInFlow = {
+      initial: this.snapshot,
+      epoch: this.signOutEpoch,
+      wasLogoutHeld: this.isLogoutHeld,
+      abort: new AbortController(),
+      signOut: this.signOutStarts.signal,
+      fileBefore: this.deps.backend.credentialFileModifiedAt(),
+    }
+    const { abort } = flow
     const cli = this.deps.backend.resolveCli()
     if (!cli.ok) {
-      return await this.finishFailedCliSignIn(initial, 'noCli', cli.reason, 'warning')
+      return await this.finishFailedCliSignIn(flow, 'noCli', cli.reason, 'warning')
     }
     // Cancel and sign-out reach this flow from here on, before any await.
-    const abort = new AbortController()
     this.deviceAbort = abort
     this.set({ ...this.snapshot, status: 'signingIn', detail: UI_TEXT.signInWaiting })
     try {
@@ -292,11 +322,11 @@ export class AuthService {
       // CLI never answers must not hold Cancel or sign-out (the review of
       // PR #49): the look ends with the flow's own signal.
       const credential = await unlessAborted(this.cliCredential(false), abort.signal)
-      if (credential?.isKeychainElsewhere === true) {
+      if (credential?.isUnsupportedFile === true) {
         return await this.finishFailedCliSignIn(
-          initial,
+          flow,
           'error',
-          this.keychainElsewhereText(),
+          this.unsupportedFileText(),
           'warning',
         )
       }
@@ -310,16 +340,11 @@ export class AuthService {
             this.set({ ...this.snapshot, verificationUrl: url, userCode: code })
           })
       if (outcome === 'cancelled') {
-        return await this.finishFailedCliSignIn(
-          initial,
-          'signedOut',
-          UI_TEXT.signInCancelled,
-          'info',
-        )
+        return await this.finishCancelledCliSignIn(flow)
       }
       if (outcome === 'timedOut') {
         return await this.finishFailedCliSignIn(
-          initial,
+          flow,
           'signedOut',
           UI_TEXT.signInTimedOut,
           'warning',
@@ -327,7 +352,7 @@ export class AuthService {
       }
       if (outcome !== 'signedIn') {
         return await this.finishFailedCliSignIn(
-          initial,
+          flow,
           'signedOut',
           endedSignInText(outcome),
           'warning',
@@ -336,41 +361,85 @@ export class AuthService {
       if (this.isSigningOut) {
         return this.snapshot
       }
-      // After a sign-out, only the CLI's own confirmation of the new sign-in
-      // (the device runner's, then the file or `account/read` here) lifts the
-      // hold, and never while a key would bill instead.
-      if (
-        wasLogoutHeld &&
-        (this.deps.backend.hasEnvironmentKey() ||
-          (await this.deps.credentials.getApiKey()) !== undefined ||
-          (await this.deps.backend.cliSignIn(true)) !== 'signedIn')
-      ) {
-        return await this.refresh(true)
-      }
-      this.admissionGenerationValue += 1
-      await this.deps.backend.restartBackend(initial.status === 'signedIn')
-      if (wasLogoutHeld) {
-        if (this.signOutEpoch !== epoch || this.deps.backend.hasEnvironmentKey()) {
-          return await this.refresh(true)
-        }
-        const isHoldSaved = await this.setLogoutHold(false)
-        if (!isHoldSaved) {
-          return this.set({ ...this.snapshot, status: 'error', detail: UI_TEXT.signOutHoldFailed })
-        }
-      }
-      return await this.refresh(true)
+      // What the CLI said before this sign-in no longer holds, even where
+      // the file did not change (a Keychain sign-in; the review of PR #49).
+      this.deps.backend.forgetCliAnswers()
+      return await this.confirmCliSignIn(flow)
     } catch (error: unknown) {
       this.deps.log.warn(
         `In-panel sign-in failed: ${error instanceof Error ? error.name : 'unknown error'}`,
       )
-      return await this.finishFailedCliSignIn(initial, 'error', UI_TEXT.signInFailed, 'warning')
+      return await this.finishFailedCliSignIn(flow, 'error', UI_TEXT.signInFailed, 'warning')
     } finally {
       this.deviceAbort = undefined
     }
   }
 
+  /**
+   * The device runner saw the sign-in land. Every question to the CLI here
+   * yields to the flow's signal, so a sign-out (or Cancel) never waits on
+   * one (the review of PR #49).
+   */
+  private async confirmCliSignIn(flow: CliSignInFlow): Promise<AuthSnapshot> {
+    const { abort } = flow
+    // After a sign-out, only the CLI's own confirmation of the new sign-in
+    // (the device runner's, then the file or `account/read` here) lifts the
+    // hold, and never while a key would bill instead.
+    if (flow.wasLogoutHeld) {
+      const hasBillingKey =
+        this.deps.backend.hasEnvironmentKey() ||
+        (await this.deps.credentials.getApiKey()) !== undefined
+      const confirmed = hasBillingKey
+        ? undefined
+        : await unlessAborted(this.deps.backend.cliSignIn(true), abort.signal)
+      if (abort.signal.aborted) {
+        return await this.finishCancelledCliSignIn(flow)
+      }
+      if (confirmed !== 'signedIn') {
+        return await this.refreshUnlessCancelled(flow)
+      }
+    }
+    this.admissionGenerationValue += 1
+    await this.deps.backend.restartBackend(flow.initial.status === 'signedIn')
+    if (abort.signal.aborted) {
+      return await this.finishCancelledCliSignIn(flow)
+    }
+    if (flow.wasLogoutHeld) {
+      if (this.signOutEpoch !== flow.epoch || this.deps.backend.hasEnvironmentKey()) {
+        return await this.refreshUnlessCancelled(flow)
+      }
+      const isHoldSaved = await this.setLogoutHold(false)
+      if (!isHoldSaved) {
+        return this.set({ ...this.snapshot, status: 'error', detail: UI_TEXT.signOutHoldFailed })
+      }
+    }
+    return await this.refreshUnlessCancelled(flow)
+  }
+
+  /** A user-action refresh that ends with the flow's signal. */
+  private async refreshUnlessCancelled(flow: CliSignInFlow): Promise<AuthSnapshot> {
+    const refreshed = await unlessAborted(this.refresh(true), flow.abort.signal)
+    return refreshed ?? (await this.finishCancelledCliSignIn(flow))
+  }
+
+  /**
+   * Cancel decides the flow, but not against the file (the review of PR
+   * #49): when the credential file changed since the flow began (the browser
+   * approved as Cancel was pressed), its structure says whether the CLI is
+   * signed in.
+   */
+  private async finishCancelledCliSignIn(flow: CliSignInFlow): Promise<AuthSnapshot> {
+    if (this.isSigningOut) {
+      return this.snapshot
+    }
+    const isFileChanged = this.deps.backend.credentialFileModifiedAt() !== flow.fileBefore
+    return isFileChanged
+      ? ((await unlessAborted(this.refresh(), flow.signOut)) ?? this.snapshot)
+      : await this.finishFailedCliSignIn(flow, 'signedOut', UI_TEXT.signInCancelled, 'info')
+  }
+
   private async finishFailedCliSignIn(
-    initial: AuthSnapshot,
+    flow: CliSignInFlow,
     status: 'noCli' | 'signedOut' | 'error',
     detail: string,
     noticeLevel: 'info' | 'warning',
@@ -379,13 +448,14 @@ export class AuthService {
     if (this.isSigningOut) {
       return this.snapshot
     }
-    if (this.isLogoutHeld) {
-      const refreshed = await this.refresh(true)
-      this.deps.broadcast({ type: 'notice', level: noticeLevel, text: detail })
-      return refreshed
-    }
-    if (initial.status === 'signedIn' && initial.backend === 'modelApi') {
-      const refreshed = await this.refresh(true)
+    const { initial } = flow
+    if (this.isLogoutHeld || (initial.status === 'signedIn' && initial.backend === 'modelApi')) {
+      // A sign-out that starts meanwhile publishes its own state, and does
+      // not wait on the question this refresh may ask (the review of PR #49).
+      const refreshed = await unlessAborted(this.refresh(true), flow.signOut)
+      if (refreshed === undefined) {
+        return this.snapshot
+      }
       this.deps.broadcast({ type: 'notice', level: noticeLevel, text: detail })
       return refreshed
     }
@@ -505,7 +575,7 @@ export class AuthService {
 
   /** Derive from current CLI, setting and SecretStorage facts. */
   private async selectedSnapshot(isUserAction: boolean): Promise<AuthSnapshot> {
-    const { cli, hasCliSession, isKeychainElsewhere, choice } = await this.choose(isUserAction)
+    const { cli, hasCliSession, isUnsupportedFile, choice } = await this.choose(isUserAction)
     if (choice.kind === undefined) {
       return {
         status: 'noCli',
@@ -518,10 +588,10 @@ export class AuthService {
     }
     // Muse Code would be used but cannot start with its credential file:
     // said by name, not left to a host that exits at every message.
-    const isBlocked = choice.kind === 'museCode' && cli.ok && isKeychainElsewhere
+    const isBlocked = choice.kind === 'museCode' && cli.ok && isUnsupportedFile
     return {
       status: isBlocked ? 'error' : choice.status,
-      detail: isBlocked ? this.keychainElsewhereText() : undefined,
+      detail: isBlocked ? this.unsupportedFileText() : undefined,
       backend: choice.kind,
       methods: choice.methods,
       hasCli: cli.ok,
@@ -574,7 +644,18 @@ export class AuthService {
     if (isConfirmed) {
       return true
     }
-    this.deps.log.warn('Muse Code did not sign out through its account host; running muse logout')
+    // `account/logout` may have worked while META_API_KEY hid it from
+    // `account/read` (`envKey`): the sign-in itself, read afresh, says
+    // whether a terminal is still needed (the review of PR #49).
+    if ((await this.deps.backend.cliSignIn(true)) === 'signedOut') {
+      this.deps.log.info(
+        'Muse Code did not confirm account/logout, but its sign-in now reads signed out; no terminal needed',
+      )
+      return true
+    }
+    this.deps.log.warn(
+      'Muse Code still reads signed in after account/logout; running muse logout in a terminal',
+    )
     try {
       this.deps.runInTerminal(cliPath, MUSE_LOGOUT_ARGS)
       return true
@@ -588,6 +669,8 @@ export class AuthService {
     this.signOutEpoch += 1
     this.admissionGenerationValue += 1
     this.isSigningOut = true
+    this.signOutStarts.abort()
+    this.signOutStarts = new AbortController()
     this.set({
       ...this.snapshot,
       status: 'error',
@@ -639,12 +722,12 @@ export class AuthService {
       } else if (shouldKeepHold) {
         detail = UI_TEXT.signOutPending
       }
+      // Every detail asks for a step and a Check again, which the panel
+      // offers on `error` only; `refresh` says `error` for the same state
+      // (the review of PR #49).
       return this.set({
         ...this.snapshot,
-        status:
-          !isHostStopped || isKeyClearFailed || !isHoldSaved || !isReleaseSaved
-            ? 'error'
-            : 'signedOut',
+        status: detail === undefined ? 'signedOut' : 'error',
         detail,
         verificationUrl: undefined,
         userCode: undefined,
@@ -653,14 +736,41 @@ export class AuthService {
       })
     } finally {
       this.isSigningOut = false
+      // A refresh begun during the sign-out answers too late to publish (the
+      // review of PR #49).
+      this.signOutEpoch += 1
     }
   }
 
   public cancelSignIn(): void {
     this.deviceAbort?.abort()
     // Sign-out and the next sign-in ask afresh rather than wait on a probe
-    // the CLI left unanswered (the review of PR #49).
+    // the CLI left unanswered; an answer already given stands, so what
+    // Cancel shows needs no new question (the review of PR #49).
+    this.deps.backend.abandonCliProbe()
+  }
+
+  /**
+   * The window is closing: the browser sign-in is cancelled and waited
+   * for, so its host is closed before the backends stop (the review of PR
+   * #49).
+   */
+  public async stopSignIn(): Promise<void> {
+    this.cancelSignIn()
+    const signingIn = this.deviceSignIn
+    if (signingIn !== undefined) {
+      await Promise.allSettled([signingIn])
+    }
+  }
+
+  /**
+   * Check again: the CLI is asked afresh, even about a sign-in it confirmed
+   * before (a Keychain sign-in or sign-out leaves the file as it was; the
+   * review of PR #49).
+   */
+  public async checkAgain(): Promise<AuthSnapshot> {
     this.deps.backend.forgetCliAnswers()
+    return await this.refresh(true)
   }
 
   /** One visible installer terminal and one location watch per window. */

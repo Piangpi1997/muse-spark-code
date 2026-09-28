@@ -10,9 +10,13 @@ import {
   CAPTURED_CANCEL_ANSWER,
   CAPTURED_CANCELLED_ENDING,
   CAPTURED_CODE_LIFETIME_MS,
+  CAPTURED_DENIED_ENDING,
   CAPTURED_EXPIRED_ENDING,
+  CAPTURED_FAILED_ENDING,
+  CAPTURED_GRANTED_ENDING,
   CAPTURED_LOGGED_OUT,
   CAPTURED_LOGIN_START,
+  CAPTURED_SIGNED_IN,
   endingNamed,
 } from './helpers/accountLoginCapture'
 import { FakeLogOutputChannel } from './helpers/fakes'
@@ -22,10 +26,10 @@ const DEVICE_URL = 'https://auth.meta.com/oauth/device/?code=AAAA-AAAA'
 const DEVICE_CODE = 'AAAA-AAAA'
 const log = new FakeLogOutputChannel()
 
-// `account/read` signed in, as captured on 1.3.0 and 1.4.0 (the label
-// redacted there, an e-mail address in real life, and dropped by the parser
-// here).
-const SIGNED_IN = { state: 'accountLogin', label: 'person@example.com', credentialRequired: true }
+// `account/read` once the browser approved, as captured (a stand-in label,
+// an e-mail address in real life, which the parser drops).
+const SIGNED_IN = CAPTURED_SIGNED_IN
+const LABEL = String(CAPTURED_SIGNED_IN['label'])
 
 type AccountAnswer = Record<string, unknown> | undefined
 type Notify = Parameters<AccountSession['connection']['onNotification']>[0]
@@ -68,8 +72,24 @@ function session(account: () => AccountAnswer = () => undefined) {
     notify = handler
   })
   const close = vi.fn(() => Promise.resolve())
-  const deviceSession: AccountSession = { connection: { request, onNotification }, close }
-  return { request, onNotification, close, deviceSession, complete }
+  // The host's output ends: it exited or died.
+  const hostExit = Promise.withResolvers<undefined>()
+  const exit = () => {
+    hostExit.resolve(undefined)
+  }
+  const deviceSession: AccountSession = {
+    connection: { request, onNotification, closed: hostExit.promise },
+    close,
+  }
+  return { request, onNotification, close, deviceSession, complete, exit }
+}
+
+/** Leaves `method` unanswered on `t`'s host, as a CLI that stopped answering it. */
+function unanswered(t: ReturnType<typeof session>, method: string): void {
+  const answer = t.request.getMockImplementation()
+  t.request.mockImplementation((asked) =>
+    asked === method ? never() : (answer?.(asked) ?? Promise.resolve({})),
+  )
 }
 
 describe('Muse Code device sign-in', () => {
@@ -169,10 +189,7 @@ describe('Muse Code device sign-in', () => {
     ['the first account/read', 'account/read', {}],
   ])('closes promptly when cancelled before %s answers', async (_name, stuck, params) => {
     const t = session(() => CAPTURED_LOGGED_OUT)
-    const answer = t.request.getMockImplementation()
-    t.request.mockImplementation((method) =>
-      method === stuck ? never() : (answer?.(method) ?? Promise.resolve({})),
-    )
+    unanswered(t, stuck)
     const abort = new AbortController()
     const pending = run(t, { signal: abort.signal })
     await vi.waitFor(() => {
@@ -186,10 +203,7 @@ describe('Muse Code device sign-in', () => {
 
   it('ends on the host’s ending while loginStart is unanswered, with no code shown', async () => {
     const t = session(() => CAPTURED_LOGGED_OUT)
-    const answer = t.request.getMockImplementation()
-    t.request.mockImplementation((method) =>
-      method === 'account/loginStart' ? never() : (answer?.(method) ?? Promise.resolve({})),
-    )
+    unanswered(t, 'account/loginStart')
     const onCode = vi.fn()
     const pending = runDeviceSignIn({
       connect: () => Promise.resolve(t.deviceSession),
@@ -336,8 +350,9 @@ describe('Muse Code device sign-in: how it ends', () => {
     expect(t.close).toHaveBeenCalledOnce()
   })
 
-  // `granted` was not captured: its word neither ends the flow nor signs in.
-  it('takes an uncaptured granted for nothing: account/read decides', async () => {
+  // Captured: `granted` came after `account/read` already said
+  // `accountLogin`, so its word neither ends the flow nor signs in.
+  it('decides on account/read, which the captured granted follows', async () => {
     const accounts: AccountAnswer[] = [
       CAPTURED_LOGGED_OUT,
       CAPTURED_LOGGED_OUT,
@@ -347,22 +362,44 @@ describe('Muse Code device sign-in: how it ends', () => {
     let polls = 0
     const sleep = () => {
       polls += 1
-      t.complete(endingNamed('granted'))
+      t.complete(CAPTURED_GRANTED_ENDING)
       return Promise.resolve()
     }
     await expect(run(t, { sleep })).resolves.toBe('signedIn')
     expect(polls).toBe(2)
   })
 
-  it('keeps waiting after an uncaptured granted the account never shows', async () => {
+  it('keeps waiting after a granted the account never shows', async () => {
     const t = session(() => CAPTURED_LOGGED_OUT)
     const sleep = () => {
-      t.complete(endingNamed('granted'))
+      t.complete(CAPTURED_GRANTED_ENDING)
       return Promise.resolve()
     }
     await expect(run(t, { sleep, step: ONE_POLL })).resolves.toBe('timedOut')
     expect(t.request).toHaveBeenCalledWith('account/loginCancel', {})
   })
+
+  // With no first answer there is nothing to compare: an account signed in
+  // before the flow is no new sign-in, and only a new file counts (the
+  // review of PR #49).
+  it.each([
+    ['takes no sign-in from before the flow for a new one', 1, 'timedOut'],
+    ['counts a file written since the flow began', 2, 'signedIn'],
+  ] as const)(
+    'when the first account/read goes unanswered, %s',
+    async (_name, modifiedAfterStart, outcome) => {
+      let reads = 0
+      const t = session(() => (++reads === 1 ? undefined : SIGNED_IN))
+      let modified = 1
+      const sleep = () => {
+        modified = modifiedAfterStart
+        return Promise.resolve()
+      }
+      await expect(run(t, { sleep, modified: () => modified, step: ONE_POLL })).resolves.toBe(
+        outcome,
+      )
+    },
+  )
 
   // The second answer was never captured: signed out stays signed out (the review of PR #49).
   it.each([
@@ -415,20 +452,46 @@ describe('Muse Code device sign-in: how it ends', () => {
     )
   })
 
-  // Rule 13: an ending no capture covers is shown as the CLI named it.
-  it.each(['denied', 'failed', 'somethingNew'])(
-    'ends at once on %s, which no capture covers, as the CLI named it',
-    async (outcome) => {
+  // Captured live: Deny clicked, and an approval whose file could not be
+  // written. Each has a meaning of its own (the review of PR #49).
+  it.each([
+    ['denied', CAPTURED_DENIED_ENDING, 'login failed: the request was denied'],
+    ['failed', CAPTURED_FAILED_ENDING, 'saving the credential failed'],
+  ] as const)(
+    'ends at once on the captured %s, and logs no path',
+    async (outcome, frame, logged) => {
       const t = session(() => CAPTURED_LOGGED_OUT)
+      const log = new FakeLogOutputChannel()
       const sleep = () => {
-        t.complete(endingNamed(outcome))
+        t.complete(frame)
         return Promise.resolve()
       }
-      await expect(run(t, { sleep })).resolves.toEqual({ endedAs: outcome })
+      await expect(run(t, { sleep, log })).resolves.toBe(outcome)
       expect(t.request).not.toHaveBeenCalledWith('account/loginCancel', {})
       expect(t.close).toHaveBeenCalledOnce()
+      expect(log.info).toHaveBeenCalledWith(`Muse Code sign-in ended: ${outcome}: ${logged}`)
+      // The captured `failed` message names the credential file's path.
+      expect(allLogged(log)).not.toContain('<throwaway>')
     },
   )
+
+  // Rule 13: an ending no capture covers is shown as the CLI named it, and
+  // its message, whatever it holds, is not logged.
+  it('ends at once on a word no capture covers, as the CLI named it', async () => {
+    const t = session(() => CAPTURED_LOGGED_OUT)
+    const log = new FakeLogOutputChannel()
+    const sleep = () => {
+      t.complete({
+        ...endingNamed('somethingNew'),
+        params: { outcome: 'somethingNew', message: String.raw`at C:\Users\someone\x` },
+      })
+      return Promise.resolve()
+    }
+    await expect(run(t, { sleep, log })).resolves.toEqual({ endedAs: 'somethingNew' })
+    expect(t.request).not.toHaveBeenCalledWith('account/loginCancel', {})
+    expect(log.info).toHaveBeenCalledWith('Muse Code sign-in ended: somethingNew')
+    expect(allLogged(log)).not.toContain('someone')
+  })
 
   it('cuts a long outcome word before it is shown', async () => {
     const t = session(() => CAPTURED_LOGGED_OUT)
@@ -466,8 +529,52 @@ describe('Muse Code device sign-in: how it ends', () => {
     const accounts: AccountAnswer[] = [CAPTURED_LOGGED_OUT]
     const t = session(() => accounts.shift() ?? SIGNED_IN)
     await expect(run(t, { log: logged })).resolves.toBe('signedIn')
-    const everything = [...logged.info.mock.calls, ...logged.warn.mock.calls].flat().join('\n')
-    expect(everything).not.toContain('person@example.com')
+    expect(allLogged(logged)).not.toContain(LABEL)
+  })
+})
+
+function allLogged(log: FakeLogOutputChannel): string {
+  return [...log.info.mock.calls, ...log.warn.mock.calls].flat().join('\n')
+}
+
+// A host that exits mid-flow fails the sign-in at once instead of being
+// polled until the backstop (the review of PR #49).
+describe('Muse Code device sign-in: a host that exits', () => {
+  it('fails at once when the host exits while the flow polls', async () => {
+    const t = session(() => CAPTURED_LOGGED_OUT)
+    const sleep = vi.fn(() => never<undefined>())
+    const pending = run(t, { sleep })
+    await vi.waitFor(() => {
+      expect(sleep).toHaveBeenCalled()
+    })
+    t.exit()
+    await expect(pending).rejects.toThrow('exited')
+    expect(t.request).not.toHaveBeenCalledWith('account/loginCancel', {})
+    expect(t.close).toHaveBeenCalledOnce()
+  })
+
+  it('fails at once when the host exits before loginStart answers', async () => {
+    const t = session(() => CAPTURED_LOGGED_OUT)
+    unanswered(t, 'account/loginStart')
+    const pending = run(t)
+    await vi.waitFor(() => {
+      expect(t.request).toHaveBeenCalledWith('account/loginStart', { type: 'deviceCode' })
+    })
+    t.exit()
+    await expect(pending).rejects.toThrow('exited')
+  })
+
+  it('reports Cancel, not a failure, when the host exits after it', async () => {
+    const t = session(() => CAPTURED_LOGGED_OUT)
+    unanswered(t, 'account/loginStart')
+    const abort = new AbortController()
+    const pending = run(t, { signal: abort.signal })
+    await vi.waitFor(() => {
+      expect(t.request).toHaveBeenCalledWith('account/loginStart', { type: 'deviceCode' })
+    })
+    abort.abort()
+    t.exit()
+    await expect(pending).resolves.toBe('cancelled')
   })
 })
 
@@ -523,7 +630,8 @@ describe('Muse Code device sign-in: a CLI that stops answering', () => {
 
   it.each([
     ['the captured expired ending', CAPTURED_EXPIRED_ENDING, 'expired'],
-    ['an ending no capture covers', endingNamed('denied'), { endedAs: 'denied' }],
+    ['the captured denied ending', CAPTURED_DENIED_ENDING, 'denied'],
+    ['an ending no capture covers', endingNamed('somethingNew'), { endedAs: 'somethingNew' }],
   ])('ends at once on %s while a poll is unanswered', async (_name, frame, outcome) => {
     const { t, polling } = wedgedSession()
     const pending = run(t)
@@ -560,10 +668,7 @@ describe('Muse Code device sign-in: a CLI that stops answering', () => {
         const { t, polling } = isCancel
           ? wedgedSession()
           : { t: session(() => CAPTURED_LOGGED_OUT), polling: () => Promise.resolve() }
-        const answer = t.request.getMockImplementation()
-        t.request.mockImplementation((method) =>
-          method === 'account/loginCancel' ? never() : (answer?.(method) ?? Promise.resolve({})),
-        )
+        unanswered(t, 'account/loginCancel')
         const logged = new FakeLogOutputChannel()
         const abort = new AbortController()
         const pending = run(t, {

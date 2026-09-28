@@ -8,7 +8,7 @@
 
 import { spawnMspConnection, type Connection } from '@muse-code/sdk'
 import * as z from 'zod/mini'
-import { withDeadline } from '../../core/timeouts'
+import { unlessAborted, withDeadline } from '../../core/timeouts'
 import {
   MSP_CLIENT_NAME,
   MSP_HANDSHAKE_TIMEOUT_MS,
@@ -29,9 +29,13 @@ const accountStateSchema = z.object({
 export type AccountState = z.infer<typeof accountStateSchema>
 
 export interface AccountSession {
-  readonly connection: Pick<Connection, 'request' | 'onNotification'>
+  /** `closed` settles when the host's output ends: it exited or died. */
+  readonly connection: Pick<Connection, 'request' | 'onNotification' | 'closed'>
   readonly close: () => Promise<unknown>
 }
+
+/** Starts one short-lived host; `signal` cancels the start. */
+export type ConnectAccountHost = (signal: AbortSignal) => Promise<AccountSession>
 
 const CANCELLED_CONNECT = Symbol('cancelled account host connection')
 
@@ -86,22 +90,27 @@ export async function readAccountState(
   return await requestAccount(connection, MUSE_ACCOUNT_READ)
 }
 
-/** `use` on one short-lived host, closed afterwards; `fallback` when it cannot start. */
+/**
+ * `use` on one short-lived host, closed afterwards; `fallback` when it
+ * cannot start, or once `ended` aborts (the window closing), which closes
+ * the host at once instead of waiting for its answer.
+ */
 async function onAccountHost<T>(
-  connect: () => Promise<AccountSession>,
+  connect: ConnectAccountHost,
   log: Logger,
+  ended: AbortSignal,
   fallback: T,
   use: (connection: AccountConnection) => Promise<T>,
 ): Promise<T> {
   let session: AccountSession
   try {
-    session = await connect()
+    session = await connect(ended)
   } catch (error: unknown) {
     log.warn(`The Muse Code account host could not start: ${errorName(error)}`)
     return fallback
   }
   try {
-    return await use(session.connection)
+    return (await unlessAborted(use(session.connection), ended)) ?? fallback
   } finally {
     try {
       await session.close()
@@ -113,10 +122,11 @@ async function onAccountHost<T>(
 
 /** One short-lived host asked `account/read`; undefined when it could not start or say. */
 export async function probeAccount(
-  connect: () => Promise<AccountSession>,
+  connect: ConnectAccountHost,
   log: Logger,
+  ended: AbortSignal,
 ): Promise<AccountState | undefined> {
-  return await onAccountHost(connect, log, undefined, readAccountState)
+  return await onAccountHost(connect, log, ended, undefined, readAccountState)
 }
 
 /**
@@ -127,12 +137,14 @@ export async function probeAccount(
  * the stored lane), or a state never captured.
  */
 export async function logOutAccount(
-  connect: () => Promise<AccountSession>,
+  connect: ConnectAccountHost,
   log: Logger,
+  ended: AbortSignal,
 ): Promise<'confirmed' | 'unconfirmed'> {
   return await onAccountHost<'confirmed' | 'unconfirmed'>(
     connect,
     log,
+    ended,
     'unconfirmed',
     async (connection) => {
       const answer = await requestAccount(connection, MUSE_ACCOUNT_LOGOUT)
@@ -149,6 +161,33 @@ export async function logOutAccount(
       return 'confirmed'
     },
   )
+}
+
+/**
+ * The window's short-lived `account/read` and `account/logout` hosts, which
+ * end together when it closes (the review of PR #49): a probe still waiting,
+ * or one Cancel left behind, is closed rather than left running, and none
+ * starts afterwards.
+ */
+export class AccountHosts {
+  private readonly windowClosing = new AbortController()
+
+  public constructor(
+    private readonly connect: ConnectAccountHost,
+    private readonly log: Logger,
+  ) {}
+
+  public async probe(): Promise<AccountState | undefined> {
+    return await probeAccount(this.connect, this.log, this.windowClosing.signal)
+  }
+
+  public async logOut(): Promise<'confirmed' | 'unconfirmed'> {
+    return await logOutAccount(this.connect, this.log, this.windowClosing.signal)
+  }
+
+  public close(): void {
+    this.windowClosing.abort()
+  }
 }
 
 /** Start a dedicated experimental MSP process. Keep it separate from chat. */

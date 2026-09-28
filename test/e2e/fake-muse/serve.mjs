@@ -28,18 +28,22 @@
 // Account methods (PLAN.md D26, shapes captured on 1.3.0 and 1.4.0,
 // 2026-09-27), for a client that asked for `experimentalApi` only:
 // `account/read` answers from the credential file under XDG_CONFIG_HOME
-// (a named provider is a login, anything else signed out), and
+// (`providers.meta` is a login, anything else signed out), and
 // `account/logout` rewrites that file as the empty one the CLI leaves.
 //
 // The device sign-in replays the frames captured live on 1.4.0-R4302.1
 // (test/fixtures/msp/account-login-*.json, 2026-09-27), read from the folder
 // MUSE_FAKE_CAPTURES names. `account/loginStart` answers as captured; with
-// MUSE_FAKE_LOGIN_ENDING=<capture> that capture's `account/loginCompleted`
-// frame follows after MUSE_FAKE_LOGIN_ENDING_MS. `account/loginCancel` sends
-// the captured `cancelled` ending, then answers `{cancelled: true}`, in the
-// captured order; with no flow pending it answers as captured after an
-// ending. MUSE_FAKE_ACCOUNT_READ=silentAfterStart leaves every
-// `account/read` after `account/loginStart` unanswered (a wedged CLI).
+// MUSE_FAKE_LOGIN_ENDING=<capture> that capture's notifications up to its
+// ending follow after MUSE_FAKE_LOGIN_ENDING_MS, in the captured order (for
+// `granted`: the file written as the browser sign-in left it, then
+// `account/changed`, the ending, and `account/changed` again).
+// `account/loginCancel` sends the captured `cancelled` ending, then answers
+// `{cancelled: true}`, in the captured order; with no flow pending it
+// answers as captured after an ending. MUSE_FAKE_ACCOUNT_READ=silentAfterStart
+// leaves every `account/read` after `account/loginStart` unanswered (a
+// wedged CLI); MUSE_FAKE_LOGIN_EXIT_MS exits that long after
+// `account/loginStart` (a host that dies mid-flow).
 
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
@@ -53,6 +57,25 @@ const COMMAND_REJECTED = -32_000
 const LOGOUT_SHELL = '{\n  "schema_version": 1,\n  "providers": {}\n}'
 // The account's display label: an e-mail address the extension never logs.
 const ACCOUNT_LABEL = 'person@example.com'
+// The provider the CLI keeps its own sign-in under; others share the file.
+const MUSE_PROVIDER = 'meta'
+// A browser sign-in as the granted capture left the file (schema 1, `meta`
+// with these keys; placeholders for every secret or personal value).
+const DEVICE_LOGIN_FILE = JSON.stringify({
+  schema_version: 1,
+  providers: {
+    meta: {
+      access_token: '<placeholder>',
+      obtained_via: 'device_code',
+      mechanism: 'oauth',
+      api_key: '<placeholder>',
+      api_base_url: '<placeholder>',
+      user_full_name: '<placeholder>',
+      user_email: '<placeholder>',
+      user_avatar_url: '<placeholder>',
+    },
+  },
+})
 const CRASH_EXIT_CODE = 3
 const DIE_EXIT_CODE = 1
 const ECHO_PREFIX = 'echo: '
@@ -396,7 +419,8 @@ function hasStoredSignIn() {
     return false
   }
   try {
-    return Object.keys(JSON.parse(readFileSync(file, 'utf8')).providers ?? {}).length > 0
+    const providers = JSON.parse(readFileSync(file, 'utf8')).providers ?? {}
+    return Object.hasOwn(providers, MUSE_PROVIDER)
   } catch {
     return false
   }
@@ -432,16 +456,45 @@ function capturedEnding(name) {
   )?.frame
 }
 
+/** The notifications a capture received before it sent `account/loginCancel`. */
+function capturedFlowNotifications(name) {
+  const frames = captureFrames(name)
+  const cancelAt = frames.findIndex(
+    (entry) => entry.dir === 'out' && entry.frame.method === 'account/loginCancel',
+  )
+  return frames
+    .slice(0, cancelAt === -1 ? frames.length : cancelAt)
+    .filter((entry) => entry.dir === 'in' && entry.frame.method !== undefined)
+    .map((entry) => entry.frame)
+}
+
+/** A capture's flow as it ended: the file a sign-in left, then its notifications. */
+function endLogin(name) {
+  state.login = undefined
+  const file = credentialFile()
+  if (name === 'granted' && file !== undefined) {
+    writeFileSync(file, DEVICE_LOGIN_FILE)
+  }
+  for (const frame of capturedFlowNotifications(name)) {
+    send(frame)
+  }
+}
+
 function startLogin() {
   state.isLoginStarted = true
   const ending = env['MUSE_FAKE_LOGIN_ENDING']
+  const exitAfter = env['MUSE_FAKE_LOGIN_EXIT_MS']
+  if (exitAfter !== undefined) {
+    setTimeout(() => {
+      exit(DIE_EXIT_CODE)
+    }, Number(exitAfter))
+  }
   const timer =
     ending === undefined
       ? undefined
       : setTimeout(
           () => {
-            state.login = undefined
-            send(capturedEnding(ending))
+            endLogin(ending)
           },
           Number(env['MUSE_FAKE_LOGIN_ENDING_MS'] ?? '0'),
         )

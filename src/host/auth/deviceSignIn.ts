@@ -7,18 +7,19 @@
 // credential file is written and `account/read` does not contradict it; a
 // CLI that cannot answer `account/read` falls back to the file alone.
 //
-// `account/loginCompleted` ends the flow on any outcome but `granted`. Only
-// `cancelled` and `expired` were captured live (docs/certification/
-// sign-in-detection.md, "Live capture"), so they are the only endings with a
-// meaning of their own; any other word is shown as the CLI named it
-// (AGENTS.md rule 13). `granted` was not captured, so it is not taken for a
-// sign-in: `account/read` or the file decides. `account/changed` is not
-// relied on: it fired neither for a change made outside the host nor for an
-// expired code.
+// `account/loginCompleted` ends the flow on any outcome but `granted`. Every
+// outcome was captured live (docs/certification/sign-in-detection.md, "Live
+// capture"): `cancelled`, `expired`, `denied` and `failed` each have a
+// meaning of their own, and any other word is shown as the CLI named it
+// (AGENTS.md rule 13). `granted` came after the file was written and
+// `account/read` already said `accountLogin`, so those decide and `granted`
+// needs no handler. `account/changed` is not relied on: it fired neither for
+// a change made outside the host nor for an expired, denied or failed code.
 //
-// Cancel and the host's ending are noticed at once, even while an
-// `account/read` is unanswered, and the `account/loginCancel` sent on the way
-// out is bounded: the host is closed either way, which ends its flow.
+// Cancel, the host's ending and the host's exit are noticed at once, even
+// while an `account/read` is unanswered, and the `account/loginCancel` sent
+// on the way out is bounded: the host is closed either way, which ends its
+// flow.
 
 import * as z from 'zod/mini'
 import { clipForLog } from '../../core/logging'
@@ -44,9 +45,10 @@ const loginStartSchema = z.object({
   verificationUrl: z.url(),
   userCode: z.string().check(z.minLength(1)),
 })
-// As captured: `{outcome: "expired", message: "login failed: the request
-// expired"}` and `{outcome: "cancelled"}`. The message goes to the log,
-// clipped, never the panel.
+// As captured: `expired` and `denied` carry a message ("login failed: the
+// request expired" / "… was denied"), `failed` one that names the credential
+// file's path, `cancelled` and `granted` none. Only what `loggedEnding`
+// allows reaches the log; the panel shows none of it.
 const loginCompletedSchema = z.object({
   outcome: z.string().check(z.minLength(1)),
   message: z.optional(z.string()),
@@ -67,20 +69,52 @@ export interface DeviceSignInDeps {
 export interface DeviceSignInEnded {
   readonly endedAs: string
 }
+/** The endings captured live, each with a meaning of its own. */
+export type CapturedSignInEnding = 'cancelled' | 'expired' | 'denied' | 'failed'
 /** How the host ended a flow that did not sign in. */
-type HostEnding = 'cancelled' | 'expired' | DeviceSignInEnded
+type HostEnding = CapturedSignInEnding | DeviceSignInEnded
 export type DeviceSignInOutcome = 'signedIn' | 'timedOut' | HostEnding
 
 const STOPPED = Symbol('device sign-in stopped')
 
-// The endings captured live: `cancelled` (1.3.0, M55; 1.4.0-R4302.1) and
-// `expired` (1.4.0-R4302.1, 600 s after `account/loginStart`).
-const CAPTURED_ENDINGS: ReadonlyMap<string, 'cancelled' | 'expired'> = new Map([
+/**
+ * A host that exits mid-flow fails the sign-in at once, instead of being
+ * polled until the backstop (the review of PR #49).
+ */
+function hostGone(): Error {
+  return new Error('The Muse Code sign-in host exited during sign-in')
+}
+
+// The endings captured live: `cancelled` (1.3.0, M55; 1.4.0-R4302.1),
+// `expired` (600 s after `account/loginStart`), `denied` (Deny clicked) and
+// `failed` (approved, but the file could not be written), all 1.4.0-R4302.1.
+const CAPTURED_ENDINGS: ReadonlyMap<string, CapturedSignInEnding> = new Map([
   [MUSE_LOGIN_OUTCOMES.cancelled, 'cancelled'],
   [MUSE_LOGIN_OUTCOMES.expired, 'expired'],
+  [MUSE_LOGIN_OUTCOMES.denied, 'denied'],
+  [MUSE_LOGIN_OUTCOMES.failed, 'failed'],
 ])
 
-/** How `outcome` ends the flow; undefined for `granted`, which `account/read` must bear out. */
+// The endings whose captured message is safe to log: it names no path and
+// no account (the review of PR #49). `failed`'s names the credential file's
+// path, under the user's profile, so a fixed line stands in for it; a word
+// no capture covers is logged without its message.
+const LOGGED_MESSAGES: ReadonlySet<string> = new Set([
+  MUSE_LOGIN_OUTCOMES.expired,
+  MUSE_LOGIN_OUTCOMES.denied,
+])
+
+/** How the log names an ending: the word, and only a message captured as safe. */
+function loggedEnding(outcome: string, message: string | undefined): string {
+  if (outcome === MUSE_LOGIN_OUTCOMES.failed) {
+    return `${outcome}: saving the credential failed`
+  }
+  const said =
+    message !== undefined && LOGGED_MESSAGES.has(outcome) ? `: ${clipForLog(message)}` : ''
+  return `${clipForLog(outcome)}${said}`
+}
+
+/** How `outcome` ends the flow; undefined for `granted`, which `account/read` bears out. */
 function endingOf(outcome: string): HostEnding | undefined {
   if (outcome === MUSE_LOGIN_OUTCOMES.granted) {
     return undefined
@@ -108,6 +142,7 @@ export function parseDeviceCode(raw: unknown): { readonly url: string; readonly 
 
 /** The signals that a new sign-in landed, as one poll sees them. */
 interface SignInSignals {
+  /** Undefined when the host did not answer the first question. */
   readonly initial: AccountState | undefined
   /** Undefined when the host did not answer, or the poll was cut short. */
   readonly current: AccountState | undefined
@@ -125,10 +160,14 @@ function isSignedIn(signals: SignInSignals): boolean {
     return false
   }
   // `envKey` or a stored key may mask the new login, so a new file counts
-  // while the account is anything but signed out.
+  // while the account is anything but signed out. A change of account
+  // counts only against an account read before the flow: with no first
+  // answer, a sign-in from before would pass for a new one (the review of
+  // PR #49).
   const hasSignedIn =
-    current.state === MUSE_ACCOUNT_STATES.accountLogin &&
-    initial?.state !== MUSE_ACCOUNT_STATES.accountLogin
+    initial !== undefined &&
+    initial.state !== MUSE_ACCOUNT_STATES.accountLogin &&
+    current.state === MUSE_ACCOUNT_STATES.accountLogin
   return isFileWritten || hasSignedIn
 }
 
@@ -147,13 +186,15 @@ export async function runDeviceSignIn(deps: DeviceSignInDeps): Promise<DeviceSig
     }
     throw error
   }
-  // Cancel, or the host's own ending: whatever the flow is waiting on stops.
+  // Cancel, the host's own ending, or its exit: whatever the flow is
+  // waiting on stops.
   const stopped = Promise.withResolvers<typeof STOPPED>()
   const stop = () => {
     stopped.resolve(STOPPED)
   }
   let hostEnding: HostEnding | undefined
   let isEnded = false
+  let isHostGone = false
   try {
     session.connection.onNotification((notification) => {
       if (isEnded || notification.method !== MUSE_ACCOUNT_LOGIN_COMPLETED) {
@@ -166,23 +207,37 @@ export async function runDeviceSignIn(deps: DeviceSignInDeps): Promise<DeviceSig
       // The first ending counts; the host runs one flow.
       isEnded = true
       hostEnding = endingOf(result.data.outcome)
-      const message =
-        result.data.message === undefined ? '' : `: ${clipForLog(result.data.message)}`
-      deps.log.info(`Muse Code sign-in ended: ${clipForLog(result.data.outcome)}${message}`)
+      deps.log.info(
+        `Muse Code sign-in ended: ${loggedEnding(result.data.outcome, result.data.message)}`,
+      )
       if (hostEnding !== undefined) {
         stop()
       }
+    })
+    void session.connection.closed.then(() => {
+      isHostGone = true
+      stop()
     })
     deps.signal.addEventListener('abort', stop, { once: true })
     if (isAborted()) {
       return 'cancelled'
     }
-    /** `work`, or STOPPED as soon as Cancel or the host's ending arrives. */
+    /** `work`, or STOPPED as soon as Cancel, the host's ending or its exit arrives. */
     const untilStopped = <T>(work: Promise<T>) => Promise.race([work, stopped.promise])
+    /** Why a wait before the polling was cut short; no loginCancel is owed. */
+    const stoppedEarly = (): HostEnding => {
+      if (hostEnding !== undefined) {
+        return hostEnding
+      }
+      if (isHostGone && !isAborted()) {
+        throw hostGone()
+      }
+      return 'cancelled'
+    }
     // The account before the flow, so a sign-in shows as a change.
     const initial = await untilStopped(readAccountState(session.connection))
     if (initial === STOPPED) {
-      return hostEnding ?? 'cancelled'
+      return stoppedEarly()
     }
     const start = await untilStopped(
       withDeadline(
@@ -194,7 +249,7 @@ export async function runDeviceSignIn(deps: DeviceSignInDeps): Promise<DeviceSig
       ),
     )
     if (start === STOPPED) {
-      return hostEnding ?? 'cancelled'
+      return stoppedEarly()
     }
     const { url, code } = parseDeviceCode(start)
     deps.onCode(url, code)
@@ -228,10 +283,8 @@ export async function runDeviceSignIn(deps: DeviceSignInDeps): Promise<DeviceSig
         isFileWritten: modified !== undefined && modified !== before,
       })
     }
-    while (deps.now() < deadline) {
-      if (await hasLanded()) {
-        return 'signedIn'
-      }
+    /** How a flow that has not landed ends now; undefined while it goes on. */
+    const endedAs = async (): Promise<HostEnding | undefined> => {
       if (hostEnding !== undefined) {
         return hostEnding
       }
@@ -239,13 +292,27 @@ export async function runDeviceSignIn(deps: DeviceSignInDeps): Promise<DeviceSig
         await cancelLogin()
         return 'cancelled'
       }
+      if (isHostGone) {
+        throw hostGone()
+      }
+      return undefined
+    }
+    while (deps.now() < deadline) {
+      if (await hasLanded()) {
+        return 'signedIn'
+      }
+      const ending = await endedAs()
+      if (ending !== undefined) {
+        return ending
+      }
       await untilStopped(deps.sleep(CREDENTIAL_POLL_INTERVAL_MS))
     }
     if (await hasLanded()) {
       return 'signedIn'
     }
-    if (hostEnding !== undefined) {
-      return hostEnding
+    const ending = await endedAs()
+    if (ending !== undefined) {
+      return ending
     }
     await cancelLogin()
     return isAborted() ? 'cancelled' : 'timedOut'

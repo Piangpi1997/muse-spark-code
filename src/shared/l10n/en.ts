@@ -79,13 +79,16 @@ export const EN = {
   signInWaiting: 'Waiting for the browser sign-in to finish…',
   signInTimedOut: 'The sign-in did not complete in time. Try again.',
   // How Muse Code ended a browser sign-in (`account/loginCompleted`, D26):
-  // `expired` as captured live; any other ending as Muse Code named it.
+  // `expired`, `denied` and `failed` as captured live; any other ending as
+  // Muse Code named it.
   signInExpired: 'The code expired before it was approved. Sign in again to get a new code.',
-  signInEnded:
-    'Sign-in ended: {outcome}. Sign in again to get a new code; the Muse Spark log says why.',
-  // A macOS Keychain pointer on Windows or Linux stops `muse serve` (D26).
-  cliKeychainElsewhere:
-    'Muse Code cannot start: its sign-in file {path} points to the macOS Keychain, which Muse Code cannot use on this system. Move or rename that file, then sign in again.',
+  signInDenied: 'You denied the sign-in in the browser.',
+  signInSaveFailed: 'Muse Code signed in but could not save the credential.',
+  signInEnded: 'Sign-in ended: {outcome}. Sign in again to get a new code.',
+  // A macOS credential file on Windows or Linux stops `muse serve` (D26):
+  // version 2, empty or a Keychain pointer, or the Keychain lane.
+  cliCredentialUnsupported:
+    'Muse Code cannot start: its sign-in file {path} is in the macOS format, which Muse Code cannot read on this system. Move or rename that file, then sign in again.',
   hostExited: 'Muse Code stopped unexpectedly',
   hostStarting: 'Starting Muse Code…',
   // PLAN.md D25: restarts, crashes and closed sessions continue the conversation.

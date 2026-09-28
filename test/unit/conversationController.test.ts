@@ -103,6 +103,10 @@ function fakeAuth(status: AuthSnapshot['status'] = 'signedIn'): FakeAuth {
         calls.push(isUserAction === true ? 'refresh:userAction' : 'refresh')
         return Promise.resolve(state.snapshot)
       },
+      checkAgain: () => {
+        calls.push('checkAgain')
+        return Promise.resolve(state.snapshot)
+      },
       markAuthRequired: (reason: string) => {
         calls.push(`authRequired:${reason}`)
         state.snapshot = { status: 'signedOut', detail: reason }
@@ -2313,8 +2317,8 @@ describe('ConversationController: other messages', () => {
       'installMuseCode',
       'cancelSignIn',
       'signOut',
-      // Check again is a click: macOS may ask the CLI (D26).
-      'refresh:userAction',
+      // Check again is a click: the CLI is asked afresh (D26).
+      'checkAgain',
     ])
     expect(t.openExternal).toHaveBeenCalledWith('https://example.invalid/')
   })

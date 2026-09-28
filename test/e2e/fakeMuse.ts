@@ -19,6 +19,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { MUSE_CREDENTIAL_FILE_SEGMENTS } from '../../src/shared/constants'
+import { DEVICE_LOGIN_FILE } from '../unit/helpers/credentialShapes'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const SERVE_SOURCE = path.join(here, 'fake-muse', 'serve.mjs')
@@ -97,20 +98,15 @@ export function installFakeMuse(): FakeMuseInstall {
 }
 
 /**
- * A config home holding the CLI's credential file: a stored login's
- * structure as Muse Code writes it (schema 1, one provider), metadata only,
- * no secret; or `contents` as given.
+ * A config home holding the CLI's credential file: a browser sign-in's
+ * structure as the granted capture left it, placeholders for every secret
+ * or personal value; or `contents` as given.
  */
-export function installFakeCredential(contents = FAKE_STORED_SIGN_IN): string {
+export function installFakeCredential(contents = DEVICE_LOGIN_FILE): string {
   const configHome = mkdtempSync(path.join(tmpdir(), 'fake-muse-config-'))
   writeFakeCredential(configHome, contents)
   return configHome
 }
-
-export const FAKE_STORED_SIGN_IN = JSON.stringify({
-  schema_version: 1,
-  providers: { meta: { mechanism: 'oauth', obtained_via: 'device_code' } },
-})
 
 /** Where the extension and the fake CLI look for it under `configHome`. */
 export function fakeCredentialFile(configHome: string): string {

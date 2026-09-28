@@ -1,11 +1,13 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
+  AccountHosts,
   type AccountSession,
   isStoredSignIn,
   logOutAccount,
   probeAccount,
   readAccountState,
 } from '../../src/host/auth/accountHost'
+import { CAPTURED_SIGNED_IN } from './helpers/accountLoginCapture'
 import { FakeLogOutputChannel } from './helpers/fakes'
 
 // `account/read` and `account/logout` as captured (1.3.0 and 1.4.0-R4302.1,
@@ -26,9 +28,15 @@ function host(answers: Record<string, Answer | (() => Answer)>) {
     return answer instanceof Error ? Promise.reject(answer) : Promise.resolve(answer)
   })
   const close = vi.fn(() => Promise.resolve())
-  const session: AccountSession = { connection: { request, onNotification: vi.fn() }, close }
+  const session: AccountSession = {
+    connection: { request, onNotification: vi.fn(), closed: new Promise(() => undefined) },
+    close,
+  }
   return { request, close, session, connect: () => Promise.resolve(session) }
 }
+
+/** A signal nothing aborts: the window stays open. */
+const OPEN = new AbortController().signal
 
 function allLogged(log: FakeLogOutputChannel): string {
   return [...log.info.mock.calls, ...log.warn.mock.calls].flat().join('\n')
@@ -39,6 +47,15 @@ describe('readAccountState', () => {
     const t = host({ 'account/read': STORED_KEY })
     await expect(readAccountState(t.session.connection)).resolves.toEqual({
       state: 'apiKey',
+      credentialRequired: true,
+    })
+  })
+
+  // As captured once the browser approved: `avatarUrl` is not in the schema.
+  it('drops the captured label and avatarUrl of a browser sign-in', async () => {
+    const t = host({ 'account/read': CAPTURED_SIGNED_IN })
+    await expect(readAccountState(t.session.connection)).resolves.toEqual({
+      state: 'accountLogin',
       credentialRequired: true,
     })
   })
@@ -64,14 +81,14 @@ describe('probeAccount', () => {
   it('asks one host and closes it', async () => {
     const t = host({ 'account/read': LOGGED_OUT })
     const log = new FakeLogOutputChannel()
-    await expect(probeAccount(t.connect, log)).resolves.toEqual(LOGGED_OUT)
+    await expect(probeAccount(t.connect, log, OPEN)).resolves.toEqual(LOGGED_OUT)
     expect(t.close).toHaveBeenCalledOnce()
   })
 
   it('says nothing when the host cannot start, naming only the error', async () => {
     const log = new FakeLogOutputChannel()
     const failure = new Error(String.raw`failed at C:\Users\someone\.config\muse\auth.json`)
-    await expect(probeAccount(() => Promise.reject(failure), log)).resolves.toBeUndefined()
+    await expect(probeAccount(() => Promise.reject(failure), log, OPEN)).resolves.toBeUndefined()
     expect(log.warn).toHaveBeenCalledWith('The Muse Code account host could not start: Error')
     expect(allLogged(log)).not.toContain('auth.json')
   })
@@ -80,7 +97,7 @@ describe('probeAccount', () => {
     const t = host({ 'account/read': LOGGED_OUT })
     t.close.mockRejectedValue(new Error('still draining'))
     const log = new FakeLogOutputChannel()
-    await expect(probeAccount(t.connect, log)).resolves.toEqual(LOGGED_OUT)
+    await expect(probeAccount(t.connect, log, OPEN)).resolves.toEqual(LOGGED_OUT)
     expect(log.warn).toHaveBeenCalledWith('The Muse Code account host did not close cleanly: Error')
   })
 })
@@ -96,7 +113,7 @@ describe('logOutAccount', () => {
       'account/read': () => state,
     })
     const log = new FakeLogOutputChannel()
-    await expect(logOutAccount(t.connect, log)).resolves.toBe('confirmed')
+    await expect(logOutAccount(t.connect, log, OPEN)).resolves.toBe('confirmed')
     expect(t.request.mock.calls.map(([method]) => method)).toEqual([
       'account/logout',
       'account/read',
@@ -129,14 +146,37 @@ describe('logOutAccount', () => {
   ])('is false when %s', async (_name, answers) => {
     const log = new FakeLogOutputChannel()
     if (answers === undefined) {
-      await expect(logOutAccount(() => Promise.reject(new Error('no CLI')), log)).resolves.toBe(
-        'unconfirmed',
-      )
+      await expect(
+        logOutAccount(() => Promise.reject(new Error('no CLI')), log, OPEN),
+      ).resolves.toBe('unconfirmed')
       return
     }
     const t = host(answers)
-    await expect(logOutAccount(t.connect, log)).resolves.toBe('unconfirmed')
+    await expect(logOutAccount(t.connect, log, OPEN)).resolves.toBe('unconfirmed')
     expect(t.close).toHaveBeenCalledOnce()
     expect(log.warn).toHaveBeenCalled()
+  })
+})
+
+// The window closing ends every account host still open (the review of PR #49).
+describe('AccountHosts', () => {
+  it('closes a probe still waiting when the window closes, and starts none afterwards', async () => {
+    const t = host({})
+    t.request.mockImplementation(() => new Promise(() => undefined))
+    const connect = vi.fn((signal: AbortSignal) =>
+      signal.aborted ? Promise.reject(new Error('cancelled')) : t.connect(),
+    )
+    const hosts = new AccountHosts(connect, new FakeLogOutputChannel())
+    const probing = hosts.probe()
+    const loggingOut = hosts.logOut()
+    await vi.waitFor(() => {
+      expect(t.request).toHaveBeenCalledTimes(2)
+    })
+    hosts.close()
+    await expect(probing).resolves.toBeUndefined()
+    await expect(loggingOut).resolves.toBe('unconfirmed')
+    expect(t.close).toHaveBeenCalledTimes(2)
+    await expect(hosts.probe()).resolves.toBeUndefined()
+    expect(t.request).toHaveBeenCalledTimes(2)
   })
 })

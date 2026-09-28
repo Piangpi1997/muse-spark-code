@@ -852,26 +852,41 @@ action that fails is worse than hiding one that would work.
   account `meta`), and the file is a token-free pointer
   (`schema_version: 2`, `storage: "keychain"`).
 - **The structural read (`src/core/backends/musecode/credentialFile.ts`).**
-  Only three facts are kept: the schema version, whether any provider is
+  Only three facts are kept: the schema version, which providers are
   named, and whether a provider's `storage` is the Keychain. The schema
-  parse drops every other field. It decides:
+  parse drops every other field. Only `providers.meta` speaks for the
+  sign-in: 1.4.0-R4302.1's bundled Slack connector reads its own
+  `providers.slack_connector` from the same file (PR #49 review). It
+  decides:
   - no file → signed out, with no process;
   - an empty file → signed out;
-  - a file holding the credential → signed in;
-  - a Keychain pointer off macOS → a named error (`muse serve` exits 3
-    there with it).
+  - a `meta` entry holding the credential → signed in;
+  - other providers alone → asked of the CLI;
+  - off macOS, any version-2 file (the empty one included) or a `meta`
+    whose storage is the Keychain → a named error (`muse serve` exits 3 on
+    Windows: "unsupported auth schema version 2", captured 2026-09-27 for
+    an empty file and a pointer). With `META_API_KEY` set it starts and
+    answers `envKey` (captured the same day), so the key still wins.
 - **Asking the CLI.** A Keychain pointer on macOS, or a file the read cannot
   place, is asked of the CLI: `account/read` on a short-lived
   `experimentalApi` host.
-  - The answer is kept until the file's size or modification time changes.
+  - The answer is kept until the file's size or modification time changes,
+    or until a sign-out, a device sign-in or Check again forgets it. Cancel
+    only leaves an unanswered probe behind, so what it shows next asks
+    nothing new.
   - On macOS the CLI is asked only on a user action (Check again, sign-in,
-    sign-out, Diagnostics), so a Keychain prompt follows a click.
+    sign-out, the Sign Out and Diagnostics commands), so a Keychain prompt
+    follows a click.
   - `unknown` counts as signed in, as before; a turn's `authRequired`
     still corrects it.
 - **Sign-out.** It uses MSP `account/logout` on a short-lived host (the
   chat host has no `experimentalApi`, and sign-out stops it first). The
-  result is confirmed by `account/read`. The terminal `muse logout` is the
-  fallback, confirmed later by the file or the CLI.
+  result is confirmed by `account/read`. When that does not confirm it
+  (`META_API_KEY` makes it answer `envKey`), the sign-in is read afresh;
+  only a sign-in still there opens the terminal `muse logout`, with
+  `museSpark.environmentVariables`, confirmed later by the file or the CLI.
+  A sign-out that keeps the hold is published as `error`, the state the
+  panel offers Check again in.
 - **M55's device flow signs in on:**
   - `account/read` turning `accountLogin` on the open host;
   - or a new file that `account/read` does not contradict.
@@ -880,31 +895,44 @@ action that fails is worse than hiding one that would work.
   modification". `account/changed` is not relied on: neither a terminal
   `muse logout` nor an expired code fired it.
 
-- **How it ends otherwise (PR #49 review, live capture).** The endings
-  were captured on 1.4.0-R4302.1 in throwaway homes: `expired`, 600 s
-  after `loginStart`, with a message, and `cancelled`
-  (`test/fixtures/msp/`).
-  - **`granted`, `denied`, `failed`: not captured.** The owner's Chrome has
-    the Chrome Control extension disabled, so no code could be approved or
-    declined.
-  - **`granted`.** It neither ends the flow nor counts as a sign-in;
-    `account/read` decides.
-  - **Every other word.** It ends the flow at once. The captured `expired`
-    has its own message; any other word is shown as Muse Code sent it
-    (AGENTS.md rule 13).
+- **How it ends otherwise (PR #49 review, live capture).** Every ending
+  was captured on 1.4.0-R4302.1 in throwaway homes (`test/fixtures/msp/`):
+  `expired`, 600 s after `loginStart`, with a message; `cancelled`;
+  `granted`, `denied` and `failed`, from Approve and Deny clicked on the
+  device page, and an approval whose file could not be written.
+  - **`granted`.** It came after the file was written and `account/read`
+    already said `accountLogin`; it neither ends the flow nor counts on
+    its own, and `account/read` or the file decides.
+  - **`denied` and `failed`.** Each ends the flow with its own message.
+    `failed`'s message names the credential file's path under the user's
+    profile, so only `expired`'s and `denied`'s messages are logged.
+  - **Every other word.** It ends the flow at once and is shown as Muse
+    Code sent it (AGENTS.md rule 13), its message unlogged.
+  - **With no first `account/read`,** only a file written since the flow
+    began counts; a sign-in from before would pass for a new one.
+  - **Cancel after approval.** When the file changed since the flow began,
+    its structure decides, not the click.
+  - **A host that exits** fails the flow at once (`connection.closed`).
 - **The backstop.** The extension waits 11 minutes, past the code's
   lifetime, so Muse Code's `expired` ends an unapproved code. The old
   5 minutes cancelled codes that were still live.
 - **A CLI that stops answering.** Cancel and the host's ending are noticed
   at once even while `account/read` is unanswered. `loginCancel` is
-  bounded at 2 s before the host is closed anyway.
+  bounded at 2 s before the host is closed anyway. A sign-out never waits
+  on a question a finished or failed sign-in asks, and a refresh begun
+  before a sign-out ended cannot publish after it. The window closing
+  cancels the sign-in, waits for it, and closes every short-lived account
+  host before the backends stop.
 - **Where it is only as good as the schema.** `account/*` stays
   experimental.
-- **Owner steps.** A real sign-in on each OS remains an owner step:
-  - the macOS pointer after a 1.4.0 login;
-  - the success sequence and a declined code, once Chrome Control is back
-    on (`scratchpad/cred-capture/capture.mjs`);
-  - logout of an OAuth slot.
+- **Owner steps.** A real sign-in remains an owner step on:
+  - macOS, for the pointer after a 1.4.0 login;
+  - Linux, for the device-login file.
+
+  The Windows success sequence, a declined code, a failed save and the
+  logout of an OAuth slot were captured on 2026-09-27
+  (`scratchpad/cred-capture/capture2.mjs`).
+
 - **Not taken.** `TBH_CREDENTIAL_BACKEND=file` is not set. R4302.1 fixed
   #38/#53 and the launcher updates itself; the README names the switch
   only for someone stuck on R4161.1.
@@ -5961,9 +5989,10 @@ sign-in; success must be proved by a credential file change and the backend's
 refresh, not a guessed notification shape. The Model API key continues through
 SecretStorage and is never given to `muse serve`. (Amended 2026-09-27, D26:
 `account/read`, whose shapes were captured on 2026-09-27, decides a
-sign-in, with the file change as the second signal; the uncaptured
-`granted` is not one. The PR #49 capture added `expired`, 600 s after
-`loginStart`, to the captured endings.)
+sign-in, with the file change as the second signal. The PR #49 captures
+added `expired`, 600 s after `loginStart`, then `granted`, `denied` and
+`failed` to the captured endings; `granted` came after both signals, so
+it is not one of its own.)
 
 **Acceptance:** no installer or login starts without its button; installer
 command is fixed, shown before confirmation, and runs in a visible terminal;

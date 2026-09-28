@@ -1,19 +1,25 @@
 // What the Muse Code CLI's credential file (`auth.json`) says about its
 // sign-in, from the file's structure alone (PLAN.md D26, 2026-09-27). The
-// schema keeps three facts: the schema version, whether any provider is
-// named, and whether a provider's `storage` points to the macOS Keychain.
-// Every other field, the token included, is dropped by the parse, and
-// nothing from the file is stored, logged or passed on.
+// schema keeps three facts: the schema version, which providers are named,
+// and whether a provider's `storage` points to the macOS Keychain. Every
+// other field, the token included, is dropped by the parse, and nothing from
+// the file is stored, logged or passed on.
 //
 // Shapes seen on Muse Code 1.3.0 and 1.4.0-R4302.1 (isolated homes):
 // - `{"schema_version": 1, "providers": {}}`: what `muse logout` and MSP
 //   `account/logout` leave behind (they rewrite the file, never delete it).
 //   Signed out on every OS.
-// - Version 1 with a provider holding its credential: signed in.
+// - Version 1 with `providers.meta` holding its credential: `muse auth set`
+//   writes `api_key` alone, a browser sign-in the token, the key and the
+//   account's name. Signed in.
+// - Only `providers.meta` speaks for the sign-in: 1.4.0-R4302.1's bundled
+//   Slack connector reads its own `providers.slack_connector`, so a file
+//   naming other providers alone is left to the CLI.
 // - Version 2 with `providers.meta.storage: "keychain"`: macOS keeps the
-//   token in the login Keychain and the file is a pointer. On Windows and
-//   Linux `muse serve` exits 3 at startup with that file, and with a
-//   version-1 provider whose storage is the Keychain.
+//   token in the login Keychain and the file is a pointer. On Windows
+//   `muse serve` exits 3 at startup with any version-2 file, the empty one
+//   included ("unsupported auth schema version 2"), and with a version-1
+//   `meta` whose storage is the Keychain.
 
 import * as z from 'zod/mini'
 import {
@@ -21,26 +27,27 @@ import {
   MUSE_CREDENTIAL_INLINE_SCHEMA,
   MUSE_CREDENTIAL_KEYCHAIN_STORAGE,
   MUSE_CREDENTIAL_POINTER_SCHEMA,
+  MUSE_CREDENTIAL_PROVIDER,
 } from '../../../shared/constants'
 
 /**
  * - `empty`: names no provider; the file a sign-out leaves.
  * - `inline`: holds the credential itself.
  * - `keychain`: points to the macOS Keychain (on macOS).
- * - `keychainElsewhere`: a macOS pointer on Windows or Linux, where `muse
- *   serve` cannot start with it.
+ * - `unsupportedHere`: a macOS file on Windows or Linux (version 2, or the
+ *   Keychain lane), where `muse serve` cannot start with it.
  * - `unrecognized`: anything else; only the CLI can say.
  */
 export type CredentialFileVerdict =
-  'empty' | 'inline' | 'keychain' | 'keychainElsewhere' | 'unrecognized'
+  'empty' | 'inline' | 'keychain' | 'unsupportedHere' | 'unrecognized'
 
 /**
  * The CLI's own sign-in as the extension sees it: `unknown` when only the
  * CLI could say and it has not (the estimate counts it as signed in, and a
- * turn's `authRequired` corrects it); `keychainElsewhere` when the file
- * stops `muse serve` from starting.
+ * turn's `authRequired` corrects it); `unsupportedHere` when the file stops
+ * `muse serve` from starting.
  */
-export type CliSignIn = 'signedIn' | 'signedOut' | 'unknown' | 'keychainElsewhere'
+export type CliSignIn = 'signedIn' | 'signedOut' | 'unknown' | 'unsupportedHere'
 
 /** Whether the macOS Keychain holds the CLI's item, by attribute lookup only. */
 export type KeychainItemPresence = 'present' | 'absent' | 'unknown'
@@ -67,22 +74,30 @@ export function credentialFileVerdict(
     return 'unrecognized'
   }
   const version = parsed.data.schema_version
-  const providers = Object.values(parsed.data.providers)
-  const isKnownVersion =
-    version === MUSE_CREDENTIAL_INLINE_SCHEMA || version === MUSE_CREDENTIAL_POINTER_SCHEMA
-  if (!isKnownVersion) {
+  if (version !== MUSE_CREDENTIAL_INLINE_SCHEMA && version !== MUSE_CREDENTIAL_POINTER_SCHEMA) {
     return 'unrecognized'
   }
-  // No provider points anywhere, whatever the version or OS: signed out (the
-  // review of PR #49; a signed-out macOS file copied elsewhere is no pointer).
-  if (providers.length === 0) {
-    return 'empty'
+  const isMacOs = platform === 'darwin'
+  // Off macOS the version alone stops `muse serve`, whatever the file holds
+  // (captured on Windows for a pointer and for an empty file; the review of
+  // PR #49).
+  if (version === MUSE_CREDENTIAL_POINTER_SCHEMA && !isMacOs) {
+    return 'unsupportedHere'
   }
-  const isKeychainStyle =
+  const providers = parsed.data.providers
+  const muse = Object.hasOwn(providers, MUSE_CREDENTIAL_PROVIDER)
+    ? providers[MUSE_CREDENTIAL_PROVIDER]
+    : undefined
+  if (muse === undefined) {
+    // No provider at all is signed out; another provider alone (a
+    // connector's token) says nothing about the sign-in.
+    return Object.keys(providers).length === 0 ? 'empty' : 'unrecognized'
+  }
+  if (
     version === MUSE_CREDENTIAL_POINTER_SCHEMA ||
-    providers.some((provider) => provider.storage === MUSE_CREDENTIAL_KEYCHAIN_STORAGE)
-  if (isKeychainStyle) {
-    return platform === 'darwin' ? 'keychain' : 'keychainElsewhere'
+    muse.storage === MUSE_CREDENTIAL_KEYCHAIN_STORAGE
+  ) {
+    return isMacOs ? 'keychain' : 'unsupportedHere'
   }
   return 'inline'
 }
