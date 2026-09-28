@@ -371,6 +371,26 @@ async function editThroughLink(t: Setup): Promise<void> {
   await turn()
 }
 
+/**
+ * A turn in Auto that allows every card for the session: an edit of
+ * src/a.ts, then `edit` (an edit_file's arguments), with `check` configured.
+ */
+async function allowThenEdit(
+  files: Record<string, string>,
+  check: CheckCommandSetting,
+  edit: Record<string, string>,
+): Promise<Awaited<ReturnType<typeof start>>> {
+  const t = setup({ files, checks: [check], isDiagnosticsOn: false })
+  const started = await start(t, 'onRequest', () => 'allow_session')
+  t.api.script(
+    { calls: [editCall('1', '2')] },
+    { calls: [{ name: 'edit_file', arguments: JSON.stringify(edit) }] },
+    { text: 'ok' },
+  )
+  await started.turn()
+  return started
+}
+
 /** An edit of package.json, which decides what `npm run lint` runs. */
 const MANIFEST_EDIT: ScriptedCall = {
   name: 'edit_file',
@@ -1759,5 +1779,66 @@ describe('the write-back and then_run, as Grok read them', () => {
     await editThroughLink(t)
     expect(io.files.get(`${ROOT}/real/a.ts`)).toBe('const a = 2\n')
     expect(logLines(t.log).join('\n')).toContain('it has unsaved changes in an editor')
+  })
+})
+
+// PR #54, fourth Codex round: a check whose script path is quoted.
+describe('a check that runs a script by a quoted path', () => {
+  it('asks again once the model edits the script, whatever the session rule allowed', async () => {
+    const mine: CheckCommandSetting = { name: 'mine', command: 'node "scripts/my check.js"' }
+    const { cards } = await allowThenEdit(
+      { 'src/a.ts': 'const a = 1\n', 'scripts/my check.js': 'check()\n' },
+      mine,
+      { path: 'scripts/my check.js', find: 'check', replace: 'x' },
+    )
+    expect(cards.map((card) => card.subject)).toEqual([
+      { kind: 'shell', command: mine.command },
+      { kind: 'shell', command: mine.command },
+    ])
+  })
+})
+
+// PR #54, fourth Codex round, a sibling: the rule is judged on the command it is keyed on.
+describe('a then_run a hook rewrote', () => {
+  it('asks again once the model edits the script the rewritten command runs', async () => {
+    const t = setup({
+      files: { 'src/a.ts': 'const a = 1\n', 'scripts/t.js': 'run()\n' },
+      isDiagnosticsOn: false,
+      hooks: hooksOn('PreToolUse'),
+      runHook: hookAnswers((_event, payload) =>
+        isShell(payload)
+          ? {
+              hookSpecificOutput: {
+                hookEventName: 'PreToolUse',
+                permissionDecision: 'allow',
+                updatedInput: { command: 'node scripts/t.js' },
+              },
+            }
+          : undefined,
+      ),
+    })
+    const { cards, turn } = await start(t, 'onRequest', () => 'allow_session')
+    t.api.script(
+      { calls: [editCall('1', '2', 'npm test')] },
+      {
+        calls: [
+          {
+            name: 'edit_file',
+            arguments: JSON.stringify({
+              path: 'scripts/t.js',
+              find: 'run',
+              replace: 'x',
+              then_run: 'npm test',
+            }),
+          },
+        ],
+      },
+      { text: 'ok' },
+    )
+    await turn()
+    expect(cards.map((card) => card.subject)).toEqual([
+      { kind: 'shell', command: 'node scripts/t.js' },
+      { kind: 'shell', command: 'node scripts/t.js' },
+    ])
   })
 })

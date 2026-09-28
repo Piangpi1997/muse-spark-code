@@ -10,7 +10,11 @@
 // - A file that decides what a check command runs: those above, a package
 //   script's or a build tool's definition, or a file the command names. A
 //   turn that edited one asks again for the checks, whatever the session's
-//   rules allow.
+//   rules allow. Naming is judged conservatively (PR #54, fourth Codex
+//   round): a command is split into words only when it holds nothing a
+//   shell could read otherwise (quotes, escapes, variables, substitutions,
+//   globs, operators); a command that does is taken to run any edited file.
+//   An edited file's path found anywhere in the command's text counts too.
 //
 // Pure: paths are workspace-relative with forward slashes.
 
@@ -24,7 +28,13 @@ const SEGMENT_SEPARATOR = '/'
 const LEADING_DOT_SLASH = /^\.\//
 const BACKSLASH = /\\/g
 const WHITESPACE = /\s+/
-const QUOTES = /^["']|["']$/g
+// A word of a command that no shell (bash, PowerShell, cmd.exe) reads as
+// anything but itself: letters, digits and `_ . / : + -`, and `=` between an
+// option and its value. Anything else (quotes, `\`, `` ` ``, `$`, `%`, `@`
+// and `,` (PowerShell's splatting and arrays), `*?[]{}`, `~`, `!`, `#`, `^`,
+// `()`, `;&|<>`) makes the command's words uncertain.
+const PLAIN_WORD = /^[\w./:+=-]+$/
+const OPTION_VALUE = '='
 
 function segmentsOf(relativePath: string): readonly string[] {
   return relativePath.replaceAll(BACKSLASH, () => SEGMENT_SEPARATOR).split(SEGMENT_SEPARATOR)
@@ -43,31 +53,39 @@ export function isCodeLoading(relativePath: string): boolean {
   )
 }
 
-/** The command's words as paths: quotes and a leading `./` dropped, forward slashes. */
-function commandPaths(command: string): readonly string[] {
-  return command
-    .split(WHITESPACE)
-    .map((word) =>
-      word
-        .replaceAll(QUOTES, '')
-        .replaceAll(BACKSLASH, () => SEGMENT_SEPARATOR)
-        .replace(LEADING_DOT_SLASH, '')
-        .toLowerCase(),
-    )
-    .filter((word) => word !== '')
+/**
+ * The command's words as paths (a leading `./` dropped, an option's value
+ * after `=` taken apart), or undefined when a shell could read them
+ * otherwise and they cannot be told with certainty.
+ */
+function commandPaths(command: string): readonly string[] | undefined {
+  const words = command.split(WHITESPACE).filter((word) => word !== '')
+  return words.some((word) => !PLAIN_WORD.test(word))
+    ? undefined
+    : words
+        .flatMap((word) => word.split(OPTION_VALUE))
+        .map((word) => word.replace(LEADING_DOT_SLASH, '').toLowerCase())
+        .filter((word) => word !== '')
 }
 
 /**
  * Whether editing this file may change what `command` runs: a file that
- * loads code, one that defines commands, or one the command names (by its
- * path or its name). Compared without case, so it errs towards asking.
+ * loads code, one that defines commands, one whose path (either slash form)
+ * occurs in the command's text, one a word of the command names (by its
+ * path or its name), or any file when the command's words cannot be told
+ * with certainty. Compared without case, so it errs towards asking.
  */
 export function canChangeWhatRuns(relativePath: string, command: string): boolean {
-  const path = relativePath.toLowerCase()
+  const path = relativePath.replaceAll(BACKSLASH, () => SEGMENT_SEPARATOR).toLowerCase()
   const name = baseName(path)
+  const text = command.toLowerCase()
+  const paths = commandPaths(command)
   return (
     isCodeLoading(relativePath) ||
     COMMAND_DEFINING_FILES.has(name) ||
-    commandPaths(command).some((word) => word === path || baseName(word) === name)
+    text.includes(path) ||
+    text.includes(path.replaceAll(SEGMENT_SEPARATOR, () => '\\')) ||
+    paths === undefined ||
+    paths.some((word) => word === path || baseName(word) === name)
   )
 }

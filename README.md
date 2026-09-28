@@ -654,7 +654,8 @@ files, and before the next request to Meta:
   never runs in Plan mode or Restricted Mode. "Always allow in this session"
   allows that command for the conversation, but after the agent edits a
   file that decides what the command runs (`package.json`, a `Makefile`, a
-  config the tools load, or a file the command names) it asks again until
+  config the tools load, or a file the command names; for a command with
+  quotes, variables or other shell syntax, any file) it asks again until
   your next message. `changedFiles` adds the edited files that still exist
   after `--`, each quoted as one argument; a file name that starts with `-`
   or `@`, or on Windows one holding `"`, `&`, `|`, `<`, `>`, `^`, `%` or `!`

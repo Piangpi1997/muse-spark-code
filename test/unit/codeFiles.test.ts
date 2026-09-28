@@ -58,5 +58,36 @@ describe('canChangeWhatRuns (the M68 review)', () => {
   it('does not hold for a source file the command does not name', () => {
     expect(canChangeWhatRuns('src/a.ts', 'npm run lint')).toBe(false)
     expect(canChangeWhatRuns('src/check.ts', 'node scripts/lint.js')).toBe(false)
+    expect(canChangeWhatRuns('src/a.ts', 'npx eslint --max-warnings=0 src/b.ts')).toBe(false)
+  })
+
+  // PR #54, fourth Codex round: a command whose words cannot be told for certain.
+  it('holds for a file the command names in quotes, and for any file when its words are uncertain', () => {
+    expect(canChangeWhatRuns('scripts/my check.js', 'node "scripts/my check.js"')).toBe(true)
+    expect(canChangeWhatRuns('scripts/my check.js', "node 'scripts/my check.js'")).toBe(true)
+    expect(canChangeWhatRuns('scripts/my check.js', String.raw`node scripts/my\ check.js`)).toBe(
+      true,
+    )
+    expect(canChangeWhatRuns('src/lint.js', String.raw`node .\src\lint.js`)).toBe(true)
+    expect(canChangeWhatRuns('config/x.js', 'npx eslint --config=config/x.js .')).toBe(true)
+    // A path inside a word of a plain command, found in the command's text.
+    expect(canChangeWhatRuns('src/lint.js', 'node src/lint.js:fix')).toBe(true)
+    // Any shell syntax: the command may run any file.
+    for (const command of [
+      'node "$SCRIPT"',
+      'node $(cat which.txt)',
+      'node `cat which.txt`',
+      'node %SCRIPT%',
+      'node scripts/*.js',
+      'node scripts/{a,b}.js',
+      'node ~/x.js',
+      'node x.js; node y.js',
+      'node x.js && node y.js',
+      'node @args',
+      'node a,b',
+      'FOO=1 bash -c "node x.js"',
+    ]) {
+      expect(canChangeWhatRuns('src/unrelated.ts', command)).toBe(true)
+    }
   })
 })

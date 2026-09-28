@@ -530,8 +530,6 @@ interface VerifyCommand {
   readonly timeoutMs: number
   /** A hook demanded a question for the call that carries it. */
   readonly isForced: boolean
-  /** The conversation edited a file that decides what the command runs. */
-  readonly isRuleIgnored: boolean
   /** then_run's: the file still holds what the edit left. */
   readonly guard?: () => Promise<boolean>
 }
@@ -3655,9 +3653,11 @@ export class ModelApiSession implements AgentSession {
    * with the shell's approval card wherever a shell command would ask,
    * "always allow in this session" keyed on `ruleCommand` as the shell tool
    * keys it. A hook that demanded a question (`isForced`) gets one; a
-   * session rule does not answer when `isRuleIgnored`. A hook's denial is
-   * told apart from the user's Reject, each with its words (the M68
-   * review). Undefined when it may run, else why not.
+   * session rule does not answer once the conversation edited a file that
+   * may decide what `ruleCommand` runs, judged on the command the rule is
+   * keyed on, a hook's rewrite included (PR #54, fourth Codex round). A
+   * hook's denial is told apart from the user's Reject, each with its words
+   * (the M68 review). Undefined when it may run, else why not.
    */
   private async authorizeCommand(
     itemId: string,
@@ -3670,7 +3670,7 @@ export class ModelApiSession implements AgentSession {
       toolClass: 'shell',
       command: request.ruleCommand,
     }
-    const permitted = request.isRuleIgnored
+    const permitted = this.changesWhatRunsNow(request.ruleCommand)
       ? verdictFor(this.permissions.currentMode, 'shell')
       : this.permissions.verdict(query)
     const verdict = permitted === 'allow' && request.isForced ? 'ask' : permitted
@@ -3839,7 +3839,6 @@ export class ModelApiSession implements AgentSession {
         description: check.name,
         timeoutMs,
         isForced: false,
-        isRuleIgnored: this.changesWhatRunsNow(check.command),
         ...(check.changedFiles === true &&
           files.length > 0 && { guard: () => this.areStillWhereConfined(files) }),
       },
@@ -4379,7 +4378,6 @@ export class ModelApiSession implements AgentSession {
           description: THEN_RUN_DESCRIPTION,
           timeoutMs: SHELL_DEFAULT_TIMEOUT_MS,
           isForced,
-          isRuleIgnored: this.changesWhatRunsNow(command),
           guard: () => this.isAsEdited(target),
         },
         signal,
