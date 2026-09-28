@@ -375,6 +375,10 @@ export class AuthService {
     detail: string,
     noticeLevel: 'info' | 'warning',
   ): Promise<AuthSnapshot> {
+    // A sign-out that cancelled this sign-in publishes its own state.
+    if (this.isSigningOut) {
+      return this.snapshot
+    }
     if (this.isLogoutHeld) {
       const refreshed = await this.refresh(true)
       this.deps.broadcast({ type: 'notice', level: noticeLevel, text: detail })

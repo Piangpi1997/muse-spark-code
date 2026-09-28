@@ -319,6 +319,14 @@ describe('AuthService.signIn', () => {
     // The interrupted sign-in settles too, instead of waiting out the probe.
     await expect(pending).resolves.toBeDefined()
     expect(h.abandonCliProbe).toHaveBeenCalled()
+    // Its cancellation never showed over the sign-out's own state or as a notice.
+    expect(
+      h.broadcasts.some(
+        (message) =>
+          (message.type === 'authState' && message.detail === EN.signInCancelled) ||
+          (message.type === 'notice' && message.text === EN.signInCancelled),
+      ),
+    ).toBe(false)
   })
 
   it('keeps the state a sign-out published when an older refresh answers late (the review of PR #49)', async () => {

@@ -219,6 +219,7 @@ captured frames.
 | AG    | An empty version-2 file read as a Keychain pointer off macOS (the review of PR #49)                      | `credentialFile.test.ts` | exit 1, 2 failed: a signed-out macOS file copied to Windows or Linux blocked browser sign-in                                             |
 | AH    | `account/logout` confirmed on any answer but a stored sign-in (the review of PR #49)                     | `accountHost.test.ts`    | exit 1, 2 failed: `envKey` and the uncaptured `credentialRequired: false` confirmed a logout                                             |
 | AI    | A refresh begun before sign-out publishes its late answer (the review of PR #49)                         | `authService.test.ts`    | exit 1, 1 failed: the signed-out state was overwritten with "Sign-out is in progress"                                                    |
+| AJ    | A sign-in cancelled by sign-out still announces its own cancellation                                     | `authService.test.ts`    | exit 1, 1 failed: "Sign-in cancelled" was shown during the sign-out                                                                      |
 
 ## Not proved here
 
