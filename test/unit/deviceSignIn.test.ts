@@ -108,52 +108,37 @@ describe('Muse Code device sign-in', () => {
     expect(t.close).toHaveBeenCalledOnce()
   })
 
-  it('sends loginCancel after user cancellation and closes the host', async () => {
-    const t = session()
-    const abort = new AbortController()
-    await expect(
-      runDeviceSignIn({
-        connect: () => Promise.resolve(t.deviceSession),
-        credentialFileModifiedAt: () => undefined,
-        sleep: () => {
-          abort.abort()
-          return Promise.resolve()
-        },
-        now: () => 0,
-        signal: abort.signal,
-        onCode: vi.fn(),
-        log,
-      }),
-    ).resolves.toBe('cancelled')
-    expect(t.request).toHaveBeenCalledWith('account/loginCancel', {})
-    expect(t.close).toHaveBeenCalledOnce()
-  })
-
   // A stop decides the flow: a file written as Cancel lands is not a sign-in
   // on its own (an unrelated sign-out rewrites the file too). A real sign-in
   // is still seen afterwards from the file's structure (the review of PR #49).
-  it('keeps a cancellation that races a credential write in the same poll', async () => {
-    const t = session()
-    const abort = new AbortController()
-    let modified: number | undefined
-    await expect(
-      runDeviceSignIn({
-        connect: () => Promise.resolve(t.deviceSession),
-        credentialFileModifiedAt: () => modified,
-        sleep: () => {
-          modified = 2
-          abort.abort()
-          return Promise.resolve()
-        },
-        now: () => 0,
-        signal: abort.signal,
-        onCode: vi.fn(),
-        log,
-      }),
-    ).resolves.toBe('cancelled')
-    expect(t.request).toHaveBeenCalledWith('account/loginCancel', {})
-    expect(t.close).toHaveBeenCalledOnce()
-  })
+  it.each([
+    ['with no credential write', false],
+    ['racing a credential write in the same poll', true],
+  ])(
+    'sends loginCancel after user cancellation %s and closes the host',
+    async (_name, isWritten) => {
+      const t = session()
+      const abort = new AbortController()
+      let modified: number | undefined
+      await expect(
+        runDeviceSignIn({
+          connect: () => Promise.resolve(t.deviceSession),
+          credentialFileModifiedAt: () => modified,
+          sleep: () => {
+            modified = isWritten ? 2 : undefined
+            abort.abort()
+            return Promise.resolve()
+          },
+          now: () => 0,
+          signal: abort.signal,
+          onCode: vi.fn(),
+          log,
+        }),
+      ).resolves.toBe('cancelled')
+      expect(t.request).toHaveBeenCalledWith('account/loginCancel', {})
+      expect(t.close).toHaveBeenCalledOnce()
+    },
+  )
 
   it('reports a credential write at the timeout boundary', async () => {
     const t = session()
