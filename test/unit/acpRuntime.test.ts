@@ -470,17 +470,17 @@ describe('createRuntimeBackend', () => {
   it('asks for a key the Model API backend does not have, and reports a store it cannot read', async () => {
     const secrets = memorySecrets()
     const runtime = backend({ backend: 'modelApi' }, secrets)
-    expect(await runtime.backend.readiness()).toEqual({
+    expect(await runtime.backend.readiness(false)).toEqual({
       state: 'signedOut',
       message: UI_TEXT.acpNoStoredKey,
     })
     secrets.values.set(SECRET_KEYS.modelApiKey, KEY)
-    expect(await runtime.backend.readiness()).toEqual({ state: 'ready' })
+    expect(await runtime.backend.readiness(false)).toEqual({ state: 'ready' })
     const broken = backend(
       { backend: 'modelApi' },
       Object.assign(memorySecrets(), { get: () => Promise.reject(new Error('locked')) }),
     )
-    const brokenReadiness = await broken.backend.readiness()
+    const brokenReadiness = await broken.backend.readiness(false)
     expect(brokenReadiness.state).toBe('unavailable')
   })
 
@@ -500,7 +500,7 @@ describe('createRuntimeBackend', () => {
           PATH: '',
         },
       )
-      const readiness = await missing.backend.readiness()
+      const readiness = await missing.backend.readiness(false)
       expect(readiness.state).toBe('unavailable')
     } finally {
       vi.unstubAllEnvs()

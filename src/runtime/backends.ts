@@ -1,7 +1,9 @@
 // The ACP agent's backend (PLAN.md D62): the panel's backend managers,
 // given in this process what VS Code gives them in the extension, one per
 // workspace folder. Muse Code signs in on its own and the subscription
-// pays; the Model API backend reads the key from the OS credential store
+// pays, its sign-in read as the panel reads it (D26: the credential file's
+// structure, and `account/read` where only the CLI can say); the Model API
+// backend reads the key from the OS credential store
 // (D61) and is the extension's own bundle, dist/modelApi.js beside acp.js,
 // loaded the first time that backend starts (M57, PLAN.md D6). Its paid
 // features are the agent's flags, each use asked in the editor (M58, D48),
@@ -13,6 +15,7 @@ import path from 'node:path'
 import type { AcpBackend, BackendReadiness } from '../acp/agent'
 import { AcpPaidUse } from '../acp/paid'
 import type { AgentHost } from '../core/agent/agentBackend'
+import type { CliSignIn } from '../core/backends/musecode/credentialFile'
 import { environmentValue } from '../core/backends/musecode/launch'
 import { personalSkillsRoot } from '../core/context/skills'
 import { memoryDataRoot } from '../core/memory/memoryLocation'
@@ -26,6 +29,8 @@ import { ModelApiBackendManager } from '../host/backend/modelApiBackendManager'
 import { MuseCodeBackendManager, type ProxySettings } from '../host/backend/museCodeBackendManager'
 import { shellJobAssembly } from '../host/backend/shellJob'
 import { createToolIo } from '../host/backend/toolIo'
+import { AccountHosts, connectAccountSession } from '../host/auth/accountHost'
+import { CliAccount, isCliSignedIn } from '../host/auth/cliAccount'
 import { CredentialStore, type SecretStore } from '../host/auth/credentialStore'
 import type { Logger } from '../host/logger'
 import { createWorkspaceFileLister } from '../host/mention/workspaceFiles'
@@ -239,7 +244,30 @@ export function createRuntimeBackend(deps: RuntimeBackendDeps): RuntimeBackend {
     xdgDataHome: environmentValue(museEnvironment, deps.platform, 'XDG_DATA_HOME'),
   }
 
-  const museCodeReadiness = (): BackendReadiness => {
+  // Muse Code's account methods on a short-lived host of their own, as the
+  // panel asks them (PR #49): `account/read` when the file cannot say.
+  const accountHosts = new AccountHosts(
+    (signal) => connectAccountSession(museCode, deps.version, deps.log, undefined, signal),
+    deps.log,
+  )
+  const cliAccount = new CliAccount({
+    platform: deps.platform,
+    credentialFilePath: () => museCode.credentialFilePath(),
+    probe: () => accountHosts.probe(),
+    log: deps.log,
+  })
+
+  /**
+   * Muse Code's readiness, as the panel's sign-in gate counts it (D26):
+   * `META_API_KEY` in the CLI's environment (with it `muse serve` starts
+   * whatever the file says), or the CLI's own sign-in from the file's
+   * structure, asked of the CLI where only it can say. The editor asks only
+   * when the user acts (a session, a sign-in check), so macOS may ask the
+   * CLI; `authenticate`, after a sign-in in the terminal, forgets what the
+   * CLI said before, as the panel's Check again does. A macOS file on
+   * Windows or Linux stops `muse serve`, so it is said as such.
+   */
+  const museCodeReadiness = async (isRecheck: boolean): Promise<BackendReadiness> => {
     const resolution = museCode.resolveLaunch()
     if (!resolution.ok) {
       return {
@@ -247,7 +275,20 @@ export function createRuntimeBackend(deps: RuntimeBackendDeps): RuntimeBackend {
         message: `${resolution.reason} ${fill(UI_TEXT.cliSearched, { paths: resolution.searched.join(', ') })}`,
       }
     }
-    return museCode.credentialFileExists() || museCode.hasEnvironmentKey()
+    if (museCode.hasEnvironmentKey()) {
+      return { state: 'ready' }
+    }
+    if (isRecheck) {
+      cliAccount.forgetAnswers()
+    }
+    const signIn: CliSignIn = await cliAccount.signIn(true)
+    if (signIn === 'unsupportedHere') {
+      return {
+        state: 'unavailable',
+        message: fill(UI_TEXT.cliCredentialUnsupported, { path: museCode.credentialFilePath() }),
+      }
+    }
+    return isCliSignedIn(signIn)
       ? { state: 'ready' }
       : { state: 'signedOut', message: UI_TEXT.acpMuseCodeSignedOut }
   }
@@ -281,15 +322,15 @@ export function createRuntimeBackend(deps: RuntimeBackendDeps): RuntimeBackend {
   return {
     backend: {
       kind: deps.options.backend,
-      readiness: () =>
-        deps.options.backend === 'modelApi'
-          ? modelApiReadiness()
-          : Promise.resolve(museCodeReadiness()),
+      readiness: (isRecheck) =>
+        deps.options.backend === 'modelApi' ? modelApiReadiness() : museCodeReadiness(isRecheck),
       hostFor,
     },
     museCode,
     paid,
     close: async () => {
+      // A probe still waiting on its short-lived host ends with the agent.
+      accountHosts.close()
       const managers = [...museCodeHosts.values(), ...modelApiHosts.values()]
       await Promise.all(managers.map((manager) => manager.dispose()))
     },

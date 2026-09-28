@@ -91,7 +91,8 @@ export type BackendReadiness =
 /** The backend the agent was started on (the runtime builds it, D62). */
 export interface AcpBackend {
   readonly kind: AcpBackendKind
-  readonly readiness: () => Promise<BackendReadiness>
+  /** `isRecheck`: the user says they signed in, so nothing said before counts (`authenticate`). */
+  readonly readiness: (isRecheck: boolean) => Promise<BackendReadiness>
   /** The host for a folder, started on first use. */
   readonly hostFor: (cwd: string) => Promise<AgentHost>
 }
@@ -634,8 +635,8 @@ class AgentState {
       : { id, name, description: fill(UI_TEXT.acpSignInByHand, { command }) }
   }
 
-  private async requireReady(): Promise<void> {
-    const readiness = await this.deps.backend.readiness()
+  private async requireReady(isRecheck = false): Promise<void> {
+    const readiness = await this.deps.backend.readiness(isRecheck)
     if (readiness.state === 'signedOut') {
       throw RequestError.authRequired(undefined, readiness.message)
     }
@@ -754,7 +755,7 @@ class AgentState {
 
   /** Confirms the sign-in took; the client asks again if not. */
   public async authenticate(): Promise<Record<string, never>> {
-    await this.requireReady()
+    await this.requireReady(true)
     return {}
   }
 

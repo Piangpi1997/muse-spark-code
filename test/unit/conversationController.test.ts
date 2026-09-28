@@ -98,8 +98,12 @@ function fakeAuth(status: AuthSnapshot['status'] = 'signedIn'): FakeAuth {
         calls.push('signOut')
         return Promise.resolve(state.snapshot)
       },
-      refresh: () => {
-        calls.push('refresh')
+      refresh: (isUserAction?: boolean) => {
+        calls.push(isUserAction === true ? 'refresh:userAction' : 'refresh')
+        return Promise.resolve(state.snapshot)
+      },
+      checkAgain: () => {
+        calls.push('checkAgain')
         return Promise.resolve(state.snapshot)
       },
       markAuthRequired: (reason: string) => {
@@ -2312,7 +2316,8 @@ describe('ConversationController: other messages', () => {
       'installMuseCode',
       'cancelSignIn',
       'signOut',
-      'refresh',
+      // Check again is a click: the CLI is asked afresh (D26).
+      'checkAgain',
     ])
     expect(t.openExternal).toHaveBeenCalledWith('https://example.invalid/')
   })

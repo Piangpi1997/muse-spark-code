@@ -72,6 +72,7 @@ The PNGs beside the records are that day's harness renders.
 - [0.9.1](release-0.9.1.md): Muse Code 1.4.0 on Windows: rename, fork and the sandbox warning limited for every version; known 1.4.0 schema fingerprints (PLAN.md D26 amendment)
 - [M57](m57.md): the Model API backend out of the activation bundle into `dist/modelApi.js`, the identity audit and the bundle-split gate (PLAN.md D6)
 - [M58](m58.md): a popup before every paid use: Allow once, Allow always in this workspace, or Deny (PLAN.md D48)
+- [Sign-in detection](sign-in-detection.md): the CLI's sign-in read from its credential file's structure and confirmed by the CLI, sign-out through `account/logout`, and every way a browser sign-in ends (PLAN.md D26 amendment)
 - [M60](m60.md): the host API record and the `vscode` boundary, with M61's host bridge and portable controller (PLAN.md D60)
 - [M62a, M62b](m62.md): the VS Code floor at 1.99, from an API and Node audit, tested in VSCodium and code-server; Eclipse Theia 1.75 (PLAN.md M62, A8)
 - [M63a–M63c](m63.md): the ACP agent for other editors, the Model API key in the OS credential store, and the agent's package; Zed, Emacs with agent-shell, Neovim with CodeCompanion, JupyterLab with Jupyter AI; the editors' MCP servers; the host checks in CI (PLAN.md D61, D62)

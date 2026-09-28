@@ -32,6 +32,8 @@ type PermissionAnswer = (
 
 interface Harness {
   readonly host: FakeAgentHost
+  /** What each readiness question asked: a recheck (authenticate) or not. */
+  readonly rechecks: boolean[]
   readonly paid: AcpPaidUse
   readonly grants: ReturnType<typeof memoryPaidGrants>
   readonly updates: acp.SessionUpdate[]
@@ -62,6 +64,7 @@ function harness(options: HarnessOptions = {}): Harness {
   const elicitations: acp.CreateElicitationRequest[] = []
   const log = { trace: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }
   const grants = memoryPaidGrants()
+  const rechecks: boolean[] = []
   const paid = new AcpPaidUse({
     flagged: options.paid ?? [],
     canRemember: () => options.isTrusted === true,
@@ -71,7 +74,10 @@ function harness(options: HarnessOptions = {}): Harness {
   const deps: AcpAgentDeps = {
     backend: {
       kind,
-      readiness: () => Promise.resolve(options.readiness ?? { state: 'ready' }),
+      readiness: (isRecheck) => {
+        rechecks.push(isRecheck)
+        return Promise.resolve(options.readiness ?? { state: 'ready' })
+      },
       hostFor: () => Promise.resolve(host),
     },
     version: '0.0.0-test',
@@ -109,6 +115,7 @@ function harness(options: HarnessOptions = {}): Harness {
     })
   return {
     host,
+    rechecks,
     paid,
     grants,
     updates,
@@ -308,9 +315,13 @@ describe('the ACP agent (M63)', () => {
     ).rejects.toMatchObject({ code: -32_000 })
     const missing = harness({ readiness: { state: 'unavailable', message: 'no CLI' } })
     await expect(missing.run((client) => start(client))).rejects.toMatchObject({ code: -32_603 })
-    expect(
-      await harness().run((client) => client.request('authenticate', { methodId: 'x' })),
-    ).toEqual({})
+    const ready = harness()
+    expect(await ready.run((client) => client.request('authenticate', { methodId: 'x' }))).toEqual(
+      {},
+    )
+    await ready.run((client) => start(client))
+    // Only authenticate, after a sign-in in the terminal, asks afresh (PR #49).
+    expect(ready.rechecks).toEqual([true, false])
   })
 
   it('starts a session on the default model with the modes and the config options', async () => {

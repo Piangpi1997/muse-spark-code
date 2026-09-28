@@ -7,7 +7,8 @@
 // denied, a cancel, the session listed, sign-in asked for, and the key never
 // on the wire. The Model API backend, which reads its key only from the OS
 // credential store, is loaded from the package's own dist/modelApi.js (M57)
-// in this process.
+// in this process, and so is Muse Code's readiness, read from the CLI's
+// credential file as the panel reads it (D26, PR #49).
 
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
@@ -21,12 +22,19 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import type { AgentEvent } from '../../src/shared/agentEvents'
 import { createRuntimeBackend } from '../../src/runtime/backends'
 import { webReadable } from '../../src/runtime/webStreams'
-import { SECRET_KEYS } from '../../src/shared/constants'
+import { SECRET_KEYS, UI_TEXT } from '../../src/shared/constants'
+import { fill } from '../../src/shared/l10n/text'
+import { DEVICE_LOGIN_FILE, LOGOUT_SHELL } from '../unit/helpers/credentialShapes'
 import { memorySecrets } from '../unit/helpers/fakes'
 import { fakeModelApi } from '../unit/helpers/fakeModelApi'
 import { buildModelApiBundle } from '../unit/helpers/modelApiBundle'
 import { removeFolder } from '../unit/helpers/temporaryFolders'
-import { installFakeCredential, installFakeMuse } from './fakeMuse'
+import {
+  fakeCredentialFile,
+  installFakeCredential,
+  installFakeMuse,
+  writeFakeCredential,
+} from './fakeMuse'
 
 const TEST_TIMEOUT_MS = 30_000
 const ROOT = path.resolve(import.meta.dirname, '..', '..')
@@ -42,6 +50,21 @@ const LAID_OUT_VERSION = '0.0.0-e2e'
 const fake = installFakeMuse()
 const signedIn = installFakeCredential()
 const signedOut = mkdtempSync(path.join(tmpdir(), 'fake-muse-none-'))
+// What `muse logout` leaves: the file is there, and signed out (PR #49).
+const loggedOut = installFakeCredential(LOGOUT_SHELL)
+// Captured on macOS (version 2, the Keychain lane); `muse serve` exits with
+// it on Windows and Linux (docs/certification/sign-in-detection.md).
+const MACOS_POINTER = JSON.stringify({
+  schema_version: 2,
+  providers: { meta: { storage: 'keychain' } },
+})
+// Synthetic, as PR #49's own e2e: a `meta` entry in a lane no build was seen
+// writing, beside a credential key. Only the CLI can say; the fake answers
+// from the key.
+const UNPLACEABLE = JSON.stringify({
+  schema_version: 1,
+  providers: { meta: { storage: 'elsewhere', access_token: '<placeholder>' } },
+})
 const workspace = mkdtempSync(path.join(tmpdir(), 'acp-e2e-ws-'))
 const dataHome = mkdtempSync(path.join(tmpdir(), 'acp-e2e-data-'))
 const children: ChildProcessWithoutNullStreams[] = []
@@ -70,7 +93,7 @@ afterAll(async () => {
   for (const child of children) {
     child.kill()
   }
-  const made = [fake.installDir, signedIn, signedOut, workspace, dataHome]
+  const made = [fake.installDir, signedIn, signedOut, loggedOut, workspace, dataHome]
   await Promise.all(
     [...made, ...(INSTALLED === undefined ? [PACKAGE] : [])].map((folder) => removeFolder(folder)),
   )
@@ -95,6 +118,18 @@ interface Session {
   readonly stderr: string[]
   run<T>(op: (client: acp.ClientContext) => Promise<T>): Promise<T>
 }
+
+// The runtime's options in this process: Muse Code, nothing trusted or paid.
+const MUSE_CODE_OPTIONS = {
+  backend: 'museCode',
+  trustWorkspace: false,
+  museBinary: '',
+  shellSandbox: 'off',
+  canBypass: false,
+  allowsContributorModels: false,
+  paidFeatures: [],
+  isVerbose: false,
+} as const
 
 function startAgent(
   configHome: string,
@@ -249,6 +284,75 @@ describe('the ACP agent over stdio (M63)', { timeout: TEST_TIMEOUT_MS }, () => {
     expect(museCode.stderr.join('')).not.toContain('HTTPS_PROXY is set')
   })
 
+  it('asks for sign-in after `muse logout`, whose file stays behind (PR #49)', async () => {
+    const agent = startAgent(loggedOut)
+    await expect(agent.run((client) => newSession(client))).rejects.toMatchObject({
+      code: -32_000,
+    })
+  })
+
+  it('reads Muse Code’s readiness from the credential file, and asks the CLI where only it can say (PR #49)', async () => {
+    const configHome = mkdtempSync(path.join(tmpdir(), 'acp-readiness-'))
+    const log = { trace: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }
+    // The manager reads the process's own environment, as the agent's does.
+    vi.stubEnv('XDG_CONFIG_HOME', configHome)
+    vi.stubEnv('MUSE_FAKE_NODE', process.execPath)
+    vi.stubEnv('MUSE_FAKE_FINGERPRINT', EXPECTED_SCHEMA_FINGERPRINT)
+    vi.stubEnv('META_API_KEY', '')
+    const runtime = createRuntimeBackend({
+      options: { ...MUSE_CODE_OPTIONS, museBinary: fake.binaryPath },
+      version: LAID_OUT_VERSION,
+      distDir: path.dirname(AGENT),
+      platform: process.platform,
+      env: process.env,
+      homeDir: configHome,
+      secrets: memorySecrets(),
+      runGit: () => Promise.reject(new Error('no git')),
+      fetch: () => Promise.reject(new Error('no network')),
+      sleep: () => Promise.resolve(),
+      log,
+    })
+    const asked = () =>
+      log.info.mock.calls.filter(([line]) => String(line).includes('confirmed by account/read'))
+        .length
+    try {
+      expect(await runtime.backend.readiness(false)).toMatchObject({ state: 'signedOut' })
+      writeFakeCredential(configHome, LOGOUT_SHELL)
+      expect(await runtime.backend.readiness(false)).toEqual({
+        state: 'signedOut',
+        message: UI_TEXT.acpMuseCodeSignedOut,
+      })
+      // A browser sign-in: settled by the file off macOS, asked of the CLI there.
+      writeFakeCredential(configHome, DEVICE_LOGIN_FILE)
+      expect(await runtime.backend.readiness(false)).toEqual({ state: 'ready' })
+      // A file only the CLI can place: asked once, remembered, asked again on authenticate.
+      writeFakeCredential(configHome, UNPLACEABLE)
+      const before = asked()
+      expect(await runtime.backend.readiness(false)).toEqual({ state: 'ready' })
+      expect(await runtime.backend.readiness(false)).toEqual({ state: 'ready' })
+      expect(asked()).toBe(before + 1)
+      expect(await runtime.backend.readiness(true)).toEqual({ state: 'ready' })
+      expect(asked()).toBe(before + 2)
+      if (process.platform !== 'darwin') {
+        writeFakeCredential(configHome, MACOS_POINTER)
+        expect(await runtime.backend.readiness(false)).toEqual({
+          state: 'unavailable',
+          message: fill(UI_TEXT.cliCredentialUnsupported, {
+            path: fakeCredentialFile(configHome),
+          }),
+        })
+      }
+      // With META_API_KEY in its environment `muse serve` starts whatever the file says.
+      writeFakeCredential(configHome, LOGOUT_SHELL)
+      vi.stubEnv('META_API_KEY', 'LLM|1|placeholder')
+      expect(await runtime.backend.readiness(false)).toEqual({ state: 'ready' })
+    } finally {
+      vi.unstubAllEnvs()
+      await runtime.close()
+      await removeFolder(configHome)
+    }
+  })
+
   it('ships the Model API backend beside the agent, where the runtime loads it (M57)', async () => {
     const api = fakeModelApi()
     api.script({ text: 'From the bundle.' })
@@ -256,16 +360,7 @@ describe('the ACP agent over stdio (M63)', { timeout: TEST_TIMEOUT_MS }, () => {
     secrets.values.set(SECRET_KEYS.modelApiKey, 'LLM|1|secret')
     const log = { trace: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }
     const runtime = createRuntimeBackend({
-      options: {
-        backend: 'modelApi',
-        trustWorkspace: false,
-        museBinary: '',
-        shellSandbox: 'off',
-        canBypass: false,
-        allowsContributorModels: false,
-        paidFeatures: [],
-        isVerbose: false,
-      },
+      options: { ...MUSE_CODE_OPTIONS, backend: 'modelApi' },
       version: LAID_OUT_VERSION,
       distDir: path.dirname(AGENT),
       platform: process.platform,

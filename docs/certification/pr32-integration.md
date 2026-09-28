@@ -304,3 +304,38 @@ the warning with `HTTPS_PROXY` on the Model API backend, none with
 | Q8    | the agent's unreachable advice replaced by the extension's | exit 1: "names the agent's environment, never VS Code's settings, for the same failures"            |
 | Q9    | the default advice made the agent's                        | exit 1: 5 of M56's tests (the extension's advice), in `networkFailure` and `modelApiClient`         |
 | Q10   | one table without `acpNetworkUnreachable`                  | `check:l10n` exit 1: "l10n/ui.de.json: acpNetworkUnreachable: missing"                              |
+
+## Main's plan (PR #50) and the sign-in fix (PR #49) joined, 2026-09-28
+
+Main `ba82f43` (PR #50: D49, D50, M67–M85) merged first: PLAN.md keeps D49
+and D50 before PR #32's D60–D62, and AGENTS.md rule 12 keeps both the ACP
+agent's paid-use sentence and D50's planned TypeSafe exception. Then PR
+#49's branch, `fix/cli-sign-in-detection` at `2a324d4`, not yet merged to
+main: three conflicts (the certification index, `report.ts`'s imports,
+`deviceSignIn.ts`), both sides kept.
+
+- **Node 20, again.** PR #49's `deviceSignIn.ts` and `accountHost.ts` used
+  `Promise.withResolvers`, which VS Code 1.99 and 1.100 (Node 20.18) lack;
+  the host typecheck at ES2023 (M62) refused it. `accountHost.ts` now
+  races the handshake with the core's `unlessAborted`; the device sign-in
+  stops through a controller of its own and M62's `settleOnAbort`. PR #49's
+  220 sign-in tests pass unchanged.
+- **The agent's Muse Code readiness** (`src/runtime/backends.ts`) no longer
+  asks whether the credential file exists, which `muse logout` leaves
+  behind, emptied. It counts as the panel's gate does: `META_API_KEY` in the
+  CLI's environment, or PR #49's `CliAccount` over the file's structure
+  (`empty` signed out, `inline` signed in), with `account/read` on a
+  short-lived host where only the CLI can say (a Keychain pointer, any file
+  on macOS, an unrecognized one; the editor asks only when the user acts).
+  `unsupportedHere` (a macOS file on Windows or Linux) is "cannot run" with
+  the panel's `cliCredentialUnsupported` sentence. `authenticate`, after a
+  sign-in in the terminal, forgets what the CLI said before (the panel's
+  Check again). No new wire shape: the verdicts and `account/read` are PR
+  #49's, from its captures.
+
+Tests: over stdio, the agent asks for sign-in after `muse logout` (the file
+there, emptied; the old check said ready); in process, against the fake
+CLI, the readiness for no file, the logout shell, a browser sign-in (asked
+of the CLI on macOS), an unplaceable file (asked once, remembered, asked
+again on `authenticate`), a macOS pointer off macOS, and `META_API_KEY`;
+the agent passes the recheck only from `authenticate`.
