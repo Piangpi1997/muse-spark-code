@@ -223,3 +223,17 @@ On the Muse Code backend these are bounded by MSP. But the extension's
 of them there too: code intelligence, web fetch and browser checks.
 Everything that lives in the extension itself serves both backends: the
 review pane, git/PR, checkpoints, the board, notifications.
+
+## TypeSafe (read 2026-09-27)
+
+[docs.typesafe.ai](https://docs.typesafe.ai/introduction) sells Jev, a "System One" model. It takes text
+and typed questions (Choice, Score, Noul) and returns calibrated
+probabilities and a confidence. It does not generate text or code, and its
+own docs say it is no replacement for a coding agent's model.
+
+- **Terms:** $0.042 per million input tokens, output free; 64k tokens per
+  request; 1,200 requests a minute; text only.
+- **Weak spots:** literal reading, math and dates, adversarial content.
+
+PLAN.md D50 and M85 take it only as an opt-in assist to the Muse model: skill
+suggestion first, then an Auto risk score beside the command rules.

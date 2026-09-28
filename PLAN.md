@@ -2413,6 +2413,88 @@ days, L is one to two weeks.
 - A plugin marketplace of our own. M83 imports others' formats instead,
   and Muse Code's own plugins keep working.
 
+### D50 — TypeSafe, experimental: an assist to the Muse model, never a replacement (2026-09-27)
+
+The owner asked for research on TypeSafe (docs.typesafe.ai), "to see if there
+is a way we can leverage this functionality somehow to improve stuff". Then:
+"To be clear I would only want this as a tool to assist the muse model not
+to replace", and "the typsafe stuff would be experimental opt in".
+
+**What TypeSafe is.** Jev is a "System One" model, read 2026-09-27. It
+takes text as `state` and typed questions, and returns calibrated answers
+with probabilities and a confidence:
+
+- a **Choice** among up to 255 options;
+- a **Score** on up to 10 ordered levels;
+- a **Noul**, the 0–1 probability that a statement is true.
+
+It does not generate text or code. Its own docs say it is no replacement
+for the model behind a coding agent, and name Muse Spark. The terms, from
+docs.typesafe.ai/models, /api and /legal:
+
+- `POST https://api.typesafe.ai/v1/systemone`, with a Bearer key;
+- `jev-1.13.0`, $0.042 per million input tokens, output free;
+- 64k tokens per request, 1,200 requests a minute, text only, English
+  best;
+- no training on customer data; zero retention on enterprise plans only;
+- rate limits "can change without notice".
+
+Its documented weak spots (docs.typesafe.ai/model-jaggedness/jev-1.13):
+
+- literal reading;
+- math, counting and dates;
+- indirection;
+- large irrelevant state;
+- adversarial content.
+
+**The ruling.** TypeSafe may only assist the Muse model. It never answers
+the user, writes code, or decides an action alone:
+
+- it only feeds hints, scores and relevance signals;
+- the Muse model, or the extension's deterministic rules, act on them;
+- where a signal is missing or unsure, behaviour is exactly what it is
+  without TypeSafe.
+
+**Constraints.**
+
+- **Experimental and opt in.** Labelled Experimental wherever it shows
+  (setting, palette, Account & usage). Off by default, with a
+  machine-scoped setting under `museSpark.experimental.*`. It may change
+  or be removed without notice, and nothing else depends on it.
+- **Its own key.** The user's own TypeSafe key, kept in SecretStorage.
+- **Disclosed.** PRIVACY names exactly what is sent and to whom.
+- **Paid.** A TypeSafe call is billed to the user and follows D48: the
+  popup, whose "Allow always in this workspace" makes per-turn assist
+  bearable.
+- **Timeouts.** Short, and a failed call is silently no assist.
+
+**Model API first.** Muse Code runs its own skill choice and approvals, so
+only the extension-side uses reach it.
+
+**The uses, ranked** (M85):
+
+1. **Skill suggestion.** Before a turn, rank the skills against the user's
+   message, then verify the top candidates. At most one "relevant skill"
+   hint line goes into that turn's context; the model keeps its full index
+   and its own judgement. TypeSafe's cookbook measured wrong skill loads
+   falling from 16.8 % to 7.3 %, and loads when none fit from 9.8 % to
+   4.0 %. The same pattern suggests a custom agent (M76).
+2. **Auto risk score** (M78). A Score and Nouls on a command or write that
+   the deterministic rules did not settle. A confident "safe" may skip the
+   question; anything else asks. It never overrides a rule's "forbid" or
+   "ask", and it is compared in M75 against the Muse-model Auto reviewer.
+3. **Context relevance** (M73, M74, M67). Nouls on whether an old tool
+   output or a file still matters to the current task, used to rank what
+   is packed or kept. Adopted only if M75 shows no loss.
+4. **Evaluation grading** (M75). Cheap semantic checks beside the
+   deterministic verifiers, never in place of them.
+
+**Not taken.**
+
+- Screening untrusted content as a guarantee. It is adversarial content,
+  a documented weak spot, so at most a warning signal.
+- Any use as the coding model.
+
 ## 3. Open questions (need the owner)
 
 | #   | Question                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            | Default until answered                                                           |
@@ -6503,6 +6585,36 @@ full gate. A paid item follows D30/D48.
   - No hosted sharing.
 - **Backends.** The Model API resumes; Muse Code exports its own log (M30).
 - **Size.** S.
+
+### M85 — TypeSafe assist, experimental and opt in (D50)
+
+- **Goal.** Cheaper, better-calibrated small decisions around the Muse
+  model: which skill fits, how risky a command is, what context still
+  matters. The Muse model stays the one that answers and acts.
+- **Scope.**
+  - A thin client over TypeSafe's HTTP API, zod-validated like the Model
+    API client (D2).
+  - The key is kept in SecretStorage; a machine-scoped
+    `museSpark.experimental.typesafeAssist` setting is off by default and
+    labelled Experimental.
+  - It is disclosed in PRIVACY: the user's message and skill descriptions
+    for suggestion; the command or path for a risk score.
+  - D48's paid-use popup covers it.
+  - Timeouts are short, and on failure there is no assist.
+  - Uses:
+    - skill suggestion first;
+    - then the Auto risk score, as M78's optional second layer;
+    - context relevance and evaluation grading only if M75 supports them.
+- **Backends.** Model API. Muse Code only where the extension decides.
+- **Acceptance.**
+  - With the setting off, nothing changes and nothing is sent.
+  - With it on, every call is visible in the log (question ids and timing,
+    never the content) and tallied in Account & usage.
+  - No path lets a TypeSafe answer skip a deterministic rule or answer the
+    user.
+- **Tests.** A fake TypeSafe endpoint with Choice, Score and Noul shapes
+  taken from the live API (AGENTS.md rule 13), plus the paired runs in M75.
+- **Size.** M.
 
 ### M41 — Install Muse Code from the panel (folded into M55)
 
