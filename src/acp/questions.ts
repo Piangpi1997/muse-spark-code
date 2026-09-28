@@ -3,11 +3,8 @@
 // otherwise the questions as text, declined so the model carries on and the
 // user answers in the next prompt. Pure.
 
-import {
-  CreateElicitationResponse,
-  type ElicitationPropertySchema,
-  type ElicitationSchema,
-} from '@agentclientprotocol/sdk'
+import type { ElicitationPropertySchema, ElicitationSchema } from '@agentclientprotocol/sdk'
+import * as z from 'zod/mini'
 import type { Question, QuestionAnswer } from '../shared/agentEvents'
 import { UI_TEXT } from '../shared/constants'
 
@@ -54,30 +51,64 @@ export function questionForm(questions: readonly Question[]): ElicitationSchema 
   }
 }
 
-/** The form's answers as the backend takes them; a value that is not an option is free text. */
-export function formAnswers(
-  questions: readonly Question[],
-  response: CreateElicitationResponse,
-): readonly QuestionAnswer[] | undefined {
-  if (!CreateElicitationResponse.isAccept(response)) {
+// The client's answer to `elicitation/create`, checked before use (AGENTS.md
+// rule 7): the ACP SDK checks what it receives, not what a request of ours
+// gets back. The form asks only for text and lists of option labels.
+const formResponseSchema = z.object({
+  action: z.literal('accept'),
+  content: z.optional(z.nullable(z.record(z.string(), z.unknown()))),
+})
+const formValueSchema = z.union([z.string(), z.array(z.string())])
+
+/** Several options, each one offered, none twice, as many as the question allows. */
+function selectionAnswer(
+  question: Question,
+  labels: readonly string[],
+): QuestionAnswer | undefined {
+  const offered = new Set(question.options.map((option) => option.label))
+  const isFitting =
+    labels.every((label) => offered.has(label)) &&
+    new Set(labels).size === labels.length &&
+    labels.length >= (question.selection.minSelections ?? 0) &&
+    labels.length <= (question.selection.maxSelections ?? offered.size)
+  return isFitting ? { questionId: question.id, selectedLabels: [...labels] } : undefined
+}
+
+/** One field's answer; a text that is not an option is free text, as the panel's Other. */
+function fieldAnswer(question: Question, raw: unknown): QuestionAnswer | undefined {
+  const parsed = formValueSchema.safeParse(raw)
+  if (!parsed.success) {
     return undefined
   }
-  const { content } = response
-  return questions.flatMap((question): QuestionAnswer[] => {
-    const value = content?.[question.id]
-    if (Array.isArray(value)) {
-      return [{ questionId: question.id, selectedLabels: value }]
-    }
-    if (typeof value !== 'string') {
-      return []
-    }
-    const isOption = question.options.some((option) => option.label === value)
-    return [
-      isOption
-        ? { questionId: question.id, selectedLabel: value }
-        : { questionId: question.id, freeText: value },
-    ]
-  })
+  const value = parsed.data
+  const isMultiple = question.selection.mode === MULTIPLE_SELECTION
+  if (typeof value !== 'string') {
+    return isMultiple ? selectionAnswer(question, value) : undefined
+  }
+  if (isMultiple || value.trim() === '') {
+    return undefined
+  }
+  return question.options.some((option) => option.label === value)
+    ? { questionId: question.id, selectedLabel: value }
+    : { questionId: question.id, freeText: value }
+}
+
+/**
+ * The form's answers as the backend takes them, or `undefined` (the
+ * questions are declined) when the form was not accepted or any answer is
+ * missing or does not fit its question: each field was required.
+ */
+export function formAnswers(
+  questions: readonly Question[],
+  response: unknown,
+): readonly QuestionAnswer[] | undefined {
+  const parsed = formResponseSchema.safeParse(response)
+  if (!parsed.success) {
+    return undefined
+  }
+  const content = parsed.data.content ?? {}
+  const answers = questions.map((question) => fieldAnswer(question, content[question.id]))
+  return answers.every((answer) => answer !== undefined) ? answers : undefined
 }
 
 /** The questions as a message, for a client without forms. */

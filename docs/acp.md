@@ -208,14 +208,17 @@ Creator's ACP Client, sublime-acp, Devin Desktop's custom agents).
 ## What the editor sees
 
 - **Modes**: Manual, Edit automatically, Plan, Auto (and Bypass permissions
-  with its flag), as in the panel.
+  with its flag), as in the panel. A session loaded or resumed runs in the
+  mode the editor is told, not the one it last ran in.
 - **Settings**: the model and the reasoning effort.
 - **Commands**: the session's skills, run as `/name arguments`.
 - **Permission prompts**: the backend's own choices (allow once, allow for
   the session, reject). A prompt the editor cancels, or answers with a
   choice it was not offered, is rejected; nothing runs by default.
 - **Questions** the agent asks: a form where the editor has forms,
-  otherwise the question as text, answered in your next message.
+  otherwise the question as text, answered in your next message. A form
+  that comes back with an answer that is not one of the options offered,
+  or with more or fewer than the question allows, is declined.
 - **Sessions**: listed, loaded with their history, resumed and closed.
 - **Prompts**: text, files as @mentions, attached excerpts, and PNG, JPEG,
   GIF and WebP images up to 10 MB.

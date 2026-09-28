@@ -499,6 +499,11 @@ describe('mcpServersFrom (M63c)', () => {
   })
 })
 
+/** A form the user accepted with this content. */
+function accepted(content: unknown) {
+  return { action: 'accept', content }
+}
+
 describe('questions', () => {
   const single: Question = {
     id: 'q1',
@@ -565,8 +570,42 @@ describe('questions', () => {
       { questionId: 'q2', selectedLabels: ['A', 'B'] },
       { questionId: 'q3', freeText: 'Muse' },
     ])
-    expect(formAnswers([single], { action: 'accept' })).toEqual([])
     expect(formAnswers([single], { action: 'decline' })).toBeUndefined()
+  })
+
+  it('declines a form whose answers do not fit the questions (AGENTS.md rule 7)', () => {
+    for (const response of [
+      // Not an answer the client can give, or a field left out.
+      undefined,
+      { action: 'accept' },
+      accepted({ q2: ['A'] }),
+      accepted(['Blue', ['A']]),
+    ]) {
+      expect(formAnswers([single, multiple], response)).toBeUndefined()
+    }
+    for (const content of [
+      { q1: 'Blue', q2: ['A', 2] },
+      { q1: 'Blue', q2: ['A', 'C'] },
+      { q1: 'Blue', q2: ['A', 'A'] },
+      { q1: 'Blue', q2: [] },
+      { q1: 'Blue', q2: 'A' },
+      { q1: ['Blue'], q2: ['A'] },
+      { q1: 3, q2: ['A'] },
+      { q1: ' ', q2: ['A'] },
+    ]) {
+      expect(formAnswers([single, multiple], accepted(content))).toBeUndefined()
+    }
+    const atMostOne: Question = { ...multiple, selection: { mode: 'multiple', maxSelections: 1 } }
+    expect(formAnswers([atMostOne], accepted({ q2: ['A', 'B'] }))).toBeUndefined()
+    // Without bounds, none up to every option.
+    const unbounded: Question = { ...multiple, selection: { mode: 'multiple' } }
+    expect(formAnswers([unbounded], accepted({ q2: [] }))).toEqual([
+      { questionId: 'q2', selectedLabels: [] },
+    ])
+    // Fields for no question are ignored.
+    expect(formAnswers([single], accepted({ q1: 'Red', other: 7 }))).toEqual([
+      { questionId: 'q1', selectedLabel: 'Red' },
+    ])
   })
 
   it('writes the questions as text for a client without forms', () => {

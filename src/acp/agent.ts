@@ -42,6 +42,7 @@ import {
   type TurnPart,
 } from '../core/agent/agentBackend'
 import { editAutomaticallyChoice } from '../core/agent/approvalRules'
+import { failureForLog } from '../core/backends/musecode/logText'
 import type { CoreLogger } from '../core/logging'
 import { type PaidUseAnswer, paidUseQuestion } from '../core/paid/paidConsent'
 import type { AgentEvent } from '../shared/agentEvents'
@@ -146,6 +147,7 @@ const FAILED_TERMINAL = 'failed'
 // Turns that finished before `sendTurn` answered with their id; a few suffice.
 const EARLY_FINISHES_KEPT = 8
 
+/** A failure of the editor's side of the connection, as the log names it: its own message. */
 function describe(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
@@ -251,7 +253,9 @@ class AcpSession {
     try {
       this.skills = await this.session.listSkills()
     } catch (error: unknown) {
-      this.deps.log.warn(`ACP session ${this.sessionId}: skills unavailable: ${describe(error)}`)
+      this.deps.log.warn(
+        `ACP session ${this.sessionId}: skills unavailable: ${failureForLog(error)}`,
+      )
       return
     }
     this.send({
@@ -404,7 +408,7 @@ class AcpSession {
     } catch (error: unknown) {
       const level = isPromptSettledError(error) ? 'info' : 'warn'
       this.deps.log[level](
-        `ACP session ${this.sessionId}: approval ${event.approvalId}: ${describe(error)}`,
+        `ACP session ${this.sessionId}: approval ${event.approvalId}: ${failureForLog(error)}`,
       )
     }
   }
@@ -429,11 +433,14 @@ class AcpSession {
           await this.session.answerQuestions(event.userInputId, answers)
           return
         }
+        this.deps.log.info(
+          `ACP session ${this.sessionId}: question ${event.userInputId} declined: the form came back without an answer that fits each question`,
+        )
       }
       await this.session.cancelQuestions(event.userInputId)
     } catch (error: unknown) {
       this.deps.log.warn(
-        `ACP session ${this.sessionId}: question ${event.userInputId}: ${describe(error)}`,
+        `ACP session ${this.sessionId}: question ${event.userInputId}: ${failureForLog(error)}`,
       )
       // A form that failed is declined, so the turn goes on without the answer.
       await this.declineQuestions(event.userInputId)
@@ -445,7 +452,7 @@ class AcpSession {
       await this.session.cancelQuestions(userInputId)
     } catch (error: unknown) {
       this.deps.log.warn(
-        `ACP session ${this.sessionId}: question ${userInputId} not declined: ${describe(error)}`,
+        `ACP session ${this.sessionId}: question ${userInputId} not declined: ${failureForLog(error)}`,
       )
     }
   }
@@ -633,7 +640,7 @@ class AcpSession {
     try {
       await this.session.cancel()
     } catch (error: unknown) {
-      this.deps.log.warn(`ACP session ${this.sessionId}: cancel failed: ${describe(error)}`)
+      this.deps.log.warn(`ACP session ${this.sessionId}: cancel failed: ${failureForLog(error)}`)
     }
   }
 
@@ -826,6 +833,15 @@ class AgentState {
       this.forwardedMcp(host, requestedMcp),
     )
     const acp = this.register(host, loaded.session, cwd, client, models)
+    // A session resumes on the approval mode it last had, which may be more
+    // permissive than the one the editor is told: the mode is set before
+    // anything is replayed, as the panel sets its own on a resume.
+    try {
+      await acp.setMode(this.deps.options.initialMode)
+    } catch (error: unknown) {
+      this.closeSession(loaded.session.sessionId)
+      throw error
+    }
     if (isReplayed) {
       await acp.replay([...loaded.history.items])
       acp.sendPlan(loaded.history.todos)

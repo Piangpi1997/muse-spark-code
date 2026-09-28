@@ -1,10 +1,17 @@
 import * as acp from '@agentclientprotocol/sdk'
+import { MspError } from '@muse-code/sdk'
 import { describe, expect, it, vi } from 'vitest'
 import { type AcpAgentDeps, type BackendReadiness, createAcpAgent } from '../../src/acp/agent'
 import { AcpPaidUse } from '../../src/acp/paid'
-import type { AgentEvent, ApprovalChoice, ItemSnapshot } from '../../src/shared/agentEvents'
+import type {
+  AgentEvent,
+  ApprovalChoice,
+  ItemSnapshot,
+  Question,
+} from '../../src/shared/agentEvents'
 import { type AcpPaidFeature, UI_TEXT } from '../../src/shared/constants'
 import type { PaidUseRequest } from '../../src/shared/paid'
+import { approvalModeFor } from '../../src/shared/permissionModes'
 import { FakeAgentHost, type FakeAgentSession } from './helpers/fakeAgent'
 import { memoryPaidGrants } from './helpers/paidGrants'
 
@@ -174,6 +181,26 @@ function approval(overrides: Partial<Extract<AgentEvent, { type: 'approvalReques
     isProtectedWrite: false,
     ...overrides,
   }
+}
+
+/** Asks one question in a session whose client has forms, until it is answered or declined. */
+async function askInForm(h: Harness, question: Question): Promise<void> {
+  await h.run(async (client) => {
+    const { sessionId } = await start(client, { elicitation: { form: {} } })
+    await turn(h, client, sessionId, async (session) => {
+      session.emit({
+        type: 'questionRequested',
+        userInputId: 'input-1',
+        itemId: 'q1',
+        questions: [question],
+      })
+      await until(
+        () =>
+          session.answerQuestions.mock.calls.length + session.cancelQuestions.mock.calls.length ===
+          1,
+      )
+    })
+  })
 }
 
 /** Starts a session and a prompt, and waits until the backend has the turn. */
@@ -595,25 +622,12 @@ describe('the ACP agent (M63)', () => {
     const h = harness({
       elicitation: { action: 'accept', content: { color: 'Blue' } },
     })
-    await h.run(async (client) => {
-      const { sessionId } = await start(client, { elicitation: { form: {} } })
-      await turn(h, client, sessionId, async (session) => {
-        session.emit({
-          type: 'questionRequested',
-          userInputId: 'input-1',
-          itemId: 'q1',
-          questions: [
-            {
-              id: 'color',
-              header: 'Colour',
-              question: 'Which colour?',
-              selection: { mode: 'single' },
-              options: [{ label: 'Blue' }, { label: 'Red' }],
-            },
-          ],
-        })
-        await until(() => session.answerQuestions.mock.calls.length === 1)
-      })
+    await askInForm(h, {
+      id: 'color',
+      header: 'Colour',
+      question: 'Which colour?',
+      selection: { mode: 'single' },
+      options: [{ label: 'Blue' }, { label: 'Red' }],
     })
     expect(h.elicitations[0]).toMatchObject({
       mode: 'form',
@@ -660,6 +674,53 @@ describe('the ACP agent (M63)', () => {
       sessionUpdate: 'agent_message_chunk',
       content: { type: 'text', text: `${UI_TEXT.acpQuestionAsked}\nProceed?\n- Yes` },
     })
+  })
+
+  it('declines a form whose answer is not one of the options it offered', async () => {
+    const h = harness({
+      elicitation: { action: 'accept', content: { parts: ['A', 'Z'] } },
+    })
+    await askInForm(h, {
+      id: 'parts',
+      header: 'Parts',
+      question: 'Which parts?',
+      selection: { mode: 'multiple' },
+      options: [{ label: 'A' }, { label: 'B' }],
+    })
+    expect(h.host.sessions[0]?.answerQuestions).not.toHaveBeenCalled()
+    expect(h.log.info).toHaveBeenCalledWith(
+      expect.stringContaining('question input-1 declined: the form came back without an answer'),
+    )
+  })
+
+  it('logs a backend failure by its MSP kind and code, never the CLI’s message', async () => {
+    const personal = 'no such session under /home/someone for someone@example.com'
+    const refused = new MspError({
+      code: -32_000,
+      message: personal,
+      data: { kind: 'commandRejected' },
+    })
+    const h = harness()
+    await h.run(async (client) => {
+      const { sessionId } = await start(client)
+      await turn(h, client, sessionId, async (session) => {
+        session.decideApproval.mockRejectedValueOnce(refused)
+        session.cancelQuestions.mockRejectedValue(refused)
+        session.emit(approval())
+        session.emit({
+          type: 'questionRequested',
+          userInputId: 'input-1',
+          itemId: 'q1',
+          questions: [],
+        })
+        await until(() => session.cancelQuestions.mock.calls.length === 2)
+      })
+    })
+    const logged = JSON.stringify([h.log.info.mock.calls, h.log.warn.mock.calls])
+    expect(logged).toContain('approval approval-1: commandRejected (MSP error -32000)')
+    expect(logged).toContain('question input-1 not declined: commandRejected (MSP error -32000)')
+    expect(logged).not.toContain('/home/someone')
+    expect(logged).not.toContain('someone@example.com')
   })
 
   it('is busy while the skills are first announced, and a cancel then ends the prompt without a turn', async () => {
@@ -776,6 +837,10 @@ describe('the ACP agent (M63)', () => {
       await client.request('session/resume', { sessionId: 'old-2', cwd: CWD })
       await client.request('session/resume', { sessionId: 'old-2', cwd: CWD })
     })
+    // The mode the editor is told is set on the backend, whatever the session last ran in.
+    for (const session of h.host.sessions) {
+      expect(session.setApprovalMode).toHaveBeenCalledWith(approvalModeFor('manual', true))
+    }
     // Resumed again, the session held before is let go.
     expect(h.host.sessions[1]?.dispose).toHaveBeenCalledTimes(1)
     expect(h.host.sessions[2]?.dispose).not.toHaveBeenCalled()
@@ -788,6 +853,25 @@ describe('the ACP agent (M63)', () => {
       },
     ])
     expect(h.host.resumeSession).toHaveBeenCalledTimes(3)
+  })
+
+  it('fails a load whose mode the backend refuses, and lets that session go', async () => {
+    const h = harness()
+    const resume = h.host.resumeSession.getMockImplementation()!
+    h.host.resumeSession.mockImplementationOnce(async (...args) => {
+      const loaded = await resume(...args)
+      vi.mocked(loaded.session.setApprovalMode).mockRejectedValue(new Error('refused'))
+      return loaded
+    })
+    await h.run(async (client) => {
+      await client.request('initialize', { protocolVersion: acp.PROTOCOL_VERSION })
+      await expect(
+        client.request('session/load', { sessionId: 'old-1', cwd: CWD, mcpServers: [] }),
+      ).rejects.toThrow()
+      await expect(prompt(client, 'old-1')).rejects.toThrow()
+    })
+    expect(h.host.sessions[0]?.dispose).toHaveBeenCalledTimes(1)
+    expect(h.updates).toEqual([])
   })
 
   it('lists the folder’s sessions, the agent’s own folder when none is named', async () => {
