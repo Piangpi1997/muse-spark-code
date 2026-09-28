@@ -74,6 +74,8 @@ import { canonicalPath } from './host/canonicalPath'
 import { loadToolImage } from './core/toolImages'
 import { ModelApiClient } from './core/backends/modelapi/client'
 import { ideImageTools } from './host/ide/imageTools'
+import { ideCodeIntelTools } from './host/ide/codeIntelTools'
+import { vscodeLanguageServices } from './host/codeIntel/languageServices'
 import { usablePaidFeatures } from './shared/paid'
 import { createCliFeatures } from './host/cliFeatures'
 import { createWorktreeFeatures } from './host/worktreeFeatures'
@@ -807,9 +809,24 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     log,
   })
   const ideTools = [diagnostics]
+  // Code intelligence over VS Code's language services (M67, PLAN.md D49):
+  // native tools on the Model API backend, `ide` tools for Muse Code. Only
+  // with a folder open, since every path is the workspace's.
+  const languageServices = vscodeLanguageServices()
+  const codeIntel =
+    workspaceRoot === undefined
+      ? undefined
+      : {
+          service: languageServices,
+          workspaceRoot,
+          platform: process.platform,
+          io: toolIo,
+          now: () => Date.now(),
+        }
   const ideServer = new IdeMcpServer(
     () => [
       diagnostics,
+      ...ideCodeIntelTools(codeIntel),
       ...ideImageTools({
         isOffered: () => isKeyStored && paid.gate.isOn('imageGeneration'),
         keyGeneration: () => auth.admissionGeneration,
@@ -1015,6 +1032,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         }),
       ),
     ideTools,
+    codeIntel: languageServices,
+    isRepoMapInPrompt: () => currentSettings().modelApiRepoMap,
     allowsPaidUse: async (request, requiresAsking) =>
       await paid.consent.allows(request, requiresAsking),
     isPaidUseRemembered: (feature) => paid.consent.isRemembered(feature),

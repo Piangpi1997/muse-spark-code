@@ -101,6 +101,16 @@ export const workspace = {
     // The Memory view's delete, to the trash (M49).
     delete: vi.fn<typeof vscode.workspace.fs.delete>(),
   },
+  // The code intelligence tools' documents (M67).
+  openTextDocument: vi.fn<(uri: vscode.Uri) => Promise<vscode.TextDocument>>(),
+}
+
+/** A position, as the language-service commands take one (M67). */
+export class Position {
+  public constructor(
+    public readonly line: number,
+    public readonly character: number,
+  ) {}
 }
 
 export const env = {

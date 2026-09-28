@@ -2581,6 +2581,8 @@ only the extension-side uses reach it.
 | Q7  | **Resolved 2026-09-22:** owner pressed F5 and confirmed the Muse Spark chat shell renders in the Extension Development Host (verbal confirmation; no screenshot filed).                                                                                                                                                                                                                                                                                                                                                                                                                             | Closed.                                                                          |
 | Q8  | **Resolved 2026-09-22:** owner signed in; publisher is `RandyNorthrup`. Publishing ran by hand from the CI artifact with a clipboard PAT for 0.1.0–0.5.0; since 2026-09-23 the `VSCE_PAT` repository secret lets `release.yml` publish every `v*` tag.                                                                                                                                                                                                                                                                                                                                              | Closed.                                                                          |
 | Q9  | The Muse Code user rules file: `/rules import` writes one into the config root and the model is told "if user and project rules conflict, project rules win", but its file name is not printed by `muse --help`, `muse skills`, the settings skill or the binary's strings. The Model API backend cannot mirror what it cannot name.                                                                                                                                                                                                                                                                | Not loaded on the Model API backend; the CLI backend loads it itself.            |
+| Q10 | M67's repo map on Muse Code: the plan asks for it "as an opt-in section of the system prompt", but Muse Code's instructions are its own (D13: nothing installed into its folders). It could ride as a hidden note on the first turn of a conversation (as the question-card hint does), billed to the subscription as prompt tokens. Wanted?                                                                                                                                                                                                                                                        | The `repoMap` tool only; no note in Muse Code turns.                             |
+| Q11 | M67's prompt repo map setting: its name (`museSpark.modelApiRepoMap`), its default (off, since every request pays its tokens) and its fixed ~1,000-token budget, and whether the model should see the map by default once the M75 evaluation measures it.                                                                                                                                                                                                                                                                                                                                           | Off by default, machine-scoped, 1,024 tokens, no budget setting.                 |
 
 ## 4. Architecture
 
@@ -6401,6 +6403,81 @@ harness scenario, which is what the accessibility gate checks (D32).
 - **Tests.** A fake language-service host in unit tests. An integration
   test in VS Code over a TypeScript fixture.
 - **Size.** M.
+- **As built (2026-09-28).** Decisions taken while building, each open to
+  the owner's review:
+  - **One core, two surfaces.** `src/core/codeIntel/` holds the tools
+    (confinement, placing, capping, the repo map, the rename plan) over a
+    `LanguageServiceHost` interface; `src/host/codeIntel/languageServices.ts`
+    implements it with VS Code's `vscode.execute…Provider`,
+    `vscode.prepareCallHierarchy`/`provide…Calls`, `vscode.prepareRename`
+    and `vscode.executeDocumentRenameProvider` commands. The Model API
+    offers `find_definition`, `find_references`, `workspace_symbols`,
+    `document_symbols`, `hover`, `call_hierarchy`, `repo_map`,
+    `rename_symbol`; the `ide` server offers the same as `findDefinition`,
+    …, `renameSymbol` (the camel case of `getDiagnostics`). The core stays
+    outside `src/core/backends/modelapi/**`, since the activation bundle
+    carries it for the `ide` tools.
+  - **Naming a symbol.** Path, line and column (1-based); path, line and
+    name (its first whole-word use on the line); path and name (its first
+    use in the file); or name alone, looked up among the workspace symbols
+    (exact name, TypeScript's `greet()` read as `greet`; the first in place
+    order is used and the others listed).
+  - **"No language service".** VS Code exposes no way to ask whether a
+    provider exists, and its commands answer an empty list either way. An
+    empty answer is therefore checked against the file's document symbols:
+    none means "no language service answered for <file> (language <id>)",
+    worded to allow for a file that declares nothing; some means "No
+    <kind> at <place>". Workspace symbols have no file to check, so an
+    empty answer says that they come from the languages' services and that
+    TypeScript's needs a project file open.
+  - **Placing results.** A result is in the workspace when its path is
+    (textual and canonical confinement, D24) or when its real path is under
+    the root's real path (a workspace opened through a link, whose files a
+    server reports by real path). Everything else, including virtual
+    documents, is left out and counted. Lines come from the disk.
+  - **Caps.** 100 locations, 200 symbols, 50 callers or callees with five
+    call sites each, 4,000 characters of hover, three outline levels; a
+    20-second deadline per language-service call.
+  - **Rename.** Planned before the card from VS Code's rename edit: every
+    file must be placed in the workspace (any outside refuses the whole
+    rename), at most 200 files, no file operations, no unsaved changes, and
+    the document's text equal to the disk's (BOM aside), so the edit lands
+    where the service meant it. On the Model API the card is a `fileWrite`
+    naming up to five files and counting the rest, protected when any file
+    is (D24); after approval every file is confined and read again and
+    nothing is written unless each is unchanged; files are written with the
+    tools' atomic write, one patch across them (per-line hunks, which Edit
+    Review's revert undoes), and the fingerprints `write_file` checks are
+    updated. A failed write stops the rest and names what was written.
+    Plan refuses a rename before the language service is asked. On `ide`
+    the tool returns a unified diff and writes nothing (read-only). The
+    file tools' one-hunk patch (D27's `hunkBetween`) moved beside the
+    rename's hunks as `changeHunk` in `codeText.ts`, unchanged, so the two
+    share one implementation (the duplication gate).
+  - **Repo map.** Aider's idea over VS Code's services: names of three
+    characters or more are counted in the text of up to 1,000 listed files
+    (128 KiB each, read confined); the 300 names used by the most files are
+    looked up as workspace symbols, eight at a time, within 10 seconds (5 for
+    the prompt); each file scores the uses of its names by other files,
+    shared among a name's definers. Document symbols per file were rejected:
+    opening every file would make VS Code open each document for every
+    extension (a linter lints them all). The prompt section is opt in
+    (`museSpark.modelApiRepoMap`, machine-scoped since it bills prompt
+    tokens), made on the first turn that has it on and kept for the session
+    so the prompt's prefix stays cached (a Stop ends it at once, and a map
+    cut short that way is not kept); Muse Code's instructions are its own,
+    so there it is the `repoMap` tool only.
+  - **Annotations.** `McpTool` gained `annotations` (as M69 adds it);
+    `getDiagnostics` and every code intelligence tool declare
+    `readOnlyHint: true`, and all are listed in Restricted Mode.
+  - **Tests.** `codeIntelTools`, `codeText`, `renamePlan`, `repoMap`,
+    `modelApiCodeIntel`, `ideCodeIntelTools`, `languageServices` (the
+    adapter over the `vscode` mock) and `toolPresentation`;
+    `test/integration/codeIntel.test.ts` over `test/fixtures/workspace/
+code-intel` on VS Code stable and 1.125.0; live case19 of the Model
+    API sweep; the `code-intel` harness scenario.
+- **Status.** Built on `feature/m67-code-intel` (2026-09-28); drills and
+  the live check in `docs/certification/m67.md`.
 
 ### M68 — Verify loop (D49)
 

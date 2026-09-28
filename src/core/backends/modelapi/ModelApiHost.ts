@@ -35,6 +35,8 @@ import {
   MODEL_API_EFFORT_OFF,
   ISO_DATE_LENGTH,
   MODEL_API_MAX_OUTPUT_TOKENS,
+  CODE_INTEL_TOOLS,
+  type CodeIntelTool,
   MODEL_API_MAX_RETRIES,
   MODEL_API_MAX_TOOL_ROUNDS,
   MAX_ENCODED_MEDIA_CHARS,
@@ -137,6 +139,17 @@ import { isProtectedPath } from '../../protectedPaths'
 import { confineWorkspacePath } from '../../workspacePath'
 import type { McpTool } from '../../mcp'
 import type { MemoryStore } from '../../memory/memoryStore'
+import type { CodeIntelDeps } from '../../codeIntel/codeIntelQuery'
+import { codeIntelToolOf } from '../../codeIntel/definitions'
+import type { LanguageServiceHost } from '../../codeIntel/languageService'
+import { repoMapSection } from '../../codeIntel/repoMap'
+import {
+  applyRename,
+  planRenameCall,
+  renameCardPath,
+  renameRefused,
+  runCodeIntelRead,
+} from './codeIntelCalls'
 import {
   type ConfirmedModelRequest,
   MissingApiKeyError,
@@ -304,6 +317,13 @@ export interface ModelApiHostDeps extends ModelApiPaidHooks {
    * session-start snapshot; undefined leaves them out.
    */
   readonly memory: MemoryStore | undefined
+  /**
+   * VS Code's language services (M67, PLAN.md D49): the code intelligence
+   * tools; undefined leaves them out.
+   */
+  readonly codeIntel?: LanguageServiceHost | undefined
+  /** `museSpark.modelApiRepoMap`, read per turn: the repo map in the system prompt (M67). */
+  readonly isRepoMapInPrompt?: (() => boolean) | undefined
 }
 
 const NO_ENVIRONMENT: EnvironmentFacts = { git: undefined }
@@ -1149,6 +1169,12 @@ export class ModelApiSession implements AgentSession {
   private readonly context: WorkspaceContext
   /** The git facts of the prompt's environment section (D15), read on the first turn. */
   private environment: EnvironmentFacts | undefined
+  /**
+   * The repo map of the prompt (M67), made on the first turn that has it on
+   * and kept for the session, so the prompt's prefix stays the same; the
+   * text is undefined when the map came out empty or could not be made.
+   */
+  private repoMap: { readonly text: string | undefined } | undefined
   private readonly pendingApprovals = new Map<string, Pending<ApprovalDecision>>()
   /** Live cards for a second surface joining while a decision is still pending. */
   private readonly pendingApprovalEvents = new Map<
@@ -1417,6 +1443,47 @@ export class ModelApiSession implements AgentSession {
     }
   }
 
+  /** What the code intelligence tools work with (M67); undefined without language services. */
+  private codeIntelDeps(): CodeIntelDeps | undefined {
+    const { codeIntel } = this.deps
+    return codeIntel === undefined
+      ? undefined
+      : {
+          service: codeIntel,
+          workspaceRoot: this.deps.workspaceRoot,
+          platform: this.deps.platform,
+          io: this.deps.io,
+          now: this.deps.now,
+        }
+  }
+
+  /** Whether this request's prompt carries the repo map: the setting on, now (M67). */
+  private isRepoMapOn(): boolean {
+    return this.deps.codeIntel !== undefined && this.deps.isRepoMapInPrompt?.() === true
+  }
+
+  /**
+   * The repo map for the prompt (M67), once per session while the setting
+   * is on. Never throws: a map that cannot be made is logged and the
+   * session's prompt goes without it. A Stop ends the lookups at once, and a
+   * map cut short that way is not kept: the next turn makes it again.
+   */
+  private async loadRepoMap(signal: AbortSignal): Promise<void> {
+    const deps = this.codeIntelDeps()
+    if (deps === undefined || this.repoMap !== undefined || !this.isRepoMapOn()) {
+      return
+    }
+    try {
+      const text = await repoMapSection(deps, signal)
+      if (!signal.aborted) {
+        this.repoMap = { text }
+      }
+    } catch (error: unknown) {
+      this.repoMap = { text: undefined }
+      this.deps.log.warn(`The repo map for the prompt could not be made: ${describe(error)}`)
+    }
+  }
+
   /** Never throws: a describer that fails leaves the section at "no git". */
   private async loadEnvironment(): Promise<EnvironmentFacts> {
     try {
@@ -1472,9 +1539,12 @@ export class ModelApiSession implements AgentSession {
         shellName: shell.shellName,
         hasShell,
         hasMemory,
+        hasCodeIntel: this.deps.codeIntel !== undefined,
         today: new Date(this.deps.now()).toISOString().slice(0, ISO_DATE_LENGTH),
         environment: this.environment ?? NO_ENVIRONMENT,
         context,
+        ...(this.isRepoMapOn() &&
+          this.repoMap?.text !== undefined && { repoMap: this.repoMap.text }),
         // Pinned while the goal is active (M45, PLAN.md D38).
         ...(goalSection !== undefined && { goalSection }),
       }),
@@ -1532,6 +1602,7 @@ export class ModelApiSession implements AgentSession {
       hasSubagents: !this.isSubagent && this.deps.isPaidFeatureOn('subagents'),
       isSubagent: this.isSubagent,
       hasMemory,
+      hasCodeIntel: this.deps.codeIntel !== undefined,
     })
     const ide = (this.deps.ideTools ?? []).map(
       (tool) => mcpFunctionDefinition(ideFunctionName(tool), tool).definition,
@@ -3497,6 +3568,10 @@ export class ModelApiSession implements AgentSession {
         return await this.runShellCall(itemId, call, signal)
       }
       default: {
+        const intelTool = codeIntelToolOf(call.name)
+        if (intelTool !== undefined && intelTool !== 'renameSymbol') {
+          return { outcome: await this.readCode(intelTool, call, signal) }
+        }
         return {
           outcome: await executeTool(call.name, call.arguments, {
             workspaceRoot: this.deps.workspaceRoot,
@@ -3611,6 +3686,67 @@ export class ModelApiSession implements AgentSession {
     return { outcome: await runMemoryCall(memory, placed.value), isRejected: false }
   }
 
+  /** A read-only code intelligence call (M67): a read in every mode, stopped by Stop. */
+  private async readCode(
+    tool: Exclude<CodeIntelTool, 'renameSymbol'>,
+    call: FunctionCallItem,
+    signal: AbortSignal,
+  ): Promise<ToolOutcome> {
+    const deps = this.codeIntelDeps()
+    return deps === undefined
+      ? toolFailure(`unknown tool ${call.name}`)
+      : await unlessStopped(runCodeIntelRead(tool, call.arguments, deps, signal), signal)
+  }
+
+  /**
+   * `rename_symbol` (M67, PLAN.md D49): the edit planned and checked before
+   * any card (a refused rename asks nothing), judged as an edit whose card
+   * names its files (protected if any file is, D24), then written file by
+   * file after every file is checked again.
+   */
+  private async decideAndRunRename(
+    itemId: string,
+    call: FunctionCallItem,
+    signal: AbortSignal,
+    shouldForceApproval: boolean,
+  ): Promise<CallResult> {
+    const deps = this.codeIntelDeps()
+    if (deps === undefined) {
+      return { outcome: toolFailure(`unknown tool ${call.name}`), isRejected: false }
+    }
+    // Plan refuses every edit: the language service is not even asked then.
+    if (this.verdictWithHook({ toolName: call.name, toolClass: 'edit' }, false) === 'deny') {
+      return this.refusedByMode(call)
+    }
+    const planned = await unlessStopped(planRenameCall(call.arguments, deps), signal)
+    if (!planned.ok) {
+      return { outcome: renameRefused(planned), isRejected: false }
+    }
+    const { plan } = planned
+    const refusal = await this.judge(
+      itemId,
+      call,
+      signal,
+      {
+        toolName: call.name,
+        toolClass: 'edit',
+        isProtected: plan.files.some((file) => isProtectedPath(file.canonical)),
+      },
+      { kind: 'fileWrite', path: renameCardPath(plan), toolName: call.name },
+      shouldForceApproval,
+    )
+    if (refusal !== undefined) {
+      return refusal
+    }
+    const outcome = await applyRename(plan, {
+      workspaceRoot: this.deps.workspaceRoot,
+      platform: this.deps.platform,
+      io: this.deps.io,
+      seen: this.seenFiles,
+    })
+    return { outcome, isRejected: false }
+  }
+
   /** The permission check and, when it allows, the tool itself. May throw (an abort, an I/O error). */
   private async decideAndRun(
     turnId: string,
@@ -3637,6 +3773,9 @@ export class ModelApiSession implements AgentSession {
     }
     if (isMemoryTool(call.name)) {
       return await this.decideAndRunMemory(itemId, call, signal, toolClass, shouldForceApproval)
+    }
+    if (call.name === CODE_INTEL_TOOLS.renameSymbol) {
+      return await this.decideAndRunRename(itemId, call, signal, shouldForceApproval)
     }
     if (
       this.isSubagent &&
@@ -4354,6 +4493,7 @@ export class ModelApiSession implements AgentSession {
     // it never throws, so the user message always follows.
     await this.context.load()
     this.environment ??= await this.loadEnvironment()
+    await this.loadRepoMap(turn.abort.signal)
     // Pending background output and user shell commands precede this turn.
     this.settleNotes(turn.turnId)
     this.touch()

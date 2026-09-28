@@ -7,6 +7,32 @@ happened, not what was planned; superseded entries are kept.
 
 ## [Unreleased]
 
+### Added
+
+- **Code intelligence** (M67, PLAN.md D49): the agent finds definitions,
+  references and symbols the way the editor does, from VS Code's own
+  language services, instead of searching text. `find_definition`,
+  `find_references`, `workspace_symbols`, `document_symbols`, `hover`,
+  `call_hierarchy` and `repo_map` are reads in every mode, Plan and
+  Restricted Mode included; a symbol is named by path, line and column, by
+  its name on a line or in a file, or by name alone. Answers are
+  workspace-relative, sorted and capped, and say how many results outside
+  the workspace (a library's declarations, another folder) they left out; a
+  file whose language has no service says so instead of answering nothing.
+  On the Muse Code backend the same tools are served to Muse Code as
+  `mcp__ide__findDefinition` and the rest, each marked read-only.
+- **`rename_symbol`** renames a symbol everywhere it is used. On the Model
+  API backend it is an edit: the card names its files (and is a protected
+  write when one of them is), every file is checked again before any is
+  written, and the row carries one patch, so Revert and rewind undo it. On
+  Muse Code it changes nothing and hands Muse Code the diff to apply with its
+  own edit tool.
+- **A repo map in the Model API's prompt** (`museSpark.modelApiRepoMap`,
+  off by default, machine-scoped): the files other files use most, with
+  their most used definitions, made once per conversation within about
+  1,000 tokens. It adds those tokens to every request. `repo_map` gives the
+  same map on request either way.
+
 ### Changed
 
 - **Every paid use asks first, in a popup** (M58, PLAN.md D48): **Allow

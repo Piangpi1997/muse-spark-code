@@ -45,7 +45,7 @@ Only the latest release on the Visual Studio Marketplace receives fixes.
   a trusted workspace. The settings that choose what runs and what is
   billed (`museBinaryPath`, `environmentVariables`, `backend`,
   `shellSandbox`, `sandboxNetwork`, `initialPermissionMode`,
-  `allowDangerouslySkipPermissions`, `modelApiHooks`,
+  `allowDangerouslySkipPermissions`, `modelApiHooks`, `modelApiRepoMap`,
   `modelApiPromptCacheRetention` and the five paid `modelApi*` features)
   are machine-scoped in every workspace, trusted or not: a repository's
   `.vscode/settings.json` cannot point the extension at its own executable. In a remote window a dev container
@@ -62,6 +62,18 @@ Only the latest release on the Visual Studio Marketplace receives fixes.
   rewind apply the same check before writing a file back. Windows names
   that would be reinterpreted are refused: alternate data streams
   (`a.txt:x`), device names (`NUL`, `COM1`), trailing dots or spaces.
+- **Code intelligence (both backends).** The file a code intelligence tool
+  is asked about is confined the same way, and a result VS Code's language
+  service returns from outside the workspace (a library's declarations,
+  another folder, a file reached through a link that leaves it) is left out
+  and counted, never shown. `rename_symbol` refuses a rename that would touch
+  any file outside the workspace, create or move files, or change a file
+  with unsaved changes or one VS Code holds differently from the disk. On the
+  Model API backend it asks as an edit (a protected write when any of its
+  files is one), and every file is confined and read again after the card,
+  so nothing is written if one changed while it was open. On the Muse Code
+  backend the `ide` server's tools change nothing and declare themselves
+  read-only; its rename returns the edits for Muse Code's own edit tool.
 - **Protected writes (Model API backend).** Writing `.git/**`, `.husky/**`,
   `.vscode/**`, `.idea/**`, `.devcontainer/**`, `.github/workflows/**`,
   `.agents/**`, `.muse/**`, `AGENTS.md`, `CLAUDE.md`, `.envrc` or

@@ -14,6 +14,8 @@ export interface McpTool {
   readonly description: string
   /** JSON Schema for the arguments. */
   readonly inputSchema: Readonly<Record<string, unknown>>
+  /** MCP's behaviour hints (`readOnlyHint`, `openWorldHint`, …), listed when present (M69). */
+  readonly annotations?: Readonly<Record<string, unknown>>
   /** The tool's text result; throw to report a tool error. */
   readonly call: (args: Readonly<Record<string, unknown>>) => Promise<string>
 }
@@ -108,10 +110,11 @@ export async function handleMcpMessage(
     }
     case 'tools/list': {
       return resultResponse(message.id, {
-        tools: tools.map(({ name, description, inputSchema }) => ({
+        tools: tools.map(({ name, description, inputSchema, annotations }) => ({
           name,
           description,
           inputSchema,
+          ...(annotations !== undefined && { annotations }),
         })),
       })
     }

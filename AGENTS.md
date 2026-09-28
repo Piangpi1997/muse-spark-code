@@ -98,11 +98,14 @@ src/host/**           VS Code adapters (views, conversation, backend managers,
                       when that backend first starts) and the search worker,
                       commands, auth, settings, mentions,
                       editor tracking, usage trace logs, voice, the diagnostics
-                      MCP server, the MCP servers' spawner, the network posture)
+                      MCP server and its code intelligence tools, VS Code's
+                      language services, the MCP servers' spawner, the network
+                      posture)
 src/core/**           backend-agnostic logic; must not import `vscode`
                       (MSP host, Model API client and tools, the MCP client,
                       context, Muse Code's memory, export, worktrees, usage,
-                      dictation, Muse Voice, the paid gate, network failures)
+                      dictation, Muse Voice, the paid gate, network failures,
+                      code intelligence and the repo map)
 src/shared/**         constants + zod protocol shared by host and webview
 src/shared/l10n/**    the English table (en.ts), fill/plural/Intl helpers, the
                       table checks and the list of translated languages
@@ -122,7 +125,9 @@ test/unit/**          vitest (node + jsdom via docblock); `vscode` is mocked
 test/e2e/**           the fake Muse Code CLI driven through the real backend;
                       the opt-in live drills (the Muse Code CLI; the Model
                       API sweep, which bills the owner's key)
-test/integration/**   @vscode/test-cli, runs inside VS Code
+test/integration/**   @vscode/test-cli, runs inside VS Code, over the workspace
+                      test/fixtures/workspace (code-intel/ is a TypeScript
+                      project its language service reads)
 test/harness/         the webview behind a fake host, for screenshots and the
                       accessibility gate; themes/ holds VS Code's four themes
 scripts/**            esbuild build; bundle-size, bundle-split, host-globals,

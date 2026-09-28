@@ -760,7 +760,23 @@
     "TodoWrite": "工作",
     "snooze_reminder": "延後提醒",
     "submit_reminder_decision": "提醒",
-    "submit_result": "結果"
+    "submit_result": "結果",
+    "find_definition": "定義",
+    "find_references": "參考",
+    "workspace_symbols": "符號",
+    "document_symbols": "大綱",
+    "hover": "暫留",
+    "call_hierarchy": "呼叫",
+    "repo_map": "儲存庫地圖",
+    "rename_symbol": "重新命名",
+    "mcp__ide__findDefinition": "定義",
+    "mcp__ide__findReferences": "參考",
+    "mcp__ide__workspaceSymbols": "符號",
+    "mcp__ide__documentSymbols": "大綱",
+    "mcp__ide__hover": "暫留",
+    "mcp__ide__callHierarchy": "呼叫",
+    "mcp__ide__repoMap": "儲存庫地圖",
+    "mcp__ide__renameSymbol": "重新命名"
   },
   "mcpToolLabel": "{tool}（{server}）",
   "memoryScopes": {
@@ -972,6 +988,12 @@
   "museStoppedBySignal": "Muse Code 已被 {signal} 停止",
   "museUnknownSignal": "未知的訊號",
   "approvalImageSources": "從 {paths} 開始",
+  "renameCardMore": {
+    "other": "{files} 及另外 {count} 個檔案"
+  },
+  "codeIntelNoService": "沒有語言服務對 {path} 作出回應。",
+  "codeIntelTimedOut": "語言服務未在 {seconds} 秒內回應。",
+  "repoMapNoService": "沒有語言服務對工作區符號作出回應。",
   "imageBuyTitle": "Muse 想要建立圖片 {path}",
   "imageBuyEditTitle": "Muse 想要製作編輯後的圖片 {path}",
   "imageBuyPrompt": "提示詞：{prompt}",

@@ -64,6 +64,8 @@ interface ParsedArgs {
   readonly currentWork: string | undefined
   /** `cron_delete`'s job id (M43). */
   readonly id: string | undefined
+  /** A code intelligence tool's symbol name (M67). */
+  readonly symbol: string | undefined
 }
 
 const NO_ARGS: ParsedArgs = {
@@ -79,6 +81,7 @@ const NO_ARGS: ParsedArgs = {
   status: undefined,
   currentWork: undefined,
   id: undefined,
+  symbol: undefined,
 }
 
 // `mcp__<server>__<tool>`: the name Muse Code gives an MCP server's tool.
@@ -107,6 +110,7 @@ function parseArgs(args: string): ParsedArgs {
       status: pick('status'),
       currentWork: pick('current_work'),
       id: pick('id'),
+      symbol: pick('symbol'),
     }
   } catch {
     return NO_ARGS
@@ -189,6 +193,7 @@ function otherPresentation(
   return {
     summary:
       parsed.path ??
+      parsed.symbol ??
       parsed.pattern ??
       parsed.query ??
       parsed.url ??
@@ -217,7 +222,13 @@ export function describeTool(tool: string, args: string): ToolPresentation {
     }
   }
   if (FILE_EDIT_TOOLS.has(tool)) {
-    return { label, summary: parsed.path ?? '', body: 'edit', command: undefined, imagePath }
+    return {
+      label,
+      summary: parsed.path ?? parsed.symbol ?? '',
+      body: 'edit',
+      command: undefined,
+      imagePath,
+    }
   }
   return FILE_READ_TOOLS.has(tool)
     ? { label, summary: parsed.path ?? '', body: 'read', command: undefined, imagePath }

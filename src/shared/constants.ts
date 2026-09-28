@@ -87,6 +87,17 @@ export const VSCODE_COMMANDS = {
   openWalkthrough: 'workbench.action.openWalkthrough',
   // A folder in a window of its own (M32's new worktree).
   openFolder: 'vscode.openFolder',
+  // VS Code's language services (M67): the code intelligence tools.
+  executeDefinitionProvider: 'vscode.executeDefinitionProvider',
+  executeReferenceProvider: 'vscode.executeReferenceProvider',
+  executeHoverProvider: 'vscode.executeHoverProvider',
+  executeDocumentSymbolProvider: 'vscode.executeDocumentSymbolProvider',
+  executeWorkspaceSymbolProvider: 'vscode.executeWorkspaceSymbolProvider',
+  prepareCallHierarchy: 'vscode.prepareCallHierarchy',
+  provideIncomingCalls: 'vscode.provideIncomingCalls',
+  provideOutgoingCalls: 'vscode.provideOutgoingCalls',
+  prepareRename: 'vscode.prepareRename',
+  executeDocumentRenameProvider: 'vscode.executeDocumentRenameProvider',
 } as const
 
 // Settings (package.json `contributes.configuration`). Keys are relative to
@@ -232,6 +243,9 @@ export const SETTING_DEFAULTS = {
   // Hook commands are user code outside the agent sandbox (M51). A machine
   // setting must explicitly enable them on the Model API backend.
   modelApiHooks: false,
+  // M67 (PLAN.md D49): the repo map in the Model API's system prompt. It
+  // spends tokens on every request, so it is off until the user turns it on.
+  modelApiRepoMap: false,
 } as const
 export const ARCHIVE_DAY_CHOICES = [1, 2, 7, 14, 0] as const
 // Settings a repository's `.vscode/settings.json` must never set (PLAN.md
@@ -254,6 +268,8 @@ export const MACHINE_SCOPED_SETTINGS = [
   'modelApiScheduledPrompts',
   'modelApiSubagents',
   'modelApiHooks',
+  // The repo map is billed as prompt tokens on the key (M67): the user's choice.
+  'modelApiRepoMap',
 ] as const
 
 // Muse Code SDK 1.3.0 hook process limits (PLAN.md M51).
@@ -549,6 +565,8 @@ export const FILE_EDIT_TOOLS: ReadonlySet<string> = new Set([
   'write_file',
   'edit_file',
   'apply_patch',
+  // M67: the Model API's rename, one patch across the files it changed.
+  'rename_symbol',
 ])
 export const FILE_READ_TOOLS: ReadonlySet<string> = new Set(['read_file'])
 // Muse Code's own tool families whose rows read their JSON results (M43,
@@ -614,6 +632,107 @@ export const IMAGE_PREVIEW_TOOLS: ReadonlySet<string> = new Set([
   'mcp__ide__generateImage',
   'mcp__ide__editImage',
 ])
+
+// --- Code intelligence (M67, PLAN.md D49) ---
+//
+// The tools over VS Code's language services: native on the Model API
+// backend, and on the `ide` server for Muse Code by the camel-case names
+// its other tools use (`getDiagnostics`).
+export const CODE_INTEL_TOOLS = {
+  findDefinition: 'find_definition',
+  findReferences: 'find_references',
+  workspaceSymbols: 'workspace_symbols',
+  documentSymbols: 'document_symbols',
+  hover: 'hover',
+  callHierarchy: 'call_hierarchy',
+  repoMap: 'repo_map',
+  renameSymbol: 'rename_symbol',
+} as const
+export type CodeIntelTool = keyof typeof CODE_INTEL_TOOLS
+export const IDE_CODE_INTEL_TOOLS = {
+  findDefinition: 'findDefinition',
+  findReferences: 'findReferences',
+  workspaceSymbols: 'workspaceSymbols',
+  documentSymbols: 'documentSymbols',
+  hover: 'hover',
+  callHierarchy: 'callHierarchy',
+  repoMap: 'repoMap',
+  renameSymbol: 'renameSymbol',
+} as const satisfies Readonly<Record<CodeIntelTool, string>>
+// MCP tool annotations (2025-06-18 schema): a tool that changes nothing
+// says so, and Muse Code may run it as a read (D49's rule for `ide`).
+export const MCP_ANNOTATIONS_READ_ONLY = { readOnlyHint: true } as const
+// What one answer lists at most; the rest are counted, never silently cut.
+export const CODE_INTEL_MAX_LOCATIONS = 100
+export const CODE_INTEL_MAX_SYMBOLS = 200
+export const CODE_INTEL_MAX_CALLS = 50
+// Call sites listed per caller or callee; the rest are counted.
+export const CODE_INTEL_MAX_CALL_SITES = 5
+// Other symbols of the same name a lookup by name lists, so the model can pick one.
+export const CODE_INTEL_MAX_NAME_MATCHES = 10
+// Nesting `document_symbols` shows (a class, its members, their locals).
+export const CODE_INTEL_SYMBOL_DEPTH = 3
+export const CODE_INTEL_HOVER_MAX_CHARS = 4000
+// A result's source line, as `search` shows one.
+export const CODE_INTEL_PREVIEW_MAX_CHARS = 200
+export const CODE_INTEL_NAME_MAX_CHARS = 200
+// A language server that does not answer (a stuck one, a project still
+// loading) ends the call with that reason instead of holding it.
+export const CODE_INTEL_TIMEOUT_MS = 20_000
+// A rename touching more files than this is refused (a rename that large is
+// a refactor for the user); its card names a few and counts the rest.
+export const RENAME_MAX_FILES = 200
+export const RENAME_CARD_FILES_SHOWN = 5
+// VS Code's `SymbolKind`, by value (vscode.d.ts): the words the model reads.
+export const SYMBOL_KIND_NAMES = [
+  'file',
+  'module',
+  'namespace',
+  'package',
+  'class',
+  'method',
+  'property',
+  'field',
+  'constructor',
+  'enum',
+  'interface',
+  'function',
+  'variable',
+  'constant',
+  'string',
+  'number',
+  'boolean',
+  'array',
+  'object',
+  'key',
+  'null',
+  'enum member',
+  'struct',
+  'event',
+  'operator',
+  'type parameter',
+] as const
+// The repo map (Aider's idea, over VS Code's services): files ranked by how
+// often other files use the names they define. The names are counted in
+// the files' text; where each is defined comes from workspace symbols.
+export const REPO_MAP_MAX_FILES = 1000
+export const REPO_MAP_MAX_FILE_CHARS = 131_072
+// The names looked up (the most widely used first), and how many at once.
+export const REPO_MAP_MAX_LOOKUPS = 300
+export const REPO_MAP_CONCURRENCY = 8
+// Shorter names (`i`, `id`) are too common to rank by.
+export const REPO_MAP_MIN_NAME_CHARS = 3
+export const REPO_MAP_SYMBOLS_PER_FILE = 8
+// The tool's default budget and its ceiling; the system prompt's (opt in).
+export const REPO_MAP_DEFAULT_TOKENS = 1024
+export const REPO_MAP_MAX_TOKENS = 8192
+export const REPO_MAP_PROMPT_TOKENS = 1024
+// The rough characters-per-token figure OpenAI and Meta both quote.
+export const REPO_MAP_CHARS_PER_TOKEN = 4
+// The lookups stop here, and the map says it is partial.
+export const REPO_MAP_TIME_BUDGET_MS = 10_000
+export const REPO_MAP_PROMPT_TIME_BUDGET_MS = 5000
+
 // --- Meta Model API backend (M7, PLAN.md D1 / D2 / §5.1) ---
 
 export const MODEL_API_BASE_URL = 'https://api.meta.ai/v1'
@@ -1649,6 +1768,61 @@ export const MODEL_TEXT = {
   imagePathTaken: 'something already exists at that path; choose a new file name',
   imageAccountChanged: 'the Model API key changed; ask again before buying an image',
   pathChangedAfterApproval: 'path changed after approval; request a new approval',
+  // M67 (PLAN.md D49): the code intelligence tools' answers and refusals.
+  codeIntelInstructions:
+    "For code, find_definition, find_references, workspace_symbols, document_symbols, hover, call_hierarchy and repo_map answer from VS Code's language services, as an IDE does: prefer them to search when you look for where a symbol is defined or used. rename_symbol renames a symbol everywhere it is used.",
+  codeIntelNoService:
+    'no language service answered for {path} (language {language}): VS Code has no provider of this kind for it here, or the file declares no symbols; use search and read_file instead',
+  codeIntelNothingAt: 'No {what} at {place}.',
+  codeIntelTimedOut:
+    'the language service did not answer within {seconds} seconds; it may still be loading the project, so try again shortly or use search',
+  codeIntelOutside:
+    '[left out {count} outside the workspace: library declarations or other folders]',
+  codeIntelMore: '[{count} more not shown]',
+  codeIntelNoTarget:
+    'name the symbol by path, line and column; by path, line and symbol; by path and symbol; or by symbol alone',
+  codeIntelBadPosition: 'line and column must be whole numbers from 1',
+  codeIntelBadName: '{field} must be a single line of 1 to {max} characters',
+  codeIntelNotInFile: '`{symbol}` does not occur in {place}',
+  codeIntelNoSymbolNamed:
+    "no workspace symbol is named `{symbol}`: workspace symbols come from the languages' services (TypeScript's needs one of the project's files open), so give a path, or use search",
+  codeIntelUsing: 'Using `{symbol}` at {place}.',
+  codeIntelOtherMatches: 'Also named `{symbol}`: {places}.',
+  codeIntelNoSymbolsMatch:
+    "No workspace symbols match `{query}` in the workspace. Workspace symbols come from the languages' services: TypeScript's needs one of the project's files open, and a language without a service has none.",
+  codeIntelNoCallHierarchy:
+    'nothing at {place} has a call hierarchy here; place the position on a function or method name, or the language has no call hierarchy in VS Code',
+  codeIntelCallsTo: 'Calls to {symbol} at {place}:',
+  codeIntelCallsFrom: 'Calls from {symbol} at {place}:',
+  codeIntelCallSites: 'calls at {sites}',
+  codeIntelCalledAt: 'called at {sites}',
+  codeIntelOutsideWorkspace: 'outside the workspace',
+  codeIntelNoCalls: 'No calls found.',
+  renameFileOperations:
+    'this rename would also create, move or delete files, which rename_symbol does not do; nothing was changed',
+  renameOutside:
+    'this rename would also change {count} files outside the workspace; nothing was changed',
+  renameTooMany: 'this rename would change {count} files, more than {max}; nothing was changed',
+  renameStale:
+    '{path} differs between VS Code and the disk (unsaved changes, mixed line breaks, or a change VS Code has not loaded yet); nothing was changed',
+  renameNothing: 'nothing to rename at {place}',
+  renameChanged:
+    '{path} changed while the rename waited for approval; nothing was changed, so call rename_symbol again',
+  renameDone:
+    'Renamed `{from}` to `{to}`: {edits} edits in {files} files ({paths}). Read a file again before replacing it with write_file.',
+  renamePartial:
+    'writing {path} failed: {reason}. The rename was written to {written} of {total} files ({paths}); the rest are unchanged, and the row can revert what was written',
+  renameEditsLead:
+    'The rename of `{from}` to `{to}`: {edits} edits in {files} files. This tool changed nothing: apply the diff below with your own edit tool.',
+  repoMapLead:
+    'Files ranked by how often other files use the names they define (names counted in the text, definitions from workspace symbols), each with its most used definitions:',
+  repoMapPartial: '[partial: looked up {done} of {total} names within the time budget]',
+  repoMapFilesCapped: '[ranked the first {count} of {total} files]',
+  repoMapNoService:
+    "no language service answered workspace symbols here (TypeScript's needs one of the project's files open); use list_files and search instead",
+  repoMapEmpty: 'No file defines a name that other files use.',
+  repoMapSection: '# Repo map',
+  repoMapSectionLead: 'The workspace as this session began (repo_map gives a fresh one):',
   // The user said no in the price confirmation (M44): nothing was bought.
   imageDeclined: 'the user declined to buy this image; nothing was bought or written',
   // M45 (PLAN.md D38): the goal loop on the Model API backend, in Muse Code's
