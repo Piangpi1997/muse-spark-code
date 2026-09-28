@@ -75,8 +75,21 @@ Only the latest release on the Visual Studio Marketplace receives fixes.
   write to `.agents/plans/`, and it asks in a modal first, as a protected
   write does. It creates a new file by a hard link from a hidden stage, so
   it never replaces a file. The plans folder must be the workspace's own
-  `.agents/plans`: a link or junction to anywhere else is refused.
-  Restricted Mode refuses both saving a plan and implementing one.
+  `.agents/plans`: a link or junction to anywhere else is refused, and the
+  folder is checked again after it is made and just before the link, so
+  one swapped for a junction after the check is refused too (memory notes
+  get the same re-check). A file system without hard links refuses the
+  save rather than risk replacing a file. Restricted Mode refuses both
+  saving a plan and implementing one.
+- **A plan file is untrusted content.** Anything in `.agents/plans/` may
+  have been written by a cloned repository or a tool, so a plan picked
+  from **Plans…** starts a conversation in Manual (Plan when that is the
+  starting mode), whatever `initialPermissionMode` says, and the model is
+  told nobody confirmed who wrote it. Only a reply saved from a Plan-mode
+  turn of the conversation on screen is sent as the plan the user
+  approved; even then Bypass is never the starting mode in a remote
+  window. A reply holding HTML that the panel does not show is saved with
+  a warning and not started.
 - **Shell commands.** On the Model API backend the extension's own shell
   tool runs the command as an argument array through PowerShell or bash,
   never as a shell string, in the workspace root, with a timeout and an

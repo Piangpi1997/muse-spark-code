@@ -8,6 +8,7 @@
 
 import { realpath } from 'node:fs'
 import { readdir } from 'node:fs/promises'
+import path from 'node:path'
 import { promisify } from 'node:util'
 import { MEMORY_STAGE_FILE_MODE } from '../../shared/constants'
 import type { ToolIo } from '../../core/backends/modelapi/tools'
@@ -15,21 +16,32 @@ import type { MemoryDirectoryEntry, MemoryIo } from '../../core/memory/memorySto
 import { isMissingPath } from '../canonicalPath'
 import { createFileExclusively } from '../fsAtomic'
 
+/**
+ * A folder's entries by kind, a link or junction reported as neither file
+ * nor folder; rejects as `readdir` does (plans, M79, tell a missing folder
+ * from one that is a file).
+ */
+export async function entriesByKind(
+  absolutePath: string,
+): Promise<readonly MemoryDirectoryEntry[]> {
+  const entries = await readdir(absolutePath, { withFileTypes: true })
+  return entries.map((entry) => {
+    let kind: MemoryDirectoryEntry['kind'] = 'other'
+    if (entry.isFile()) {
+      kind = 'file'
+    } else if (entry.isDirectory()) {
+      kind = 'directory'
+    }
+    return { name: entry.name, kind }
+  })
+}
+
 /** A folder's entries; none when it does not exist. */
 export async function listMemoryEntries(
   absolutePath: string,
 ): Promise<readonly MemoryDirectoryEntry[]> {
   try {
-    const entries = await readdir(absolutePath, { withFileTypes: true })
-    return entries.map((entry) => {
-      let kind: MemoryDirectoryEntry['kind'] = 'other'
-      if (entry.isFile()) {
-        kind = 'file'
-      } else if (entry.isDirectory()) {
-        kind = 'directory'
-      }
-      return { name: entry.name, kind }
-    })
+    return await entriesByKind(absolutePath)
   } catch (error: unknown) {
     if (isMissingPath(error)) {
       return []
@@ -51,11 +63,14 @@ export function createMemoryIo(
     readFile: (absolutePath) => files.readFile(absolutePath),
     hasUnsavedChanges: (absolutePath) => files.hasUnsavedChanges(absolutePath),
     writeFile: (absolutePath, content) => files.writeFile(absolutePath, content),
-    createFile: (absolutePath, content) =>
+    createFile: (absolutePath, content, checkedPath) =>
       createFileExclusively(absolutePath, content, {
         mode: MEMORY_STAGE_FILE_MODE,
-        warn: (message) => {
-          options.warn(`memory ${message}`)
+        // The folder `locate` checked (C2-4): one swapped for a link since is refused.
+        ...(checkedPath !== undefined && { expectedDirectory: path.dirname(checkedPath) }),
+        warn: (stage, isPublished, error) => {
+          const when = isPublished ? 'after the note was published' : 'after the write failed'
+          options.warn(`memory stage ${stage} could not be removed ${when}: ${String(error)}`)
         },
         ...(options.publish !== undefined && { publish: options.publish }),
       }),

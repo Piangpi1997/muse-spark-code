@@ -685,6 +685,23 @@ export const EN = {
     'Muse Code does not let the extension set its todo list, so the brief asks Muse to list the plan’s steps there.',
   planNamesTaken: 'Every file name for this plan is taken in .agents/plans.',
   planFileMissing: 'That plan file no longer exists.',
+  // {size}: the limit in KB.
+  planTooLarge: 'This plan is larger than {size} KB, the most a plan may be.',
+  planSessionGone:
+    'That conversation is no longer open in this panel, so this reply can no longer be saved or implemented as a plan.',
+  planNotFromPlanTurn:
+    'This reply was not written in Plan mode here, so it is not saved or implemented as a plan.',
+  planHiddenMarkup:
+    'The plan holds HTML that the panel does not show. Open {path} and read all of it before you implement it.',
+  planHiddenMarkupNotStarted:
+    'Plan saved to {path}, but not started: it holds HTML that the panel does not show. Read the file, then implement it from Plans….',
+  planSavedNotStarted:
+    'Plan saved to {path}, but not started: the conversation changed in the meantime.',
+  planChangedNotStarted: 'The plan was not started: the conversation changed in the meantime.',
+  planActionBusy: 'A plan action is still running.',
+  // {mode}: the permission mode's name.
+  planFromFileMode:
+    'A plan picked from Plans… starts in {mode}: the file comes from the workspace, so the conversation asks before it acts.',
   planOpen: 'Open',
   plansItem: 'Plans…',
   plansItemDetail: 'Saved plans in .agents/plans: open one or implement it',

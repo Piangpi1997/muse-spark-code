@@ -77,10 +77,21 @@ describe('plan actions (M79)', () => {
     })
   })
 
-  it('offers nothing outside Plan mode, while a turn runs, or once another message follows', () => {
+  it('offers nothing for a reply to a message sent outside Plan mode, even after switching to Plan', () => {
     renderPanel()
     setMode('manual')
     planTurn()
+    expect(screen.queryByRole('button', { name: UI_TEXT.savePlan })).toBeNull()
+    setMode('plan')
+    expect(screen.queryByRole('button', { name: UI_TEXT.savePlan })).toBeNull()
+  })
+
+  it('offers nothing once Plan mode is left, or once another message follows', () => {
+    renderPanel()
+    setMode('plan')
+    planTurn()
+    expect(screen.getByRole('button', { name: UI_TEXT.savePlan })).toBeTruthy()
+    setMode('manual')
     expect(screen.queryByRole('button', { name: UI_TEXT.savePlan })).toBeNull()
     setMode('plan')
     expect(screen.getByRole('button', { name: UI_TEXT.savePlan })).toBeTruthy()

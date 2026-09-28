@@ -31,6 +31,8 @@
 // Measured 2026-09-27 on 0.9.0: a full run of the 18 cases is 59 requests
 // (58 HTTP, one WebSocket) and about $0.033, of which $0.02 is the two
 // images; a case alone is well under a tenth of a cent, case12 aside.
+// case19 (M79, 2026-09-28) drives the panel's own ConversationController
+// over the rig's backend: 10 requests, about $0.0008.
 
 import { execFile } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
@@ -55,8 +57,7 @@ import { memoryDataRoot } from '../../src/core/memory/memoryLocation'
 import { MemoryStore } from '../../src/core/memory/memoryStore'
 import { PaidFeatureGate, PaidUsage } from '../../src/core/paid/paidFeatures'
 import { pdfPageCount } from '../../src/core/pdf'
-import { planBody, planSteps, planTitle } from '../../src/core/plans/planDocument'
-import { PlanStore } from '../../src/core/plans/planStore'
+import { planBody, planSteps } from '../../src/core/plans/planDocument'
 import { estimateCostUsd } from '../../src/core/usage/insights'
 import type { DictationHandle, DictationListener } from '../../src/core/voice/dictation'
 import { MuseVoiceDictation } from '../../src/core/voice/museVoice'
@@ -73,7 +74,9 @@ import { createToolIo } from '../../src/host/backend/toolIo'
 import { processGitRunner } from '../../src/host/git'
 import { createLogger, type Logger } from '../../src/host/logger'
 import { liveFetch } from '../../src/host/networkPosture'
-import { createPlanIo } from '../../src/host/planFeatures'
+import { ConversationController } from '../../src/host/conversation/conversationController'
+import type { AuthSnapshot } from '../../src/host/auth/authService'
+import { createPlanFiles, createPlanIo } from '../../src/host/planFeatures'
 import { openWebSocket } from '../../src/host/voice/dictationHost'
 import type { AgentEvent, ItemSnapshot } from '../../src/shared/agentEvents'
 import {
@@ -88,7 +91,6 @@ import {
   MODEL_API_SCHEDULES_DIR,
   MODEL_API_SESSIONS_DIR,
   MODEL_API_WEB_SEARCH_TOOL,
-  MODEL_TEXT,
   MUSE_VOICE_BYTES_PER_SECOND,
   MUSE_VOICE_REALTIME_URL,
   MUSE_VOICE_SAMPLE_RATE,
@@ -102,12 +104,13 @@ import {
   SECONDS_PER_HOUR,
   SETTING_DEFAULTS,
   SHELL_TOOLS,
-  TEXT_ATTACHMENT_MEDIA_TYPE,
   THINKING_OFF_EFFORT,
+  UI_TEXT,
 } from '../../src/shared/constants'
 import { fill } from '../../src/shared/l10n/text'
 import type { PaidTally } from '../../src/shared/paid'
-import { FakeLogOutputChannel } from '../unit/helpers/fakes'
+import type { HostToWebviewMessage } from '../../src/shared/protocol'
+import { FakeLogOutputChannel, fakeSurface } from '../unit/helpers/fakes'
 import { readJobSource } from '../unit/helpers/jobSource'
 import { logLines } from '../unit/helpers/logText'
 import { FAKE_MCP_SERVER, fixtureJobLifecycle } from '../unit/helpers/mcpFixtures'
@@ -908,6 +911,184 @@ async function runCase(
 
 function callsOf(name: string): readonly WireCall[] {
   return wire.filter((call) => call.caseName === name)
+}
+
+// --- the panel's controller on the rig (M79) ---
+
+/** What a live case never reaches: reaching it fails the case. */
+function unreached(): Promise<never> {
+  return Promise.reject(new Error('not reached by this case'))
+}
+
+interface LivePanel {
+  readonly controller: ConversationController
+  readonly posted: readonly HostToWebviewMessage[]
+  /** The tools whose cards the panel's automatic answerer allowed once, in order. */
+  readonly allowed: readonly string[]
+}
+
+/**
+ * One panel's `ConversationController` on the rig's first window, wired as
+ * `activate` wires it for the Model API, with the real plan files. Only the
+ * webview is replaced: each approval card it is sent is answered Allow once,
+ * and each modal (the protected `.agents/` save) is answered yes. What the
+ * case never reaches rejects, so reaching it fails the case.
+ */
+function livePanel(rig: Rig): LivePanel {
+  const allowed: string[] = []
+  const surface = fakeSurface('live')
+  const holder: { controller?: ConversationController } = {}
+  const signedIn: AuthSnapshot = { status: 'signedIn', detail: undefined, backend: 'modelApi' }
+  surface.post = (message) => {
+    surface.posted.push(message)
+    const event = message.type === 'agentEvent' ? message.event : undefined
+    if (event?.type !== 'approvalRequested' || event.isReplayed === true) {
+      return
+    }
+    allowed.push(event.toolName)
+    void holder.controller?.handle({
+      type: 'decideApproval',
+      approvalId: event.approvalId,
+      choiceId: APPROVAL_CHOICE_IDS.allowOnce,
+      requirementId: event.requirementId,
+    })
+  }
+  const controller = new ConversationController({
+    surface,
+    auth: {
+      current: signedIn,
+      backend: 'modelApi',
+      toMessage: () => ({ type: 'authState', status: 'signedIn' }),
+      signIn: unreached,
+      installMuseCode: unreached,
+      cancelSignIn: () => undefined,
+      signOut: unreached,
+      refresh: () => Promise.resolve(signedIn),
+      markAuthRequired: () => signedIn,
+      markBackendError: () => signedIn,
+    },
+    ensureHost: () => rig.manager.ensureHost(),
+    workspaceRoot: rig.workspace,
+    modelId: MODEL_ID,
+    initialPermissionMode: 'manual',
+    hasApprovalUi: true,
+    openExternal: () => undefined,
+    mentions: { search: () => Promise.resolve([]), contains: () => Promise.resolve(false) },
+    files: {
+      showOpenDialog: () => Promise.resolve([]),
+      readFile: unreached,
+      canonicalRelativePath: () => Promise.resolve(undefined),
+      pickMentionFile: () => Promise.resolve(undefined),
+      toRelativePath: () => undefined,
+    },
+    isBypassAllowed: () => false,
+    isRemoteWindow: false,
+    confirmRemoteBypass: () => Promise.resolve(false),
+    isConfidentialWorkspace: () => false,
+    // The live cases' model is the contributor one: its one yes (M7), given.
+    confirmContributor: () => Promise.resolve(true),
+    runHostAction: () => Promise.resolve(),
+    copyText: unreached,
+    insertCode: unreached,
+    onSandboxUnavailable: () => undefined,
+    platform: process.platform,
+    userProfileDir: undefined,
+    shellSandbox: () => ({ isSandboxed: false, reason: 'setting' }),
+    editorContext: () => undefined,
+    isAutosaveEnabled: () => false,
+    saveAll: () => Promise.resolve(),
+    unsavedFiles: () => [],
+    applyCode: unreached,
+    editReview: { openDiff: unreached, revert: unreached },
+    openDocument: unreached,
+    openFile: unreached,
+    readToolImage: unreached,
+    ideMcpEndpoint: () => Promise.resolve(undefined),
+    newAttachmentId: () => randomUUID(),
+    sessions: {
+      archivedIds: () => [],
+      setArchivedIds: () => Promise.resolve(),
+      lastSession: () => undefined,
+      setLastSession: () => Promise.resolve(),
+    },
+    accountFacts: () => Promise.resolve({ signInMethod: 'apiKey' as const }),
+    usageInsights: () => Promise.resolve(undefined),
+    isRestorable: false,
+    dictation: { isAvailable: false, reason: 'no microphone in the live sweep' },
+    museVoice: () => undefined,
+    exports: { saveMarkdown: unreached, saveSessionLog: unreached },
+    plans: createPlanFiles({
+      workspaceRoot: rig.workspace,
+      platform: process.platform,
+      io: createPlanIo({ log: rig.log, now: Date.now }),
+      pick: unreached,
+      confirm: () => Promise.resolve(true),
+    }),
+    setPaidFeature: unreached,
+    isWorkspaceTrusted: () => true,
+    onForegroundTasksChanged: () => undefined,
+    allowsPaidUse: () => Promise.resolve(false),
+    forgetPaidUse: unreached,
+    now: Date.now,
+    log: rig.log,
+  })
+  holder.controller = controller
+  return { controller, posted: surface.posted, allowed }
+}
+
+/** What the panel was told: its notices, for a failure's message. */
+function panelNotices(panel: LivePanel): string {
+  return JSON.stringify(
+    panel.posted.flatMap((message) => (message.type === 'notice' ? [message.text] : [])),
+  )
+}
+
+/** The panel's events of one kind, in order, from its `from`th message on. */
+function panelEvents<T extends AgentEvent['type']>(
+  panel: LivePanel,
+  type: T,
+  from = 0,
+): readonly Extract<AgentEvent, { type: T }>[] {
+  return panel.posted
+    .slice(from)
+    .flatMap((message) =>
+      message.type === 'agentEvent' && message.event.type === type
+        ? [message.event as Extract<AgentEvent, { type: T }>]
+        : [],
+    )
+}
+
+/** The turn the panel's message `localId` became, once finished, and its last reply. */
+async function panelTurn(
+  panel: LivePanel,
+  localId: string,
+): Promise<{ readonly terminal: string; readonly reply: ItemSnapshot | undefined }> {
+  const turnId = await vi.waitFor(
+    () => {
+      const accepted = panel.posted.find(
+        (message) => message.type === 'turnAccepted' && message.localId === localId,
+      )
+      if (accepted?.type !== 'turnAccepted') {
+        throw new Error(`no turn for ${localId} yet; notices ${panelNotices(panel)}`)
+      }
+      return accepted.turnId
+    },
+    { timeout: TURN_MS, interval: 250 },
+  )
+  const completed = await vi.waitFor(
+    () => {
+      const found = panelEvents(panel, 'turnCompleted').find((event) => event.turnId === turnId)
+      if (found === undefined) {
+        throw new Error(`turn ${turnId} still running; notices ${panelNotices(panel)}`)
+      }
+      return found
+    },
+    { timeout: TURN_MS, interval: 250 },
+  )
+  const replies = panelEvents(panel, 'itemCompleted')
+    .map((event) => event.item)
+    .filter((item) => item.turnId === turnId && item.kind === 'agentMessage')
+  return { terminal: completed.terminal, reply: replies.at(-1) }
 }
 
 // --- fixtures made in the test ---
@@ -1781,61 +1962,69 @@ describe.skipIf(!IS_ENABLED)('live Model API sweep (MUSE_LIVE_MODEL_API=1)', () 
   )
 
   it(
-    'case19 plans as files: a Plan-mode plan saved byte for byte, then implemented from a fresh session with its steps as the todo list (M79)',
+    'case19 plans as files: through the panel’s controller, a Plan-mode reply saved byte for byte, then implemented in a fresh conversation with its steps as the todo list (M79)',
     async () => {
       const name = 'case19 plans'
       await runCase(name, {}, async (rig) => {
-        const planner = await startSession(rig, 'denyUnmatched')
-        const planned = await send(
-          planner,
-          'Plan how to create a file named hello.txt that contains the single word hi. Give the plan as exactly two numbered steps. Only the plan; do not carry it out.',
-        )
-        expectCompleted(planned)
-        const text = planBody(planned.reply)
-        const steps = planSteps(text)
-        expect(steps.length).toBeGreaterThan(0)
-        const store = new PlanStore({
-          workspaceRoot: rig.workspace,
-          platform: process.platform,
-          io: createPlanIo(rig.log),
-        })
-        const saved = await store.save({
-          title: planTitle(text, 'Create hello.txt', 'plan'),
-          savedAt: new Date(),
-          text,
-        })
-        const plan = await store.read(saved.fileName)
-        expect(Buffer.from(plan.bytes).toString('utf8')).toBe(text)
-        // A fresh session: its todo list first, then the brief as the panel sends it.
-        const builder = await startSession(rig, 'onRequest')
-        expect(builder.session.setTodos).toBeTypeOf('function')
-        builder.session.setTodos?.(
-          steps.map((step) => ({ text: step, status: PLAN_TODO_PENDING_STATUS })),
-        )
-        const finished = await send(builder, [
-          { type: 'text', text: `Implement the plan in ${saved.relativePath}.` },
-          {
-            type: 'textFile',
-            name: saved.relativePath,
-            mediaType: TEXT_ATTACHMENT_MEDIA_TYPE,
-            sizeBytes: plan.bytes.byteLength,
-            text,
-          },
-          {
-            type: 'text',
-            text: `${fill(MODEL_TEXT.planBrief, { name: JSON.stringify(saved.relativePath) })} ${MODEL_TEXT.planBriefTodosSet}`,
-          },
-        ])
-        expectCompleted(finished)
-        expect(readFileSync(path.join(rig.workspace, 'hello.txt'), 'utf8').trim()).toBe('hi')
-        const updates = builder.watch.events.flatMap((event) =>
-          event.type === 'todoChanged' ? [event.items.map((item) => item.status).join(',')] : [],
-        )
-        rig.notes.push(
-          `plan ${saved.relativePath}, steps ${JSON.stringify(steps)}`,
-          `todo lists ${updates.join(' | ')}`,
-          `rows ${toolsRun(finished).join(' ')}`,
-        )
+        const panel = livePanel(rig)
+        const { controller } = panel
+        try {
+          await controller.handle({ type: 'setPermissionMode', mode: 'plan' })
+          await controller.handle({
+            type: 'sendMessage',
+            localId: 'plan-1',
+            text: 'Plan how to create a file named hello.txt that contains the single word hi. Give the plan as exactly two numbered steps. Only the plan; do not carry it out.',
+            attachmentIds: [],
+          })
+          const planned = await panelTurn(panel, 'plan-1')
+          expect(planned.terminal).toBe('completed')
+          const reply = planned.reply
+          expect(reply?.text?.trim()).toBeTruthy()
+          const sessionInfo = panel.posted.findLast((message) => message.type === 'sessionInfo')
+          const sourceSessionId =
+            sessionInfo?.type === 'sessionInfo' ? String(sessionInfo.sessionId) : ''
+          const itemId = String(reply?.itemId)
+          // Save plan: the file holds the reply's plan, byte for byte.
+          await controller.handle({ type: 'savePlan', sourceSessionId, itemId })
+          const plansFolder = path.join(rig.workspace, '.agents', 'plans')
+          const saved = readdirSync(plansFolder)
+          expect(saved, panelNotices(panel)).toHaveLength(1)
+          const relativePath = `.agents/plans/${String(saved[0])}`
+          const text = planBody(String(reply?.text))
+          expect(readFileSync(path.join(plansFolder, String(saved[0])), 'utf8')).toBe(text)
+          // Implement: the same file found (no second one), a fresh conversation in Manual.
+          await controller.handle({ type: 'implementPlan', sourceSessionId, itemId })
+          expect(readdirSync(plansFolder)).toEqual(saved)
+          const brief = panel.posted.find((message) => message.type === 'briefSubmitted')
+          expect(brief?.type === 'briefSubmitted' && brief.text, panelNotices(panel)).toBe(
+            fill(UI_TEXT.planBriefText, { path: relativePath }),
+          )
+          const localId = brief?.type === 'briefSubmitted' ? brief.localId : ''
+          const built = await panelTurn(panel, localId)
+          expect(built.terminal).toBe('completed')
+          expect(readFileSync(path.join(rig.workspace, 'hello.txt'), 'utf8').trim()).toBe('hi')
+          const modes = panel.posted.flatMap((message) =>
+            message.type === 'composerState' ? [message.permissionMode] : [],
+          )
+          expect(modes.at(-1)).toBe('manual')
+          const briefAt = brief === undefined ? 0 : panel.posted.indexOf(brief)
+          const lists = panelEvents(panel, 'todoChanged', briefAt).map((event) =>
+            event.items.map((item) => item.status).join(','),
+          )
+          // The new conversation's first list is the plan's steps, set before the brief went.
+          expect(lists[0]).toBe(
+            planSteps(text)
+              .map(() => PLAN_TODO_PENDING_STATUS)
+              .join(','),
+          )
+          rig.notes.push(
+            `plan ${relativePath} (${String(planSteps(text).length)} steps)`,
+            `todo lists ${lists.join(' | ')}`,
+            `cards allowed ${panel.allowed.join(' ')}`,
+          )
+        } finally {
+          controller.dispose()
+        }
       })
     },
     CASE_MS,

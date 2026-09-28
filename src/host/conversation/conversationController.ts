@@ -28,8 +28,20 @@ import {
   type TurnSubmission,
 } from '../../core/agent/agentBackend'
 import { toSessionRow } from '../../core/agent/sessionRows'
-import { planBody, planSteps, planTitle } from '../../core/plans/planDocument'
-import type { PlanFile, PlanStore, PlanSummary, SavedPlan } from '../../core/plans/planStore'
+import {
+  hasHiddenMarkup,
+  numberedSteps,
+  planBody,
+  planLogName,
+  planSteps,
+  planTitle,
+} from '../../core/plans/planDocument'
+import {
+  type PlanStore,
+  type PlanSummary,
+  type SaveOutcome,
+  planTooLargeText,
+} from '../../core/plans/planStore'
 import { isProfileWorkspace, type ShellSandboxPosture } from '../../core/backends/musecode/sandbox'
 import { chatReferenceText } from '../../core/chatReference'
 import { textFileDisplay } from '../../shared/textFileDisplay'
@@ -55,6 +67,7 @@ import {
   MAX_TEXT_ATTACHMENT_BYTES,
   PDF_EXTENSION,
   PLAN_BRIEF_LOCAL_ID_PREFIX,
+  PLAN_FILE_MAX_BYTES,
   PLAN_TODO_PENDING_STATUS,
   PRIVATE_ATTACHMENT_EXTENSIONS,
   PRIVATE_ATTACHMENT_NAMES,
@@ -188,7 +201,7 @@ export interface PlanChoice {
  * Plans as files (M79, PLAN.md D49): the workspace's `.agents/plans/` and
  * the Plans… pick. Undefined without a workspace folder.
  */
-export interface PlanFiles extends Pick<PlanStore, 'save' | 'has' | 'read' | 'list'> {
+export interface PlanFiles extends Pick<PlanStore, 'find' | 'save' | 'has' | 'read' | 'list'> {
   /**
    * The yes a save needs: `.agents/` is a protected path (PLAN.md D24), so
    * writing a plan there asks first, as a protected write does.
@@ -512,23 +525,44 @@ function isContributorModel(modelId: string): boolean {
  * first message is the brief alone, in the starting permission mode.
  */
 export interface ConversationBrief {
-  /** What the brief is, for the log (never its content). */
+  /** What the brief is, for the log: never its content, nor a name drawn from it (M39). */
   readonly label: string
   /** The first message as its card shows it, in the user's language. */
-  readonly text: string
+  readonly displayText: string
+  /** The same message as the model reads it (MODEL_TEXT, English). */
+  readonly modelText: string
   /** The brief as a named UTF-8 text file (M54's path on both backends), if it is one. */
   readonly attachment: { readonly name: string; readonly bytes: Uint8Array } | undefined
   /**
-   * What the model reads beside it (MODEL_TEXT, English), told whether the
+   * What the model reads after it (MODEL_TEXT, English), told whether the
    * todo list below was set, which only some backends allow.
    */
   readonly modelNote: (hasSetTodos: boolean) => string
   /** The todo list the conversation starts with, where the backend lets the extension set one. */
   readonly todos: readonly TodoItem[]
+  /**
+   * Whether the user approved this content here: a Plan-mode reply of this
+   * panel's conversation. Anything else (a file from the workspace) is
+   * untrusted content (PLAN.md D49): the conversation starts in a mode that
+   * asks, whatever `museSpark.initialPermissionMode` says.
+   */
+  readonly isApproved: boolean
 }
 
-/** What `send` adds to a brief's first message: the model's note and the todo list. */
-type BriefExtras = Pick<ConversationBrief, 'modelNote' | 'todos'>
+/** What `send` takes from a brief for its first message. */
+type BriefExtras = Pick<ConversationBrief, 'displayText' | 'modelNote' | 'todos'>
+
+/** What `send` did: whether the host took the message, and whether a brief's todo list was set. */
+interface SendOutcome {
+  readonly isAccepted: boolean
+  readonly hasSetTodos: boolean
+}
+
+/** What `startFromBrief` did; a refusal has already said why. */
+type BriefStart =
+  | { readonly status: 'started'; readonly hasSetTodos: boolean }
+  | { readonly status: 'refused' }
+  | { readonly status: 'changed' }
 
 /** Where a plan to implement comes from (M79): the reply on screen, or a saved file. */
 type PlanSource =
@@ -537,28 +571,54 @@ type PlanSource =
 
 const AGENT_MESSAGE_KIND = 'agentMessage'
 const USER_MESSAGE_KIND = 'userMessage'
+const STEERED_DISPOSITION = 'steered'
+const PLAN_MODE: PermissionMode = 'plan'
 
 /**
- * A saved plan as a conversation's brief (M79): the plan file attached, what
- * to do with it for the model, and its steps as the todo list; where the
- * backend lets nobody but the model set that list (MSP has no todo
- * command), the note asks the model to take the steps as its list.
+ * A plan as a conversation's brief (M79): the plan file attached, what to do
+ * with it for the model, and its steps as the todo list. Where the backend
+ * lets the extension set that list, the note says what it was set to (the
+ * model does not see the list otherwise); where it does not (MSP has no todo
+ * command), the note asks the model to take the steps as its list. A plan
+ * the user approved here is said to be approved; a file from the workspace
+ * is untrusted content, and the note says so.
  */
-function planBrief(plan: PlanFile): ConversationBrief {
-  const steps = planSteps(plan.document.body)
+function planBrief(
+  relativePath: string,
+  bytes: Uint8Array,
+  body: string,
+  isApproved: boolean,
+): ConversationBrief {
+  const steps = planSteps(body)
+  const name = JSON.stringify(relativePath)
   return {
-    label: plan.relativePath,
-    text: fill(UI_TEXT.planBriefText, { path: plan.relativePath }),
-    attachment: { name: plan.relativePath, bytes: plan.bytes },
+    label: planLogName(path.posix.basename(relativePath)),
+    displayText: fill(UI_TEXT.planBriefText, { path: relativePath }),
+    modelText: fill(MODEL_TEXT.planBriefRequest, { path: relativePath }),
+    attachment: { name: relativePath, bytes },
     modelNote: (hasSetTodos) => {
-      const lead = fill(MODEL_TEXT.planBrief, { name: JSON.stringify(plan.relativePath) })
+      const lead = fill(isApproved ? MODEL_TEXT.planBriefApproved : MODEL_TEXT.planBriefFromFile, {
+        name,
+      })
       if (steps.length === 0) {
         return lead
       }
-      return `${lead} ${hasSetTodos ? MODEL_TEXT.planBriefTodosSet : MODEL_TEXT.planBriefTodosAsk}`
+      const todos = hasSetTodos
+        ? fill(MODEL_TEXT.planBriefTodosSet, { steps: numberedSteps(steps) })
+        : MODEL_TEXT.planBriefTodosAsk
+      return `${lead} ${todos}`
     },
     todos: steps.map((step) => ({ text: step, status: PLAN_TODO_PENDING_STATUS })),
+    isApproved,
   }
+}
+
+/** An error's kind for the log (its code or name), never its message, which may name the plan. */
+function errorKind(error: unknown): string {
+  if (typeof error === 'object' && error !== null && 'code' in error) {
+    return String(error.code)
+  }
+  return error instanceof Error ? error.name : typeof error
 }
 
 export class ConversationController {
@@ -674,8 +734,18 @@ export class ConversationController {
   /** A shell's row can start before its approval is granted (Model API). */
   private readonly pendingShellApprovals = new Set<string>()
   private readonly pausedForegroundShells = new Set<string>()
-  /** The plans saved from this surface's replies (M79), by session and reply: saved once. */
-  private readonly savedPlans = new Map<string, SavedPlan>()
+  /**
+   * The turns this panel started in Plan mode that finished with the panel
+   * in Plan mode throughout (M79): only their replies are plans. A restart
+   * keeps them (the resumed session has the same turns); a new conversation
+   * forgets them.
+   */
+  private readonly planTurnIds = new Set<string>()
+  /**
+   * Plan-mode turns sent but not finished yet, running or queued: leaving
+   * Plan mode drops them all, since any of them may then act.
+   */
+  private readonly pendingPlanTurnIds = new Set<string>()
   /** A plan action (save, implement, Plans…) is running (M79). */
   private isPlanActionRunning = false
 
@@ -1151,11 +1221,16 @@ export class ConversationController {
         // It will never run: a late acceptance must not make it the running turn.
         this.finishedTurns.add(event.turnId)
         this.turnClocks.delete(event.turnId)
+        this.pendingPlanTurnIds.delete(event.turnId)
         break
       }
       case 'turnCompleted': {
         this.endTurnClock(event)
         this.finishedTurns.add(event.turnId)
+        // A Plan-mode turn that finished with the panel in Plan mode throughout (M79).
+        if (this.pendingPlanTurnIds.delete(event.turnId)) {
+          this.planTurnIds.add(event.turnId)
+        }
         // Another turn completing (a subagent's) leaves this one running.
         if (this.activeTurnId === event.turnId) {
           this.activeTurnId = undefined
@@ -2057,26 +2132,33 @@ export class ConversationController {
     )
   }
 
-  private refuseAction(localId?: string): string | undefined {
+  /**
+   * Why an action cannot run now, posted as asked. A refused message's
+   * images were never used, so the composer gets them back, unless the
+   * message was the host's own (a brief, M79), whose chip goes with it.
+   */
+  private refuseAction(localId?: string, isComposerMessage = true): string | undefined {
     const isSignedIn = this.isAuthAdmitted()
     const reason = isSignedIn ? undefined : UI_TEXT.notSignedInReason
     if (reason === undefined && this.deps.workspaceRoot !== undefined) {
       return undefined
     }
     const text = reason ?? UI_TEXT.noWorkspaceReason
-    // A refused message's images were never used: the composer gets them back.
     this.post(
       localId === undefined
         ? { type: 'notice', level: 'warning', text }
-        : { type: 'sendFailed', localId, reason: text, attachmentsKept: true },
+        : { type: 'sendFailed', localId, reason: text, attachmentsKept: isComposerMessage },
     )
     return text
   }
 
   /** The session for a user action, or undefined (with the reason posted). */
-  private async sessionForAction(localId?: string): Promise<AgentSession | undefined> {
+  private async sessionForAction(
+    localId?: string,
+    isComposerMessage = true,
+  ): Promise<AgentSession | undefined> {
     const generation = this.sendInvalidationEpoch
-    const refusal = this.refuseAction(localId)
+    const refusal = this.refuseAction(localId, isComposerMessage)
     if (refusal !== undefined || this.deps.workspaceRoot === undefined) {
       return undefined
     }
@@ -2533,14 +2615,41 @@ export class ConversationController {
   // --- Plans as files (M79, PLAN.md D49) ---
 
   /**
+   * The session a plan action names: the attached one, or, after a restart,
+   * a crash or the host closing it (D25), the one the next message would
+   * resume, resumed now. Undefined, with the reason said, when the panel
+   * no longer holds that conversation.
+   */
+  private async planSession(
+    sourceSessionId: string,
+    generation: number,
+  ): Promise<AgentSession | undefined> {
+    let session = this.session
+    if (session === undefined && this.resumeTarget?.sessionId === sourceSessionId) {
+      session = await this.sessionForAction()
+    }
+    if (
+      session?.sessionId !== sourceSessionId ||
+      !this.isCurrentSessionAction(session, generation)
+    ) {
+      if (!this.isDisposed) {
+        this.notice('info', UI_TEXT.planSessionGone)
+      }
+      return undefined
+    }
+    return session
+  }
+
+  /**
    * The reply to save as a plan: read back from the host, never taken from
-   * the webview, and only while it is this conversation's latest reply, in
-   * Plan mode, with no turn running. Neither backend marks an approved plan
-   * on the wire: Muse Code 1.4.0 in Plan mode sends its plan as an ordinary
-   * `agentMessage` and takes the user's next message ("go") as the go-ahead
-   * (captured live, D13), and the Model API harness has no plan tool. The
-   * panel's Save plan or Implement is the approval. Undefined, with the
-   * reason said, otherwise.
+   * the webview, and only while it is this conversation's latest reply, from
+   * a turn this panel started in Plan mode and that stayed in it, with no
+   * turn running and the panel still in Plan mode. Neither backend marks a
+   * plan or its approval on the wire: Muse Code 1.4.0 in Plan mode sends its
+   * plan as an ordinary `agentMessage` and takes the user's next message
+   * ("go") as the go-ahead (captured live, D13), and the Model API harness
+   * has no plan tool. The panel's Save plan or Implement is the approval.
+   * Undefined, with the reason said, otherwise.
    */
   private async planReply(
     sourceSessionId: string,
@@ -2555,15 +2664,12 @@ export class ConversationController {
       }
     | undefined
   > {
-    const session = this.session
-    if (
-      !this.isCurrentSessionAction(session, generation) ||
-      session.sessionId !== sourceSessionId
-    ) {
+    if (this.permissionMode !== PLAN_MODE) {
+      this.notice('info', UI_TEXT.planReplyNotLatest)
       return undefined
     }
-    if (this.permissionMode !== 'plan') {
-      this.notice('info', UI_TEXT.planReplyNotLatest)
+    const session = await this.planSession(sourceSessionId, generation)
+    if (session === undefined) {
       return undefined
     }
     const host = await this.deps.ensureHost()
@@ -2576,6 +2682,10 @@ export class ConversationController {
     }
     if (this.activeTurnId !== undefined) {
       this.notice('info', UI_TEXT.planWaitForTurn)
+      return undefined
+    }
+    if (history.mode === HISTORY_MODE_NONE) {
+      this.notice('warning', UI_TEXT.historyNotServed)
       return undefined
     }
     const { items } = history
@@ -2592,20 +2702,25 @@ export class ConversationController {
       this.notice('info', UI_TEXT.planReplyNotLatest)
       return undefined
     }
+    if (reply.turnId === undefined || !this.planTurnIds.has(reply.turnId)) {
+      this.notice('info', UI_TEXT.planNotFromPlanTurn)
+      return undefined
+    }
     const prompt = items[promptIndex]?.text?.split(TEXT_FILE_DISPLAY_MARKER)[0]
     return { text, prompt, name: history.name }
   }
 
   /**
-   * Saves the latest Plan-mode reply under `.agents/plans/`, once per reply:
-   * the file and whether this call wrote it, or undefined with the reason
-   * said. A workspace write, so Restricted Mode refuses it.
+   * Saves the latest Plan-mode reply under `.agents/plans/`, checked afresh
+   * on every press: the file (new, or the same plan found saved already) and
+   * the plan's text, or undefined with the reason said. A workspace write,
+   * so Restricted Mode refuses it, and `.agents` is protected, so it asks.
    */
   private async savePlanReply(
     sourceSessionId: string,
     itemId: string,
     generation: number,
-  ): Promise<{ readonly saved: SavedPlan; readonly isNew: boolean } | undefined> {
+  ): Promise<{ readonly saved: SaveOutcome; readonly text: string } | undefined> {
     // Refused with its reason said first: no plans without a workspace folder.
     if (this.refuseAction() !== undefined) {
       return undefined
@@ -2622,41 +2737,47 @@ export class ConversationController {
       this.notice('info', UI_TEXT.planWaitForTurn)
       return undefined
     }
-    const key = `${sourceSessionId}\n${itemId}`
-    const known = this.savedPlans.get(key)
-    if (known !== undefined) {
-      if (await plans.has(known.fileName)) {
-        return { saved: known, isNew: false }
-      }
-      // Moved or deleted since: this save makes a new file.
-      this.savedPlans.delete(key)
-    }
     const reply = await this.planReply(sourceSessionId, itemId, generation)
-    // `.agents/` is a protected path (D24): the save asks, as a protected write does.
-    if (reply === undefined || !(await plans.confirmSave())) {
+    if (reply === undefined) {
       return undefined
     }
     // The plan the reply holds, byte for byte: a Muse Code plan reply's
     // handoff lines are not part of it (captured, D13).
     const text = planBody(reply.text)
-    const saved = await plans.save({
+    if (new TextEncoder().encode(text).byteLength > PLAN_FILE_MAX_BYTES) {
+      this.notice('warning', planTooLargeText())
+      return undefined
+    }
+    const content = {
       title: planTitle(text, reply.prompt, reply.name ?? UI_TEXT.untitledConversation),
       savedAt: new Date(this.deps.now()),
       text,
-    })
-    this.savedPlans.set(key, saved)
-    // The path and the conversation it came from, never the plan (M39).
-    this.deps.log.info(`Plan saved to ${saved.relativePath} from session ${sourceSessionId}`)
-    return { saved, isNew: true }
+    }
+    // Saved already (this press or another panel's): the same file, nothing asked.
+    const known = await plans.find(content)
+    if (known !== undefined) {
+      return { saved: { ...known, isNew: false }, text }
+    }
+    // `.agents/` is a protected path (D24): the save asks, as a protected write does.
+    if (!(await plans.confirmSave())) {
+      return undefined
+    }
+    const saved = await plans.save(content)
+    // The file's date and a hash of its name, and the conversation, never the plan (M39).
+    this.deps.log.info(
+      `Plan ${saved.isNew ? 'saved' : 'found saved'} as ${planLogName(saved.fileName)} from session ${sourceSessionId}`,
+    )
+    return { saved, text }
   }
 
   /**
    * One plan action at a time: a second press while Save plan, Implement or
-   * Plans… still runs is dropped, so a plan is saved once and started once.
+   * Plans… still runs is dropped, and said, so a plan is saved once and
+   * started once.
    */
   private async onePlanAction(run: () => Promise<void>): Promise<void> {
     if (this.isPlanActionRunning) {
-      this.deps.log.info('A plan action is still running; the second press is dropped')
+      this.say('info', UI_TEXT.planActionBusy)
       return
     }
     this.isPlanActionRunning = true
@@ -2667,37 +2788,53 @@ export class ConversationController {
     }
   }
 
+  /** A plan action failed: the reason in the panel, only its kind in the log (M39). */
+  private planFailed(message: string, error: unknown): void {
+    this.deps.log.warn(`A plan action failed (${errorKind(error)})`)
+    if (!this.isDisposed) {
+      this.say('error', `${message}: ${describe(error)}`)
+    }
+  }
+
   /** "Save plan" under the latest Plan-mode reply. */
   private async savePlan(sourceSessionId: string, itemId: string): Promise<void> {
     const generation = this.sendInvalidationEpoch
     try {
       const outcome = await this.savePlanReply(sourceSessionId, itemId, generation)
-      if (outcome !== undefined && !this.isDisposed) {
-        this.notice(
-          'info',
-          fill(outcome.isNew ? UI_TEXT.planSaved : UI_TEXT.planAlreadySaved, {
-            path: outcome.saved.relativePath,
-          }),
-        )
+      if (outcome === undefined || this.isDisposed) {
+        return
+      }
+      const path = outcome.saved.relativePath
+      this.say(
+        'info',
+        fill(outcome.saved.isNew ? UI_TEXT.planSaved : UI_TEXT.planAlreadySaved, { path }),
+      )
+      if (hasHiddenMarkup(outcome.text)) {
+        this.say('warning', fill(UI_TEXT.planHiddenMarkup, { path }))
       }
     } catch (error: unknown) {
-      if (!this.isDisposed) {
-        this.notice('error', `${UI_TEXT.planSaveFailed}: ${describe(error)}`)
-      }
+      this.planFailed(UI_TEXT.planSaveFailed, error)
     }
   }
 
   /**
-   * The mode a brief starts in: the configured starting mode, never Plan,
-   * and Bypass only where a conversation could start in it (D24); otherwise
-   * Manual.
+   * The mode an approved brief starts in: the configured starting mode,
+   * never Plan, and Bypass only where a conversation could start in it and
+   * never in a remote window (D24); otherwise Manual.
    */
   private briefMode(): PermissionMode {
     const mode = this.deps.initialPermissionMode
     const isBypassRefused =
-      mode === BYPASS_MODE &&
-      (!this.deps.isBypassAllowed() || (this.deps.isRemoteWindow && !this.hasConfirmedRemoteBypass))
-    return mode === 'plan' || isBypassRefused ? FALLBACK_MODE : mode
+      mode === BYPASS_MODE && (!this.deps.isBypassAllowed() || this.deps.isRemoteWindow)
+    return mode === PLAN_MODE || isBypassRefused ? FALLBACK_MODE : mode
+  }
+
+  /**
+   * The mode a brief built on untrusted content starts in (D49): one that
+   * asks, Manual, or Plan when that is the starting mode.
+   */
+  private untrustedBriefMode(): PermissionMode {
+    return this.deps.initialPermissionMode === PLAN_MODE ? PLAN_MODE : FALLBACK_MODE
   }
 
   /**
@@ -2705,29 +2842,24 @@ export class ConversationController {
    * `/handoff` reuses it). The attachment is checked before anything is
    * left, so a brief the backend would not take changes nothing. Then this
    * conversation is left (History keeps it), Plan mode gives way to the
-   * starting mode, and the brief is sent as the first message, with its
-   * card, its note for the model and, where the backend takes one, its todo
-   * list. Resolves to whether the backend took the todo list; undefined
-   * when nothing was started.
+   * brief's mode, and the brief is sent as the first message, with its card,
+   * its note for the model and, where the backend takes one, its todo list.
    */
-  private async startFromBrief(
-    brief: ConversationBrief,
-    generation: number,
-  ): Promise<boolean | undefined> {
+  private async startFromBrief(brief: ConversationBrief, generation: number): Promise<BriefStart> {
     if (this.isSideChat) {
       this.notice('info', UI_TEXT.sideChatPlanOnly)
-      return undefined
+      return { status: 'refused' }
     }
     if (this.refuseAction() !== undefined) {
-      return undefined
+      return { status: 'refused' }
     }
     const host = await this.deps.ensureHost()
     if (generation !== this.sendInvalidationEpoch || this.isDisposed) {
-      return undefined
+      return { status: 'changed' }
     }
     if (this.activeTurnId !== undefined) {
       this.notice('info', UI_TEXT.planWaitForTurn)
-      return undefined
+      return { status: 'refused' }
     }
     const isModelApi = host.info.kind === 'modelApi'
     const { attachment } = brief
@@ -2739,13 +2871,13 @@ export class ConversationController {
         true,
       )
       if (!staged.ok) {
-        this.notice('warning', `${UI_TEXT.planImplementFailed}: ${staged.reason}`)
-        return undefined
+        this.say('warning', `${UI_TEXT.planImplementFailed}: ${staged.reason}`)
+        return { status: 'refused' }
       }
     }
     this.deps.log.info(`Starting a new conversation from the brief ${brief.label}`)
     this.clear()
-    this.permissionMode = this.briefMode()
+    this.permissionMode = brief.isApproved ? this.briefMode() : this.untrustedBriefMode()
     this.postComposerState()
     // The same checks on the emptied store as on the staged one above.
     const added =
@@ -2757,41 +2889,18 @@ export class ConversationController {
     }
     const attachments = added?.ok === true ? [added.attachment] : []
     const localId = `${PLAN_BRIEF_LOCAL_ID_PREFIX}${this.deps.newAttachmentId()}`
-    this.post({ type: 'briefSubmitted', localId, text: brief.text, attachments })
-    await this.send(
+    this.post({ type: 'briefSubmitted', localId, text: brief.displayText, attachments })
+    const sent = await this.send(
       localId,
-      brief.text,
+      brief.modelText,
       attachments.map((summary) => summary.id),
       false,
       undefined,
       brief,
     )
-    return this.session === undefined ? undefined : this.session.setTodos !== undefined
-  }
-
-  /**
-   * A saved plan as the brief of a new conversation: refused in Restricted
-   * Mode (its content is workspace text for the model, M54), and said where
-   * the backend keeps the todo list to the model (MSP has no todo command).
-   */
-  private async implementPlanFile(fileName: string, generation: number): Promise<void> {
-    // Refused with its reason said first: no plans without a workspace folder.
-    if (this.refuseAction() !== undefined) {
-      return
-    }
-    const { plans } = this.deps
-    if (plans === undefined) {
-      return
-    }
-    if (!this.deps.isWorkspaceTrusted()) {
-      this.notice('warning', UI_TEXT.planRestricted)
-      return
-    }
-    const brief = planBrief(await plans.read(fileName))
-    const canSetTodos = await this.startFromBrief(brief, generation)
-    if (canSetTodos === false && brief.todos.length > 0) {
-      this.say('info', UI_TEXT.planTodosByModel)
-    }
+    return sent.isAccepted
+      ? { status: 'started', hasSetTodos: sent.hasSetTodos }
+      : { status: 'refused' }
   }
 
   /** "Implement in a fresh conversation": the reply on screen (saved first), or a saved plan. */
@@ -2802,18 +2911,93 @@ export class ConversationController {
     }
     const generation = this.sendInvalidationEpoch
     try {
-      let fileName = source.kind === 'file' ? source.fileName : undefined
-      if (source.kind === 'reply') {
-        const outcome = await this.savePlanReply(source.sessionId, source.itemId, generation)
-        fileName = outcome?.saved.fileName
+      const brief = await this.planBriefFor(source, generation)
+      if (brief === undefined) {
+        return
       }
-      if (fileName !== undefined && generation === this.sendInvalidationEpoch) {
-        await this.implementPlanFile(fileName, generation)
+      if (brief.hasHiddenMarkup) {
+        // The user did not see all of what the model would be sent.
+        this.say('warning', fill(UI_TEXT.planHiddenMarkupNotStarted, { path: brief.relativePath }))
+        return
+      }
+      const started =
+        generation === this.sendInvalidationEpoch
+          ? await this.startFromBrief(brief.brief, generation)
+          : ({ status: 'changed' } as const)
+      if (started.status === 'changed') {
+        this.say(
+          'info',
+          source.kind === 'reply'
+            ? fill(UI_TEXT.planSavedNotStarted, { path: brief.relativePath })
+            : UI_TEXT.planChangedNotStarted,
+        )
+        return
+      }
+      if (started.status !== 'started') {
+        return
+      }
+      if (!brief.brief.isApproved) {
+        this.say(
+          'info',
+          fill(UI_TEXT.planFromFileMode, { mode: UI_TEXT.permissionModes[this.permissionMode] }),
+        )
+      }
+      // MSP has no todo command: the brief asked the model to list the steps.
+      if (!started.hasSetTodos && brief.brief.todos.length > 0) {
+        this.say('info', UI_TEXT.planTodosByModel)
       }
     } catch (error: unknown) {
-      if (!this.isDisposed && this.accountStopsInFlight === 0) {
-        this.notice('error', `${UI_TEXT.planImplementFailed}: ${describe(error)}`)
+      if (this.accountStopsInFlight === 0) {
+        this.planFailed(UI_TEXT.planImplementFailed, error)
       }
+    }
+  }
+
+  /**
+   * The brief a plan becomes: a reply saved first (the file then holds
+   * exactly what the user approved, which is what is sent), or a saved file,
+   * which is untrusted content. Implementing either reads workspace text
+   * into the model, so Restricted Mode refuses it. Undefined, with the
+   * reason said, when there is none.
+   */
+  private async planBriefFor(
+    source: PlanSource,
+    generation: number,
+  ): Promise<
+    | {
+        readonly brief: ConversationBrief
+        readonly relativePath: string
+        readonly hasHiddenMarkup: boolean
+      }
+    | undefined
+  > {
+    if (source.kind === 'reply') {
+      const outcome = await this.savePlanReply(source.sessionId, source.itemId, generation)
+      if (outcome === undefined) {
+        return undefined
+      }
+      const { relativePath } = outcome.saved
+      const bytes = new TextEncoder().encode(outcome.text)
+      return {
+        brief: planBrief(relativePath, bytes, outcome.text, true),
+        relativePath,
+        hasHiddenMarkup: hasHiddenMarkup(outcome.text),
+      }
+    }
+    // Refused with its reason said first: no plans without a workspace folder.
+    if (this.refuseAction() !== undefined || this.deps.plans === undefined) {
+      return undefined
+    }
+    if (!this.deps.isWorkspaceTrusted()) {
+      this.notice('warning', UI_TEXT.planRestricted)
+      return undefined
+    }
+    const plan = await this.deps.plans.read(source.fileName)
+    return {
+      brief: planBrief(plan.relativePath, plan.bytes, plan.document.body, false),
+      relativePath: plan.relativePath,
+      // A file is sent as untrusted content in a mode that asks, and Plans… can open it first.
+      hasHiddenMarkup: false,
     }
   }
 
@@ -2833,7 +3017,7 @@ export class ConversationController {
       }
       choice = await plans.choose(saved)
     } catch (error: unknown) {
-      this.notice('error', `${UI_TEXT.plansFailed}: ${describe(error)}`)
+      this.planFailed(UI_TEXT.plansFailed, error)
       return
     }
     if (choice?.action === 'open') {
@@ -2976,6 +3160,13 @@ export class ConversationController {
     this.notice('warning', `${UI_TEXT.unsavedFilesNotice} ${shown}${more}.`)
   }
 
+  /**
+   * Sends one message. A brief (M79) is the host's own message: its card
+   * shows `brief.displayText` while the model reads `text` (English), its
+   * note and, where the backend takes one, its todo list; if it fails, its
+   * chip goes with the card rather than back to the composer, and the todo
+   * list it set is taken back.
+   */
   private async send(
     localId: string,
     text: string,
@@ -2983,12 +3174,14 @@ export class ConversationController {
     isEditorContextIncluded: boolean,
     reference: ChatReference | undefined,
     brief?: BriefExtras,
-  ): Promise<void> {
+  ): Promise<SendOutcome> {
+    const isComposerMessage = brief === undefined
+    let seededSession: AgentSession | undefined
     try {
       const sendEpoch = this.sendInvalidationEpoch
-      const session = await this.sessionForAction(localId)
+      const session = await this.sessionForAction(localId, isComposerMessage)
       if (session === undefined) {
-        return
+        return { isAccepted: false, hasSetTodos: false }
       }
       let expectedGeneration = this.attachmentGeneration
       let submittedSession = session
@@ -3011,9 +3204,9 @@ export class ConversationController {
           type: 'sendFailed',
           localId,
           reason: UI_TEXT.nothingToSendReason,
-          attachmentsKept: true,
+          attachmentsKept: isComposerMessage,
         })
-        return
+        return { isAccepted: false, hasSetTodos: false }
       }
       // A reply to an output or a quoted passage rides as its own part (M17),
       // before the editor context, like the ide_selection part of M5.
@@ -3044,17 +3237,20 @@ export class ConversationController {
         ...(context === undefined ? [] : [context]),
         ...note,
       ]
+      // What the card shows: a brief's own words, else what was typed.
+      const shownText = brief?.displayText ?? text
       // MSP stores no text-file attachment metadata: keep each name in the
       // durable card while the full content travels only to the model (M54).
       const textFileNames = typed.flatMap((part) => (part.type === 'textFile' ? [part.name] : []))
-      const contextText = parts.length === typed.length ? undefined : text
-      let displayText = contextText
+      let displayText = brief === undefined && parts.length === typed.length ? undefined : shownText
       if (textFileNames.length > 0) {
         displayText =
           host.info.kind === 'museCode'
-            ? textFileDisplay(text, textFileNames)
-            : [text, ...textFileNames].filter((line) => line !== '').join('\n')
+            ? textFileDisplay(shownText, textFileNames)
+            : [shownText, ...textFileNames].filter((line) => line !== '').join('\n')
       }
+      // Whether this message starts a Plan-mode turn: its reply may be a plan (M79).
+      const isPlanModeSend = this.permissionMode === PLAN_MODE
       const submission = await this.runResuming(host, session, (current) => {
         // runResuming may replace a not-loaded session itself; that recovery
         // owns the new generation. An unrelated restart still fails admission.
@@ -3065,8 +3261,9 @@ export class ConversationController {
         submittedSession = current
         // A brief's todo list is set before its first turn reads it (M79),
         // where the backend lets the extension set one.
-        if (hasSetTodos) {
-          current.setTodos?.(brief.todos)
+        if (hasSetTodos && current.setTodos !== undefined) {
+          current.setTodos(brief.todos)
+          seededSession = current
         }
         return this.submit(
           current,
@@ -3084,15 +3281,27 @@ export class ConversationController {
       // The images go only once the host has the message (D26).
       this.attachments.release(attachmentIds)
       if (this.isDisposed) {
-        return
+        return { isAccepted: false, hasSetTodos: false }
       }
       const { turnId } = submission
-      this.acceptedUserCards.set(localId, { turnId, text })
+      this.acceptedUserCards.set(localId, { turnId, text: shownText })
       if (submission.userMessageId !== undefined) {
-        this.acceptedUserCards.set(submission.userMessageId, { turnId, text })
+        this.acceptedUserCards.set(submission.userMessageId, { turnId, text: shownText })
       }
       if (typed.some((part) => part.type === 'file' || part.type === 'textFile')) {
         this.fileMessageIds.add(submission.userMessageId ?? localId)
+      }
+      if (
+        isPlanModeSend &&
+        this.permissionMode === PLAN_MODE &&
+        submission.disposition !== STEERED_DISPOSITION
+      ) {
+        // An ack can land after its own turn completed (D26).
+        if (this.finishedTurns.has(turnId)) {
+          this.planTurnIds.add(turnId)
+        } else {
+          this.pendingPlanTurnIds.add(turnId)
+        }
       }
       // A queued turn is not the running one, and an ack that lands after its
       // own turn completed must not mark it running again (D26).
@@ -3108,11 +3317,29 @@ export class ConversationController {
         }),
       })
       this.noteActivity()
+      return { isAccepted: true, hasSetTodos: seededSession !== undefined }
     } catch (error: unknown) {
       const reason = describe(error)
-      this.deps.log.error(`sendMessage failed: ${reason}`)
-      // Nothing was released: the composer gets the images back for another try.
-      this.post({ type: 'sendFailed', localId, reason, attachmentsKept: true })
+      this.deps.log.error(`sendMessage failed: ${isComposerMessage ? reason : errorKind(error)}`)
+      if (seededSession !== undefined) {
+        this.takeBackTodos(seededSession)
+      }
+      if (!isComposerMessage) {
+        this.attachments.release(attachmentIds)
+      }
+      // A composer message's images were not released: the composer gets
+      // them back for another try. A brief's go with its card.
+      this.post({ type: 'sendFailed', localId, reason, attachmentsKept: isComposerMessage })
+      return { isAccepted: false, hasSetTodos: false }
+    }
+  }
+
+  /** A brief that failed leaves no todo list behind (M79): its steps were never sent. */
+  private takeBackTodos(session: AgentSession): void {
+    try {
+      session.setTodos?.([])
+    } catch (error: unknown) {
+      this.deps.log.warn(`The brief's todo list could not be taken back: ${errorKind(error)}`)
     }
   }
 
@@ -3440,6 +3667,10 @@ export class ConversationController {
     }
     const previous = this.permissionMode
     this.permissionMode = mode
+    // A turn running or queued when Plan mode is left may act, so its reply is no plan (M79).
+    if (mode !== PLAN_MODE) {
+      this.pendingPlanTurnIds.clear()
+    }
     const target = approvalModeFor(mode, this.deps.hasApprovalUi)
     if (
       this.session !== undefined &&
@@ -3468,6 +3699,8 @@ export class ConversationController {
     // A new conversation is new: the session a restart or crash left to
     // resume is not picked up by its first message (D25).
     this.resumeTarget = undefined
+    this.planTurnIds.clear()
+    this.pendingPlanTurnIds.clear()
     // The webview drops its transcript too, whoever asked: the panel's own
     // New Conversation (it spends the echo) or a keybinding (M25, D28).
     this.post({ type: 'conversationCleared' })

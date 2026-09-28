@@ -1570,6 +1570,7 @@ function withPendingCard(
     readonly attachments: readonly AttachmentSummary[]
     readonly contextLabel?: string | undefined
     readonly reference?: ChatReference | undefined
+    readonly isPlanTurn?: boolean
   },
 ): UiState {
   return {
@@ -1590,6 +1591,7 @@ function withPendingCard(
         attachments: card.attachments,
         ...(card.contextLabel !== undefined && { contextLabel: card.contextLabel }),
         ...(card.reference !== undefined && { referenceLabel: referenceLabel(card.reference) }),
+        ...(card.isPlanTurn === true && { isPlanTurn: true }),
       },
     ],
   }
@@ -1598,8 +1600,9 @@ function withPendingCard(
 /**
  * The reply that "Save plan" and "Implement in a fresh conversation" sit
  * under (M79): the conversation's latest reply, in Plan mode, once no turn
- * runs and nothing was sent after it. Neither backend marks a plan or its
- * approval on the wire, so the panel offers its own action here.
+ * runs and nothing was sent after it, answering a message this panel sent
+ * in Plan mode. Neither backend marks a plan or its approval on the wire,
+ * so the panel offers its own action here; the host checks it all again.
  */
 export function planReplyIdOf(state: UiState): string | undefined {
   if (
@@ -1610,10 +1613,18 @@ export function planReplyIdOf(state: UiState): string | undefined {
   ) {
     return undefined
   }
-  const last = state.transcript.findLast(
+  const lastIndex = state.transcript.findLastIndex(
     (entry) => entry.kind === 'assistant' || entry.kind === 'user',
   )
-  return last?.kind === 'assistant' && !last.isStreaming && last.text.trim() !== ''
+  const last = state.transcript[lastIndex]
+  const asked = state.transcript
+    .slice(0, Math.max(lastIndex, 0))
+    .findLast((entry) => entry.kind === 'user')
+  return last?.kind === 'assistant' &&
+    !last.isStreaming &&
+    last.text.trim() !== '' &&
+    asked?.kind === 'user' &&
+    asked.isPlanTurn === true
     ? last.id
     : undefined
 }
@@ -2248,7 +2259,7 @@ export function uiReducer(state: UiState, action: UiAction): UiState {
           attachments: [],
           reference: undefined,
         },
-        action,
+        { ...action, isPlanTurn: state.permissionMode === 'plan' },
       )
     }
     case 'editorContextDismissed': {

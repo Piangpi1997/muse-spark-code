@@ -295,9 +295,12 @@ the memory folders, so they are treated as ordinary edits (see
 
 ### Plans as files
 
-In Plan mode, the latest reply gets two buttons once it has finished.
+In Plan mode, the latest reply gets two buttons once it has finished, when
+the message it answers was sent in Plan mode and the turn stayed in it.
 Pressing either one approves the plan; neither backend marks a plan or its
-approval any other way.
+approval any other way. The extension reads the reply back from the backend
+on every press, so after a restart it resumes the conversation first, and it
+says why when it cannot.
 
 - **Save plan** writes the plan to `.agents/plans/YYYY-MM-DD-<slug>.md`.
   This is where Muse Code's own `plan` skill keeps plans. The slug comes
@@ -307,7 +310,14 @@ approval any other way.
   - The file holds the plan byte for byte. On Muse Code, a plan reply opens
     and closes with the skill's "Reply `go` to execute this plan…" line;
     those two lines are left out. Any other reply is saved whole.
+  - Pressing again finds the file already saved with the same content and
+    writes nothing.
   - `.agents` is a protected folder, so the save asks first.
+  - A plan may be up to 256 KB.
+  - The file is published by a hard link; on a file system without hard
+    links the save is refused rather than risk replacing a file.
+  - A plan holding HTML that the panel does not show (a comment, a tag) is
+    saved with a warning to read the file.
   - Restricted Mode saves nothing.
 - **Implement in a fresh conversation** saves the plan (unless it is
   already saved), then starts a new conversation on the same backend:
@@ -316,14 +326,19 @@ approval any other way.
   - nothing else from the planning conversation comes along, and it stays
     in History;
   - Plan mode gives way to your starting mode (`museSpark.initialPermissionMode`,
-    or Manual when that is Plan).
+    or Manual when that is Plan; never Bypass in a remote window);
+  - a plan holding HTML that the panel does not show is saved but not
+    started: read the file, then implement it from Plans….
 - **The todo list.** On the Model API backend, the plan's numbered steps
   (or its bullets, when nothing is numbered) become the todo list before
-  the first request. Muse Code keeps its todo list to the model, and MSP
-  has no command to set it, so there the brief asks Muse to put the plan's
-  steps on its list.
-- **Plans…** in the palette lists the saved plans, newest first, to open
-  one or implement it.
+  the first request, and the brief tells the model what they are. Muse Code
+  keeps its todo list to the model, and MSP has no command to set it, so
+  there the brief asks Muse to put the plan's steps on its list.
+- **Plans…** in the palette lists the saved plans, newest date first, to
+  open one or implement it. A plan file may come from anywhere (a cloned
+  repository, a tool), so implementing one from Plans… starts in Manual
+  (Plan when that is your starting mode), whatever your starting mode is,
+  and tells the model nobody confirmed who wrote it.
 
 A side chat stays in Plan mode, so it offers only Save plan. Implementing a
 saved plan is refused in Restricted Mode, because its content goes to the

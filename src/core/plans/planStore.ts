@@ -1,16 +1,19 @@
 // The workspace's saved plans (M79, PLAN.md D49): `.agents/plans/*.md`.
-// A save always makes a new file and never replaces one; every path is
-// confined to the workspace, links and junctions resolved (PLAN.md D24), and
-// the plans folder must be the workspace's own `.agents/plans`, not a link
-// to somewhere else inside it. Reads are bounded. The file system is a port.
+// A save never replaces a file: it makes a new one, or finds the same plan
+// already saved under one of its names. Every path is confined to the
+// workspace, links and junctions resolved (PLAN.md D24), and the plans
+// folder must be the workspace's own `.agents/plans`, not a link to
+// somewhere else inside it. Reads are bounded. The file system is a port.
 
 import {
   PLAN_FILE_MAX_BYTES,
+  PLAN_FILE_MAX_KB,
   PLAN_LIST_MAX,
   PLAN_NAME_ATTEMPTS,
   PLANS_DIR_SEGMENTS,
   UI_TEXT,
 } from '../../shared/constants'
+import { fill } from '../../shared/l10n/text'
 import { confineWorkspacePath, type RealPathIo } from '../workspacePath'
 import {
   isPlanFileName,
@@ -29,21 +32,26 @@ export interface PlanDirectoryEntry {
 
 export interface PlanIo extends RealPathIo {
   /**
-   * Publishes a new file with `content`, its folder created; false when a
-   * file of that name exists already, which is left as it was.
+   * Publishes a new file with `content` at `absolutePath`, the checked
+   * canonical target, its folder created and checked again before the file
+   * appears; false when a file of that name exists already, which is left
+   * as it was. Any other failure rejects.
    */
   createFile(absolutePath: string, content: string): Promise<boolean>
   /**
-   * The file's bytes, read only from `expectedCanonicalPath`'s target;
-   * `bytes` is undefined when it is missing or larger than `maxBytes`.
+   * The file's bytes, read only from `expectedCanonicalPath`'s target, never
+   * more than `maxBytes` whatever the file is; `bytes` is undefined when it
+   * is missing or larger.
    */
   readFile(
     absolutePath: string,
     maxBytes: number,
     expectedCanonicalPath: string,
   ): Promise<{ readonly bytes: Uint8Array | undefined; readonly isPdf: boolean }>
-  /** A folder's entries; none when it does not exist. */
+  /** A folder's entries; none when it does not exist, a rejection when it is not a folder. */
   listEntries(absolutePath: string): Promise<readonly PlanDirectoryEntry[]>
+  /** Removes the hidden stages a failed or interrupted save left in the folder, once stale. */
+  removeStaleStages(absolutePath: string): Promise<void>
 }
 
 export interface PlanStoreDeps {
@@ -57,6 +65,11 @@ export interface SavedPlan {
   readonly fileName: string
   /** Workspace-relative, forward slashes: `.agents/plans/<file>`. */
   readonly relativePath: string
+}
+
+/** What a save did: a new file, or the same plan found saved already. */
+export interface SaveOutcome extends SavedPlan {
+  readonly isNew: boolean
 }
 
 /** A plan read back whole. */
@@ -83,6 +96,15 @@ function isSameRelative(left: string, right: string, platform: NodeJS.Platform):
   return platform === 'win32' || platform === 'darwin'
     ? left.toLowerCase() === right.toLowerCase()
     : left === right
+}
+
+function isSameBytes(left: Uint8Array, right: Uint8Array): boolean {
+  return left.byteLength === right.byteLength && left.every((byte, index) => byte === right[index])
+}
+
+/** The refusal for a plan over the size limit, in the user's language. */
+export function planTooLargeText(): string {
+  return fill(UI_TEXT.planTooLarge, { size: PLAN_FILE_MAX_KB })
 }
 
 export class PlanStore {
@@ -114,17 +136,61 @@ export class PlanStore {
     return await this.place(`${PLANS_DIR}/${fileName}`)
   }
 
+  /** Whether the taken name already holds exactly these bytes (the same plan saved before). */
+  private async holds(fileName: string, bytes: Uint8Array): Promise<boolean> {
+    try {
+      const saved = await this.read(fileName)
+      return isSameBytes(saved.bytes, bytes)
+    } catch {
+      // Unreadable (a folder of that name, too large, gone again): not this plan.
+      return false
+    }
+  }
+
   /**
-   * Writes the plan, byte for byte, to a new file: `<date>-<slug>.md`, or
-   * the first free `-<n>` after it.
+   * Where this plan is saved already under one of the names a save would
+   * give it (the same bytes), so a second press asks nothing and writes
+   * nothing; undefined when it is not.
    */
-  public async save(content: PlanContent): Promise<SavedPlan> {
+  public async find(content: PlanContent): Promise<SavedPlan | undefined> {
+    const bytes = new TextEncoder().encode(content.text)
+    const folder = await this.place(PLANS_DIR)
+    const entries = await this.deps.io.listEntries(folder.checkedAbsolute)
+    const taken = new Set(entries.map((entry) => entry.name))
+    const slug = planSlug(content.title)
+    for (let attempt = 1; attempt <= PLAN_NAME_ATTEMPTS; attempt += 1) {
+      const fileName = planFileName(content.savedAt, slug, attempt)
+      if (!taken.has(fileName)) {
+        return undefined
+      }
+      if (await this.holds(fileName, bytes)) {
+        return { fileName, relativePath: `${PLANS_DIR}/${fileName}` }
+      }
+    }
+    return undefined
+  }
+
+  /**
+   * Saves the plan byte for byte as `<date>-<slug>.md`, or the first free
+   * `-<n>` after it. A name that already holds exactly this plan is the
+   * plan's (saved before, from this or another panel): no second copy.
+   */
+  public async save(content: PlanContent): Promise<SaveOutcome> {
+    const bytes = new TextEncoder().encode(content.text)
+    if (bytes.byteLength > PLAN_FILE_MAX_BYTES) {
+      throw new Error(planTooLargeText())
+    }
+    const folder = await this.place(PLANS_DIR)
+    await this.deps.io.removeStaleStages(folder.checkedAbsolute)
     const slug = planSlug(content.title)
     for (let attempt = 1; attempt <= PLAN_NAME_ATTEMPTS; attempt += 1) {
       const fileName = planFileName(content.savedAt, slug, attempt)
       const place = await this.planPlace(fileName)
       if (await this.deps.io.createFile(place.checkedAbsolute, content.text)) {
-        return { fileName, relativePath: place.relativePath }
+        return { fileName, relativePath: place.relativePath, isNew: true }
+      }
+      if (await this.holds(fileName, bytes)) {
+        return { fileName, relativePath: place.relativePath, isNew: false }
       }
     }
     throw new Error(UI_TEXT.planNamesTaken)
@@ -149,9 +215,7 @@ export class PlanStore {
       throw new Error(UI_TEXT.textFileInvalid)
     }
     if (read.bytes === undefined) {
-      throw new Error(
-        (await this.has(fileName)) ? UI_TEXT.textFileTooLarge : UI_TEXT.planFileMissing,
-      )
+      throw new Error((await this.has(fileName)) ? planTooLargeText() : UI_TEXT.planFileMissing)
     }
     const text = new TextDecoder('utf-8').decode(read.bytes)
     return {
@@ -162,9 +226,14 @@ export class PlanStore {
     }
   }
 
-  /** The saved plans, newest name first; one that cannot be read is listed by its name. */
+  /**
+   * The saved plans, newest date first (a plan's name starts with the day it
+   * was saved; one day's plans follow in reverse name order). One that
+   * cannot be read is listed by its name.
+   */
   public async list(): Promise<readonly PlanSummary[]> {
     const folder = await this.place(PLANS_DIR)
+    await this.deps.io.removeStaleStages(folder.checkedAbsolute)
     const entries = await this.deps.io.listEntries(folder.checkedAbsolute)
     const names = entries
       .filter((entry) => entry.kind === 'file' && isPlanFileName(entry.name))

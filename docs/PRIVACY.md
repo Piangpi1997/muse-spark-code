@@ -113,7 +113,9 @@ security notes for contributors are in `PLAN.md` §9.
   **Implement in a fresh conversation** sends that file's text to the
   backend in use, as the first message of the new conversation, as a
   picked text file would be. It sends nothing else from the planning
-  conversation. **Plans…** only reads the folder.
+  conversation. **Plans…** only reads the folder. The extension's log
+  names a saved plan by its date and a short hash of its file name, never
+  by the name, which comes from your words.
 - **Environment facts (Model API backend).** The instructions sent with
   every request name the workspace's absolute path, the operating system
   and shell, and today's date. In a trusted workspace that is a git

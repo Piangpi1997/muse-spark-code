@@ -824,9 +824,9 @@
                 event: {
                   type: 'todoChanged',
                   items: [
-                    { text: 'Add a theme setting to the settings store', status: 'inProgress' },
-                    { text: 'Add the toggle to the settings page', status: 'pending' },
-                    { text: 'Test both themes', status: 'pending' },
+                    { text: 'Add a theme setting to the settings store.', status: 'pending' },
+                    { text: 'Add the toggle to the settings page.', status: 'pending' },
+                    { text: 'Test both themes.', status: 'pending' },
                   ],
                 },
               })
@@ -2200,9 +2200,12 @@
             contextLimit: 1007997,
             sessionId: 's1',
           })
-          setDraft('Plan how to add a dark mode toggle to the settings page')
-          key({ key: 'Enter' })
-          later(100, () => {
+          // Sent once the panel is in Plan mode: only such a message's reply is a plan.
+          later(50, () => {
+            setDraft('Plan how to add a dark mode toggle to the settings page')
+            key({ key: 'Enter' })
+          })
+          later(150, () => {
             event({
               type: 'itemCompleted',
               item: {
@@ -2219,7 +2222,10 @@
             save.focus()
           })
         },
+        // On the Model API backend, where the plan's steps become the todo list.
         'plan-brief': () => {
+          window.harnessBackend = 'modelApi'
+          send({ type: 'authState', status: 'signedIn', backend: 'modelApi' })
           steps.plan()
           whenFound('.plan-actions .button-primary', (implement) => {
             implement.click()

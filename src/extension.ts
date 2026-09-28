@@ -951,7 +951,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       : createPlanFiles({
           workspaceRoot,
           platform: process.platform,
-          io: createPlanIo(log),
+          io: createPlanIo({ log, now: () => Date.now() }),
           pick: showPickOne,
           confirm: async (message, detail, action) =>
             (await vscode.window.showWarningMessage(message, { modal: true, detail }, action)) ===

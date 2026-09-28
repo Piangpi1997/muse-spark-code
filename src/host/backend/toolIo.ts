@@ -440,11 +440,16 @@ async function readBoundedFile(
   }
 }
 
-/** Picker bytes use the same single-handle cap as tool reads, on the extension host. */
+/**
+ * Picker bytes use the same single-handle cap as tool reads, on the extension
+ * host. A PDF may be as large as `pdfMaxBytes` (a document attachment's
+ * limit unless the caller holds every file to `maxBytes`, M79).
+ */
 export async function readPickedFile(
   absolutePath: string,
   maxBytes: number,
   expectedCanonicalPath?: string,
+  pdfMaxBytes: number = MAX_DOCUMENT_BYTES,
 ): Promise<{ readonly bytes: Uint8Array | undefined; readonly isPdf: boolean }> {
   try {
     const read = await readBoundedFile(
@@ -452,7 +457,7 @@ export async function readPickedFile(
       maxBytes,
       expectedCanonicalPath,
       process.platform,
-      MAX_DOCUMENT_BYTES,
+      pdfMaxBytes,
     )
     return { bytes: read.ok ? read.bytes : undefined, isPdf: read.isPdf }
   } catch (error: unknown) {

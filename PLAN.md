@@ -2434,9 +2434,10 @@ both backends comes before what serves one.
   files and tool output are data, never instructions. They are marked as
   untrusted where the model receives them, and nothing in them can raise
   a permission, pick a model or skip a question. A conversation built on
-  such content (an imported session, a PR someone else wrote) starts in a
-  mode that asks, whatever `museSpark.initialPermissionMode` says, and
-  only the user's own action relaxes it.
+  such content (an imported session, a PR someone else wrote, a plan file
+  picked from Plans… in M79) starts in a mode that asks, whatever
+  `museSpark.initialPermissionMode` says, and only the user's own action
+  relaxes it.
 - **Automatic actions follow the mode.** Anything the extension runs on
   its own (checks after an edit, a memory flush, a review turn) takes the
   same path as the call it stands for: a shell command asks wherever the
@@ -6796,7 +6797,9 @@ harness scenario, which is what the accessibility gate checks (D32).
 
 ### M79 — Plans as files (D49)
 
-**Status 2026-09-28: built on `feature/m79-plans-as-files`; certified in
+**Status 2026-09-28: built on `feature/m79-plans-as-files`, then fixed in
+one pass after three class reviews (the file brief as untrusted content,
+restart, plan turns, hidden HTML, the folder re-check); certified in
 `docs/certification/m79.md`. Not pushed; no pull request yet.**
 
 - **Goal.** A plan the user approved survives and can drive a clean run.
@@ -6832,8 +6835,16 @@ harness scenario, which is what the accessibility gate checks (D32).
   - **The approval.** "Save plan" and "Implement in a fresh conversation"
     appear under the latest Plan-mode reply once no turn runs; pressing
     either is the approval. The host reads the reply back from the backend
-    (`readSession`) and takes it only while it is the latest reply, after
-    the latest prompt, in Plan mode. The webview's ids only name it.
+    (`readSession`) on every press and takes it only while it is the latest
+    finished reply, after the latest prompt, in Plan mode, from a turn this
+    panel started in Plan mode that stayed in it (a message steered into a
+    running turn does not make it one). The webview's ids only name it.
+    - After a restart (a setting, trust granted, the host gone) the
+      conversation is resumed first (`resumeTarget`); when the panel no
+      longer holds it, the press says so. History mode `none` says the
+      history was not served.
+    - A second press finds the file already holding the same bytes and
+      writes nothing; a plan over 256 KB is refused at save.
   - **The file (D13).** Muse Code's own convention:
     `.agents/plans/YYYY-MM-DD-<slug>.md`, a numeric suffix on a taken name,
     the plan byte for byte.
@@ -6843,11 +6854,17 @@ harness scenario, which is what the accessibility gate checks (D32).
     - No front matter, so the title lives in the file name, and the source
       conversation's session id in the log line that names the file.
     - It is published by a hard link from a hidden stage, so it never
-      replaces a file (`createFileExclusively`, shared with memory).
+      replaces a file (`createFileExclusively`, shared with memory). A file
+      system without hard links refuses the save. A stage the OS holds is
+      removed again; one left by a crash is swept after five minutes.
     - It is confined to the workspace's own `.agents/plans`; a link or
-      junction there is refused.
+      junction there is refused, and the folder is checked again after it
+      is made and before the link (memory too), so a swap after the check
+      is refused. Node cannot link relative to a folder handle, so a swap
+      between that last check and the link is outside the guarantee.
     - `.agents` is a protected path (D24), so the save asks in a modal.
     - Restricted Mode refuses it.
+    - The log names the file by its date and a hash, never the slug (M39).
   - **The brief.** "Start a new conversation from a brief"
     (`ConversationBrief`, `startFromBrief`) is its own piece, for M74's
     `/handoff`.
@@ -6855,20 +6872,38 @@ harness scenario, which is what the accessibility gate checks (D32).
     - The conversation is then cleared (History keeps it), Plan mode gives
       way to the starting mode, and the brief goes as the first message.
       Its card is the host's `briefSubmitted`.
-    - The plan file travels as named text on both backends (M54), with a
-      MODEL_TEXT note after it.
+    - The plan file travels as named text on both backends (M54), after an
+      English MODEL_TEXT request and before a MODEL_TEXT note; the card
+      shows the localized text.
     - Nothing else from the old conversation comes along: no editor
       context, no reference, no goal.
+    - **Two kinds of brief (D49 "Untrusted content").** A reply saved from
+      a Plan-mode turn of the conversation on screen is the plan the user
+      approved: its note says so, and it starts in the starting mode
+      (Manual when that is Plan, never Bypass in a remote window). A file
+      picked from Plans… may come from a cloned repository or a tool: it
+      starts in Manual (Plan when that is the starting mode), whatever
+      `initialPermissionMode` says, its note tells the model nobody
+      confirmed who wrote it, and the panel names the mode.
+    - A reply holding raw HTML that the Markdown view hides is saved with
+      a warning and not started; the user reads the file and starts it from
+      Plans…, as untrusted content.
     - Implementing a saved plan is refused in Restricted Mode.
+    - A brief the backend refuses leaves nothing behind: its chip goes with
+      the card, the todo list it set is taken back, and no "started" notice
+      is said. A brief overtaken by another action says it was saved but not
+      started.
   - **The todo list.** The top-level numbered items, else the top-level
     bullets, outside code; at most 50.
     - Model API: `AgentSession.setTodos`, before the first request, refused
-      while a turn runs.
+      while a turn runs. The harness does not send the list to the model,
+      so the note lists the steps it was set to (cut where long).
     - Muse Code: the note asks the model to take the steps as its list, and
       the panel says so.
-  - **Plans…** in the palette lists `.agents/plans/*.md` newest first, to
-    open or implement.
-  - **One plan action at a time.** A second press is dropped.
+  - **Plans…** in the palette lists `.agents/plans/*.md` newest date first
+    (names start with the date), to open or implement. A plan file is read
+    with the plan limit only, even when it starts like a PDF.
+  - **One plan action at a time.** A second press is dropped, and said.
 - **Acceptance.**
   - The captured reply saves byte for byte as its body.
   - Implement on the fake MSP host sends the file, the note and the
@@ -6877,9 +6912,15 @@ harness scenario, which is what the accessibility gate checks (D32).
     and nothing of the planning turn is in it.
   - Restricted Mode, a no, a stale reply, a side chat, a plan neither
     backend takes and a double press all start or write nothing.
-  - The live Model API case (7 requests) saved a plan, implemented it, and
-    the model moved the seeded list to completed.
-  - The harness has `plan`, `plan-brief` and `plan-narrow`.
+  - A plan from Plans… starts in Manual (Plan when that is the starting
+    mode) with the untrusted note, on the fake MSP host.
+  - The live Model API case drove the panel's controller (10 requests):
+    Plan mode, Save plan, Implement found the file saved and started a
+    Manual conversation whose seeded list the model moved to completed.
+    Muse Code Implement was not run live; its side rests on the capture and
+    the fake MSP host.
+  - The harness has `plan`, `plan-brief` (the Model API render: the seeded
+    list, all pending) and `plan-narrow`.
 - **Left.** None of the milestone. Not taken: the plan skill's precedence
   for a stronger plan location (`specs/…/plan.md`, `docs/plans/`), which is
   the model's judgement, not a fixed name (D13).

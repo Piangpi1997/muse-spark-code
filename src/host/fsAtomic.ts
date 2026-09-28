@@ -16,6 +16,7 @@ import { randomUUID } from 'node:crypto'
 import { constants } from 'node:fs'
 import { access, link, mkdir, open, realpath, rename, rm, stat } from 'node:fs/promises'
 import path from 'node:path'
+import { setTimeout as delay } from 'node:timers/promises'
 import { isSamePath } from '../core/paths'
 import {
   ATOMIC_RENAME_ATTEMPTS,
@@ -184,32 +185,130 @@ export async function writeFileAtomically(
 export interface NewFileOptions {
   /** The file's mode before the umask; the file keeps the stage's inode. */
   readonly mode: number
-  /** A warning when cleanup fails after the target has already been published. */
-  readonly warn: (message: string) => void
+  /**
+   * The folder's canonical form, links resolved, that the file must land
+   * in: the checked one when the caller confined the path already, else the
+   * folder's form when the create starts.
+   */
+  readonly expectedDirectory?: string
+  /**
+   * A stage that could not be removed: `isPublished` says whether the file
+   * was published first (complete under its name) or the create failed.
+   */
+  readonly warn: (stage: string, isPublished: boolean, error: unknown) => void
   /** Replace the hard-link call in a deterministic publication test. */
   readonly publish?: (stage: string, target: string) => Promise<void>
+  /** Waits between removal attempts; injectable so tests do not sleep. */
+  readonly sleep?: (ms: number) => Promise<void>
+  /** Removes the stage (`fs.rm`); tests stand in a scanner holding it. */
+  readonly remove?: (stage: string) => Promise<void>
+  /** Runs once the stage is written and closed, before the last check; tests swap the folder here. */
+  readonly staged?: () => Promise<void>
+  readonly platform?: NodeJS.Platform
+}
+
+const NAME_TAKEN_ERROR = 'NameTakenError'
+// What the hard link answers when the name is taken.
+const NAME_TAKEN_CODE = 'EEXIST'
+// What mkdir answers when a part of the folder's path is a file.
+const NOT_A_FOLDER_CODES: ReadonlySet<string> = new Set(['EEXIST', 'ENOTDIR'])
+
+/**
+ * The target's name was taken when the file was to be published: nothing
+ * was written. It keeps `code: 'EEXIST'`, as the link's own error had it.
+ */
+class NameTakenError extends Error {
+  public readonly code = NAME_TAKEN_CODE
+
+  public constructor(target: string, cause: unknown) {
+    super(`${target} exists already`, { cause })
+    this.name = NAME_TAKEN_ERROR
+  }
+}
+
+/** Whether `createFileExclusively` found the name taken (and nothing else went wrong). */
+export function isNameTaken(error: unknown): boolean {
+  return error instanceof Error && error.name === NAME_TAKEN_ERROR
+}
+
+/** Refuses a folder that now leads somewhere else than it did when it was checked. */
+async function assertSameDirectory(
+  directory: string,
+  expected: string,
+  platform: NodeJS.Platform,
+): Promise<void> {
+  if (!isSamePath(await canonicalPath(directory), expected, platform)) {
+    throw new Error(`${directory} now leads elsewhere through a link`)
+  }
+}
+
+function removeFile(target: string): Promise<void> {
+  return rm(target, { force: true })
+}
+
+/** Removes a stage, again while Windows reports it held (a scanner, an indexer). */
+async function removeStage(
+  stage: string,
+  sleep: (ms: number) => Promise<void>,
+  remove: (stage: string) => Promise<void>,
+): Promise<void> {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      await remove(stage)
+      return
+    } catch (error: unknown) {
+      const code = errorCode(error)
+      if (
+        code === undefined ||
+        !RENAME_RETRY_CODES.has(code) ||
+        attempt >= ATOMIC_RENAME_ATTEMPTS
+      ) {
+        throw error
+      }
+      await sleep(ATOMIC_RENAME_DELAY_MS * 2 ** (attempt - 1))
+    }
+  }
 }
 
 /**
  * Creates `absolutePath` with `content` (UTF-8), its folder made, and never
  * replaces a file already there: the content goes to a hidden stage beside
- * it, which a hard link then publishes under the target name. The link fails
- * with EEXIST when the name is taken, so a reader never sees half a file and
- * another writer's file is never replaced. File systems without hard links
- * fail closed; copy and rename cannot make both guarantees.
+ * it, which a hard link then publishes under the target name. A taken name
+ * is a `NameTakenError` (see `isNameTaken`), so a reader never sees half a
+ * file and another writer's file is never replaced. File systems without
+ * hard links fail closed; copy and rename cannot make both guarantees.
+ *
+ * The folder is checked against `expectedDirectory` after it is made and
+ * again just before the link, so a folder swapped for a link or junction in
+ * between is refused. Node cannot link relative to a held folder handle, so
+ * a swap between that last check and the link itself stays outside the
+ * guarantee, as for `writeFileAtomically`.
  */
 export async function createFileExclusively(
   absolutePath: string,
   content: string,
   options: NewFileOptions,
 ): Promise<void> {
+  const platform = options.platform ?? process.platform
+  const sleep = options.sleep ?? delay
   const directory = path.dirname(absolutePath)
-  await mkdir(directory, { recursive: true })
+  const expected = options.expectedDirectory ?? (await canonicalPath(directory))
+  try {
+    await mkdir(directory, { recursive: true })
+  } catch (error: unknown) {
+    const code = errorCode(error)
+    if (code !== undefined && NOT_A_FOLDER_CODES.has(code)) {
+      throw new Error(`${directory} is not a folder`, { cause: error })
+    }
+    throw error
+  }
+  await assertSameDirectory(directory, expected, platform)
   const stage = path.join(
     directory,
     `.${path.basename(absolutePath)}.${randomUUID()}${ATOMIC_TEMPORARY_SUFFIX}`,
   )
   let hasOwnedStage = false
+  let isPublished = false
   try {
     const handle = await open(stage, 'wx', options.mode)
     hasOwnedStage = true
@@ -219,15 +318,22 @@ export async function createFileExclusively(
     } finally {
       await handle.close()
     }
-    await (options.publish ?? link)(stage, absolutePath)
+    await options.staged?.()
+    await assertSameDirectory(directory, expected, platform)
+    try {
+      await (options.publish ?? link)(stage, absolutePath)
+    } catch (error: unknown) {
+      throw errorCode(error) === NAME_TAKEN_CODE ? new NameTakenError(absolutePath, error) : error
+    }
+    isPublished = true
   } finally {
     if (hasOwnedStage) {
       try {
-        await rm(stage, { force: true })
+        await removeStage(stage, sleep, options.remove ?? removeFile)
       } catch (error: unknown) {
-        // Once linked, the file is complete. Keep that success; the hidden
-        // stage can be cleaned later.
-        options.warn(`stage ${stage} could not be removed: ${String(error)}`)
+        // A published file is complete whatever happens to its stage; a
+        // stage left beside it is swept later (plans) or harmless (memory).
+        options.warn(stage, isPublished, error)
       }
     }
   }

@@ -4,14 +4,32 @@
 // (a junction, which Windows makes without privilege, is refused), bounded
 // reads, and the Plans… listing.
 
+import { randomUUID } from 'node:crypto'
 import { realpathSync } from 'node:fs'
-import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises'
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rename,
+  rm,
+  symlink,
+  utimes,
+  writeFile,
+} from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { PlanStore } from '../../src/core/plans/planStore'
 import { createPlanIo } from '../../src/host/planFeatures'
-import { PLAN_FILE_MAX_BYTES, PLAN_NAME_ATTEMPTS, UI_TEXT } from '../../src/shared/constants'
+import {
+  ATOMIC_TEMPORARY_SUFFIX,
+  PLAN_FILE_MAX_BYTES,
+  PLAN_NAME_ATTEMPTS,
+  PLAN_STAGE_STALE_MS,
+  UI_TEXT,
+} from '../../src/shared/constants'
+import { fill } from '../../src/shared/l10n/text'
 import { FakeLogOutputChannel } from './helpers/fakes'
 import { CAPTURED_PLAN_BODY } from './helpers/m79Capture'
 import { pdfFixture } from './helpers/pdfFixture'
@@ -39,7 +57,7 @@ async function workspace(name: string): Promise<{ root: string; store: PlanStore
     store: new PlanStore({
       workspaceRoot: root,
       platform: process.platform,
-      io: createPlanIo(log),
+      io: createPlanIo({ log, now: () => Date.now() }),
     }),
   }
 }
@@ -59,11 +77,124 @@ describe('PlanStore on the file system (M79)', () => {
     expect(saved).toEqual({
       fileName: '2026-09-27-add-a-readme.md',
       relativePath: '.agents/plans/2026-09-27-add-a-readme.md',
+      isNew: true,
     })
     const written = await readFile(path.join(plansFolder(root), saved.fileName))
     expect(written.equals(Buffer.from(CAPTURED_PLAN_BODY, 'utf8'))).toBe(true)
     // No stage is left beside it.
     expect(await readdir(plansFolder(root))).toEqual([saved.fileName])
+  })
+
+  it('finds the same plan saved already instead of writing it twice', async () => {
+    const { root, store } = await workspace('same')
+    const content = { title: 'Same', savedAt: NOON, text: '1. Once.' }
+    await expect(store.find(content)).resolves.toBeUndefined()
+    await store.save(content)
+    await expect(store.find(content)).resolves.toEqual({
+      fileName: '2026-09-27-same.md',
+      relativePath: '.agents/plans/2026-09-27-same.md',
+    })
+    // Another panel saving it again gets the same file, not a -2.
+    await expect(store.save(content)).resolves.toMatchObject({
+      fileName: '2026-09-27-same.md',
+      isNew: false,
+    })
+    // Edited since: a different plan under that name, so a new file.
+    await writeFile(path.join(plansFolder(root), '2026-09-27-same.md'), '1. Edited.')
+    await expect(store.find(content)).resolves.toBeUndefined()
+    await expect(store.save(content)).resolves.toMatchObject({
+      fileName: '2026-09-27-same-2.md',
+      isNew: true,
+    })
+  })
+
+  it('says a file where the plans folder should be is not a folder, never that every name is taken', async () => {
+    const { root, store } = await workspace('not-a-folder')
+    await mkdir(path.join(root, '.agents'), { recursive: true })
+    await writeFile(plansFolder(root), 'a file')
+    await expect(store.save({ title: 'x', savedAt: NOON, text: 'x' })).rejects.toThrow(
+      /not a folder|ENOTDIR/,
+    )
+    await expect(store.list()).rejects.toThrow(/ENOTDIR|not a directory/)
+  })
+
+  it('removes a stale hidden stage on the next save or listing, and leaves a fresh one', async () => {
+    const { root, store } = await workspace('stages')
+    await mkdir(plansFolder(root), { recursive: true })
+    const stale = path.join(plansFolder(root), `.a.md.${randomUUID()}${ATOMIC_TEMPORARY_SUFFIX}`)
+    const fresh = path.join(plansFolder(root), `.b.md.${randomUUID()}${ATOMIC_TEMPORARY_SUFFIX}`)
+    // An old plan is not a stage: only the hidden stage names are swept.
+    const oldPlan = path.join(plansFolder(root), '2026-09-01-old.md')
+    await writeFile(stale, 'left by a crash')
+    await writeFile(fresh, 'a save under way')
+    await writeFile(oldPlan, '# Old')
+    const old = new Date(Date.now() - PLAN_STAGE_STALE_MS - 1000)
+    await utimes(stale, old, old)
+    await utimes(oldPlan, old, old)
+    await expect(store.list()).resolves.toEqual([
+      {
+        fileName: '2026-09-01-old.md',
+        relativePath: '.agents/plans/2026-09-01-old.md',
+        title: 'Old',
+      },
+    ])
+    const left = await readdir(plansFolder(root))
+    expect(new Set(left)).toEqual(new Set([path.basename(fresh), '2026-09-01-old.md']))
+  })
+
+  it('refuses a plans folder swapped for a junction after it was checked, writing nothing there', async () => {
+    const { root } = await workspace('swapped')
+    const folder = plansFolder(root)
+    const elsewhere = path.join(paths.root, 'swapped-elsewhere')
+    await mkdir(folder, { recursive: true })
+    await mkdir(elsewhere, { recursive: true })
+    const io = createPlanIo({ log, now: () => Date.now() })
+    const store = new PlanStore({
+      workspaceRoot: root,
+      platform: process.platform,
+      io: {
+        ...io,
+        // The name was checked; the folder is swapped before the file is made.
+        createFile: async (absolutePath, content) => {
+          await rename(folder, `${folder}-moved`)
+          await symlink(elsewhere, folder, 'junction')
+          return await io.createFile(absolutePath, content)
+        },
+      },
+    })
+    try {
+      await expect(store.save({ title: 'x', savedAt: NOON, text: 'x' })).rejects.toThrow(
+        /now leads elsewhere/,
+      )
+      expect(await readdir(elsewhere)).toEqual([])
+    } finally {
+      await rm(folder, { force: true })
+    }
+  })
+
+  it('holds a file that looks like a PDF to the plan limit, never the document one', async () => {
+    const { root, store } = await workspace('pdf-like')
+    await mkdir(plansFolder(root), { recursive: true })
+    const big = Buffer.concat([
+      Buffer.from('%PDF-1.7\n'),
+      Buffer.alloc(PLAN_FILE_MAX_BYTES * 2, 0x20),
+    ])
+    await writeFile(path.join(plansFolder(root), 'looks.md'), big)
+    await expect(store.read('looks.md')).rejects.toThrow(UI_TEXT.textFileInvalid)
+    const io = createPlanIo({ log, now: () => Date.now() })
+    const target = path.join(plansFolder(root), 'looks.md')
+    const read = await io.readFile(target, PLAN_FILE_MAX_BYTES, target)
+    // The size, not the bytes: a failure names a number, not half a megabyte.
+    expect({ size: read.bytes?.byteLength, isPdf: read.isPdf }).toEqual({
+      size: undefined,
+      isPdf: true,
+    })
+  })
+
+  it('refuses names with control or format characters', async () => {
+    const { store } = await workspace('names')
+    await expect(store.read('a\nb.md')).rejects.toThrow(/not a plan file name/)
+    await expect(store.read('evil\u{202E}dm.exe.md')).rejects.toThrow(/not a plan file name/)
   })
 
   it('never replaces a file: a taken name gets the next numeric suffix', async () => {
@@ -136,7 +267,13 @@ describe('PlanStore on the file system (M79)', () => {
     expect(Buffer.from(plan.bytes).toString('utf8')).toBe('# Read me\n\n1. One.')
     await expect(store.read('2026-09-27-gone.md')).rejects.toThrow(UI_TEXT.planFileMissing)
     await writeFile(path.join(plansFolder(root), 'big.md'), 'x'.repeat(PLAN_FILE_MAX_BYTES + 1))
-    await expect(store.read('big.md')).rejects.toThrow(UI_TEXT.textFileTooLarge)
+    const tooLarge = fill(UI_TEXT.planTooLarge, { size: PLAN_FILE_MAX_BYTES / 1024 })
+    await expect(store.read('big.md')).rejects.toThrow(tooLarge)
+    // A plan it could not read back is not saved either.
+    await expect(
+      store.save({ title: 'big', savedAt: NOON, text: 'x'.repeat(PLAN_FILE_MAX_BYTES + 1) }),
+    ).rejects.toThrow(tooLarge)
+    expect(await readdir(plansFolder(root))).not.toContain('2026-09-27-big.md')
     await writeFile(path.join(plansFolder(root), 'fake.md'), Buffer.from(pdfFixture(1)))
     await expect(store.read('fake.md')).rejects.toThrow(UI_TEXT.textFileInvalid)
     await expect(store.read('../escape.md')).rejects.toThrow(/not a plan file name/)

@@ -24,9 +24,22 @@ happened, not what was planned; superseded entries are kept.
     text, and nothing else from the planning conversation, which stays in
     History. Plan mode gives way to the starting mode.
   - On the Model API backend, the plan's steps become the todo list before
-    the first request. On Muse Code, which keeps its todo list to the model,
-    the brief asks Muse to list the steps.
-  - **Plans…** in the palette lists the saved plans to open or implement.
+    the first request, and the brief names them. On Muse Code, which keeps
+    its todo list to the model, the brief asks Muse to list the steps.
+  - **Plans…** in the palette lists the saved plans, newest date first, to
+    open or implement. A plan file is untrusted content (PLAN.md D49): one
+    implemented from Plans… starts in Manual (Plan when that is the
+    starting mode) and is never presented to the model as approved.
+  - Only a reply to a message sent in Plan mode, in a turn that stayed in
+    it, counts as a plan. Save and Implement resume the conversation after
+    a restart, find a plan already saved instead of writing it twice, and
+    say why when they do nothing. A plan with HTML the panel hides is saved
+    with a warning and not started. The log names a plan by its date and a
+    hash, never its file name.
+- **Memory and plans: folder re-check.** A new memory note or plan is
+  refused when its folder was swapped for a link or junction after it was
+  checked (`createFileExclusively` checks again after making the folder and
+  before publishing).
 
 ### Changed
 

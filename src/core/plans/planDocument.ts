@@ -3,13 +3,15 @@
 // `.agents/plans/YYYY-MM-DD-<slug>.md`, a short numeric suffix when that
 // name is taken, and the file's content is exactly the plan's body. The
 // name it gets, the body a reply holds, how a file is read back, and the
-// steps that seed a new conversation's todo list. Pure: no file system,
-// no `vscode`.
+// steps that seed a new conversation's todo list. No file system, no
+// `vscode`.
 
+import { createHash } from 'node:crypto'
 import {
   MUSE_PLAN_HANDOFF_LEAD,
   MUSE_PLAN_HANDOFF_TAIL,
   PLAN_FILE_EXTENSION,
+  PLAN_LOG_HASH_CHARS,
   PLAN_SLUG_FALLBACK,
   PLAN_SLUG_MAX_CHARS,
   PLAN_STEP_MAX_CHARS,
@@ -49,21 +51,45 @@ const WHITESPACE = /\s+/g
 const NOT_SLUG = /[^\p{L}\p{M}\p{N}]+/gu
 // The accents of Latin, Greek and Cyrillic letters once decomposed; kana's
 // voicing marks and Hangul's jamo are left to recompose.
-const COMBINING_ACCENTS = /[̀-ͯ]+/g
+const COMBINING_ACCENTS = /[\u{300}-\u{36F}]+/gu
 const EDGE_HYPHENS = /^-+|-+$/g
 const LEADING_BREAKS = /^(?:\r?\n)+/
 const TRAILING_BREAKS = /(?:\r?\n)+$/
-// A separator, a drive or stream colon, or a NUL: never part of a plan's own name.
-const UNSAFE_NAME_CHARACTER = /[\\/:\0]/
+// A separator, a drive or stream colon, a control character (a line break
+// would reach the brief unquoted) or a format character (a right-to-left
+// override would disguise the name in Plans…): never part of a plan's name.
+const UNSAFE_NAME_CHARACTER = /[\\/:\p{Cc}\p{Cf}]/u
+// Raw HTML outside code, which the panel's Markdown view does not show: a
+// comment, a declaration or processing instruction, or a tag, even one
+// whose attributes go on past the line. A tag name ends at a space, `/`,
+// `>` or the line's end, so a Markdown autolink (`<https://…>`, `<a@b.c>`),
+// which the panel shows, is not one.
+const INLINE_CODE = /`[^`\n]*`/g
+const HIDDEN_MARKUP = /<!--|<[!?][A-Za-z]|<!\[|<\/?[A-Za-z][\w-]*(?=[\s/>]|$)/
+const ISO_DATE_CHARS = 10
 const DATE_PAD = 2
 const ELLIPSIS = '…'
+
+// Characters as the user sees them: a cut never splits a pair or a cluster.
+const GRAPHEMES = new Intl.Segmenter(undefined, { granularity: 'grapheme' })
+
+function graphemes(text: string): readonly string[] {
+  return Array.from(GRAPHEMES.segment(text), (part) => part.segment)
+}
 
 function oneLine(text: string): string {
   return text.replaceAll(WHITESPACE, ' ').trim()
 }
 
+/** At most `maxChars` characters, never split, an ellipsis when cut. */
 function cut(text: string, maxChars: number): string {
-  return text.length <= maxChars ? text : `${text.slice(0, maxChars - 1).trimEnd()}${ELLIPSIS}`
+  const characters = graphemes(text)
+  return characters.length <= maxChars
+    ? text
+    : `${characters
+        .slice(0, maxChars - 1)
+        .join('')
+        .trimEnd()}${ELLIPSIS}`
 }
 
 /** The lines outside fenced code blocks. */
@@ -138,9 +164,27 @@ export function planSlug(title: string): string {
     .toLowerCase()
     .replaceAll(NOT_SLUG, '-')
     .replaceAll(EDGE_HYPHENS, '')
-    .slice(0, PLAN_SLUG_MAX_CHARS)
-    .replaceAll(EDGE_HYPHENS, '')
-  return slug === '' ? PLAN_SLUG_FALLBACK : slug
+  // Cut by characters: a pair cut in half would reach the disk as U+FFFD.
+  const kept = graphemes(slug).slice(0, PLAN_SLUG_MAX_CHARS).join('').replaceAll(EDGE_HYPHENS, '')
+  return kept === '' ? PLAN_SLUG_FALLBACK : kept
+}
+
+/**
+ * How the log names a plan file: its date and a short hash of its name,
+ * never the slug, which is drawn from what the user or the model wrote (M39).
+ */
+export function planLogName(fileName: string): string {
+  const hash = createHash('sha256').update(fileName).digest('hex').slice(0, PLAN_LOG_HASH_CHARS)
+  return `${fileName.slice(0, ISO_DATE_CHARS)}-#${hash}${PLAN_FILE_EXTENSION}`
+}
+
+/**
+ * Whether the plan holds raw HTML outside code: a comment or a tag, which the
+ * panel's Markdown view leaves out, so the user did not see all of what the
+ * model would be sent.
+ */
+export function hasHiddenMarkup(text: string): boolean {
+  return proseLines(text).some((line) => HIDDEN_MARKUP.test(line.replaceAll(INLINE_CODE, '')))
 }
 
 /** `2026-09-27`: the local calendar day. */
@@ -187,6 +231,11 @@ export function planSteps(body: string): readonly string[] {
     ;(numbered === undefined ? bullets : ordered).push(text)
   }
   return (ordered.length > 0 ? ordered : bullets).slice(0, PLAN_STEPS_MAX)
+}
+
+/** The steps as numbered lines, as the model is told its todo list was set. */
+export function numberedSteps(steps: readonly string[]): string {
+  return steps.map((step, index) => `${String(index + 1)}. ${step}`).join('\n')
 }
 
 /** Whether a name is a plan file's own: one path segment ending in `.md`. */

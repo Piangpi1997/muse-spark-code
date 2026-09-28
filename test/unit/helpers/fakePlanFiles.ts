@@ -35,6 +35,8 @@ function memoryPlanIo(files: Map<string, string>): PlanIo {
         isPdf: false,
       })
     },
+    // A map leaves no stages behind.
+    removeStaleStages: () => Promise.resolve(),
     listEntries: (absolutePath) => {
       const entries: PlanDirectoryEntry[] = []
       for (const file of files.keys()) {
