@@ -74,8 +74,11 @@ them, the milestone plan, and the certification checklist.
     billed to the Model API key: offered on the Model API backend, and on
     the Muse Code backend only while a key is stored and only through the
     extension itself (the `ide` server, M44; the key never reaches
-    `muse serve`). One that can ask first does, in every mode, Bypass
-    included. The subscription never pays for one.
+    `muse serve`). Every use asks first in the paid-use popup (M58, D48:
+    `PaidUseConsent` in `src/core/paid/paidConsent.ts`, Allow once / Allow
+    always in this workspace / Deny), in every mode, Bypass included; a
+    paid call never gets an approval card or a session rule. The
+    subscription never pays for one.
 13. **Wire shapes come from a live capture.** A row, parser or schema for
     something Muse Code or the Model API sends is written from a captured
     frame (the certification record names the capture, its workspace and its

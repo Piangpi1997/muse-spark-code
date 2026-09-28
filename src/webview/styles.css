@@ -1279,26 +1279,12 @@ body {
   font-size: 0.85em;
 }
 
-/* The price on a paid call's card (M34): as loud as the paid badge. */
-.approval-paid {
-  padding: 0 6px;
-  border: 1px solid var(--vscode-editorWarning-foreground, var(--vscode-panel-border));
-  border-radius: 999px;
-  color: var(--vscode-foreground);
-}
-
-/* What an image card would create (M34). */
+/* What a subagent spawn's card would start (M18). */
 .approval-prompt {
   margin: 4px 0;
   padding-left: var(--ms-gap);
   border-left: 2px solid var(--vscode-panel-border);
   white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-
-/* The images an edit starts from (M44). */
-.approval-sources {
-  margin: 4px 0;
   overflow-wrap: anywhere;
 }
 
@@ -1953,6 +1939,15 @@ body {
 
 .usage-setup p {
   margin: 0;
+}
+
+/* The paid features allowed always in this workspace, and "Ask again" (M58). */
+.usage-paid-always {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--ms-gap);
+  min-width: 0;
 }
 
 .usage-facts dt {

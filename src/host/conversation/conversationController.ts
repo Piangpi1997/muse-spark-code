@@ -78,6 +78,7 @@ import {
 import { effortForThinking, effortLevelsFor, isEffortLevel } from '../../shared/effort'
 import type { AgentEvent, ApprovalChoice, ItemSnapshot } from '../../shared/agentEvents'
 import { fill, plural } from '../../shared/l10n/text'
+import type { PaidUseRequest } from '../../shared/paid'
 import type { ScheduleCadence, ScheduledPrompt } from '../../shared/schedule'
 import { formatMention, parseSkillInvocation } from '../../shared/mentions'
 import { approvalModeFor } from '../../shared/permissionModes'
@@ -269,9 +270,16 @@ export interface ConversationDeps {
    * running here (M46): the keybinding's context key follows.
    */
   readonly onForegroundTasksChanged: () => void
-  /** A separate yes for each due Model API turn, naming prompt and token price (M52). */
+  /**
+   * A separate yes for each due Model API turn, naming prompt and token price
+   * (M52): the paid-use popup (M58).
+   */
   readonly confirmScheduledRun?: (job: ScheduledPrompt, modelId: string) => Promise<boolean>
   readonly isScheduledPaidOn?: () => boolean
+  /** The paid-use popup (M58, PLAN.md D48): before each Muse Voice recording. */
+  readonly allowsPaidUse: (request: PaidUseRequest) => Promise<boolean>
+  /** Account & usage's "Ask again": every paid feature asks again in this workspace (M58). */
+  readonly forgetPaidUse: () => Promise<void>
   readonly now: () => number
   readonly log: Logger
 }
@@ -530,6 +538,11 @@ export class ConversationController {
    * the transcript of what it already sent arrives or the panel closes.
    */
   private retiredDictation: DictationHandle | undefined
+  /**
+   * Counts every microphone press (M58): a Muse Voice start waits for the
+   * paid-use popup, and a stop pressed meanwhile cancels it.
+   */
+  private dictationPresses = 0
   /** Approvals "Edit automatically" answered itself (D24): their resolution is labelled so. */
   private readonly autoApproved = new Set<string>()
   /** The remote-window Bypass confirmation, given once per conversation (D24). */
@@ -3614,7 +3627,18 @@ export class ConversationController {
     return this.dictation
   }
 
-  private handleDictation(action: DictationAction): void {
+  private async handleDictation(action: DictationAction): Promise<void> {
+    this.dictationPresses += 1
+    const press = this.dictationPresses
+    const choice = this.dictationChoice()
+    if (action === 'start' && choice.engine === 'museVoice' && choice.setup.isAvailable) {
+      // Each Muse Voice recording is paid: the popup first (M58, PLAN.md D48).
+      const isAllowed = await this.deps.allowsPaidUse({ feature: 'voice' })
+      if (!isAllowed || press !== this.dictationPresses) {
+        this.postDictationState()
+        return
+      }
+    }
     const driver = this.dictationDriver()
     if (driver === undefined) {
       // The button is disabled with the reason; a stray press re-sends it.
@@ -3921,7 +3945,7 @@ export class ConversationController {
         break
       }
       case 'dictation': {
-        this.handleDictation(message.action)
+        await this.handleDictation(message.action)
         break
       }
       case 'readUsage': {
@@ -3930,6 +3954,10 @@ export class ConversationController {
       }
       case 'setPaidFeature': {
         await this.deps.setPaidFeature(message.feature, message.isOn)
+        break
+      }
+      case 'forgetPaidUse': {
+        await this.deps.forgetPaidUse()
         break
       }
     }

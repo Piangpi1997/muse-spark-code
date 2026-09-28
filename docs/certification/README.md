@@ -71,3 +71,4 @@ The PNGs beside the records are that day's harness renders.
 - [0.9.0 release fixes](release-0.9.0.md): Model API keys in Meta's current format, hooks only in a trusted workspace, the search worker's parsed job (PLAN.md §10)
 - [0.9.1](release-0.9.1.md): Muse Code 1.4.0 on Windows: rename, fork and the sandbox warning limited for every version; known 1.4.0 schema fingerprints (PLAN.md D26 amendment)
 - [M57](m57.md): the Model API backend out of the activation bundle into `dist/modelApi.js`, the identity audit and the bundle-split gate (PLAN.md D6)
+- [M58](m58.md): a popup before every paid use: Allow once, Allow always in this workspace, or Deny (PLAN.md D48)

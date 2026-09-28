@@ -2381,6 +2381,7 @@ describe('App: Model API scheduled prompts (M52)', () => {
         features: ['scheduledPrompts'],
         tally: { webSearches: 0, images: 0, voiceSeconds: 0, scheduledRuns: 0 },
         isKeyStored: true,
+        alwaysAllowed: [],
       },
     })
     fireEvent.click(screen.getByRole('button', { name: 'Run scheduled prompt job-a' }))

@@ -9,6 +9,20 @@ happened, not what was planned; superseded entries are kept.
 
 ### Changed
 
+- **Every paid use asks first, in a popup** (M58, PLAN.md D48): **Allow
+  once**, **Allow always in this workspace**, or **Deny**, in every
+  permission mode, Bypass included. It covers each image (on either
+  backend), each subagent task, each scheduled run, each Muse Voice
+  recording, and web search once per prompt (Deny sends the prompt without
+  it). Web search and Muse Voice asked nothing per use before; images and
+  child tasks asked on an in-chat card, which is gone.
+- **Allow always in this workspace** is offered only in a trusted
+  workspace with a folder open, lapses everywhere when the feature is turned
+  off or a new price is accepted, and **Ask again every time** in Account &
+  usage takes it back. A paid image aimed at a protected path, and a hook
+  that demands a question, still ask. Account & usage and the paid badge's
+  tooltip name what no longer asks; every use stays a paid row in the
+  tally.
 - **The extension starts lighter** (M57, PLAN.md D6). The Model API backend
   (its host, tools, hooks, goals, subagents and MCP client) is now a bundle
   of its own, `dist/modelApi.js`, loaded the first time a conversation uses
