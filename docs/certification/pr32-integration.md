@@ -191,3 +191,12 @@ measured on this machine (Windows 11) with a throwaway script:
 The agent does not turn Node's switch on by itself, and the network-failure
 advice (M56) names VS Code's settings: both are open for the owner as
 PLAN.md Q66, and `docs/acp.md` gives the variables that work today.
+
+## The key store on the owner's rigs
+
+`test/hosts/keystore.sh` with its made-up key, on the agent packed from this
+branch: Windows 11 VM (Credential Manager, in the owner's console session)
+and Mac mini (a keychain of the run's own): both `ok`, nothing left behind.
+Over SSH with a key, Windows refuses Credential Manager
+(`ERROR_NO_SUCH_LOGON_SESSION`) and the agent stores nothing; now in
+`docs/acp.md`. Details in `m63.md`, "The key store on the owner's rigs".

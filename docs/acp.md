@@ -67,7 +67,11 @@ asks for it. Elsewhere, run it yourself once:
 The key is never read from an environment variable, a settings file or an
 argument, and never passed to Muse Code. On Linux without a running,
 unlocked Secret Service the Model API backend is unavailable; there is no
-plaintext fallback.
+plaintext fallback. On Windows, Credential Manager cannot be used from a
+session opened over SSH with a key (Windows reports
+`ERROR_NO_SUCH_LOGON_SESSION`): run `auth set` from a desktop session, and
+expect a Model API agent started in such a session to say the credential
+store cannot be used.
 
 ## Configure the editor
 
