@@ -151,6 +151,18 @@ describe('the Model API bundle (M57)', () => {
     }
   })
 
+  it('reads a wrong-shaped file again once it is repaired in place (the review of PR #47)', async () => {
+    const file = path.join(scratchFolder(), MODEL_API_BUNDLE_FILE)
+    writeFileSync(file, 'module.exports = {}')
+    const t = managerFor(file)
+    await expect(t.manager.ensureHost()).rejects.toThrow(UI_TEXT.modelApiBundleUnavailable)
+    // Node cached the module that ran; the manager must not keep reading that copy.
+    copyFileSync(built.file, file)
+    const host = await t.manager.ensureHost()
+    expect(host.info.kind).toBe('modelApi')
+    await t.manager.dispose()
+  })
+
   it('shows the host’s own sentences in the installed table and language (D33)', async () => {
     const de = await loadUiTable({
       language: 'de',
