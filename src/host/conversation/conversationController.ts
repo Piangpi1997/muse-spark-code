@@ -1863,12 +1863,15 @@ export class ConversationController {
     this.post({ type: 'modelList', models: [...this.models] })
   }
 
-  private async applyEffort(session: AgentSession): Promise<void> {
+  /** Whether the session took the effort; a refusal is said, and the turn still goes. */
+  private async applyEffort(session: AgentSession): Promise<boolean> {
     try {
       await session.setReasoningEffort(effortForThinking(this.effort, this.isThinkingEnabled))
+      return true
     } catch (error: unknown) {
       this.deps.log.warn(`session/setReasoningEffort failed: ${describe(error)}`)
       this.say('warning', `${UI_TEXT.effortNotApplied}: ${describe(error)}`)
+      return false
     }
   }
 
@@ -3634,10 +3637,18 @@ export class ConversationController {
   }
 
   private async updateEffort(effort: EffortLevel, isThinkingEnabled: boolean): Promise<void> {
+    const previous = { effort: this.effort, isThinkingEnabled: this.isThinkingEnabled }
     this.effort = effort
     this.isThinkingEnabled = isThinkingEnabled
-    if (this.session !== undefined) {
-      await this.applyEffort(this.session)
+    const { session } = this
+    if (session !== undefined && !(await this.applyEffort(session))) {
+      // The session kept its effort, so the composer shows it again, unless
+      // the model no longer serves it (a model switch dropped the tier).
+      const isSameSession = this.session === session
+      if (isSameSession && effortLevelsFor(this.modelId).includes(previous.effort)) {
+        this.effort = previous.effort
+        this.isThinkingEnabled = previous.isThinkingEnabled
+      }
     }
     this.postComposerState()
   }
@@ -3667,23 +3678,40 @@ export class ConversationController {
     }
     const previous = this.permissionMode
     this.permissionMode = mode
-    // A turn running or queued when Plan mode is left may act, so its reply is no plan (M79).
+    // A turn running or queued when Plan mode is left may act, so its reply
+    // is no plan (M79): dropped now, before the backend can apply the mode.
+    const leftPlanTurns = mode === PLAN_MODE ? [] : [...this.pendingPlanTurnIds]
     if (mode !== PLAN_MODE) {
       this.pendingPlanTurnIds.clear()
     }
     const target = approvalModeFor(mode, this.deps.hasApprovalUi)
-    if (
-      this.session !== undefined &&
-      target !== approvalModeFor(previous, this.deps.hasApprovalUi)
-    ) {
+    const { session } = this
+    if (session !== undefined && target !== approvalModeFor(previous, this.deps.hasApprovalUi)) {
       try {
-        await this.session.setApprovalMode(target)
+        await session.setApprovalMode(target)
       } catch (error: unknown) {
         this.permissionMode = previous
+        this.restorePlanTurns(leftPlanTurns)
         this.notice('error', `${UI_TEXT.permissionModeChangeFailed}: ${describe(error)}`)
       }
     }
     this.postComposerState()
+  }
+
+  /**
+   * The backend refused to leave Plan mode, so the turns it kept running
+   * in it are Plan-mode turns still (M79): one that finished meanwhile is
+   * one now, the rest again when they finish. (Had the conversation
+   * changed during the request, its turn ids match nothing any more.)
+   */
+  private restorePlanTurns(turnIds: readonly string[]): void {
+    for (const turnId of turnIds) {
+      if (this.finishedTurns.has(turnId)) {
+        this.planTurnIds.add(turnId)
+      } else {
+        this.pendingPlanTurnIds.add(turnId)
+      }
+    }
   }
 
   /** A pending browser encode belongs to the session before this replacement request. */

@@ -5,8 +5,20 @@
 // name it gets, the body a reply holds, how a file is read back, and the
 // steps that seed a new conversation's todo list. No file system, no
 // `vscode`.
+//
+// A plan's structure (its heading, its steps, what the panel leaves out) is
+// read with the panel's own Markdown grammar. MarkdownView renders a reply
+// with react-markdown, whose remark-parse is `mdast-util-from-markdown`, and
+// the panel's remark-gfm adds `micromark-extension-gfm` and `mdast-util-gfm`
+// (no options): the same three, at the versions those resolve to, parse the
+// plan here, without unified around them. A hand-made line scanner
+// disagreed with it (a backtick fence whose info string holds a backtick is
+// no fence), so what it called code the panel showed as prose.
 
 import { createHash } from 'node:crypto'
+import { fromMarkdown } from 'mdast-util-from-markdown'
+import { gfmFromMarkdown } from 'mdast-util-gfm'
+import { gfm } from 'micromark-extension-gfm'
 import {
   MUSE_PLAN_HANDOFF_LEAD,
   MUSE_PLAN_HANDOFF_TAIL,
@@ -36,16 +48,23 @@ export interface PlanContent {
   readonly text: string
 }
 
+/** The parts of a parsed Markdown node (mdast) this module reads. */
+interface MarkdownNode {
+  readonly type: string
+  readonly value?: string | undefined
+  readonly alt?: string | null | undefined
+  readonly title?: string | null | undefined
+  readonly identifier?: string | undefined
+  readonly depth?: number | undefined
+  readonly ordered?: boolean | null | undefined
+  readonly children?: readonly MarkdownNode[] | undefined
+}
+
+// The panel's parser: remark-parse's options once remark-gfm (no options) is in.
+const MARKDOWN_OPTIONS = { extensions: [gfm()], mdastExtensions: [gfmFromMarkdown()] }
 const LINE_BREAK = /\r?\n/
-const CODE_FENCE = /^ {0,3}(?:```|~~~)/
-const TOP_HEADING = /^ {0,3}#\s+(.*?)\s*#*\s*$/
 // "Plan", "Plan:", "Plan how to", "Implementation plan —" say nothing about the task.
 const GENERIC_PLAN_LEAD = /^(?:implementation\s+)?plan\b(?:\s+how\s+to\b)?[\s:.\-–—]*/i
-// A top-level item starts at most one space in; a nested one is indented under its parent.
-const ORDERED_ITEM = /^ ?\d{1,9}[.)]\s+(.*)$/
-const BULLET_ITEM = /^ ?[-*+]\s+(.*)$/
-const TASK_BOX = /^\[[ xX]\]\s+/
-const INLINE_MARKUP = /\*\*|__|`/g
 const WHITESPACE = /\s+/g
 // Letters, their marks (Devanagari's vowel signs, Thai's tones) and digits.
 const NOT_SLUG = /[^\p{L}\p{M}\p{N}]+/gu
@@ -59,13 +78,20 @@ const TRAILING_BREAKS = /(?:\r?\n)+$/
 // would reach the brief unquoted) or a format character (a right-to-left
 // override would disguise the name in Plans…): never part of a plan's name.
 const UNSAFE_NAME_CHARACTER = /[\\/:\p{Cc}\p{Cf}]/u
-// Raw HTML outside code, which the panel's Markdown view does not show: a
-// comment, a declaration or processing instruction, or a tag, even one
-// whose attributes go on past the line. A tag name ends at a space, `/`,
-// `>` or the line's end, so a Markdown autolink (`<https://…>`, `<a@b.c>`),
-// which the panel shows, is not one.
-const INLINE_CODE = /`[^`\n]*`/g
-const HIDDEN_MARKUP = /<!--|<[!?][A-Za-z]|<!\[|<\/?[A-Za-z][\w-]*(?=[\s/>]|$)/
+// What the panel never shows: raw HTML, block or inline (MarkdownView's
+// `skipHtml`); a title (links and pictures render without one); and a
+// definition nothing refers to, which renders as nothing at all. A link
+// definition serves link and picture references; a footnote, footnote ones.
+const HTML_NODE = 'html'
+const DEFINITION_KINDS: ReadonlyMap<string, string> = new Map([
+  ['definition', 'link'],
+  ['footnoteDefinition', 'footnote'],
+])
+const REFERENCE_KINDS: ReadonlyMap<string, string> = new Map([
+  ['linkReference', 'link'],
+  ['imageReference', 'link'],
+  ['footnoteReference', 'footnote'],
+])
 const ISO_DATE_CHARS = 10
 const DATE_PAD = 2
 const ELLIPSIS = '…'
@@ -92,26 +118,48 @@ function cut(text: string, maxChars: number): string {
         .trimEnd()}${ELLIPSIS}`
 }
 
-/** The lines outside fenced code blocks. */
-function proseLines(text: string): readonly string[] {
-  const lines: string[] = []
-  let isInFence = false
-  for (const line of text.split(LINE_BREAK)) {
-    if (CODE_FENCE.test(line)) {
-      isInFence = !isInFence
-      continue
-    }
-    if (!isInFence) {
-      lines.push(line)
-    }
-  }
-  return lines
+/** The plan as the panel parses it. */
+function parseMarkdown(text: string): MarkdownNode {
+  return fromMarkdown(text, MARKDOWN_OPTIONS)
 }
 
-/** The text of the first top-level (`# `) heading outside code, if any. */
-function topHeading(text: string): string | undefined {
-  for (const line of proseLines(text)) {
-    const heading = oneLine((TOP_HEADING.exec(line)?.[1] ?? '').replaceAll(INLINE_MARKUP, ''))
+function childrenOf(node: MarkdownNode): readonly MarkdownNode[] {
+  return node.children ?? []
+}
+
+/** Every node of the tree, depth first. */
+function nodesOf(node: MarkdownNode): readonly MarkdownNode[] {
+  return [node, ...childrenOf(node).flatMap((child) => nodesOf(child))]
+}
+
+/**
+ * A node's text as the panel shows it: markup gone, a picture's alt text,
+ * and raw HTML left out (an `html` node has a value but no children).
+ */
+function shownText(node: MarkdownNode): string {
+  switch (node.type) {
+    case 'text':
+    case 'inlineCode': {
+      return node.value ?? ''
+    }
+    case 'image': {
+      return node.alt ?? ''
+    }
+    case 'break': {
+      return ' '
+    }
+    default: {
+      return childrenOf(node)
+        .map((child) => shownText(child))
+        .join('')
+    }
+  }
+}
+
+/** The text of the plan's first top-level heading (`# ` or underlined with `=`), if any. */
+function topHeading(tree: MarkdownNode): string | undefined {
+  for (const node of childrenOf(tree)) {
+    const heading = node.type === 'heading' && node.depth === 1 ? oneLine(shownText(node)) : ''
     if (heading !== '') {
       return heading
     }
@@ -143,7 +191,7 @@ export function planBody(reply: string): string {
  * to" dropped; else `fallback`.
  */
 export function planTitle(text: string, prompt: string | undefined, fallback: string): string {
-  const heading = topHeading(text)?.replace(GENERIC_PLAN_LEAD, '').trim()
+  const heading = topHeading(parseMarkdown(text))?.replace(GENERIC_PLAN_LEAD, '').trim()
   const request = (prompt ?? '')
     .split(LINE_BREAK)
     .map((line) => oneLine(line).replace(GENERIC_PLAN_LEAD, ''))
@@ -179,12 +227,24 @@ export function planLogName(fileName: string): string {
 }
 
 /**
- * Whether the plan holds raw HTML outside code: a comment or a tag, which the
- * panel's Markdown view leaves out, so the user did not see all of what the
- * model would be sent.
+ * Whether the plan holds text the panel does not show, so the user did not
+ * see all of what the model would be sent: raw HTML anywhere outside code
+ * (a comment, a tag, a declaration), a link's or picture's title, or a
+ * definition nothing refers to.
  */
 export function hasHiddenMarkup(text: string): boolean {
-  return proseLines(text).some((line) => HIDDEN_MARKUP.test(line.replaceAll(INLINE_CODE, '')))
+  const nodes = nodesOf(parseMarkdown(text))
+  const referenced = new Set(
+    nodes.flatMap((node) => {
+      const kind = REFERENCE_KINDS.get(node.type)
+      return kind === undefined ? [] : [`${kind}:${node.identifier ?? ''}`]
+    }),
+  )
+  return nodes.some((node) => {
+    const kind = DEFINITION_KINDS.get(node.type)
+    const isUnreferenced = kind !== undefined && !referenced.has(`${kind}:${node.identifier ?? ''}`)
+    return node.type === HTML_NODE || isUnreferenced || (node.title ?? '').trim() !== ''
+  })
 }
 
 /** `2026-09-27`: the local calendar day. */
@@ -205,30 +265,38 @@ export function parsePlanFile(content: string, fileName: string): PlanDocument {
   const bareName = fileName.endsWith(PLAN_FILE_EXTENSION)
     ? fileName.slice(0, -PLAN_FILE_EXTENSION.length)
     : fileName
-  return { title: cut(topHeading(content) ?? bareName, PLAN_TITLE_MAX_CHARS), body: content }
+  return {
+    title: cut(topHeading(parseMarkdown(content)) ?? bareName, PLAN_TITLE_MAX_CHARS),
+    body: content,
+  }
 }
 
-/** A list item as a task: its task box and inline markup gone, one line, cut. */
-function stepText(item: string): string {
-  return cut(oneLine(item.replace(TASK_BOX, '').replaceAll(INLINE_MARKUP, '')), PLAN_STEP_MAX_CHARS)
+/** A list item as a task: its first paragraph as shown (no task box, no markup), one line, cut. */
+function stepText(item: MarkdownNode): string {
+  const paragraph = childrenOf(item).find((child) => child.type === 'paragraph')
+  return cut(oneLine(paragraph === undefined ? '' : shownText(paragraph)), PLAN_STEP_MAX_CHARS)
 }
 
 /**
- * The plan's steps: its top-level numbered items outside code, or, when it
- * numbers none, its top-level bullets. Nested items and continuation lines
- * belong to their step. At most PLAN_STEPS_MAX.
+ * The plan's steps: the items of its top-level numbered lists, or, when it
+ * numbers none, of its top-level bulleted lists, as the panel parses them.
+ * Nested items and further paragraphs belong to their step. At most
+ * PLAN_STEPS_MAX.
  */
 export function planSteps(body: string): readonly string[] {
   const ordered: string[] = []
   const bullets: string[] = []
-  for (const line of proseLines(body)) {
-    const numbered = ORDERED_ITEM.exec(line)?.[1]
-    const bulleted = numbered === undefined ? BULLET_ITEM.exec(line)?.[1] : undefined
-    const text = stepText(numbered ?? bulleted ?? '')
-    if (text === '') {
+  const blocks = childrenOf(parseMarkdown(body))
+  for (const list of blocks) {
+    if (list.type !== 'list') {
       continue
     }
-    ;(numbered === undefined ? bullets : ordered).push(text)
+    for (const item of childrenOf(list)) {
+      const text = stepText(item)
+      if (text !== '') {
+        ;(list.ordered === true ? ordered : bullets).push(text)
+      }
+    }
   }
   return (ordered.length > 0 ? ordered : bullets).slice(0, PLAN_STEPS_MAX)
 }

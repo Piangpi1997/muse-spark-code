@@ -316,8 +316,11 @@ says why when it cannot.
   - A plan may be up to 256 KB.
   - The file is published by a hard link; on a file system without hard
     links the save is refused rather than risk replacing a file.
-  - A plan holding HTML that the panel does not show (a comment, a tag) is
-    saved with a warning to read the file.
+  - A plan holding text that the panel does not show (raw HTML such as a
+    comment or a tag, a link title, a definition nothing refers to) is
+    saved with a warning to read the file. The plan is read with the
+    panel's own Markdown parser, so this is exactly what the panel leaves
+    out.
   - Restricted Mode saves nothing.
 - **Implement in a fresh conversation** saves the plan (unless it is
   already saved), then starts a new conversation on the same backend:
@@ -327,7 +330,7 @@ says why when it cannot.
     in History;
   - Plan mode gives way to your starting mode (`museSpark.initialPermissionMode`,
     or Manual when that is Plan; never Bypass in a remote window);
-  - a plan holding HTML that the panel does not show is saved but not
+  - a plan holding text that the panel does not show is saved but not
     started: read the file, then implement it from Plans….
 - **The todo list.** On the Model API backend, the plan's numbered steps
   (or its bullets, when nothing is numbered) become the todo list before

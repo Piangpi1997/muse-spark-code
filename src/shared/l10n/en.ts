@@ -692,9 +692,9 @@ export const EN = {
   planNotFromPlanTurn:
     'This reply was not written in Plan mode here, so it is not saved or implemented as a plan.',
   planHiddenMarkup:
-    'The plan holds HTML that the panel does not show. Open {path} and read all of it before you implement it.',
+    'The plan holds text that the panel does not show (HTML, a link title or an unused definition). Open {path} and read all of it before you implement it.',
   planHiddenMarkupNotStarted:
-    'Plan saved to {path}, but not started: it holds HTML that the panel does not show. Read the file, then implement it from Plans….',
+    'Plan saved to {path}, but not started: it holds text that the panel does not show (HTML, a link title or an unused definition). Read the file, then implement it from Plans….',
   planSavedNotStarted:
     'Plan saved to {path}, but not started: the conversation changed in the meantime.',
   planChangedNotStarted: 'The plan was not started: the conversation changed in the meantime.',

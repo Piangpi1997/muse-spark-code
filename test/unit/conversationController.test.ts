@@ -948,6 +948,27 @@ describe('ConversationController: composer controls', () => {
     })
   })
 
+  it('shows the effort the session kept when it refuses a change', async () => {
+    const t = setup()
+    await t.send('l1', 'hi')
+    t.server.handle('session/setReasoningEffort', () => {
+      throw new Error('not adjustable')
+    })
+    await t.controller.handle({ type: 'setEffort', effort: 'max' })
+    expect(t.surface.posted.at(-1)).toEqual(composerState)
+    await t.controller.handle({ type: 'setThinking', enabled: false })
+    expect(t.surface.posted.at(-1)).toEqual(composerState)
+    // A tier the new model does not serve is not shown again: the drop stands.
+    const switched = setup()
+    await switched.send('l1', 'hi')
+    await switched.controller.handle({ type: 'setEffort', effort: 'max' })
+    switched.server.handle('session/setReasoningEffort', () => {
+      throw new Error('not adjustable')
+    })
+    await switched.controller.handle({ type: 'setModel', modelId: 'muse-spark-1.2' })
+    expect(switched.surface.posted.at(-1)).toMatchObject({ effort: 'xhigh' })
+  })
+
   it('follows a host-driven effort change and a skill-set change', async () => {
     const t = setup()
     await t.send('l1', 'hi')
@@ -7213,6 +7234,38 @@ describe('ConversationController: plans as files (M79)', () => {
     await settle()
     queued.server.handle('session/read', () => planHistory(PLAN_HISTORY_ITEMS))
     expect(await lastNoticeText(queued, SAVE)).toBe(UI_TEXT.planNotFromPlanTurn)
+  })
+
+  it('keeps a Plan-mode turn a plan turn when the backend refuses to leave Plan mode', async () => {
+    for (const isFinishedDuringChange of [false, true]) {
+      const t = setup({ initialPermissionMode: 'plan', hasApprovalUi: true })
+      startsTurn(t, CAPTURED_PLAN_TURN_ID)
+      await t.send('l1', CAPTURED_PLAN_PROMPT)
+      const finish = () => {
+        t.server.notify('item/completed', { ...PLAN_REPLY_COMPLETED, sessionId: 's1' })
+        t.server.notify('turn/completed', {
+          sessionId: 's1',
+          turnId: CAPTURED_PLAN_TURN_ID,
+          terminal: 'completed',
+        })
+      }
+      t.server.handle('session/setApprovalMode', () => {
+        if (isFinishedDuringChange) {
+          finish()
+        }
+        throw new Error('mode change refused')
+      })
+      await t.controller.handle({ type: 'setPermissionMode', mode: 'manual' })
+      expect(t.surface.posted.at(-1)).toMatchObject({ permissionMode: 'plan' })
+      if (!isFinishedDuringChange) {
+        finish()
+      }
+      await settle()
+      t.server.handle('session/read', () => planHistory(PLAN_HISTORY_ITEMS))
+      expect(await lastNoticeText(t, SAVE), String(isFinishedDuringChange)).toBe(
+        fill(UI_TEXT.planSaved, { path: PLAN_PATH }),
+      )
+    }
   })
 
   it('saves after a restart by resuming the conversation, and says so when the panel lost it', async () => {

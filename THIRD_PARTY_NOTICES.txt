@@ -70,6 +70,8 @@ bail (MIT)
   https://github.com/wooorm/bail
 ccount (MIT)
   https://github.com/wooorm/ccount
+character-entities (MIT)
+  https://github.com/wooorm/character-entities
 mdast-util-to-string (MIT)
   https://github.com/syntax-tree/mdast-util-to-string
 unist-util-position (MIT)

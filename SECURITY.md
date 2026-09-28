@@ -88,8 +88,9 @@ Only the latest release on the Visual Studio Marketplace receives fixes.
   told nobody confirmed who wrote it. Only a reply saved from a Plan-mode
   turn of the conversation on screen is sent as the plan the user
   approved; even then Bypass is never the starting mode in a remote
-  window. A reply holding HTML that the panel does not show is saved with
-  a warning and not started.
+  window. A reply holding text that the panel does not show (raw HTML, a
+  link title, a definition nothing refers to), found with the panel's own
+  Markdown parser, is saved with a warning and not started.
 - **Shell commands.** On the Model API backend the extension's own shell
   tool runs the command as an argument array through PowerShell or bash,
   never as a shell string, in the workspace root, with a timeout and an
