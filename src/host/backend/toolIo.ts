@@ -537,11 +537,12 @@ export function createToolIo(deps: ToolIoDeps): ToolIo {
         platform: deps.platform,
       })
     },
-    async writeFileIfUnchanged(absolutePath, expectedFingerprint, content, expectedCanonicalPath) {
+    async writeFileIfUnchanged(absolutePath, expectedFingerprint, content, options) {
       return await writeFileIfUnchanged(absolutePath, expectedFingerprint, content, {
         sleep: pause,
-        ...(expectedCanonicalPath !== undefined && { expectedCanonicalPath }),
+        expectedCanonicalPath: options.expectedCanonicalPath,
         platform: deps.platform,
+        isReplaceable: () => options.unsavedAt.every((path) => !deps.hasUnsavedChanges(path)),
       })
     },
     async pathExists(absolutePath) {

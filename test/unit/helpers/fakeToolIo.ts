@@ -90,10 +90,11 @@ export function memoryToolIo(
       return Promise.resolve()
     },
     // The conditional write (M68): only over the expected text.
-    writeFileIfUnchanged: (absolutePath, expectedFingerprint, content) => {
+    writeFileIfUnchanged: (absolutePath, expectedFingerprint, content, options) => {
       const key = keyOf(absolutePath)
       const current = files.get(key)
-      if (current === undefined || fingerprint(current) !== expectedFingerprint) {
+      const isUnsaved = options.unsavedAt.some((path) => unsaved.has(keyOf(path)))
+      if (isUnsaved || current === undefined || fingerprint(current) !== expectedFingerprint) {
         return Promise.resolve('changed')
       }
       files.set(key, content)

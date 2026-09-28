@@ -54,6 +54,12 @@ export interface AtomicWriteOptions {
   /** Model API tools require the operation to keep its approved canonical target. */
   readonly expectedCanonicalPath?: string
   readonly platform?: NodeJS.Platform
+  /**
+   * A conditional write's last word, asked right after the final comparison
+   * before each rename: false leaves the target alone (format on edit asks
+   * whether an editor now holds unsaved text for the file; Grok's review).
+   */
+  readonly isReplaceable?: () => boolean
 }
 
 // The bits `chmod` sets: setuid, setgid, sticky and the three rwx triads.
@@ -247,8 +253,12 @@ async function writeAtomically(
       await assertBoundPath(temporary, temporary, options)
       await assertBoundPath(destination.path, options.expectedCanonicalPath ?? target, options)
       // Last, so nothing but the rename itself follows the comparison.
-      if (expectedFingerprint !== undefined) {
-        await assertUnchanged(destination.path, expectedFingerprint)
+      if (expectedFingerprint === undefined) {
+        return
+      }
+      await assertUnchanged(destination.path, expectedFingerprint)
+      if (options.isReplaceable?.() === false) {
+        throw changedBeforeWrite()
       }
     })
   } catch (error: unknown) {

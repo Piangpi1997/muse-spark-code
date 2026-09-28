@@ -3,17 +3,22 @@
 // still on the latest state, the fix loop's count, and one reset.
 
 import { describe, expect, it } from 'vitest'
-import { VerifyLedger } from '../../src/core/backends/modelapi/verifyLedger'
-import { CHECK_FIX_MAX_ROUNDS } from '../../src/shared/constants'
+import { type CheckScope, VerifyLedger } from '../../src/core/backends/modelapi/verifyLedger'
+import { CHECK_FIX_MAX_ROUNDS, type CheckOutcome } from '../../src/shared/constants'
 
 const A = { relative: 'src/a.ts', absolute: '/ws/src/a.ts' }
 const B = { relative: 'src/b.ts', absolute: '/ws/src/b.ts' }
+
+/** A check that ran over `scope` on the state as it is now. */
+function run(ledger: VerifyLedger, name: string, outcome: CheckOutcome, scope: CheckScope): void {
+  ledger.record(outcome, ledger.snapshot(name, scope))
+}
 
 /** `rounds` failing verdicts in a row; whether the last one stopped the checks. */
 function hasStoppedAfter(ledger: VerifyLedger, rounds: number): boolean {
   let isStopping = false
   for (let round = 0; round < rounds; round += 1) {
-    ledger.record('lint', 'failed', 'project')
+    run(ledger, 'lint', 'failed', 'project')
     isStopping = ledger.judgeRound()
   }
   return isStopping
@@ -23,9 +28,9 @@ describe('VerifyLedger', () => {
   it('judges a round only by the runs on the latest state of what they covered', () => {
     const ledger = new VerifyLedger()
     // A failing whole-project run, then an edit, then a passing run: passed.
-    ledger.record('lint', 'failed', 'project')
+    run(ledger, 'lint', 'failed', 'project')
     ledger.noteEdit(A, [A.relative])
-    ledger.record('lint', 'passed', [A])
+    run(ledger, 'lint', 'passed', [A])
     expect(ledger.judgeRound()).toBe(false)
     expect(hasStoppedAfter(ledger, CHECK_FIX_MAX_ROUNDS - 1)).toBe(false)
     expect(ledger.isStopped).toBe(false)
@@ -35,8 +40,8 @@ describe('VerifyLedger', () => {
     const ledger = new VerifyLedger()
     ledger.noteEdit(A, [A.relative])
     ledger.noteEdit(B, [B.relative])
-    ledger.record('lint', 'passed', [A])
-    ledger.record('types', 'passed', [B])
+    run(ledger, 'lint', 'passed', [A])
+    run(ledger, 'types', 'passed', [B])
     ledger.noteEdit(B, [B.relative])
     expect(ledger.hasCurrentRun('lint', [A])).toBe(true)
     expect(ledger.hasCurrentRun('types', [B])).toBe(false)
@@ -44,7 +49,7 @@ describe('VerifyLedger', () => {
     expect(ledger.hasCurrentRun('lint', [A, B])).toBe(false)
     expect(ledger.hasCurrentRun('lint', 'project')).toBe(false)
     // A whole-project run answers for any scope until the next edit.
-    ledger.record('test', 'passed', 'project')
+    run(ledger, 'test', 'passed', 'project')
     expect(ledger.hasCurrentRun('test', [A, B])).toBe(true)
     ledger.noteEdit(A, [A.relative])
     expect(ledger.hasCurrentRun('test', [B])).toBe(false)
@@ -53,7 +58,7 @@ describe('VerifyLedger', () => {
   it('counts failing verdicts in a row, resets on a passing one, and stops at the limit', () => {
     const ledger = new VerifyLedger()
     expect(hasStoppedAfter(ledger, CHECK_FIX_MAX_ROUNDS - 1)).toBe(false)
-    ledger.record('lint', 'passed', 'project')
+    run(ledger, 'lint', 'passed', 'project')
     expect(ledger.judgeRound()).toBe(false)
     expect(hasStoppedAfter(ledger, CHECK_FIX_MAX_ROUNDS - 1)).toBe(false)
     expect(hasStoppedAfter(ledger, 1)).toBe(true)
@@ -64,9 +69,9 @@ describe('VerifyLedger', () => {
 
   it('judges each run once, and leaves the count alone when nothing ran', () => {
     const ledger = new VerifyLedger()
-    ledger.record('lint', 'failed', 'project')
-    ledger.record('lint', 'notRun', 'project')
-    ledger.record('lint', 'cancelled', 'project')
+    run(ledger, 'lint', 'failed', 'project')
+    run(ledger, 'lint', 'notRun', 'project')
+    run(ledger, 'lint', 'cancelled', 'project')
     expect(ledger.judgeRound()).toBe(false)
     // Nothing new ran: the next rounds judge nothing, twice.
     expect(ledger.judgeRound()).toBe(false)
@@ -78,7 +83,7 @@ describe('VerifyLedger', () => {
     const ledger = new VerifyLedger()
     expect(hasStoppedAfter(ledger, CHECK_FIX_MAX_ROUNDS - 1)).toBe(false)
     // A failure an edit has since overtaken says nothing about this round.
-    ledger.record('lint', 'failed', 'project')
+    run(ledger, 'lint', 'failed', 'project')
     ledger.noteEdit(A, [A.relative])
     expect(ledger.judgeRound()).toBe(false)
     expect(hasStoppedAfter(ledger, 1)).toBe(true)
@@ -86,8 +91,8 @@ describe('VerifyLedger', () => {
 
   it('records nothing for a check that did not run or was stopped', () => {
     const ledger = new VerifyLedger()
-    ledger.record('lint', 'notRun', 'project')
-    ledger.record('test', 'cancelled', 'project')
+    run(ledger, 'lint', 'notRun', 'project')
+    run(ledger, 'test', 'cancelled', 'project')
     // Neither answers for the check, nor moves the fix loop.
     expect(ledger.hasCurrentRun('lint', 'project')).toBe(false)
     expect(ledger.hasCurrentRun('test', 'project')).toBe(false)
@@ -111,7 +116,7 @@ describe('VerifyLedger', () => {
     expect(ledger.codeFile).toBeUndefined()
     // A new turn drops the round a stopped turn left, and its unjudged runs.
     ledger.noteEdit(B, [B.relative])
-    ledger.record('lint', 'failed', [B])
+    run(ledger, 'lint', 'failed', [B])
     ledger.beginTurn()
     expect(ledger.takeRoundEdits()).toEqual([])
     expect(ledger.editedFiles()).toEqual([B])
@@ -139,19 +144,19 @@ describe('VerifyLedger', () => {
     const ledger = new VerifyLedger()
     ledger.noteEdit(A, [A.relative])
     ledger.noteEdit(B, [B.relative])
-    ledger.record('lint', 'failed', [A])
+    run(ledger, 'lint', 'failed', [A])
     expect(ledger.judgeRound()).toBe(false)
     // B passes, but A's failure is still on A's latest state.
-    ledger.record('lint', 'passed', [B])
+    run(ledger, 'lint', 'passed', [B])
     expect(ledger.judgeRound()).toBe(false)
-    ledger.record('lint', 'passed', [B])
+    run(ledger, 'lint', 'passed', [B])
     expect(ledger.judgeRound()).toBe(true)
     // A later run of the same check over A that passes supersedes the failure.
     const again = new VerifyLedger()
     again.noteEdit(A, [A.relative])
-    again.record('lint', 'failed', [A])
+    run(again, 'lint', 'failed', [A])
     again.judgeRound()
-    again.record('lint', 'passed', [A])
+    run(again, 'lint', 'passed', [A])
     again.judgeRound()
     expect(hasStoppedAfter(again, CHECK_FIX_MAX_ROUNDS - 1)).toBe(false)
   })
@@ -160,14 +165,36 @@ describe('VerifyLedger', () => {
   it('takes an edit made by someone it answers for as a new state of that file', () => {
     const ledger = new VerifyLedger()
     ledger.noteEdit(A, [A.relative])
-    ledger.record('lint', 'passed', [A])
-    ledger.record('test', 'passed', 'project')
-    ledger.noteOutsideEdit(A.absolute)
+    run(ledger, 'lint', 'passed', [A])
+    run(ledger, 'test', 'passed', 'project')
+    ledger.noteOutsideEdit(A, [A.relative])
     expect(ledger.hasCurrentRun('lint', [A])).toBe(false)
     expect(ledger.hasCurrentRun('test', 'project')).toBe(false)
     // Not a file this session wrote: run_checks does not take it by default.
-    ledger.noteOutsideEdit(B.absolute)
+    ledger.noteOutsideEdit(B, [B.relative])
     expect(ledger.editedFiles()).toEqual([A])
+  })
+
+  // Grok's review: a run is recorded against the state it started on.
+  it('leaves behind a run that an edit overtook while it ran', () => {
+    const ledger = new VerifyLedger()
+    ledger.noteEdit(A, [A.relative])
+    const startedOn = ledger.snapshot('lint', [A])
+    // A subagent edits the file while the check runs.
+    ledger.noteOutsideEdit(A, [A.relative])
+    ledger.record('passed', startedOn)
+    expect(ledger.hasCurrentRun('lint', [A])).toBe(false)
+    expect(ledger.judgeRound()).toBe(false)
+  })
+
+  // Grok's review: what a subagent writes decides for the parent too.
+  it('takes what someone it answers for wrote as deciding what runs', () => {
+    const ledger = new VerifyLedger()
+    const manifest = { relative: 'package.json', absolute: '/ws/package.json' }
+    ledger.noteOutsideEdit(manifest, [manifest.relative])
+    expect(ledger.changesWhatRuns('npm run lint')).toBe(true)
+    expect(ledger.codeFile).toBe('package.json')
+    expect(ledger.editedFiles()).toEqual([])
   })
 
   it('names the first file written that the editor’s tools run as code', () => {

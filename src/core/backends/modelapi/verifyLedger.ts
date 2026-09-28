@@ -35,13 +35,20 @@ type Coverage =
   | { readonly kind: 'project'; readonly version: number }
   | { readonly kind: 'files'; readonly versions: ReadonlyMap<string, number> }
 
-interface RecordedRun {
-  /** The check and what it covered: a later run with the same key supersedes this one. */
+/**
+ * The state a check starts on: taken before the command runs, so an edit
+ * made while it runs (a subagent's) leaves the run behind (Grok's review).
+ */
+export interface RunSnapshot {
+  /** The check and what it covers: a later run with the same key supersedes this one. */
   readonly key: string
   readonly name: string
+  readonly coverage: Coverage
+}
+
+interface RecordedRun extends RunSnapshot {
   /** Only runs that finished: passed, failed or timed out. */
   readonly outcome: CheckOutcome
-  readonly coverage: Coverage
 }
 
 const KEY_SEPARATOR = '\u{0}'
@@ -137,25 +144,28 @@ export class VerifyLedger {
    * under (as given and after links): a new version of it and of the project.
    */
   public noteEdit(file: EditedFile, names: readonly string[]): void {
-    this.noteOutsideEdit(file.absolute)
+    this.noteOutsideEdit(file, names)
     this.files.set(file.absolute, file)
     this.roundFiles.set(file.absolute, file)
+  }
+
+  /**
+   * A file written in this workspace by someone this session answers for (a
+   * subagent), with the names it was written under: runs over it, and over
+   * the whole project, are no longer on the latest state, and what it
+   * decides (a check's script, code the editor runs) counts as this
+   * session's own (Grok's review). It is not this session's to check, so
+   * it is not among its edited files.
+   */
+  public noteOutsideEdit(file: EditedFile, names: readonly string[]): void {
+    this.projectVersion += 1
+    this.versions.set(file.absolute, this.projectVersion)
     for (const name of names) {
       this.writtenNames.add(name)
     }
     if (this.firstCodeFile === undefined && names.some((name) => isCodeLoading(name))) {
       this.firstCodeFile = file.relative
     }
-  }
-
-  /**
-   * A file written in this workspace by someone this session answers for (a
-   * subagent): runs over it, and over the whole project, are no longer on the
-   * latest state.
-   */
-  public noteOutsideEdit(absolute: string): void {
-    this.projectVersion += 1
-    this.versions.set(absolute, this.projectVersion)
   }
 
   /** The first file written that the editor's tools run as code, if any. */
@@ -193,11 +203,8 @@ export class VerifyLedger {
     return edited
   }
 
-  /** A check that ran over `scope`, recorded against the state it saw. */
-  public record(name: string, outcome: CheckOutcome, scope: CheckScope): void {
-    if (!isJudged(outcome)) {
-      return
-    }
+  /** The state `name` is about to run on over `scope`: take it before the command starts. */
+  public snapshot(name: string, scope: CheckScope): RunSnapshot {
     const coverage: Coverage =
       scope === 'project'
         ? { kind: 'project', version: this.projectVersion }
@@ -205,7 +212,14 @@ export class VerifyLedger {
             kind: 'files',
             versions: new Map(scope.map((file) => [file.absolute, this.versionOf(file.absolute)])),
           }
-    this.runs.push({ key: runKey(name, scope), name, outcome, coverage })
+    return { key: runKey(name, scope), name, coverage }
+  }
+
+  /** A check that ran, recorded against the state it started on. */
+  public record(outcome: CheckOutcome, startedOn: RunSnapshot): void {
+    if (isJudged(outcome)) {
+      this.runs.push({ ...startedOn, outcome })
+    }
   }
 
   /** Whether `name` already ran on the latest state of everything `scope` holds. */

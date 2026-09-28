@@ -150,6 +150,18 @@ describe('writeFileIfUnchanged', () => {
     await expect(stat(removed)).rejects.toThrow('ENOENT')
   })
 
+  it('asks its last word right before the rename, and leaves the file when told no', async () => {
+    const target = path.join(paths.root, 'conditional', 'f.txt')
+    await writeFileAtomically(target, 'as edited', { sleep: noWait })
+    await expect(
+      writeFileIfUnchanged(target, fingerprint('as edited'), 'formatted', {
+        sleep: noWait,
+        isReplaceable: () => false,
+      }),
+    ).resolves.toBe('changed')
+    await expect(readFile(target, 'utf8')).resolves.toBe('as edited')
+  })
+
   it('compares immediately before each rename, so a change during the write stands', async () => {
     const target = path.join(paths.root, 'conditional', 'd.txt')
     await writeFileAtomically(target, 'as edited', { sleep: noWait })
@@ -169,7 +181,7 @@ describe('writeFileIfUnchanged', () => {
     expect(wrote).toBe('changed')
     await expect(readFile(target, 'utf8')).resolves.toBe('someone else')
     const names = await readdir(path.dirname(target))
-    expect(names.toSorted((a, b) => a.localeCompare(b))).toEqual(['c.txt', 'd.txt'])
+    expect(names.toSorted((a, b) => a.localeCompare(b))).toEqual(['c.txt', 'd.txt', 'f.txt'])
   })
 })
 

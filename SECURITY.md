@@ -130,7 +130,7 @@ Only the latest release on the Visual Studio Marketplace receives fixes.
   (a check's arguments: still there). Format on edit's write-back is a
   conditional write: the file's bytes are compared with what the edit wrote
   before the write and again immediately before the rename, and a changed
-  or removed file is left alone (its folder is not made again). What
+  or removed file, or one an editor holds unsaved text for (by either name), is left alone (its folder is not made again). What
   remains is the moment between the last comparison and the rename: on
   POSIX a change saved in it is replaced, and a program still writing
   through a handle it held on the old file writes into a file that no

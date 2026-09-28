@@ -169,7 +169,11 @@ export interface ToolIo {
     absolutePath: string,
     expectedFingerprint: string,
     content: string,
-    expectedCanonicalPath?: string,
+    options: {
+      readonly expectedCanonicalPath: string
+      /** Refused when an editor holds unsaved text at any of them, checked just before the rename. */
+      readonly unsavedAt: readonly string[]
+    },
   ): Promise<ConditionalWrite>
   /** Whether anything (a file, a folder, a link) is at the path. */
   pathExists(absolutePath: string): Promise<boolean>
@@ -247,6 +251,8 @@ export interface ToolContext {
 
 /** A file an edit just wrote, as format on edit sees it (M68). */
 export interface FormatTarget {
+  /** The path as the model named it, and its real form. */
+  readonly absolute: string
   readonly checkedAbsolute: string
   /** Workspace-relative as the model named it, and after links are resolved. */
   readonly relative: string
@@ -695,7 +701,9 @@ async function formatWritten(
   // the formatter ran stands. The write also refuses a path whose real form
   // moved. Text the user typed into an editor since stands too (the review
   // of e4b035a3): the editor would save it over the formatted file.
-  if (context.io.hasUnsavedChanges(target.checkedAbsolute)) {
+  // By the path as named and its real form: an editor may hold either.
+  const paths = [target.absolute, target.checkedAbsolute]
+  if (paths.some((path) => context.io.hasUnsavedChanges(path))) {
     formatter.warn(`Format on edit skipped ${target.relative}: it has unsaved changes in an editor`)
     return written
   }
@@ -704,7 +712,7 @@ async function formatWritten(
       target.checkedAbsolute,
       fingerprint(written),
       formatted,
-      target.checkedAbsolute,
+      { expectedCanonicalPath: target.checkedAbsolute, unsavedAt: paths },
     )
     if (wrote === 'changed') {
       formatter.warn(

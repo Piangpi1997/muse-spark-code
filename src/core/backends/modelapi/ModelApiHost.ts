@@ -143,7 +143,7 @@ import { textFileInput } from '../../textAttachment'
 import { isProtectedPath } from '../../protectedPaths'
 import { confineWorkspacePath } from '../../workspacePath'
 import { pathModule } from '../../workspaceRoot'
-import { type CheckScope, VerifyLedger } from './verifyLedger'
+import { type CheckScope, type RunSnapshot, VerifyLedger } from './verifyLedger'
 import { fingerprint } from '../../verify/fingerprint'
 import type { McpTool } from '../../mcp'
 import type { MemoryStore } from '../../memory/memoryStore'
@@ -3829,6 +3829,8 @@ export class ModelApiSession implements AgentSession {
       return skippedCheck(check, 'unsafePath')
     }
     const timeoutMs = checkTimeoutMs(check)
+    // The state the check starts on: an edit made while it runs leaves it behind.
+    const startedOn = this.ledger.snapshot(check.name, checkScope(check, files))
     const outcome = await this.runVerifyCommand(
       itemId,
       {
@@ -3851,7 +3853,7 @@ export class ModelApiSession implements AgentSession {
       return skippedCheck(check, outcome.skip, outcome.detail)
     }
     const run = finishedCheck(check, outcome.line, outcome.result, timeoutMs, maxChars)
-    this.ledger.record(check.name, run.summary.outcome, checkScope(check, files))
+    this.ledger.record(run.summary.outcome, startedOn)
     return run
   }
 
@@ -4310,8 +4312,9 @@ export class ModelApiSession implements AgentSession {
     }
     this.ledger.noteEdit(file, [target.relative, target.canonical])
     // A subagent writes in its parent's workspace: the parent's runs over the
-    // file, and over the whole project, are no longer on the latest state.
-    this.parentSession?.ledger.noteOutsideEdit(file.absolute)
+    // file, and over the whole project, are no longer on the latest state,
+    // and what the file decides counts for the parent too (Grok's review).
+    this.parentSession?.ledger.noteOutsideEdit(file, [target.relative, target.canonical])
   }
 
   /**
@@ -4319,18 +4322,27 @@ export class ModelApiSession implements AgentSession {
    * would run it, is a run of that check on the state the edit left (M68;
    * PR #54's reviews): it counts for the fix loop, and the round does not run
    * the check again. Not for a check that takes the changed files (the
-   * then_run passed none), nor a time-out under the shell's cap when the
-   * check has its own.
+   * then_run passed none). It ran under the shell's cap, not the check's: a
+   * pass counts only when the check's cap is no shorter, a time-out only
+   * when it is no longer (Grok's review); a failure is a failure either way.
    */
-  private noteCheckCommandRun(line: string, result: ShellResult): void {
+  private noteCheckCommandRun(
+    line: string,
+    result: ShellResult,
+    startedOn: ReadonlyMap<string, RunSnapshot>,
+  ): void {
     const outcome = outcomeOf(result)
     for (const check of this.checkCommands()) {
+      const cap = checkTimeoutMs(check)
+      const snapshot = startedOn.get(check.name)
       const isSameRun =
+        snapshot !== undefined &&
         check.command === line.trim() &&
         check.changedFiles !== true &&
-        (outcome !== 'timedOut' || checkTimeoutMs(check) === SHELL_DEFAULT_TIMEOUT_MS)
+        (outcome !== 'passed' || cap >= SHELL_DEFAULT_TIMEOUT_MS) &&
+        (outcome !== 'timedOut' || cap <= SHELL_DEFAULT_TIMEOUT_MS)
       if (isSameRun) {
-        this.ledger.record(check.name, outcome, 'project')
+        this.ledger.record(outcome, snapshot)
       }
     }
   }
@@ -4350,6 +4362,13 @@ export class ModelApiSession implements AgentSession {
     isForced: boolean,
   ): Promise<Performed> {
     const effects = newHookEffects()
+    // The state a check of the same command would start on, taken before it runs.
+    const startedOn = new Map(
+      this.checkCommands().map((check) => [
+        check.name,
+        this.ledger.snapshot(check.name, 'project'),
+      ]),
+    )
     let ran: CommandOutcome
     try {
       ran = await this.runVerifyCommand(
@@ -4399,7 +4418,7 @@ export class ModelApiSession implements AgentSession {
       }
     }
     const { line, result } = ran
-    this.noteCheckCommandRun(line, result)
+    this.noteCheckCommandRun(line, result, startedOn)
     const finished = shellOutcome(result, SHELL_DEFAULT_TIMEOUT_MS)
     return {
       outcome: {

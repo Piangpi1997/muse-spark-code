@@ -349,6 +349,28 @@ function lintCard(...paths: readonly string[]): {
   }
 }
 
+/** A workspace whose `lnk` folder is a link to its `real` folder, holding `real/a.ts`. */
+function linkedIo(): MemoryToolIo {
+  return memoryToolIo({ 'real/a.ts': 'const a = 1\n' }, ROOT, undefined, { lnk: `${ROOT}/real` })
+}
+
+/** A turn that edits `real/a.ts` through the link, finished. */
+async function editThroughLink(t: Setup): Promise<void> {
+  const { turn } = await start(t, 'allowAll')
+  t.api.script(
+    {
+      calls: [
+        {
+          name: 'edit_file',
+          arguments: JSON.stringify({ path: 'lnk/a.ts', find: '1', replace: '2' }),
+        },
+      ],
+    },
+    { text: 'ok' },
+  )
+  await turn()
+}
+
 /** An edit of package.json, which decides what `npm run lint` runs. */
 const MANIFEST_EDIT: ScriptedCall = {
   name: 'edit_file',
@@ -1522,23 +1544,9 @@ describe('acts on the file the edit wrote, as it left it', () => {
   })
 
   it('reads and checks an edited file by the real path and canonical name it had', async () => {
-    const io = memoryToolIo({ 'real/a.ts': 'const a = 1\n' }, ROOT, undefined, {
-      lnk: `${ROOT}/real`,
-    })
+    const io = linkedIo()
     const t = setup({ io, checks: [LINT] })
-    const { turn } = await start(t, 'allowAll')
-    t.api.script(
-      {
-        calls: [
-          {
-            name: 'edit_file',
-            arguments: JSON.stringify({ path: 'lnk/a.ts', find: '1', replace: '2' }),
-          },
-        ],
-      },
-      { text: 'ok' },
-    )
-    await turn()
+    await editThroughLink(t)
     expect(t.diagnosticsCalls).toEqual([
       [
         {
@@ -1718,5 +1726,38 @@ describe('what counts as a check’s run, and what the write-back leaves alone',
     expect(logLines(t.log).join('\n')).toContain(
       'Format on edit skipped src/a.ts: it has unsaved changes in an editor',
     )
+  })
+})
+
+// Grok's review of 6b2a5bfb.
+describe('the write-back and then_run, as Grok read them', () => {
+  it('does not take a passing then_run as a check whose own cap is shorter than the shell’s', async () => {
+    const quick: CheckCommandSetting = {
+      name: 'quick',
+      command: 'npm run quick',
+      timeoutSeconds: 10,
+    }
+    const t = setup({ checks: [quick], isDiagnosticsOn: false })
+    const { turn } = await start(t, 'allowAll')
+    t.api.script({ calls: [editCall('1', '2', quick.command)] }, { text: 'ok' })
+    await turn()
+    expect(t.io.shellCalls.map((call) => call.command)).toEqual([quick.command, quick.command])
+  })
+
+  it('leaves the formatted text unwritten while an editor holds the file by the name given', async () => {
+    const io = linkedIo()
+    const t = setup({
+      io,
+      isDiagnosticsOn: false,
+      isFormatOnEdit: true,
+      format: (_path, text) => {
+        // The user types into the editor that opened the file through the link.
+        io.unsaved.add(`${ROOT}/lnk/a.ts`)
+        return Promise.resolve(`${text}// formatted\n`)
+      },
+    })
+    await editThroughLink(t)
+    expect(io.files.get(`${ROOT}/real/a.ts`)).toBe('const a = 2\n')
+    expect(logLines(t.log).join('\n')).toContain('it has unsaved changes in an editor')
   })
 })

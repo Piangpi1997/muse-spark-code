@@ -35,9 +35,11 @@ happened, not what was planned; superseded entries are kept.
   message (a message you add while the agent works starts them again too);
   the model and the panel say so. A round counts as failing only by checks
   run on the files as they now are, and passes only when none of those
-  fails; an edit's `then_run` of a check's own command counts as that check.
-  No check runs twice for the same state of the files, or after the turn's
-  last round.
+  fails; an edit's `then_run` of the own command of a check that does not
+  take the changed files counts as that check (a pass only when the check's
+  time limit is no shorter than the shell's). No such check runs twice for
+  the same state of the files, and nothing runs after the turn's last
+  round.
 - **`run_checks`**, the model's own call of the checks (on files that exist
   in the workspace, or those edited since your message), and **`then_run`**
   on `write_file` and `edit_file`: one command run right after the edit,
