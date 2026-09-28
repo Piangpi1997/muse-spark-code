@@ -285,6 +285,18 @@ describe('AuthService.signIn', () => {
     ).toBe(false)
   })
 
+  it('cancels at once while the pre-flight account probe goes unanswered (the review of PR #49)', async () => {
+    const h = harness()
+    h.cliSignIn.mockImplementation(() => new Promise<CliSignIn>(() => undefined))
+    const pending = h.service.signIn('browser')
+    await vi.waitFor(() => {
+      expect(h.cliSignIn).toHaveBeenCalled()
+    })
+    h.service.cancelSignIn()
+    await expect(pending).resolves.toMatchObject({ status: 'signedOut' })
+    expect(h.runDeviceSignIn).not.toHaveBeenCalled()
+  })
+
   it('shows the device code, waits for the credential, and restarts the backend', async () => {
     const h = harness()
     h.runDeviceSignIn.mockImplementation((_signal, onCode) => {

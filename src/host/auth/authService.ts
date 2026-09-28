@@ -130,6 +130,32 @@ function endedSignInText(ending: 'expired' | DeviceSignInEnded): string {
     : fill(UI_TEXT.signInEnded, { outcome: ending.endedAs })
 }
 
+/** The listener `unlessAborted` replaces once its promise is made. */
+const IGNORE_ABORT = (): void => undefined
+
+/**
+ * `work`'s value, or undefined as soon as `signal` aborts. `work` runs on
+ * (a probe's answer is still cached); its failure after the abort is
+ * handled by the race.
+ */
+async function unlessAborted<T>(work: Promise<T>, signal: AbortSignal): Promise<T | undefined> {
+  if (signal.aborted) {
+    return undefined
+  }
+  let onAbort = IGNORE_ABORT
+  const aborted = new Promise<undefined>((resolve) => {
+    onAbort = () => {
+      resolve(undefined)
+    }
+    signal.addEventListener('abort', onAbort, { once: true })
+  })
+  try {
+    return await Promise.race([work, aborted])
+  } finally {
+    signal.removeEventListener('abort', onAbort)
+  }
+}
+
 export class AuthService {
   private snapshot: AuthSnapshot = { status: 'checking', detail: undefined }
   /** The browser sign-in in flight: a second click joins it (PLAN.md D25). */
@@ -260,9 +286,11 @@ export class AuthService {
     this.deviceAbort = abort
     this.set({ ...this.snapshot, status: 'signingIn', detail: UI_TEXT.signInWaiting })
     try {
-      // The sign-in host could not start with that file either.
-      const { isKeychainElsewhere } = await this.cliCredential(false)
-      if (isKeychainElsewhere) {
+      // The sign-in host could not start with that file either. A probe the
+      // CLI never answers must not hold Cancel or sign-out (the review of
+      // PR #49): the look ends with the flow's own signal.
+      const credential = await unlessAborted(this.cliCredential(false), abort.signal)
+      if (credential?.isKeychainElsewhere === true) {
         return await this.finishFailedCliSignIn(
           initial,
           'error',
