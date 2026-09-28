@@ -38,7 +38,9 @@ happened, not what was planned; superseded entries are kept.
     Markdown tree (a link's destination beside its text, a picture's
     source, titles, definitions, footnotes and code-fence info as text), so
     nothing in the brief is hidden in the panel. A plan with raw HTML is
-    saved with a warning and not started. The log names a plan by a
+    saved with a warning and not started; one with a control or format
+    character (a direction override, a zero-width character) is neither
+    saved nor started. The log names a plan by a
     verified date and a hash, or by the hash alone, never by its name.
   - The plan reader (the panel's Markdown parser) is a bundle of its own,
     `dist/planMarkdown.js` (budget 150 KiB), loaded on the first Save plan,

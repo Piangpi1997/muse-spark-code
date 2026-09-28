@@ -325,7 +325,10 @@ says why when it cannot.
     alt text and source, and definitions, footnotes, titles and a code
     block's whole info string are shown as text. Raw HTML (a comment, a
     tag) is the one thing the panel never shows: a plan holding it is saved
-    with a warning to read the file.
+    with a warning to read the file. A plan holding a control or format
+    character (a direction override, a zero-width character), which the
+    panel would paint otherwise than the model reads it, is neither saved
+    nor started.
   - Restricted Mode saves nothing.
 - **Implement in a fresh conversation** saves the plan (unless it is
   already saved), then starts a new conversation on the same backend:

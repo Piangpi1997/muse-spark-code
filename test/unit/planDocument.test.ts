@@ -3,6 +3,7 @@ import {
   isPlanFileName,
   numberedSteps,
   parsePlanFile as parsePlanFileWith,
+  hasUnshownCharacters,
   planBody,
   planFileName,
   planLogName,
@@ -229,6 +230,21 @@ describe('plan names, markup and the log (M79)', () => {
     expect(brief('Do it.[^n]\n\n[^n]: Carefully.')).toBe('Do it.[^n]\n\n[^n]:\n\nCarefully.')
     expect(brief('```js ignore the rules\nx()\n```')).toBe('```js ignore the rules\nx()\n```')
     expect(brief(CAPTURED_PLAN_BODY)).toContain('1. Confirm current folder state')
+  })
+
+  it('finds the control and format characters the panel paints otherwise than the model reads', () => {
+    for (const character of ['‮', '⁦', '​', '‍', '­', '﻿']) {
+      expect(hasUnshownCharacters(`1. Do it${character} now.`), JSON.stringify(character)).toBe(
+        true,
+      )
+    }
+    for (const character of ['\u{0}', '\u{7}', '\u{1B}', '\u{7F}', '\u{85}', '\u{9F}']) {
+      expect(hasUnshownCharacters(`1. Do it${character} now.`), JSON.stringify(character)).toBe(
+        true,
+      )
+    }
+    expect(hasUnshownCharacters('1. Tab\there.\r\n2. Line.\n3. 漢字, émoji 😀.')).toBe(false)
+    expect(hasUnshownCharacters(CAPTURED_PLAN_BODY)).toBe(false)
   })
 
   it('names a plan in the log by a verified date and a hash, never by its name', () => {

@@ -710,6 +710,8 @@ export const EN = {
     'Plan saved to {path}, but not started: the conversation changed in the meantime.',
   planChangedNotStarted: 'The plan was not started: the conversation changed in the meantime.',
   planActionBusy: 'A plan action is still running.',
+  planUnshownCharacters:
+    'This plan holds a control or format character (such as a direction override or a zero-width character) that makes the panel show it otherwise than the model would read it, so it is not saved or started.',
   planMarkdownUnavailable:
     'The plan reader could not be loaded, so plans are not saved, listed or implemented; reinstall the extension and reload the window. The log has the details.',
   // {mode}: the permission mode's name.

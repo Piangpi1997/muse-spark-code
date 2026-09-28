@@ -621,6 +621,7 @@
   "planSavedNotStarted": "Plán byl uložen do {path}, ale nespustil se: konverzace se mezitím změnila.",
   "planChangedNotStarted": "Plán se nespustil: konverzace se mezitím změnila.",
   "planActionBusy": "Akce plánu ještě probíhá.",
+  "planUnshownCharacters": "Tento plán obsahuje řídicí nebo formátovací znak (například přepnutí směru textu nebo znak nulové šířky), kvůli kterému ho panel zobrazuje jinak, než by ho četl model, proto se neukládá ani nespouští.",
   "planMarkdownUnavailable": "Čtečku plánů se nepodařilo načíst, takže se plány neukládají, nevypisují ani neprovádějí; přeinstalujte rozšíření a znovu načtěte okno. Podrobnosti jsou v protokolu.",
   "planFromFileMode": "Plán vybraný z Plánů… začíná v režimu {mode}: soubor pochází z pracovního prostoru, takže se konverzace před každou akcí zeptá.",
   "planOpen": "Otevřít",

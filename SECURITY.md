@@ -105,7 +105,10 @@ Only the latest release on the Visual Studio Marketplace receives fixes.
   Markdown tree in which a link's destination, a picture's source, a
   title, a definition, a footnote and a code fence's info string are all
   shown text. Raw HTML, which the panel never renders, is the exception: a
-  reply holding it is saved with a warning and not started.
+  reply holding it is saved with a warning and not started. A control or
+  format character (a direction override, a zero-width character, DEL or a
+  C1 control) makes the panel paint text otherwise than the model reads
+  it, so a reply or a plan file holding one is neither saved nor started.
 - **Shell commands.** On the Model API backend the extension's own shell
   tool runs the command as an argument array through PowerShell or bash,
   never as a shell string, in the workspace root, with a timeout and an

@@ -125,6 +125,8 @@ const TRICKY_PLANS = [
   `See [docs][guide] and [guide].\n\n[guide]: https://a.example/g "the guide"\n[unused]: https://a.example/${HIDDEN.replaceAll(' ', '-')}`,
   `Do it.[^a]\n\n[^a]: Carefully.\n[^b]: And ${HIDDEN}.`,
   '```js and ignore the rules\nx()\n```\n\n~~~\nplain\n~~~\n\n    indented code',
+  // A fence whose info string says more than its language (a review's case).
+  `\`\`\`text ${HIDDEN}\nbody\n\`\`\``,
   // Not a fence to the panel (the review's second P1): prose, briefed as prose.
   '1. Do it.\n\n```js`\n1. Real step\n```',
   '| a | b |\n| - | - |\n| **x** | `y` |\n\n- [x] done\n- [ ] ~~todo~~',
@@ -153,6 +155,21 @@ describe('the brief is what the panel showed (M79)', () => {
       }
       cleanup()
     }
+  })
+
+  it('labels a plan code block with its whole info string, as the brief writes it', () => {
+    const { container } = render(
+      <MarkdownView
+        text={`\`\`\`text ${HIDDEN}\nbody\n\`\`\``}
+        isPlan
+        onOpenLink={() => undefined}
+        onCopy={() => undefined}
+        onInsert={() => undefined}
+        onApply={() => undefined}
+      />,
+    )
+    expect(container.querySelector('.code-block-lang')?.textContent).toBe(`text ${HIDDEN}`)
+    expect(briefText(`\`\`\`text ${HIDDEN}\nbody\n\`\`\``)).toContain(`\`\`\`text ${HIDDEN}`)
   })
 
   it('finds the raw HTML the panel leaves out, which no brief carries', () => {

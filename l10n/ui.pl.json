@@ -621,6 +621,7 @@
   "planSavedNotStarted": "Plan zapisano w {path}, ale go nie uruchomiono: w międzyczasie rozmowa się zmieniła.",
   "planChangedNotStarted": "Planu nie uruchomiono: w międzyczasie rozmowa się zmieniła.",
   "planActionBusy": "Działanie planu nadal trwa.",
+  "planUnshownCharacters": "Ten plan zawiera znak sterujący lub formatujący (np. wymuszenie kierunku tekstu albo znak o zerowej szerokości), przez który panel pokazuje go inaczej, niż odczytałby go model, dlatego nie jest zapisywany ani uruchamiany.",
   "planMarkdownUnavailable": "Nie udało się wczytać czytnika planów, więc plany nie są zapisywane, wyświetlane ani wdrażane; zainstaluj ponownie rozszerzenie i przeładuj okno. Szczegóły są w dzienniku.",
   "planFromFileMode": "Plan wybrany z Planów… zaczyna w trybie {mode}: plik pochodzi z obszaru roboczego, więc rozmowa pyta przed działaniem.",
   "planOpen": "Otwórz",

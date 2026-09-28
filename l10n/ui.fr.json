@@ -609,6 +609,7 @@
   "planSavedNotStarted": "Plan enregistré dans {path}, mais non lancé : la conversation a changé entre-temps.",
   "planChangedNotStarted": "Le plan n’a pas été lancé : la conversation a changé entre-temps.",
   "planActionBusy": "Une action de plan est encore en cours.",
+  "planUnshownCharacters": "Ce plan contient un caractère de contrôle ou de mise en forme (un forçage de sens d’écriture ou un caractère sans chasse, par exemple) qui fait que le panneau l’affiche autrement que le modèle le lirait : il n’est donc ni enregistré ni lancé.",
   "planMarkdownUnavailable": "Le lecteur de plans n’a pas pu être chargé : les plans ne sont donc ni enregistrés, ni listés, ni mis en œuvre ; réinstallez l’extension et rechargez la fenêtre. Le journal contient les détails.",
   "planFromFileMode": "Un plan choisi dans Plans enregistrés… démarre en mode {mode} : le fichier vient de l’espace de travail, donc la conversation demande avant d’agir.",
   "planOpen": "Ouvrir",

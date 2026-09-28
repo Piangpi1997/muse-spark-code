@@ -29,6 +29,7 @@ import {
 } from '../../core/agent/agentBackend'
 import { toSessionRow } from '../../core/agent/sessionRows'
 import {
+  hasUnshownCharacters,
   numberedSteps,
   planBody,
   planLogName,
@@ -2761,6 +2762,12 @@ export class ConversationController {
       this.notice('warning', planTooLargeText())
       return undefined
     }
+    // A direction override or a zero-width character: the panel paints the
+    // plan otherwise than the model reads it, so it is neither saved nor started.
+    if (hasUnshownCharacters(text)) {
+      this.notice('warning', UI_TEXT.planUnshownCharacters)
+      return undefined
+    }
     const content = {
       title: planTitle(markdown, text, reply.prompt, reply.name ?? UI_TEXT.untitledConversation),
       savedAt: new Date(this.deps.now()),
@@ -3012,6 +3019,10 @@ export class ConversationController {
     const plan = await plans.read(source.fileName)
     const markdown = plans.markdown()
     const body = plan.document.body
+    if (hasUnshownCharacters(body)) {
+      this.notice('warning', UI_TEXT.planUnshownCharacters)
+      return undefined
+    }
     const bytes = new TextEncoder().encode(markdown.briefText(body))
     return {
       brief: planBrief(plan.relativePath, bytes, planSteps(markdown, body), false),

@@ -597,6 +597,7 @@
   "planSavedNotStarted": "Plan in {path} gespeichert, aber nicht gestartet: Die Unterhaltung hat sich inzwischen geändert.",
   "planChangedNotStarted": "Der Plan wurde nicht gestartet: Die Unterhaltung hat sich inzwischen geändert.",
   "planActionBusy": "Eine Planaktion läuft noch.",
+  "planUnshownCharacters": "Dieser Plan enthält ein Steuer- oder Formatzeichen (etwa eine Richtungsumkehr oder ein Zeichen ohne Breite), durch das der Bereich ihn anders zeigt, als das Modell ihn lesen würde; er wird daher weder gespeichert noch gestartet.",
   "planMarkdownUnavailable": "Der Planleser konnte nicht geladen werden, daher werden Pläne weder gespeichert noch aufgelistet noch umgesetzt; installieren Sie die Erweiterung neu und laden Sie das Fenster neu. Details stehen im Protokoll.",
   "planFromFileMode": "Ein Plan aus „Pläne…“ startet im Modus {mode}: Die Datei stammt aus dem Arbeitsbereich, daher fragt die Unterhaltung, bevor sie handelt.",
   "planOpen": "Öffnen",

@@ -71,6 +71,11 @@ const TRAILING_BREAKS = /(?:\r?\n)+$/
 // would reach the brief unquoted) or a format character (a right-to-left
 // override would disguise the name in Plans…): never part of a plan's name.
 const UNSAFE_NAME_CHARACTER = /[\\/:\p{Cc}\p{Cf}]/u
+// In a plan's text: a control character other than a tab or a line break
+// (DEL and the C1 controls included), or a format character (a direction
+// override, a zero-width character). The panel paints them, reordering or
+// hiding text, while the model reads the string as it is.
+const UNSHOWN_CHARACTER = /[^\P{Cc}\t\n\r]|\p{Cf}/u
 // A plan file's name as the extension makes it starts with its day.
 const DATED_NAME = /^(\d{4})-(\d{2})-(\d{2})(?=[-.])/
 const DATE_PAD = 2
@@ -217,6 +222,15 @@ export function planSteps(markdown: PlanMarkdown, body: string): readonly string
 /** The steps as numbered lines, as the model is told its todo list was set. */
 export function numberedSteps(steps: readonly string[]): string {
   return steps.map((step, index) => `${String(index + 1)}. ${step}`).join('\n')
+}
+
+/**
+ * Whether a plan's text holds a character the panel does not show as the
+ * model reads it (see UNSHOWN_CHARACTER): such a plan is neither saved nor
+ * started, as the rendered view is no longer what the model gets.
+ */
+export function hasUnshownCharacters(text: string): boolean {
+  return UNSHOWN_CHARACTER.test(text)
 }
 
 /** Whether a name is a plan file's own: one path segment ending in `.md`. */
