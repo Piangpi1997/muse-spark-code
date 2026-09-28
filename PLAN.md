@@ -209,7 +209,7 @@ quality`) and as a CI job.
 | `dist/modelApi.js`     | ≤ 400 KiB (M57: the Model API backend, loaded when it first starts; 295.6 KiB when split, see below) |
 | `dist/searchWorker.js` | ≤ 50 KiB                                                                                             |
 | `dist/webview/main.js` | ≤ 900 KiB including React, the markdown renderer and highlight.js (one bundle)                       |
-| `dist/acp.js`          | ≤ 800 KiB (718 KiB at M63, 445 KiB of it the classic zod the ACP SDK imports)                        |
+| `dist/acp.js`          | ≤ 850 KiB (the ACP agent, installed once, never loaded by VS Code; 713.2 KiB when set, see below)    |
 | `.vsix`                | not gated; 0.8.0 is 905,941 bytes (the GitHub Release asset, §10)                                    |
 
 `npm run build` prints sizes; `scripts/check-bundle-size.mjs` holds the numbers
@@ -298,6 +298,32 @@ The first was taken:
 - **Measured**: `dist/acp.js` went from 874.1 KiB (the joined tree before
   M57) to 713.2 KiB; `dist/extension.js` is 432.5 KiB and `dist/modelApi.js`
   299.5 KiB, each under its budget.
+
+**Amendment (PR #32 joined with M57, 2026-09-27): the ACP agent's budget is
+850 KiB.** Set at M63 to 800 KiB against 718 KiB, and outgrown when M48–M56
+reached the agent through the shared managers (874.1 KiB, PLAN.md §7 then).
+With the backend in `dist/modelApi.js` the agent is 713.2 KiB; the budget is
+that plus about 15 %, rounded up to a multiple of 50 KiB (820 → 850). No
+other budget changes.
+
+- **What it holds** (the production metafile, `dist/meta-acp/acp.json`):
+  zod 445.2 KiB (62 %), of which 257.6 KiB are its 64 error-message locales,
+  exported by the classic API `@agentclientprotocol/sdk` imports and so kept
+  by esbuild although the agent never switches locale; zod's core and
+  classic API 185.0 KiB; the ACP SDK 53.7 KiB; the English table 58.6 KiB;
+  the engine the agent runs (the Muse Code backend and its SDK, the tool
+  harness, the conversation's shared code, `src/acp`, `src/runtime`) the
+  rest, about 155 KiB. Three of the Model API backend's files, all on
+  M57's allowed list, stay in it.
+- **Why it is acceptable.** The agent is a process of its own that the user
+  installs once with npm and an editor starts; VS Code never loads it, so
+  its size adds nothing to the extension's activation, and it is parsed
+  once per agent start. What it costs is the download: 175.1 KiB of
+  `acp.js` gzipped, and a 597 KiB package (611,034 bytes, with
+  `dist/modelApi.js`, the search worker, the 14 tables and the notices).
+- **Not taken**: dropping zod's locales. They come with the SDK's own
+  import of classic zod; removing them means aliasing or patching a
+  dependency's module graph, for a download a user makes once.
 
 ### D7 — Permission modes map onto MSP approval modes; prompting modes wait for M4
 
@@ -6716,28 +6742,13 @@ trigger was verified locally with a red drill before the M52 merge.
 | Host API record       | `node scripts/check-host-api.mjs` (`npm run check:host-api`, in `quality:gates`; `--write` regenerates): `docs/ide-compatibility/host-api.md` against the source, and the portable code never reaching `vscode`                                        | M60 ✓ (drills in `docs/certification/m60.md`)                                                                                                                                                                                                                                                                                                                     |
 | Hosts                 | `hosts.yml` (VSCodium, code-server, Theia, the agent package and key store, Jupyter, Emacs, Neovim) and `forks.yml` (Cursor, Devin Desktop, Kiro, Positron), CI only: each job runs one `test/hosts` script                                            | M62/M63 ✓ locally (drills H1–H5 in `m63.md`, F1–F2 in `m62.md`); the forks only on GitHub's runners                                                                                                                                                                                                                                                               |
 
-**Open for the owner: the bundle budget after M48–M56 joined M60–M63
-(2026-09-27).** `npm run build` fails its size check on the joined tree, and
-no budget was raised:
-
-- `dist/extension.js` is 600.5 KiB against 600 (main alone: 596.7).
-  - +3.2 KiB is the ACP agent's 28 strings in the shared English table
-    (`acp*` in `src/shared/l10n/en.ts`, AGENTS rule 5). `UI_TEXT` is one
-    object, so the extension carries them without using them.
-  - +0.65 KiB is Diagnostics' per-global routing line, the M62 answer to
-    D43's premise.
-- `dist/acp.js` is 874.1 KiB against 800 (718.6 at M63). Main's engine
-  code now reaches the agent through the shared managers: the MCP client,
-  hooks, memory, schedules, subagents and PDF input.
-
-The two ways out:
-
-- move the agent's text into a table of its own (an exception to AGENTS
-  rule 5, and a second table for the l10n gate and the 14 translations);
-- re-baseline D6 for both bundles.
-
-Either is the owner's call. Until then the build gate is red on this
-branch, and on no other.
+**Resolved 2026-09-27: the bundle budget after M48–M56 joined M60–M63.**
+The joined tree's build failed its size check (`dist/extension.js` 600.5
+KiB against 600, `dist/acp.js` 874.1 KiB against 800) and no budget was
+raised. Main's M57 took the Model API backend out of both: the extension is
+432.5 KiB under its unchanged 600 KiB, and the agent, which loads the same
+`dist/modelApi.js`, 713.2 KiB, whose budget is now 850 KiB (D6 amendments;
+`docs/certification/pr32-integration.md`).
 
 Aggregates: `quality:gates` = format:check, lint, typecheck, check:l10n, check:host-api, deadcode, cycles, duplication, test:unit, build, security:audit; `quality` = quality:gates + test:a11y + security:secrets + security:sast; `quality:ci` = quality:gates + test:a11y + test:integration (secrets and SAST are separate CI jobs). Integration tests run only in CI or via `npm run test:integration`.
 

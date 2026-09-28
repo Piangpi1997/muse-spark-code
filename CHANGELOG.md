@@ -109,6 +109,12 @@ happened, not what was planned; superseded entries are kept.
   the activation bundle (`scripts/check-bundle-split.mjs`). The host-globals
   and third-party-notices checks cover the new bundle, `npm run cycles`
   follows it, and the `.vsix` ships it.
+- **Build: the ACP agent's budget is 850 KiB** (PLAN.md D6). `dist/acp.js`
+  is 713.2 KiB now that it loads the Model API backend from
+  `dist/modelApi.js` (it was 874.1 KiB, over its 800 KiB budget, before
+  M57 reached it); the budget is that plus about 15 %. The agent is
+  installed once and never loaded by VS Code, so the size is a download,
+  not a start-up cost. No other budget changed.
 
 ## [0.9.1] - 2026-09-27
 

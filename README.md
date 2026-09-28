@@ -1660,7 +1660,7 @@ and stays English. Escape hatches
 (`eslint-disable`, `@ts-expect-error`, casts) need an inline reason and a row
 in `PLAN.md` §8. Bundle budgets: 600 KiB for the extension, 400 KiB for the
 Model API backend's own bundle, 50 KiB for the search worker, 900 KiB for
-the webview.
+the webview, and 850 KiB for the ACP agent (`dist/acp.js`).
 
 **Environment variables.** Credentials live in SecretStorage, never in
 files. `.env.example` documents `META_API_KEY`, which the Muse Code CLI

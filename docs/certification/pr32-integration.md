@@ -115,3 +115,26 @@ Each broke one thing, the named check failed, and the file was restored
 | B1    | the runtime hands the manager the entry module (`loadBundle`), bundling the backend into `acp.js` | `check-bundle-split.mjs` exit 1: 21 problems, "dist/acp.js carries src/core/backends/modelapi/ModelApiHost.ts, …"    |
 | B2    | `modelApiEntry.ts` imports a `vscode` type                                                        | `check-host-api.mjs` exit 1: "src/host/backend/modelApiEntry.ts reaches `vscode`", "Uri is a VS Code type"           |
 | B3    | `scripts/package-acp.mjs` without `modelApi.js`, packed and installed                             | the installed-package suite: 1 failed, 4 passed, "ships the Model API backend beside the agent" (`MODULE_NOT_FOUND`) |
+
+## The agent's budget (PLAN.md D6 amendment)
+
+After the merge, from the production build's metafile:
+
+| Bundle                 | Size      | Budget                |
+| ---------------------- | --------- | --------------------- |
+| `dist/extension.js`    | 432.5 KiB | 600 KiB, unchanged    |
+| `dist/modelApi.js`     | 299.5 KiB | 400 KiB, unchanged    |
+| `dist/searchWorker.js` | 15.2 KiB  | 50 KiB, unchanged     |
+| `dist/webview/main.js` | 751.7 KiB | 900 KiB, unchanged    |
+| `dist/acp.js`          | 713.2 KiB | **850 KiB** (was 800) |
+
+`acp.js`: zod 445.2 KiB (257.6 of it the 64 locale files of the classic API
+the ACP SDK imports, 185.0 its core and classic API, 2.5 the panel's
+`zod/mini`), the English table 58.6, the ACP SDK 53.7, the Muse Code SDK
+14.7, and the engine, `src/acp` and `src/runtime` about 155. 713.2 × 1.15 =
+820.2, rounded up to 850. Gzipped, `acp.js` is 175.1 KiB; the packed agent
+(`muse-spark-code-acp-0.9.1.tgz`) is 611,034 bytes.
+
+Drill: the agent's budget set to 700 KiB, `check-bundle-size.mjs` exit 1,
+"OVER dist/acp.js: 713.2 KiB (budget 700 KiB)"; restored, "ok … (budget 850
+KiB)".
