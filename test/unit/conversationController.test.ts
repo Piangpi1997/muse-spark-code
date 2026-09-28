@@ -214,6 +214,8 @@ function setup(
     dictation?: DictationSetup
     /** Muse Voice when it is the microphone's engine (M35). */
     museVoice?: () => DictationSetup | undefined
+    /** The paid-use popup (M58); every use allowed unless a test says otherwise. */
+    allowsPaidUse?: ConversationDeps['allowsPaidUse']
     now?: number
     /** Handshake fields over the fake's (D26: the platform, the version). */
     handshake?: Record<string, unknown>
@@ -369,6 +371,8 @@ function setup(
     isWorkspaceTrusted: () => options.isWorkspaceTrusted ?? true,
     onForegroundTasksChanged: vi.fn<() => void>(),
     museVoice: options.museVoice ?? (() => undefined),
+    allowsPaidUse: options.allowsPaidUse ?? (() => Promise.resolve(true)),
+    forgetPaidUse: vi.fn(() => Promise.resolve()),
     auth: auth.service,
     accountFacts: (backend) =>
       Promise.resolve(
@@ -4674,21 +4678,12 @@ describe('ConversationController: permission hardening (D24)', () => {
     requestApproval(t, 'j', { judgeEscalated: true })
     requestApproval(t, 's', { subject: { kind: 'shell', command: 'npm test' } })
     requestApproval(t, 'r', { subject: { kind: 'fileAccess', access: 'read', path: '/x' } })
-    // A paid call is always the user's to accept (M34, PLAN.md D30).
-    requestApproval(t, 'i', {
-      subject: {
-        kind: 'paidTool',
-        toolName: 'generate_image',
-        path: 'a.png',
-        paidFeature: 'imageGeneration',
-      },
-    })
     const manual = setup({ hasApprovalUi: true, initialPermissionMode: 'manual' })
     await manual.send('l1', 'hi')
     requestApproval(manual, 'm')
     await vi.waitFor(() => {
       expect(agentEvents(manual).map((event) => event.type)).toContain('approvalRequested')
-      expect(agentEvents(t).filter((event) => event.type === 'approvalRequested')).toHaveLength(5)
+      expect(agentEvents(t).filter((event) => event.type === 'approvalRequested')).toHaveLength(4)
     })
     expect(t.server.requestsFor('approval/decide')).toHaveLength(0)
     expect(manual.server.requestsFor('approval/decide')).toHaveLength(0)
@@ -4696,7 +4691,7 @@ describe('ConversationController: permission hardening (D24)', () => {
       agentEvents(t).flatMap((event) =>
         event.type === 'approvalRequested' ? [event.approvalId] : [],
       ),
-    ).toEqual(['p', 'j', 's', 'r', 'i'])
+    ).toEqual(['p', 'j', 's', 'r'])
     expect(agentEvents(manual).map((event) => event.type)).toContain('approvalRequested')
   })
 
@@ -5937,6 +5932,21 @@ function namedSetup(name: string, calls: string[]): DictationSetup {
     },
   }
 }
+/** The microphone was told Muse Voice is its idle engine. */
+function expectIdleMuseVoice(t: ReturnType<typeof setup>): void {
+  expect(t.surface.posted).toContainEqual({
+    type: 'dictationState',
+    status: 'idle',
+    engine: 'museVoice',
+  })
+}
+
+/** One tap to record and one to stop. */
+async function recordOnce(t: ReturnType<typeof setup>): Promise<void> {
+  await t.controller.handle({ type: 'dictation', action: 'start' })
+  await t.controller.handle({ type: 'dictation', action: 'stop' })
+}
+
 describe('ConversationController: the microphone’s engine (M35, PLAN.md D30)', () => {
   it('records with Muse Voice while it is the engine, and says so to the microphone', async () => {
     const calls: string[] = []
@@ -5946,13 +5956,8 @@ describe('ConversationController: the microphone’s engine (M35, PLAN.md D30)',
       museVoice: () => (engine.isPaid ? namedSetup('muse', calls) : undefined),
     })
     t.controller.surfaceReady()
-    expect(t.surface.posted).toContainEqual({
-      type: 'dictationState',
-      status: 'idle',
-      engine: 'museVoice',
-    })
-    await t.controller.handle({ type: 'dictation', action: 'start' })
-    await t.controller.handle({ type: 'dictation', action: 'stop' })
+    expectIdleMuseVoice(t)
+    await recordOnce(t)
     // Turned off: the idle paid driver goes, and the next press is the free engine's.
     engine.isPaid = false
     t.surface.posted.length = 0
@@ -5970,9 +5975,11 @@ describe('ConversationController: the microphone’s engine (M35, PLAN.md D30)',
   })
 
   it('says why when Muse Voice is the engine but cannot record here', async () => {
+    const allowsPaidUse = vi.fn(() => Promise.resolve(true))
     const t = setup({
       dictation: namedSetup('system', []),
       museVoice: () => ({ isAvailable: false, reason: 'no recorder' }),
+      allowsPaidUse,
     })
     await t.controller.handle({ type: 'dictation', action: 'start' })
     expect(t.surface.posted).toContainEqual({
@@ -5981,6 +5988,51 @@ describe('ConversationController: the microphone’s engine (M35, PLAN.md D30)',
       reason: 'no recorder',
       engine: 'museVoice',
     })
+    // Nothing that cannot record is asked about (M58).
+    expect(allowsPaidUse).not.toHaveBeenCalled()
+  })
+
+  it('asks the paid-use popup before each Muse Voice recording, never for the free one (M58)', async () => {
+    const calls: string[] = []
+    const engine = { isPaid: true }
+    const answers = [false, true]
+    const allowsPaidUse = vi.fn(() => Promise.resolve(answers.shift() ?? false))
+    const t = setup({
+      dictation: namedSetup('system', calls),
+      museVoice: () => (engine.isPaid ? namedSetup('muse', calls) : undefined),
+      allowsPaidUse,
+    })
+    t.controller.surfaceReady()
+    t.surface.posted.length = 0
+    // Denied: nothing records, and the microphone is told it is idle.
+    await t.controller.handle({ type: 'dictation', action: 'start' })
+    expect(calls).toEqual([])
+    expectIdleMuseVoice(t)
+    // Allowed: this recording starts; stopping it asks nothing.
+    await recordOnce(t)
+    expect(calls).toEqual(['muse:create', 'muse:start', 'muse:stop'])
+    expect(allowsPaidUse.mock.calls).toEqual([[{ feature: 'voice' }], [{ feature: 'voice' }]])
+    // The free recogniser never asks.
+    engine.isPaid = false
+    t.controller.refreshDictation()
+    await t.controller.handle({ type: 'dictation', action: 'start' })
+    expect(calls.at(-1)).toBe('system:start')
+    expect(allowsPaidUse).toHaveBeenCalledTimes(2)
+  })
+
+  it('cancels a Muse Voice start when stop is pressed while the popup is open (M58)', async () => {
+    const calls: string[] = []
+    const answer = Promise.withResolvers<boolean>()
+    const t = setup({
+      dictation: namedSetup('system', calls),
+      museVoice: () => namedSetup('muse', calls),
+      allowsPaidUse: () => answer.promise,
+    })
+    const starting = t.controller.handle({ type: 'dictation', action: 'start' })
+    await t.controller.handle({ type: 'dictation', action: 'stop' })
+    answer.resolve(true)
+    await starting
+    expect(calls).not.toContain('muse:start')
   })
 })
 
@@ -6631,7 +6683,8 @@ describe('ConversationController: scheduled prompts (M52)', () => {
       promptCacheRetention: () => 'in_memory',
       isPaidFeatureOn: () => isPaidOn,
       notePaidUse: () => undefined,
-      confirmSubagentTask: () => Promise.resolve(false),
+      allowsPaidUse: () => Promise.resolve(false),
+      isPaidUseRemembered: () => false,
       noteSubagentUsage: () => undefined,
       memory: undefined,
       store: memorySessionStore(),

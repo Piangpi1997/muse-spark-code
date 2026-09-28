@@ -91,8 +91,30 @@ export const paidStateSchema = z.object({
   tally: paidTallySchema,
   /** A Model API key is stored (M44): the Muse Code backend can use the key's paid features. */
   isKeyStored: z.boolean(),
+  /** The features that are on and allowed always in this workspace (M58): they no longer ask. */
+  alwaysAllowed: z.array(z.enum(PAID_FEATURES)),
 })
 export type PaidState = z.infer<typeof paidStateSchema>
+
+/**
+ * One paid use the user is asked about (M58, PLAN.md D48): what the popup
+ * names before anything is billed. Web search asks once per prompt, since
+ * Meta runs the searches inside the response and the model decides whether
+ * to search at all.
+ */
+export type PaidUseRequest =
+  | { readonly feature: 'webSearch' }
+  | { readonly feature: 'voice' }
+  | {
+      readonly feature: 'imageGeneration'
+      readonly kind: 'generate' | 'edit'
+      /** Workspace-relative paths, as the popup shows them. */
+      readonly path: string
+      readonly sources: readonly string[]
+      readonly prompt: string
+    }
+  | { readonly feature: 'scheduledPrompts'; readonly prompt: string; readonly modelId: string }
+  | { readonly feature: 'subagents'; readonly task: SubagentTaskConfirmation }
 
 /**
  * The paid features a window can use (M44, PLAN.md D37): every one on the

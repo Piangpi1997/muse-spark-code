@@ -94,7 +94,9 @@ Only the latest release on the Visual Studio Marketplace receives fixes.
   and any `*_API_KEY`, standard input capped at 256 KiB, output capped at
   16 KiB, a timeout of at most 600 s, and the process tree ended on cancel.
   A hook can approve an ordinary tool call but never a paid call or a
-  protected write.
+  protected write: a paid call always reaches the paid-use popup, unless
+  the user allowed that feature always in this (trusted) workspace, and a
+  paid image aimed at a protected path asks even then.
 - **MCP servers (Model API backend).** Started only in a trusted
   workspace. A local server sees only an allow-listed part of VS Code's
   environment plus its own `env`; the Model API key is never passed. On

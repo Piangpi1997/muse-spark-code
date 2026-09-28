@@ -159,6 +159,7 @@ describe('parseHostToWebviewMessage', () => {
         subagentCostUsd: 1.455,
       },
       isKeyStored: true,
+      alwaysAllowed: [],
     }
     const rejected = parseHostToWebviewMessage({ type: 'paidState', state })
     expect(rejected.ok).toBe(false)

@@ -149,15 +149,23 @@ function paidBadgeFor(
   if (features.length === 0) {
     return undefined
   }
+  const title = fill(UI_TEXT.paidBadgeTitle, {
+    prices: features
+      .map((feature) => `${paidFeatureName(feature)} ${paidFeaturePrice(feature)}`)
+      .join('; '),
+  })
+  // What no longer asks here (M58) is said too: loud even when silent.
+  const always = features.filter((feature) => state.paid.alwaysAllowed.includes(feature))
   return {
     label: fill(UI_TEXT.paidBadge, {
       features: features.map((feature) => paidFeatureName(feature)).join(', '),
     }),
-    title: fill(UI_TEXT.paidBadgeTitle, {
-      prices: features
-        .map((feature) => `${paidFeatureName(feature)} ${paidFeaturePrice(feature)}`)
-        .join('; '),
-    }),
+    title:
+      always.length === 0
+        ? title
+        : `${title} ${fill(UI_TEXT.usagePaidAlwaysNote, {
+            features: always.map((feature) => paidFeatureName(feature)).join(', '),
+          })}`,
   }
 }
 
@@ -1443,6 +1451,9 @@ export function App({
         onSetupSignIn={(method) => {
           closeOverlay()
           onSignIn(method)
+        }}
+        onForgetPaidUse={() => {
+          postMessage({ type: 'forgetPaidUse' })
         }}
         report={state.usageReport}
         usage={state.usage}

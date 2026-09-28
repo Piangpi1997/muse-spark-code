@@ -60,6 +60,12 @@ export const GLOBAL_STATE_KEYS = {
    */
   paidConfirmations: 'museSpark.paidConfirmations',
   subagentPriceAcceptance: 'museSpark.subagentPriceAcceptance',
+  /**
+   * Each paid feature's grant generation (M58): every change to its price
+   * acceptance counts it up, so an "Allow always in this workspace" given
+   * before the change is void in every workspace.
+   */
+  paidGrantGenerations: 'museSpark.paidGrantGenerations',
 } as const
 
 // VS Code `when`-clause context keys the extension maintains.
@@ -297,8 +303,9 @@ export const HOOK_FORBIDDEN_ENV_NAMES: ReadonlySet<string> = new Set([
 // --- Paid features on the Model API backend (M33–M35, PLAN.md D30) ---
 
 // Each is off by default, confirmed with its price when turned on, named in
-// the composer's badge while on, shown per use and tallied (the owner's rule:
-// "opt in and loud"). They are used on the Model API backend only.
+// the composer's badge while on, asked about before each use (M58: Allow
+// once, Allow always in this workspace, or Deny), shown per use and tallied
+// (the owner's rule: "opt in and loud").
 export const PAID_FEATURES = [
   'webSearch',
   'imageGeneration',
@@ -349,6 +356,8 @@ export const SESSION_RESTORE_WINDOW_MS = 10 * 60 * 1000
 export const WORKSPACE_STATE_KEYS = {
   archivedSessions: 'museSpark.archivedSessions',
   lastSession: 'museSpark.lastSession',
+  /** The paid features allowed always in this workspace, with their grant generation (M58). */
+  paidWorkspaceGrants: 'museSpark.paidWorkspaceGrants',
 } as const
 
 // Webview bundle layout produced by scripts/build.mjs.

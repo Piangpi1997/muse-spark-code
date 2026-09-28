@@ -1,11 +1,12 @@
 // The host side of the paid Model API features (M33–M35, PLAN.md D30): the
 // gate over VS Code's settings, the extension's global state and a modal
-// confirmation naming the price, the window's tally, and the `paidState`
-// message every panel renders its badge, toggles and tally from.
+// confirmation naming the price, the popup before each paid use (M58,
+// PLAN.md D48), the window's tally, and the `paidState` message every panel
+// renders its badge, toggles and tally from.
 
 import * as vscode from 'vscode'
 import * as z from 'zod/mini'
-import type { ImagePlan } from '../../core/backends/modelapi/imageGeneration'
+import { PaidUseConsent, type PaidUseAnswer } from '../../core/paid/paidConsent'
 import { PaidFeatureGate, PaidUsage, paidStateOf } from '../../core/paid/paidFeatures'
 import {
   GLOBAL_STATE_KEYS,
@@ -15,6 +16,7 @@ import {
   SETTINGS_SECTION,
   SUBAGENT_PRICE_ACCEPTANCE_VERSION,
   UI_TEXT,
+  WORKSPACE_STATE_KEYS,
 } from '../../shared/constants'
 import { fill } from '../../shared/l10n/text'
 import {
@@ -24,28 +26,41 @@ import {
   scheduledRunPrice,
   subagentTaskPrice,
   type PaidState,
-  type SubagentTaskConfirmation,
+  type PaidUseRequest,
 } from '../../shared/paid'
-import type { ScheduledPrompt } from '../../shared/schedule'
 import type { Logger } from '../logger'
 
 // What an earlier version (or a hand edit) stored is validated, never trusted.
 const acceptedSchema = z.array(z.enum(PAID_FEATURES))
+// Feature → grant generation; keys that are not a paid feature are ignored.
+const generationsSchema = z.record(z.string(), z.int().check(z.nonnegative()))
+
+/** A feature's grant generation: 0 until its price acceptance first changes. */
+function generationOf(generations: Readonly<Record<string, number>>, feature: PaidFeature): number {
+  return generations[feature] ?? 0
+}
+
+interface MementoLike {
+  get(key: string): unknown
+  update(key: string, value: unknown): Thenable<void>
+}
 
 export interface PaidFeaturesDeps {
-  readonly globalState: {
-    get(key: string): unknown
-    update(key: string, value: unknown): Thenable<void>
-  }
+  readonly globalState: MementoLike
+  /** Where "Allow always in this workspace" is kept (M58). */
+  readonly workspaceState: MementoLike
   /** Whether the feature's setting is on, as the settings reader validated it. */
   readonly isSettingOn: (feature: PaidFeature) => boolean
   /** Whether a Model API key is stored, as last read (M44). */
   readonly isKeyStored: () => boolean
+  /** A trusted workspace with a folder open: "always" is offered and kept only there. */
+  readonly canRememberPaidUse: () => boolean
   readonly log: Logger
 }
 
 export interface PaidFeatures {
   readonly gate: PaidFeatureGate
+  readonly consent: PaidUseConsent
   readonly usage: PaidUsage
   readonly state: () => PaidState
   /** Whether a change to the configuration touched a paid feature's setting. */
@@ -74,66 +89,85 @@ async function isTurnOnConfirmed(feature: PaidFeature): Promise<boolean> {
   return answer === accept
 }
 
-/**
- * The price confirmation before an image the `ide` server makes for Muse
- * Code (M44, PLAN.md D37): every one, whatever Muse Code's permission mode,
- * naming what is made, from what, and that the key pays for it.
- */
-export async function isImagePurchaseConfirmed(plan: ImagePlan): Promise<boolean> {
-  const price = paidFeaturePrice('imageGeneration')
-  const accept = fill(UI_TEXT.imageBuyAccept, { price })
-  const title = fill(plan.kind === 'edit' ? UI_TEXT.imageBuyEditTitle : UI_TEXT.imageBuyTitle, {
-    path: plan.target.relative,
-  })
-  const sources = plan.sources.map((source) => source.relative).join(', ')
-  const detail = [
-    fill(UI_TEXT.imageBuyPrompt, { prompt: plan.prompt }),
-    ...(sources === '' ? [] : [fill(UI_TEXT.imageBuySources, { paths: sources })]),
-    fill(UI_TEXT.imageBuyBilling, { price }),
-  ].join('\n\n')
-  const answer = await vscode.window.showWarningMessage(title, { modal: true, detail }, accept)
-  return answer === accept
-}
-
-/** One due occurrence: the same native VS Code price dialog in the panel and live proof. */
-export async function isScheduledRunConfirmed(
-  job: Pick<ScheduledPrompt, 'prompt'>,
-  modelId: string,
-): Promise<boolean> {
-  const accept = UI_TEXT.scheduleRunConfirmAccept
-  const answer = await vscode.window.showWarningMessage(
-    fill(UI_TEXT.scheduleRunConfirmTitle, { model: modelId }),
-    {
-      modal: true,
-      detail: [
-        fill(UI_TEXT.scheduleRunConfirmPrompt, { prompt: job.prompt }),
-        fill(UI_TEXT.scheduleRunConfirmPrice, { price: scheduledRunPrice(modelId) }),
-        UI_TEXT.scheduleRunConfirmExtras,
-      ].join('\n\n'),
-    },
-    accept,
-  )
-  return answer === accept
-}
-
-/** UI-created follow-ups require the same per-task price consent as model spawns. */
-export async function isSubagentTaskConfirmed(task: SubagentTaskConfirmation): Promise<boolean> {
-  if (!vscode.window.state.focused || modelApiPaidTier(task.modelId) === undefined) {
-    return false
+/** The popup's question and what it says about the use, in the display language. */
+function paidUseText(request: PaidUseRequest): { readonly title: string; readonly detail: string } {
+  switch (request.feature) {
+    case 'webSearch': {
+      return {
+        title: UI_TEXT.paidUseWebSearchTitle,
+        detail: fill(UI_TEXT.paidUseWebSearchDetail, { price: paidFeaturePrice('webSearch') }),
+      }
+    }
+    case 'voice': {
+      return {
+        title: UI_TEXT.paidUseVoiceTitle,
+        detail: fill(UI_TEXT.paidUseVoiceDetail, { price: paidFeaturePrice('voice') }),
+      }
+    }
+    case 'imageGeneration': {
+      // Every image, whatever the backend or permission mode: what is made,
+      // from what, and that the key pays for it (M34, M44).
+      const sources = request.sources.join(', ')
+      return {
+        title: fill(request.kind === 'edit' ? UI_TEXT.imageBuyEditTitle : UI_TEXT.imageBuyTitle, {
+          path: request.path,
+        }),
+        detail: [
+          fill(UI_TEXT.imageBuyPrompt, { prompt: request.prompt }),
+          ...(sources === '' ? [] : [fill(UI_TEXT.imageBuySources, { paths: sources })]),
+          fill(UI_TEXT.imageBuyBilling, { price: paidFeaturePrice('imageGeneration') }),
+        ].join('\n\n'),
+      }
+    }
+    case 'scheduledPrompts': {
+      return {
+        title: fill(UI_TEXT.scheduleRunConfirmTitle, { model: request.modelId }),
+        detail: [
+          fill(UI_TEXT.scheduleRunConfirmPrompt, { prompt: request.prompt }),
+          fill(UI_TEXT.scheduleRunConfirmPrice, { price: scheduledRunPrice(request.modelId) }),
+          UI_TEXT.scheduleRunConfirmExtras,
+        ].join('\n\n'),
+      }
+    }
+    case 'subagents': {
+      const { task } = request
+      return {
+        title: fill(UI_TEXT.paidSubagentTaskTitle, { role: task.role }),
+        detail: fill(UI_TEXT.paidSubagentTaskDetail, {
+          objective: task.objective,
+          price: subagentTaskPrice(task.modelId, task.attemptLimit),
+        }),
+      }
+    }
   }
-  const accept = UI_TEXT.allowOnce
+}
+
+/**
+ * The popup before a paid use (M58): Allow once, Allow always in this
+ * workspace (only where it can be kept), or Deny, which is also what closing
+ * the popup answers.
+ */
+export async function askPaidUse(
+  request: PaidUseRequest,
+  canRemember: boolean,
+): Promise<PaidUseAnswer> {
+  // No verified price, nothing to accept (M48): refused before any popup.
+  if (request.feature === 'subagents' && modelApiPaidTier(request.task.modelId) === undefined) {
+    return 'deny'
+  }
+  const { title, detail } = paidUseText(request)
+  const once: vscode.MessageItem = { title: UI_TEXT.allowOnce }
+  const always: vscode.MessageItem = { title: UI_TEXT.paidAllowAlways }
+  const deny: vscode.MessageItem = { title: UI_TEXT.paidDeny, isCloseAffordance: true }
   const answer = await vscode.window.showWarningMessage(
-    fill(UI_TEXT.paidSubagentTaskTitle, { role: task.role }),
-    {
-      modal: true,
-      detail: fill(UI_TEXT.paidSubagentTaskDetail, {
-        objective: task.objective,
-        price: subagentTaskPrice(task.modelId, task.attemptLimit),
-      }),
-    },
-    accept,
+    title,
+    { modal: true, detail },
+    ...(canRemember ? [once, always, deny] : [once, deny]),
   )
-  return answer === accept && vscode.window.state.focused
+  if (answer === once) {
+    return 'once'
+  }
+  return answer === always && canRemember ? 'always' : 'deny'
 }
 
 export function createPaidFeatures(deps: PaidFeaturesDeps): PaidFeatures {
@@ -150,6 +184,12 @@ export function createPaidFeatures(deps: PaidFeaturesDeps): PaidFeatures {
     }
     return accepted
   }
+  const readGenerations = (): Readonly<Record<string, number>> => {
+    const parsed = generationsSchema.safeParse(
+      deps.globalState.get(GLOBAL_STATE_KEYS.paidGrantGenerations) ?? {},
+    )
+    return parsed.success ? parsed.data : {}
+  }
   const gate = new PaidFeatureGate({
     isSettingOn: deps.isSettingOn,
     setSetting: async (feature, isOn) => {
@@ -159,6 +199,16 @@ export function createPaidFeatures(deps: PaidFeaturesDeps): PaidFeatures {
     },
     readAccepted,
     writeAccepted: async (accepted) => {
+      // A price accepted or withdrawn voids every "always" given under the
+      // old acceptance, in every workspace (M58).
+      const previous = readAccepted()
+      const generations = { ...readGenerations() }
+      for (const feature of PAID_FEATURES) {
+        if (previous.has(feature) !== accepted.has(feature)) {
+          generations[feature] = generationOf(generations, feature) + 1
+        }
+      }
+      await deps.globalState.update(GLOBAL_STATE_KEYS.paidGrantGenerations, generations)
       await deps.globalState.update(
         GLOBAL_STATE_KEYS.subagentPriceAcceptance,
         accepted.has('subagents') ? SUBAGENT_PRICE_ACCEPTANCE_VERSION : undefined,
@@ -169,11 +219,40 @@ export function createPaidFeatures(deps: PaidFeaturesDeps): PaidFeatures {
     isWindowFocused: () => vscode.window.state.focused,
     log: deps.log,
   })
+  const consent = new PaidUseConsent({
+    isOn: (feature) => gate.isOn(feature),
+    canRemember: deps.canRememberPaidUse,
+    readGrants: () => {
+      const parsed = generationsSchema.safeParse(
+        deps.workspaceState.get(WORKSPACE_STATE_KEYS.paidWorkspaceGrants) ?? {},
+      )
+      const grants = parsed.success ? parsed.data : {}
+      const generations = readGenerations()
+      return new Set(
+        PAID_FEATURES.filter(
+          (feature) =>
+            grants[feature] !== undefined && grants[feature] === generationOf(generations, feature),
+        ),
+      )
+    },
+    writeGrants: async (grants) => {
+      const generations = readGenerations()
+      await deps.workspaceState.update(
+        WORKSPACE_STATE_KEYS.paidWorkspaceGrants,
+        Object.fromEntries(
+          [...grants].map((feature) => [feature, generationOf(generations, feature)]),
+        ),
+      )
+    },
+    ask: askPaidUse,
+    log: deps.log,
+  })
   const usage = new PaidUsage(deps.log)
   return {
     gate,
+    consent,
     usage,
-    state: () => paidStateOf(gate, usage, deps.isKeyStored()),
+    state: () => paidStateOf(gate, usage, deps.isKeyStored(), consent.remembered()),
     affects: (event) =>
       PAID_FEATURES.some((feature) =>
         event.affectsConfiguration(`${SETTINGS_SECTION}.${PAID_FEATURE_SETTINGS[feature]}`),

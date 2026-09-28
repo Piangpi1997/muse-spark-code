@@ -437,22 +437,15 @@ export const EN = {
   approvalAction: 'Muse wants to {action}',
   /** A bare tool name (subject kind "tool", e.g. subagent_spawn), M18. */
   approvalUseTool: 'Muse wants to use {action}',
-  // M34: {action} is the new image's path.
-  approvalCreateImage: 'Muse wants to create the image {action}',
-  // An image edit's card (M44): {action} is the new file's path.
-  approvalEditImage: 'Muse wants to make the edited image {action}',
-  // {paths} is the list of images the edit starts from, shown as code.
+  // {paths} is the list of images an edit starts from, shown as code.
   approvalImageSources: 'Starting from {paths}',
-  // The confirmation before an image the extension makes for Muse Code (M44).
-  imageBuyTitle: 'Muse Code wants to create the image {path}',
-  imageBuyEditTitle: 'Muse Code wants to make the edited image {path}',
+  // The paid-use popup before an image, on either backend (M34, M44, M58).
+  imageBuyTitle: 'Muse wants to create the image {path}',
+  imageBuyEditTitle: 'Muse wants to make the edited image {path}',
   imageBuyPrompt: 'Prompt: {prompt}',
   imageBuySources: 'Starting from: {paths}',
   imageBuyBilling:
     'This costs {price}, billed to your Model API key, not to your Muse Code subscription.',
-  imageBuyAccept: 'Pay {price} and create',
-  // M34: on the card of a paid call; {price} as `paidImagePrice` says it.
-  approvalPaid: 'Paid: {price}, billed to your Model API key',
   approvalStage: 'step {position} of {total}',
   approvalProtectedWrite: 'Protected write',
   approvalJudgeEscalated: 'Escalated by the safety check',
@@ -1015,14 +1008,12 @@ export const EN = {
   scheduleBusy: 'Wait for the current turn to finish before running this prompt.',
   scheduleNotDue: 'This scheduled prompt is not due or is no longer available.',
   scheduleAlreadyRun: 'This occurrence was already admitted in another window or before a restart.',
-  scheduleRunStarted:
-    'Started after your price confirmation. Model API tokens are billed to your key.',
+  scheduleRunStarted: 'Started with your permission. Model API tokens are billed to your key.',
   scheduleRunConfirmTitle: 'Run this scheduled prompt with {model}?',
   scheduleRunConfirmPrompt: 'Prompt: {prompt}',
   scheduleRunConfirmPrice: 'Billed to your Model API key: {price}. Total varies with tokens used.',
   scheduleRunConfirmExtras:
     'Other enabled paid tools may add their own charges. Bypass does not skip this confirmation.',
-  scheduleRunConfirmAccept: 'Run this time',
   scheduleConfirmationExpired:
     'The model, conversation or prompt changed during confirmation. Review the schedule and choose Run again.',
   webNoResults: 'No results',
@@ -1226,8 +1217,17 @@ export const EN = {
     '{model}: {input} input, {cached} cached input, {output} output per million tokens; up to {limit} requests per task, including retries.',
   paidSubagentTaskTitle: 'Approve paid task for {role}?',
   paidSubagentTaskDetail:
-    '{objective}\n\n{price}\n\nBilled to your Model API key. Actual cost depends on tokens used. Other enabled paid tools are charged separately. This approval covers this task only.',
-  approvalRunSubagent: 'Run paid subagent task {action}?',
+    '{objective}\n\n{price}\n\nBilled to your Model API key. Actual cost depends on tokens used. Other enabled paid tools are charged separately. Allow once covers this task only.',
+  // The popup before each paid use (M58): its buttons, and the two uses that
+  // have no popup of their own. "Allow once" is `allowOnce`.
+  paidAllowAlways: 'Allow always in this workspace',
+  paidDeny: 'Deny',
+  paidUseWebSearchTitle: 'Let Muse search the web for this prompt?',
+  paidUseWebSearchDetail:
+    'Muse may search the web while it answers. Each search is billed to your Model API key at {price}, on top of the tokens its results add. Deny sends the prompt without web search.',
+  paidUseVoiceTitle: 'Record with Muse Voice?',
+  paidUseVoiceDetail:
+    'Muse Voice transcribes this recording, billed to your Model API key at {price}. Deny leaves the microphone off.',
   paidWebSearchPrice: '{price} per 1,000 searches',
   paidImagePrice: '{price} per image',
   paidVoicePrice: '{price} per hour of audio',
@@ -1235,15 +1235,15 @@ export const EN = {
   // The confirmation shown when a paid feature is turned on; {feature} is its name.
   paidConfirmTitle: 'Turn on {feature}?',
   paidConfirmWebSearch:
-    'The model may search the web while it answers. Each search is billed to your Model API key at {price}, on top of the tokens its results add, and the extension cannot ask before each one. Used on the Model API backend only.',
+    'The model may search the web while it answers. Each search is billed to your Model API key at {price}, on top of the tokens its results add. Each prompt asks first, unless you allow web search always in this workspace. Used on the Model API backend only.',
   paidConfirmImage:
-    'The model may create image files in the workspace, or edit workspace images into new ones. Each image is billed to your Model API key at {price}, and you are asked before every one, in every permission mode. Used on the Model API backend, and on the Muse Code backend while a key is stored (never billed to the subscription).',
+    'The model may create image files in the workspace, or edit workspace images into new ones. Each image is billed to your Model API key at {price}, and you are asked before every one, in every permission mode, unless you allow images always in this workspace. Used on the Model API backend, and on the Muse Code backend while a key is stored (never billed to the subscription).',
   paidConfirmVoice:
-    'The microphone will send what you record to Meta’s Muse Voice Transcribe instead of your computer’s own recogniser, billed to your Model API key at {price}. Used on the Model API backend, and on the Muse Code backend while a key is stored.',
+    'The microphone will send what you record to Meta’s Muse Voice Transcribe instead of your computer’s own recogniser, billed to your Model API key at {price}. Each recording asks first, unless you allow Muse Voice always in this workspace. Used on the Model API backend, and on the Muse Code backend while a key is stored.',
   paidConfirmScheduled:
-    'A due scheduled prompt waits for you to run it. Each run asks again before any Model API call. {price}. Billed to your Model API key; total varies with tokens used.',
+    'A due scheduled prompt waits for you to run it. Each run asks before any Model API call, unless you allow scheduled runs always in this workspace. {price}. Billed to your Model API key; total varies with tokens used.',
   paidConfirmSubagents:
-    'Child agents make additional requests billed to your Model API key. {price} Each new task asks for approval in every permission mode, including Bypass. Actual cost depends on tokens used; other paid tools cost extra. Model API backend only.',
+    'Child agents make additional requests billed to your Model API key. {price} Each new task asks for approval in every permission mode, including Bypass, unless you allow subagents always in this workspace. Actual cost depends on tokens used; other paid tools cost extra. Model API backend only.',
   paidConfirmAccept: 'Turn on',
   // The composer's badge while a paid feature is on; {features} lists their names.
   paidBadge: 'Paid: {features}',
@@ -1258,6 +1258,10 @@ export const EN = {
   usagePaidHeading: 'Paid features in this window',
   usagePaidOn: 'on',
   usagePaidOff: 'off',
+  // M58: a feature that no longer asks in this workspace; {features} lists names.
+  usagePaidOnAlways: 'on, allowed always in this workspace',
+  usagePaidAlwaysNote: 'Allowed always in this workspace, without asking: {features}.',
+  usagePaidAskAgain: 'Ask again every time',
   usagePaidSearches: forms({ one: '{count} search', other: '{count} searches' }),
   usagePaidImages: forms({ one: '{count} image', other: '{count} images' }),
   usagePaidAudio: '{duration} of audio',

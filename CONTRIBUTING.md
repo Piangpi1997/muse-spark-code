@@ -139,10 +139,12 @@ its `{slots}` and code spans. Run `npm run check:l10n` and
 Anything that bills the user beyond tokens follows AGENTS.md rule 12 and
 PLAN.md D34: its own machine-scoped setting, off by default, with the price
 in its description; the gate in `src/core/paid/paidFeatures.ts` before any
-call; a row marked paid; a count in `PaidUsage`. A paid feature offered on
+call; the paid-use popup (`PaidUseConsent.allows`, M58) before each use; a
+row marked paid; a count in `PaidUsage`. A paid feature offered on
 the Muse Code backend goes through the extension itself (the `ide` server's
 tools, `src/host/ide/imageTools.ts`), never through `muse serve`, and
-confirms each purchase in a dialog, whatever Muse Code's permission mode.
+asks before each purchase in the same popup, whatever Muse Code's
+permission mode.
 The tests never spend:
 the Model API, the Images endpoint and the Muse Voice WebSocket are all
 fakes (`test/unit/helpers/fakeModelApi.ts` and `fakeVoiceServer.ts`, a

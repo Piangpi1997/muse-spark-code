@@ -140,17 +140,18 @@ security notes for contributors are in `PLAN.md` §9.
   Dictation is off in remote windows.
 - **The paid features (off unless you turn them on).** Each is billed to
   your Model API key, never to your Muse Code subscription, and each asks
-  you to accept its price before it is used. All five work on the Model
+  you to accept its price when you turn it on, then asks again in a popup
+  before each use (Allow once, Allow always in this workspace, or Deny). All five work on the Model
   API backend; image generation and Muse Voice also work on the Muse Code
   backend while a key is stored, the images made by the extension itself
   (the key is never given to the Muse Code CLI):
   - **Web search** lets the model send search queries it writes, drawn from
     the conversation, to Meta's search; the pages it cites are listed under
     the reply and open in your browser only when you click one.
-  - **Image generation** sends the prompt the model writes (you see it on
-    the card, or in the dialog on the Muse Code backend, and approve each
-    image) to Meta's image model, and for an edit the workspace images it
-    starts from, which the card names; the image comes back and is saved in
+  - **Image generation** sends the prompt the model writes (you see it in
+    the popup and allow each image, unless you allowed images always in
+    this workspace) to Meta's image model, and for an edit the workspace images it
+    starts from, which the popup names; the image comes back and is saved in
     the workspace as a new file.
   - **Muse Voice** sends your recording to Meta's Muse Voice Transcribe
     instead of your computer's own recogniser: audio leaves the machine only
@@ -242,7 +243,9 @@ fields, never raw configuration or failed-command output.
   receipt for each run you confirmed. Archiving a conversation in the
   History dialog hides it; deleting the directory removes them all.
 - Settings (`museSpark.*`), the archived-session list, the "last session"
-  memory per panel, which paid features' prices you accepted, and whether
+  memory per panel, which paid features' prices you accepted, which paid
+  features you allowed always in a workspace (kept in that workspace's
+  state, feature names only), and whether
   you signed out of Muse Code are stored by VS Code's settings and state
   APIs. On Windows the small job helpers the extension compiles are kept in
   its global storage folder.

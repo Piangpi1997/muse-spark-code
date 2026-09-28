@@ -58,6 +58,8 @@ export interface UsageDialogProps {
   readonly auth: UiState['auth']
   readonly onInstallMuseCode: () => void
   readonly onSetupSignIn: (method: SignInMethod) => void
+  /** "Ask again" (M58): no paid feature stays allowed always in this workspace. */
+  readonly onForgetPaidUse: () => void
   readonly now: () => number
   readonly onOpenExternal: (url: string) => void
   readonly onClose: () => void
@@ -243,10 +245,13 @@ function paidUseText(feature: PaidFeature, tally: PaidTally): string {
 function PaidSection({
   paid,
   features,
+  onForgetPaidUse,
 }: {
   readonly paid: PaidState
   readonly features: readonly PaidFeature[]
+  readonly onForgetPaidUse: () => void
 }) {
+  const always = features.filter((feature) => paid.alwaysAllowed.includes(feature))
   return (
     <>
       <dl className="usage-facts">
@@ -264,12 +269,31 @@ function PaidSection({
       {features.includes('subagents') ? (
         <p className="usage-row-meta">{UI_TEXT.usagePaidSubagentSubset}</p>
       ) : null}
+      {always.length === 0 ? null : (
+        <div className="usage-paid-always">
+          <p className="usage-row-meta">
+            {fill(UI_TEXT.usagePaidAlwaysNote, {
+              features: always.map((feature) => paidFeatureName(feature)).join(', '),
+            })}
+          </p>
+          <button type="button" className="button-secondary" onClick={onForgetPaidUse}>
+            {UI_TEXT.usagePaidAskAgain}
+          </button>
+        </div>
+      )}
     </>
   )
 }
 
+function paidRowState(feature: PaidFeature, paid: PaidState): string {
+  if (!paid.features.includes(feature)) {
+    return UI_TEXT.usagePaidOff
+  }
+  return paid.alwaysAllowed.includes(feature) ? UI_TEXT.usagePaidOnAlways : UI_TEXT.usagePaidOn
+}
+
 function PaidRow({ feature, paid }: { readonly feature: PaidFeature; readonly paid: PaidState }) {
-  const state = paid.features.includes(feature) ? UI_TEXT.usagePaidOn : UI_TEXT.usagePaidOff
+  const state = paidRowState(feature, paid)
   const requests = paid.tally.subagentRequests ?? 0
   const unknown = paid.tally.subagentUnknownRequests ?? 0
   const isEntirelyUnknown = feature === 'subagents' && requests > 0 && requests === unknown
@@ -435,6 +459,7 @@ export function UsageDialog({
   auth,
   onInstallMuseCode,
   onSetupSignIn,
+  onForgetPaidUse,
   now,
   onOpenExternal,
   onClose,
@@ -489,7 +514,7 @@ export function UsageDialog({
         {paidFeatures.length > 0 ? (
           <>
             <h3 className="usage-heading">{UI_TEXT.usagePaidHeading}</h3>
-            <PaidSection paid={paid} features={paidFeatures} />
+            <PaidSection paid={paid} features={paidFeatures} onForgetPaidUse={onForgetPaidUse} />
           </>
         ) : null}
         <h3 className="usage-heading">{UI_TEXT.usageContributing}</h3>
