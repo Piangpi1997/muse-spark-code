@@ -2480,9 +2480,15 @@ only the extension-side uses reach it.
    falling from 16.8 % to 7.3 %, and loads when none fit from 9.8 % to
    4.0 %. The same pattern suggests a custom agent (M76).
 2. **Auto risk score** (M78). A Score and Nouls on a command or write that
-   the deterministic rules did not settle. A confident "safe" may skip the
-   question; anything else asks. It never overrides a rule's "forbid" or
-   "ask", and it is compared in M75 against the Muse-model Auto reviewer.
+   the deterministic rules did not settle. The score is **advisory only**:
+
+   - A risky score can add caution: ask where Auto would have allowed, or
+     flag the call to the Muse-model Auto reviewer.
+   - A "safe" score never skips a question and never becomes an allow on
+     its own. Adversarial content is its documented weak spot.
+   - It never overrides a rule's "forbid" or "ask".
+   - It is compared in M75 against the Muse-model Auto reviewer.
+
 3. **Context relevance** (M73, M74, M67). Nouls on whether an old tool
    output or a file still matters to the current task, used to rank what
    is packed or kept. Adopted only if M75 shows no loss.
@@ -6329,8 +6335,13 @@ full gate. A paid item follows D30/D48.
   - An optional **format on edit** runs VS Code's formatter on edited
     files.
   - **Check commands**: `museSpark.checkCommands` (lint, test,
-    typecheck), machine-scoped and run in the shell tool's sandbox. The
-    model can call `run_checks`.
+    typecheck), machine-scoped and run in the shell tool's sandbox.
+    - They run **automatically once after every tool round that edited
+      files**, before the next request, and their results go into it.
+    - Each can scope itself to the changed files, a time cap bounds the
+      run, and the permission mode applies: Manual asks first; Plan and
+      Restricted Mode never run them.
+    - The model can also call `run_checks` itself.
   - A `then_run` option on `write_file`/`edit_file` (SoL-Pi's Action
     Fusion). The command goes through the shell permission path, and a
     hash guard skips it if the file changed.
@@ -6376,8 +6387,13 @@ full gate. A paid item follows D30/D48.
     - the uncommitted changes, the branch against its base, one commit, or
       custom instructions;
     - a security preset: injection, secrets, authentication, unsafe APIs.
-  - The review runs as a read-only reviewer: on the Model API a
-    Reviewer agent (M76); on Muse Code a prompt and skill.
+  - The review runs as a read-only reviewer.
+    - On the Model API, M70 builds the built-in **Reviewer** agent itself:
+      read-only tools, its own prompt, the security preset. A review the
+      user asks for is part of their turn; one run on its own is a paid use
+      (D48).
+    - On Muse Code, a prompt and skill do the review.
+    - M76 later lets users define agents of their own on the same base.
   - Findings become a list with file and line.
   - A **review pane** over the conversation's changes:
     - files and hunks, each hunk accepted or reverted;
@@ -6472,7 +6488,8 @@ full gate. A paid item follows D30/D48.
     formats are imported (M83).
   - Built-in agents:
     - **Explore**: read-only, context-saving;
-    - **Reviewer**: read-only, used by M70;
+    - **Reviewer**: built in M70, and becomes the first definition in
+      this format;
     - **Second opinion**: a high-effort consult on a hard question.
   - A run that makes model calls beyond the user's own turn is a paid
     subagent use (D45, D48).
@@ -6530,8 +6547,23 @@ full gate. A paid item follows D30/D48.
     - a budget and an attempt cap.
   - A GitHub Action for PR review and "fix this" comments, on the user's
     own runners and key.
-- **Backends.** The Model API with a key; Muse Code where its sign-in is
-  available.
+  - **The key follows D61 and AGENTS.md rule 8.**
+    - It lives in the operating system's credential store, the one the
+      ACP agent already uses (`@napi-rs/keyring`, filled by
+      `muse-spark-code-acp auth set` from standard input).
+    - It is never passed as an environment variable, an argument or a
+      file, and never to a child process.
+    - A local headless run reads that entry, like the ACP agent.
+    - In CI the Action starts a throwaway keyring session on the runner:
+      on Linux, a Secret Service under `dbus-run-session`; on macOS and
+      Windows, the runner's own store. It pipes the repository secret into
+      `auth set` through standard input, runs `exec`, and clears the
+      entry and ends the session in an always-run step.
+    - If no store is available, the run stops with that reason; there is
+      no fallback.
+- **Backends.** The Model API with the key from the store. Muse Code only
+  where the CLI is already signed in on that machine; a device sign-in
+  needs a person, so it is not offered in CI.
 - **Size.** M.
 
 ### M81 — Browser check (D49)
@@ -6603,15 +6635,17 @@ full gate. A paid item follows D30/D48.
   - Timeouts are short, and on failure there is no assist.
   - Uses:
     - skill suggestion first;
-    - then the Auto risk score, as M78's optional second layer;
+    - then the Auto risk score, as M78's optional advisory layer: it can
+      only add caution, never allow.
     - context relevance and evaluation grading only if M75 supports them.
 - **Backends.** Model API. Muse Code only where the extension decides.
 - **Acceptance.**
   - With the setting off, nothing changes and nothing is sent.
   - With it on, every call is visible in the log (question ids and timing,
     never the content) and tallied in Account & usage.
-  - No path lets a TypeSafe answer skip a deterministic rule or answer the
-    user.
+  - No path lets a TypeSafe answer skip a question, allow an action, skip a
+    deterministic rule, or answer the user. A test proves that a "safe"
+    score leaves the verdict unchanged.
 - **Tests.** A fake TypeSafe endpoint with Choice, Score and Noul shapes
   taken from the live API (AGENTS.md rule 13), plus the paired runs in M75.
 - **Size.** M.
