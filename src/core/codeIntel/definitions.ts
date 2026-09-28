@@ -98,7 +98,11 @@ const READ_DEFINITIONS: readonly CodeIntelDefinition[] = [
     description:
       'A compact map of the workspace: the files other files use most, ranked by how often the names they define are used elsewhere, each with its most used definitions, within a token budget. Use it to get your bearings in an unfamiliar codebase.',
     properties: {
-      max_tokens: { type: 'integer', description: 'The budget in tokens (default 1024)' },
+      max_tokens: {
+        type: 'integer',
+        description:
+          'The budget in tokens for the whole answer, notes included (default 1024, at most 8192)',
+      },
     },
     required: [],
   },

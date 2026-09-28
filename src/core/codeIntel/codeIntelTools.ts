@@ -208,8 +208,9 @@ function outlineLines(symbols: readonly CodeSymbol[]): readonly string[] {
 
 async function documentSymbols(query: CodeIntelQuery, raw: unknown): Promise<string> {
   const { path } = parseArgs(documentSymbolsArgs, raw)
-  const file = await query.confine(path)
-  const document = await ask(query.service.open(file.absolute))
+  // The outline of the editor's text when one holds unsaved changes to the
+  // file, asked at that editor's path (it may name the file another way).
+  const { file, document } = await query.openAsEdited(await query.confine(path))
   query.noteDocument(file, document)
   const symbols = await ask(query.service.documentSymbols(file.absolute))
   if (symbols.length === 0) {

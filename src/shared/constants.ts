@@ -1924,6 +1924,8 @@ export const MODEL_TEXT = {
     "no language service answered workspace symbols here (TypeScript's needs one of the project's files open); use list_files and search instead",
   repoMapEmpty:
     'No workspace file defines a name that other files use, as far as the workspace symbols show.',
+  repoMapBudgetTooSmall:
+    "max_tokens {tokens} cannot hold the map's own lead and notes; ask again with max_tokens of at least {needed}",
   repoMapSection: '# Repo map',
   repoMapSectionLead: 'The workspace as this session began (repo_map gives a fresh one):',
   // The user said no in the price confirmation (M44): nothing was bought.

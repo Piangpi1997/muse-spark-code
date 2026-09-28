@@ -8,7 +8,13 @@ import type { CodeIntelDeps } from '../../src/core/codeIntel/codeIntelQuery'
 import { answerCodeIntel } from '../../src/core/codeIntel/codeIntelTools'
 import type { CodeSymbol } from '../../src/core/codeIntel/languageService'
 import { repoMapSection } from '../../src/core/codeIntel/repoMap'
-import { REPO_MAP_MAX_FILE_CHARS, REPO_MAP_MAX_FILES, UI_TEXT } from '../../src/shared/constants'
+import {
+  REPO_MAP_CHARS_PER_TOKEN,
+  REPO_MAP_MAX_FILE_CHARS,
+  REPO_MAP_MAX_FILES,
+  REPO_MAP_PROMPT_TOKENS,
+  UI_TEXT,
+} from '../../src/shared/constants'
 import { fakeLanguageService, KIND, sym } from './helpers/fakeLanguageService'
 import { memoryToolIo, type MemoryToolIo } from './helpers/fakeToolIo'
 
@@ -79,13 +85,25 @@ describe('repo map', () => {
     expect(text).not.toContain('x.d.ts')
   })
 
-  it('keeps within the token budget and counts the files left out', async () => {
+  it('keeps all its text within the token budget and counts the files left out', async () => {
     const t = setup()
     const text = await t.map({ max_tokens: 60 })
     expect(text).toContain('src/core.ts')
     expect(text).not.toContain('src/two.ts')
     expect(text).toContain('[1 more not shown]')
-    expect(await t.map({ max_tokens: 0 })).toContain('[2 more not shown]')
+    // The lead and the count of the files left out are counted too.
+    for (const tokens of [46, 59, 60, 62, 63]) {
+      const answer = await t.map({ max_tokens: tokens })
+      expect(answer).not.toContain('refused')
+      expect(answer.length).toBeLessThanOrEqual(tokens * 4)
+    }
+    expect(await t.map({ max_tokens: 46 })).toContain('[2 more not shown]')
+    // A budget that cannot hold even those says what would.
+    const refusal =
+      "max_tokens 1 cannot hold the map's own lead and notes; ask again with max_tokens of at least 46"
+    expect(await t.map({ max_tokens: 0 })).toBe(`refused: ${refusal} / ${refusal}`)
+    const alone = setup({ io: memoryToolIo({ 'solo.ts': 'const lonely = 1\n' }, ROOT) })
+    expect(await alone.map({ max_tokens: 5 })).toContain('refused: max_tokens 5 cannot hold')
   })
 
   it('says when no language service answers, and when no file ranks', async () => {
@@ -214,5 +232,28 @@ describe('repo map', () => {
     const quiet = setup()
     expect(await repoMapSection(quiet.deps, stopped.signal)).toBeUndefined()
     expect(quiet.service.asked.some((call) => call.startsWith('workspace'))).toBe(false)
+  })
+
+  it('keeps the whole prompt section, its heading included, within its budget', async () => {
+    // 150 files each defining a name another file uses: far more than fits.
+    const names = Array.from({ length: 150 }, (_, index) => `definedInFile${String(index)}`)
+    const files: Record<string, string> = { 'src/user.ts': names.join('\n') }
+    for (const [index, name] of names.entries()) {
+      files[`src/d${String(index)}.ts`] = `export function ${name}() {}\n`
+    }
+    const many = setup({
+      io: memoryToolIo(files, ROOT),
+      workspace: (query) => {
+        const index = names.indexOf(query)
+        return Promise.resolve(
+          index === -1
+            ? []
+            : [sym(query, KIND.function, `${ROOT}/src/d${String(index)}.ts`, 0, 16)],
+        )
+      },
+    })
+    const section = await repoMapSection(many.deps, new AbortController().signal)
+    expect(section).toContain('more not shown]')
+    expect(section?.length).toBeLessThanOrEqual(REPO_MAP_PROMPT_TOKENS * REPO_MAP_CHARS_PER_TOKEN)
   })
 })

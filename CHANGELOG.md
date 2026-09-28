@@ -46,8 +46,10 @@ happened, not what was planned; superseded entries are kept.
   files use most, with their most used definitions, within about 1,000
   tokens. It is kept once made, tried again on a later turn when a try finds
   nothing (three tries at most), and shared with child tasks and forks. It
-  adds those tokens to every request. `repo_map` gives the same map on
-  request either way.
+  adds those tokens to every request, its heading and notes counted in
+  the budget. `repo_map` gives the same map on request either way, all of
+  its text within `max_tokens`; a budget too small for its own lead and
+  notes is refused with the size that would do.
 
 ### Changed
 

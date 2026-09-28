@@ -43,6 +43,8 @@ export interface RepoMapOptions {
 // A name as most languages spell one: a letter, `_` or `$`, then those or digits.
 const NAME = /[\p{L}_$][\p{L}\p{N}_$]*/gu
 const INDENT = '  '
+// Between the prompt section's heading, its lead and the map.
+const SECTION_BREAK = '\n\n'
 const BUDGET_SPENT = 'the repo map time budget is spent'
 // What `Limits.within` settles with when the turn is stopped.
 const STOPPED = Symbol('stopped')
@@ -258,30 +260,53 @@ function fileBlock(file: RankedFile): string {
   return [file.relative, ...shown].join('\n')
 }
 
-/** The ranked files as text, as many as the budget holds. */
-function render(
+/** The length of lines joined one per line (`joinLines`). */
+function joinedLength(lines: readonly string[]): number {
+  return lines.reduce((total, line) => total + line.length, Math.max(lines.length - 1, 0))
+}
+
+/**
+ * The map as lines within `budget` characters, every line counted: the
+ * lead, as many ranked files as fit, the line counting the rest, and the
+ * notes. When the lead, that line and the notes alone do not fit, those
+ * lines, and `fits` false.
+ */
+function renderLines(
   ranked: readonly RankedFile[],
-  maxTokens: number,
+  budget: number,
   notes: readonly string[],
-): string {
-  const budget = maxTokens * REPO_MAP_CHARS_PER_TOKEN
+): { readonly lines: readonly string[]; readonly fits: boolean } {
   const blocks: string[] = []
-  let used = MODEL_TEXT.repoMapLead.length
+  const compose = (): readonly string[] => {
+    const hidden = ranked.length - blocks.length
+    return [
+      MODEL_TEXT.repoMapLead,
+      ...blocks,
+      ...(hidden > 0 ? [fill(MODEL_TEXT.codeIntelMore, { count: String(hidden) })] : []),
+      ...notes,
+    ]
+  }
+  if (joinedLength(compose()) > budget) {
+    return { lines: compose(), fits: false }
+  }
   for (const file of ranked) {
-    const block = fileBlock(file)
-    if (used + block.length + 1 > budget) {
+    blocks.push(fileBlock(file))
+    if (joinedLength(compose()) > budget) {
+      blocks.pop()
       break
     }
-    blocks.push(block)
-    used += block.length + 1
   }
-  const hidden = ranked.length - blocks.length
-  return joinLines([
-    MODEL_TEXT.repoMapLead,
-    ...blocks,
-    ...(hidden > 0 ? [fill(MODEL_TEXT.codeIntelMore, { count: String(hidden) })] : []),
-    ...notes,
-  ])
+  return { lines: compose(), fits: true }
+}
+
+/** The refusal for a budget too small for the answer's own fixed text. */
+function tooSmall(maxTokens: number, lines: readonly string[]): CodeIntelRefusal {
+  return new CodeIntelRefusal(
+    fill(MODEL_TEXT.repoMapBudgetTooSmall, {
+      tokens: String(maxTokens),
+      needed: String(Math.ceil(joinedLength(lines) / REPO_MAP_CHARS_PER_TOKEN)),
+    }),
+  )
 }
 
 interface BuiltMap {
@@ -357,18 +382,32 @@ async function buildWithin(query: CodeIntelQuery, limits: Limits): Promise<Built
   return { ranked: rank(definitions, uses), notes }
 }
 
-/** The `repo_map` tool's answer within `maxTokens`. */
+/**
+ * The `repo_map` tool's answer within `maxTokens`, all of its text counted;
+ * the refusal names the budget needed when its fixed text does not fit.
+ */
 export async function repoMap(query: CodeIntelQuery, options: RepoMapOptions): Promise<string> {
   const { ranked, notes } = await buildMap(query, options)
-  return ranked.length === 0
-    ? joinLines([MODEL_TEXT.repoMapEmpty, ...notes])
-    : render(ranked, options.maxTokens, notes)
+  const budget = options.maxTokens * REPO_MAP_CHARS_PER_TOKEN
+  if (ranked.length === 0) {
+    const empty = [MODEL_TEXT.repoMapEmpty, ...notes]
+    if (joinedLength(empty) > budget) {
+      throw tooSmall(options.maxTokens, empty)
+    }
+    return joinLines(empty)
+  }
+  const { lines, fits } = renderLines(ranked, budget, notes)
+  if (!fits) {
+    throw tooSmall(options.maxTokens, lines)
+  }
+  return joinLines(lines)
 }
 
 /**
  * The system prompt's section (opt in, M67): the map within its own budget
- * and time, undefined when no file ranks. Rejects with the refusal when no
- * language service answers.
+ * and time, its heading counted, undefined when no file ranks (or, never
+ * with the fixed budget, when its fixed text would not fit). Rejects with
+ * the refusal when no language service answers.
  */
 export async function repoMapSection(
   deps: CodeIntelDeps,
@@ -380,11 +419,11 @@ export async function repoMapSection(
     signal,
   }
   const { ranked, notes } = await buildMap(new CodeIntelQuery(deps), options)
-  return ranked.length === 0
-    ? undefined
-    : [
-        MODEL_TEXT.repoMapSection,
-        MODEL_TEXT.repoMapSectionLead,
-        render(ranked, options.maxTokens, notes),
-      ].join('\n\n')
+  const heading = `${MODEL_TEXT.repoMapSection}${SECTION_BREAK}${MODEL_TEXT.repoMapSectionLead}${SECTION_BREAK}`
+  const { lines, fits } = renderLines(
+    ranked,
+    options.maxTokens * REPO_MAP_CHARS_PER_TOKEN - heading.length,
+    notes,
+  )
+  return !fits || ranked.length === 0 ? undefined : `${heading}${joinLines(lines)}`
 }

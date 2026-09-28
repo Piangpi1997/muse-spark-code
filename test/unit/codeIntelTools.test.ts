@@ -397,11 +397,21 @@ describe('files with unsaved changes', () => {
       realPath: realPathThrough(link, ROOT),
       dirty: new Set([B]),
       buffers: { [B]: edited },
+      // The service outlines the editor's document, the one it has open.
+      symbols: { [B]: [sym('main', KIND.function, B, 2, 0)] },
     })
     real.io.unsaved.add(B)
     expect(
       await reasonOf(real.ask('findReferences', { path: 'src/b.ts', line: 3, column: 1 })),
     ).toContain('src/b.ts has unsaved changes in an editor')
+    // Its outline is the editor's, asked at the editor's path, and said so.
+    expect(await textOf(real.ask('documentSymbols', { path: 'src/b.ts' }))).toBe(
+      [
+        'src/b.ts (typescript):',
+        '3:1 function main',
+        "[unsaved changes in an editor: src/b.ts; their lines here are the editor's, not what read_file shows]",
+      ].join('\n'),
+    )
   })
 })
 

@@ -6707,6 +6707,14 @@ code-intel` on VS Code stable and 1.125.0; live case19 of the Model
     - Call hierarchy: outgoing call sites name the file of the function
       asked about; of several items at a position the one declared there is
       asked, and the answer counts the others.
+  - **Codex on PR #57.** Two P2s, both held and fixed in one commit:
+    - The repo map counts every line it renders against its budget (the
+      lead, the count of files left out, the notes, and the prompt
+      section's heading); `repo_map` refuses a `max_tokens` too small for
+      its own fixed text and names the size that would do.
+    - `document_symbols` opens and outlines the file at the path of an
+      editor holding unsaved changes to it (`openAsEdited`), as the other
+      tools do; no other tool opened a named file directly.
 - **Status.** Built on `feature/m67-code-intel` (2026-09-28); reviewed and
   fixed the same day. Drills and the live checks in
   `docs/certification/m67.md`.
