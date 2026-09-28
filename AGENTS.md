@@ -53,6 +53,18 @@ them, the milestone plan, and the certification checklist.
 8. **Secrets never leave SecretStorage.** No API keys in settings, logs,
    telemetry, tests, or fixtures. The pasted Model API key is never passed to
    any child process: the Muse Code CLI signs in on its own.
+   - **Outside VS Code (the ACP agent, PLAN.md D61).** The operating
+     system's credential store stands in for SecretStorage: it is the store
+     VS Code's SecretStorage itself rests on. The key goes in only through
+     `muse-spark-code-acp auth set`, from its standard input (the user's
+     terminal, or a pipe into it); never from an environment variable, an
+     argument or a file; and it is never passed to a child process
+     (`muse serve`, a tool, a check).
+   - **The one exception: M80's CI bootstrap** (PLAN.md M80, planned).
+     GitHub hands a secret to a step only through its environment or its
+     script, so the Action's own step shell is the one environment the key
+     is ever in: that shell pipes it to `auth set`'s standard input and
+     unsets it before `exec` starts. Nothing else is excepted.
    - **The CLI's credential file.** The extension reads only its structure
      (`src/core/backends/musecode/credentialFile.ts`): the schema version,
      which providers are named (only `meta` speaks for the sign-in), each

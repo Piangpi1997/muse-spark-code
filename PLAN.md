@@ -2888,9 +2888,17 @@ add-generic-password -w` takes it as an argument, visible to `ps`. A
   is stored, never any of it; `auth clear` removes it. Each ACP client is
   offered a terminal sign-in that runs exactly `auth set`, so the key goes
   from the keyboard to the store without passing through the editor.
-- **Never**: an argument, an environment variable, a settings file, a log
-  (the redactor stays), an ACP message, or the environment of `muse serve`
-  (D1).
+- **Never**: an argument, an environment variable, a file, a log (the
+  redactor stays), an ACP message, or a child process: not the environment
+  of `muse serve` (D1), a tool or a check.
+- **AGENTS.md rule 8 (amended 2026-09-28)** names this store as
+  SecretStorage's stand-in outside VS Code (it is the store SecretStorage
+  itself rests on), filled only through `auth set`'s standard input and
+  never passed to a child process. Its one named exception is M80's CI
+  bootstrap: GitHub hands a secret to a step only through its environment
+  or script, so the Action's step shell is the one environment the key is
+  ever in; it pipes the key to `auth set` and unsets it before `exec`
+  starts.
 - **Later**: offering, in VS Code, to copy the key into the OS store for
   the other editors needs the native module in the `.vsix`, so
   per-platform packages (with M64).
@@ -7254,10 +7262,10 @@ harness scenario, which is what the accessibility gate checks (D32).
     - a prompt in, JSONL events or a final JSON out;
     - a schema for the output;
     - a budget, kept by reservation as in M82, and an attempt cap.
-  - M63 and D61 are defined in PR #32, which is not merged yet; M80 is
-    blocked until it is. PR #32 also amends AGENTS.md rule 8 to name the OS
-    credential store as the store outside VS Code (it is the one
-    SecretStorage itself uses).
+  - M80 builds on M63 and D61 (PR #32), and on PR #32's amendment of
+    AGENTS.md rule 8, which names the OS credential store as the store
+    outside VS Code (the one SecretStorage itself rests on) and this
+    bootstrap as its one exception.
   - A GitHub Action for PR review and "fix this" comments, on the user's
     own runners and key.
     - It runs only for triggers from the repository's owners, members and

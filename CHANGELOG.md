@@ -58,6 +58,12 @@ happened, not what was planned; superseded entries are kept.
   never reaches Meta now names the variables to set in the agent's
   environment instead of VS Code's `http.*` settings, in all 15 languages.
   `docs/acp.md` has a new "Networks and proxies" section.
+- **The key outside VS Code, in the rules** (AGENTS.md rule 8, PLAN.md
+  D61). Outside VS Code the operating system's credential store stands in
+  for SecretStorage: the ACP agent's key goes in only through `auth set`'s
+  standard input and never reaches a child process. The one named
+  exception is the planned CI bootstrap (M80), whose step shell pipes the
+  key to `auth set` and unsets it before the run.
 - **Open VSX and npm publishing** in the release workflow. A tag also
   publishes the VSIX to Open VSX, for VS Code forks that install from
   there, and the agent to npm, each only when its token is set in the
