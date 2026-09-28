@@ -6445,7 +6445,8 @@ full gate. A paid item follows D30/D48.
   - The swap is sticky, so the cached prefix breaks once per output.
   - A savings ledger shows the tokens avoided in Account & usage.
 - **Backends.** Model API. Muse Code has no hook for this.
-- **Gate.** M75's paired evaluation, before it is on by default.
+- **Gate.** M75 comes later in the order, so M73 ships off by default (a
+  setting) and is switched on only after M75's paired evaluation.
 - **Size.** S.
 
 ### M74 — Long tasks: automatic compaction and handoff (D49)
@@ -6460,7 +6461,7 @@ full gate. A paid item follows D30/D48.
   - A memory flush before compaction (OpenClaw).
   - `/handoff` starts a new conversation from a distilled brief (Amp).
 - **Backends.** Model API. Muse Code compacts itself.
-- **Gate.** M75.
+- **Gate.** Off by default until M75 has measured it, as for M73.
 - **Size.** M.
 
 ### M75 — Paired efficiency evaluation (D49)
@@ -6541,7 +6542,8 @@ full gate. A paid item follows D30/D48.
 
 - **Goal.** The agent runs where the editor does not.
 - **Scope.**
-  - An `exec` mode in the ACP agent's package (M63):
+  - An `exec` mode in the ACP agent's package (M63, which arrives with PR
+    #32; M80 waits for it):
     - a prompt in, JSONL events or a final JSON out;
     - a schema for the output;
     - a budget and an attempt cap.
