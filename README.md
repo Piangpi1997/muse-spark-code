@@ -1730,10 +1730,12 @@ published.
 
 ### How this extension is built
 
-Since September 2026 the extension has been developed by a small team of AI
-agents under one human owner. This describes that process; each milestone's
-record in `docs/certification/` says what was actually run for it,
-including how earlier milestones were checked.
+The extension is developed by a small team of AI agents under one human
+owner. The process below has been in use since 2026-09-28. Each milestone's
+record in `docs/certification/` says what was actually run for it; the
+records of milestones before that date describe their own checks, which
+sometimes differed (for example, M7 was certified against a fake server and
+M44 took a response shape from Meta's documentation).
 
 - **The owner** sets the plan (`PLAN.md`), makes the product decisions, and
   approves anything that spends money, signs in or publishes.
@@ -1752,18 +1754,22 @@ including how earlier milestones were checked.
   agents. On the pull request, **Codex** reviews again. A finding is fixed
   with every sibling of its class in one commit, and a change that reaches
   a third review round is redesigned instead of patched.
-- **Gates.** `quality:gates`, the secret scan and semgrep run on a
-  dedicated test machine (Linux or macOS) so they never compete with the
-  owner's workstation; the accessibility gate runs locally for the screens
-  a change touches, and the PowerShell lint only on Windows. CI then runs
-  `quality:gates` on Ubuntu, Windows and macOS, and the other gates as the
-  jobs listed above. A milestone's new guards get red drills: each guard is
-  broken on purpose, its test must fail, and the file is restored byte for
-  byte; the record lists the drills and anything not drilled.
+- **Gates.** AGENTS.md requires `npm run quality` to pass before a commit.
+  Its parts other than the accessibility suite (`quality:gates`, the secret
+  scan and semgrep) run on a dedicated test machine, Linux or macOS, so they
+  never compete with the owner's workstation. Headless Chrome does not yet
+  run reliably on those machines, so for now the accessibility suite runs
+  in CI (Ubuntu and Windows) on every pull request, and locally for the
+  screens a change touches. The PowerShell lint runs only on Windows. CI
+  also runs `quality:gates` on Ubuntu, Windows and macOS, and the other
+  gates as the jobs listed above. A milestone's new guards get red drills:
+  each guard is broken on purpose, its test must fail, and the file is
+  restored byte for byte; the record lists the drills and anything not
+  drilled.
 - **Evidence.** Under AGENTS.md rule 13, a shape parsed from Muse Code or
-  the Model API is written from a live capture, and the record names it.
-  Live checks run on the contributor model in throwaway workspaces and
-  record their model-call counts.
+  the Model API is written from a live capture, and the record names it or
+  says it did not have one. Live checks run on the contributor model in
+  throwaway workspaces and record their model-call counts.
 
 ## Support this project
 
