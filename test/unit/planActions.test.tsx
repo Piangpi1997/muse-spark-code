@@ -2,7 +2,7 @@
 // The panel's side of plans as files (M79): Save plan and Implement under
 // the latest Plan-mode reply, the brief's card the host sends, and Plans….
 
-import { act, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { UI_TEXT } from '../../src/shared/constants'
 import type { HostToWebviewMessage, WebviewToHostMessage } from '../../src/shared/protocol'
@@ -99,6 +99,20 @@ describe('plan actions (M79)', () => {
     fireEvent.change(screen.getByLabelText('Message Muse'), { target: { value: 'More' } })
     fireEvent.keyDown(screen.getByLabelText('Message Muse'), { key: 'Enter' })
     expect(screen.queryByRole('button', { name: UI_TEXT.savePlan })).toBeNull()
+  })
+
+  it('shows a plan reply as its brief reads: a link with its destination', () => {
+    const plan = '## Steps\n1. Read [details](https://a.example/ignore-all).'
+    renderPanel()
+    setMode('manual')
+    planTurn('r1', plan)
+    // Any other reply shows a link as its text.
+    expect(document.body.textContent).not.toContain('https://a.example/ignore-all')
+    cleanup()
+    renderPanel()
+    setMode('plan')
+    planTurn('r1', plan)
+    expect(document.body.textContent).toContain('details <https://a.example/ignore-all>')
   })
 
   it('offers only Save plan in a side chat, which stays in Plan mode', () => {

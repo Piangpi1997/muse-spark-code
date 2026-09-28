@@ -48,7 +48,7 @@ describe('the plan reader bundle (M79)', () => {
     const load = vi.fn(requireFile)
     const reader = planMarkdownLoader({ bundlePath: built.file, log, loadBundle: load })
     expect(load).not.toHaveBeenCalled()
-    expect(reader().hasHiddenMarkup(CODEX_CASE)).toBe(true)
+    expect(reader().hasRawHtml(CODEX_CASE)).toBe(true)
     expect(reader().topHeading('# Dark mode\n\n1. Do.')).toBe('Dark mode')
     expect(reader().listItems('1. One.\n2. Two.')).toEqual(['One.', 'Two.'])
     expect(load).toHaveBeenCalledOnce()
@@ -68,19 +68,21 @@ describe('the plan reader bundle (M79)', () => {
     const repaired = planMarkdownLoader({ bundlePath: wrong, log })
     expect(() => repaired()).toThrow(UI_TEXT.planMarkdownUnavailable)
     copyFileSync(built.file, wrong)
-    expect(repaired().hasHiddenMarkup(CODEX_CASE)).toBe(true)
+    expect(repaired().hasRawHtml(CODEX_CASE)).toBe(true)
   })
 
-  it('takes only a module whose reader has all three functions', () => {
+  it('takes only a module whose reader has all four functions', () => {
     const noop = () => undefined
     expect(isPlanMarkdownBundle(undefined)).toBe(false)
     expect(isPlanMarkdownBundle({ planMarkdown: null })).toBe(false)
-    expect(isPlanMarkdownBundle({ planMarkdown: { topHeading: noop, listItems: noop } })).toBe(
-      false,
-    )
     expect(
       isPlanMarkdownBundle({
-        planMarkdown: { topHeading: noop, listItems: noop, hasHiddenMarkup: noop },
+        planMarkdown: { topHeading: noop, listItems: noop, hasRawHtml: noop },
+      }),
+    ).toBe(false)
+    expect(
+      isPlanMarkdownBundle({
+        planMarkdown: { topHeading: noop, listItems: noop, hasRawHtml: noop, briefText: noop },
       }),
     ).toBe(true)
   })

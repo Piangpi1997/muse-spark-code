@@ -14,6 +14,7 @@ import {
   UI_TEXT,
 } from '../../shared/constants'
 import { fill } from '../../shared/l10n/text'
+import { hasBinaryControlCharacters } from '../attachments'
 import { confineWorkspacePath, type RealPathIo } from '../workspacePath'
 import {
   isPlanFileName,
@@ -224,7 +225,17 @@ export class PlanStore {
     if (read.bytes === undefined) {
       throw new Error((await this.has(fileName)) ? planTooLargeText() : UI_TEXT.planFileMissing)
     }
-    const text = new TextDecoder('utf-8').decode(read.bytes)
+    // Text, as a picked text file must be (M54): the brief is written from
+    // the parsed plan, which would turn a NUL into U+FFFD and pass it on.
+    let text: string
+    try {
+      text = new TextDecoder('utf-8', { fatal: true }).decode(read.bytes)
+    } catch {
+      throw new Error(UI_TEXT.textFileInvalid)
+    }
+    if (hasBinaryControlCharacters(text)) {
+      throw new Error(UI_TEXT.textFileInvalid)
+    }
     return {
       fileName,
       relativePath: place.relativePath,

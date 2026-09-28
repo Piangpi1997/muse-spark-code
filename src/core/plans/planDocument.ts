@@ -40,8 +40,10 @@ export interface PlanMarkdown {
   readonly topHeading: (text: string) => string | undefined
   /** The items of its top-level numbered lists, else of its bulleted ones, each on one line. */
   readonly listItems: (body: string) => readonly string[]
-  /** Whether it holds text the panel does not show (raw HTML, a title, an unused definition). */
-  readonly hasHiddenMarkup: (text: string) => boolean
+  /** Whether it holds raw HTML, which the panel never renders. */
+  readonly hasRawHtml: (text: string) => boolean
+  /** The plan as the model gets it: what the panel showed of it, written as Markdown. */
+  readonly briefText: (text: string) => string
 }
 
 /** What a plan file is written from. */
@@ -69,7 +71,8 @@ const TRAILING_BREAKS = /(?:\r?\n)+$/
 // would reach the brief unquoted) or a format character (a right-to-left
 // override would disguise the name in Plans…): never part of a plan's name.
 const UNSAFE_NAME_CHARACTER = /[\\/:\p{Cc}\p{Cf}]/u
-const ISO_DATE_CHARS = 10
+// A plan file's name as the extension makes it starts with its day.
+const DATED_NAME = /^(\d{4})-(\d{2})-(\d{2})(?=[-.])/
 const DATE_PAD = 2
 const ELLIPSIS = '…'
 
@@ -150,13 +153,25 @@ export function planSlug(title: string): string {
   return kept === '' ? PLAN_SLUG_FALLBACK : kept
 }
 
+/** A name's leading `YYYY-MM-DD` when it is a real day, as the extension names plans. */
+function datePrefix(fileName: string): string | undefined {
+  const match = DATED_NAME.exec(fileName)
+  const [, year = 0, month = 0, date = 0] = (match ?? []).map(Number)
+  const day = new Date(Date.UTC(year, month - 1, date))
+  const isRealDay = day.getUTCMonth() === month - 1 && day.getUTCDate() === date
+  return match !== null && isRealDay ? match[0] : undefined
+}
+
 /**
- * How the log names a plan file: its date and a short hash of its name,
- * never the slug, which is drawn from what the user or the model wrote (M39).
+ * How the log names a plan file: a short hash of its name, after its day
+ * when the name verifiably starts with one, and nothing else of it: the rest
+ * of a name is drawn from what the user or the model wrote (M39), and a file
+ * someone else put in the folder may be named anything.
  */
 export function planLogName(fileName: string): string {
   const hash = createHash('sha256').update(fileName).digest('hex').slice(0, PLAN_LOG_HASH_CHARS)
-  return `${fileName.slice(0, ISO_DATE_CHARS)}-#${hash}${PLAN_FILE_EXTENSION}`
+  const day = datePrefix(fileName)
+  return `${day === undefined ? '' : `${day}-`}#${hash}${PLAN_FILE_EXTENSION}`
 }
 
 /** `2026-09-27`: the local calendar day. */

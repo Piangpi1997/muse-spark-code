@@ -1,12 +1,19 @@
 // A plan read with the panel's own Markdown grammar (M79, PLAN.md D49): its
-// top-level heading, its steps, and whether it holds text the panel does not
-// show. MarkdownView renders a reply with react-markdown, whose remark-parse
-// is `mdast-util-from-markdown`, and the panel's remark-gfm adds
+// top-level heading, its steps, whether it holds raw HTML, and the brief the
+// model gets. MarkdownView renders a reply with react-markdown, whose
+// remark-parse is `mdast-util-from-markdown`, and the panel's remark-gfm adds
 // `micromark-extension-gfm` and `mdast-util-gfm` (no options): the same
 // three, at the versions those resolve to, parse the plan here, without
-// unified around them. A hand-made line scanner disagreed with it (a backtick
-// fence whose info string holds a backtick is no fence), so what it called
-// code the panel showed as prose (PR #53 review).
+// unified around them (PR #53's second review).
+//
+// What the model gets is what the user saw, by construction (the third
+// review): the panel shows a plan reply through `showPlanParts`
+// (shared/planView.ts), which turns every part of the plan into rendered
+// text (a link's destination beside its text, a picture's source, a
+// definition, a footnote, a code fence's info string), and the brief is that
+// same rewritten tree written back as Markdown (`mdast-util-to-markdown`, the
+// version remark-gfm's writer resolves to). Only raw HTML stays unrendered,
+// and a reply holding it is saved but not started.
 //
 // The parser is 114 KiB, so this module is not in the activation bundle: it
 // is built into dist/planMarkdown.js (host/planMarkdownEntry.ts), loaded on
@@ -16,17 +23,16 @@
 // along): it reads, and planDocument.ts cuts and caps what it read.
 
 import { fromMarkdown } from 'mdast-util-from-markdown'
-import { gfmFromMarkdown } from 'mdast-util-gfm'
+import { gfmFromMarkdown, gfmToMarkdown } from 'mdast-util-gfm'
+import { toMarkdown } from 'mdast-util-to-markdown'
 import { gfm } from 'micromark-extension-gfm'
+import { showPlanParts } from '../../shared/planView'
 import type { PlanMarkdown } from './planDocument'
 
 /** The parts of a parsed Markdown node (mdast) this module reads. */
 interface MarkdownNode {
   readonly type: string
   readonly value?: string | undefined
-  readonly alt?: string | null | undefined
-  readonly title?: string | null | undefined
-  readonly identifier?: string | undefined
   readonly depth?: number | undefined
   readonly ordered?: boolean | null | undefined
   readonly children?: readonly MarkdownNode[] | undefined
@@ -35,20 +41,13 @@ interface MarkdownNode {
 const WHITESPACE = /\s+/g
 // The panel's parser: remark-parse's options once remark-gfm (no options) is in.
 const MARKDOWN_OPTIONS = { extensions: [gfm()], mdastExtensions: [gfmFromMarkdown()] }
-// What the panel never shows: raw HTML, block or inline (MarkdownView's
-// `skipHtml`); a title (links and pictures render without one); and a
-// definition nothing refers to, which renders as nothing at all. A link
-// definition serves link and picture references; a footnote, footnote ones.
+// The brief's writer: GFM, and the list and rule markers a plan usually has.
+const BRIEF_OPTIONS: Parameters<typeof toMarkdown>[1] = {
+  extensions: [gfmToMarkdown()],
+  bullet: '-',
+  rule: '-',
+}
 const HTML_NODE = 'html'
-const DEFINITION_KINDS: ReadonlyMap<string, string> = new Map([
-  ['definition', 'link'],
-  ['footnoteDefinition', 'footnote'],
-])
-const REFERENCE_KINDS: ReadonlyMap<string, string> = new Map([
-  ['linkReference', 'link'],
-  ['imageReference', 'link'],
-  ['footnoteReference', 'footnote'],
-])
 
 /** Text on one line, its runs of white space one space. */
 function oneLine(text: string): string {
@@ -56,8 +55,15 @@ function oneLine(text: string): string {
 }
 
 /** The plan as the panel parses it. */
-function parseMarkdown(text: string): MarkdownNode {
+function parseMarkdown(text: string): ReturnType<typeof fromMarkdown> {
   return fromMarkdown(text, MARKDOWN_OPTIONS)
+}
+
+/** The plan as the panel shows a plan reply: every part rendered text. */
+function shownTree(text: string): ReturnType<typeof fromMarkdown> {
+  const tree = parseMarkdown(text)
+  showPlanParts(tree)
+  return tree
 }
 
 function childrenOf(node: MarkdownNode): readonly MarkdownNode[] {
@@ -69,25 +75,19 @@ function nodesOf(node: MarkdownNode): readonly MarkdownNode[] {
   return [node, ...childrenOf(node).flatMap((child) => nodesOf(child))]
 }
 
-/**
- * A node's text as the panel shows it: markup gone, a picture's alt text,
- * and raw HTML left out (an `html` node has a value but no children).
- */
-function shownText(node: MarkdownNode): string {
+/** A node's text: its text and code, markup gone, raw HTML left out, a hard break a space. */
+function textOf(node: MarkdownNode): string {
   switch (node.type) {
     case 'text':
     case 'inlineCode': {
       return node.value ?? ''
-    }
-    case 'image': {
-      return node.alt ?? ''
     }
     case 'break': {
       return ' '
     }
     default: {
       return childrenOf(node)
-        .map((child) => shownText(child))
+        .map((child) => textOf(child))
         .join('')
     }
   }
@@ -95,9 +95,9 @@ function shownText(node: MarkdownNode): string {
 
 /** The text of the plan's first top-level heading (`# ` or underlined with `=`), if any. */
 export function topHeading(text: string): string | undefined {
-  const blocks = childrenOf(parseMarkdown(text))
+  const blocks = childrenOf(shownTree(text))
   for (const node of blocks) {
-    const heading = node.type === 'heading' && node.depth === 1 ? oneLine(shownText(node)) : ''
+    const heading = node.type === 'heading' && node.depth === 1 ? oneLine(textOf(node)) : ''
     if (heading !== '') {
       return heading
     }
@@ -105,42 +105,26 @@ export function topHeading(text: string): string | undefined {
   return undefined
 }
 
-/**
- * Whether the plan holds text the panel does not show, so the user did not
- * see all of what the model would be sent: raw HTML anywhere outside code
- * (a comment, a tag, a declaration), a link's or picture's title, or a
- * definition nothing refers to.
- */
-export function hasHiddenMarkup(text: string): boolean {
-  const nodes = nodesOf(parseMarkdown(text))
-  const referenced = new Set(
-    nodes.flatMap((node) => {
-      const kind = REFERENCE_KINDS.get(node.type)
-      return kind === undefined ? [] : [`${kind}:${node.identifier ?? ''}`]
-    }),
-  )
-  return nodes.some((node) => {
-    const kind = DEFINITION_KINDS.get(node.type)
-    const isUnreferenced = kind !== undefined && !referenced.has(`${kind}:${node.identifier ?? ''}`)
-    return node.type === HTML_NODE || isUnreferenced || (node.title ?? '').trim() !== ''
-  })
+/** Whether the plan holds raw HTML outside code (a comment, a tag), which the panel never renders. */
+export function hasRawHtml(text: string): boolean {
+  return nodesOf(parseMarkdown(text)).some((node) => node.type === HTML_NODE)
 }
 
 /** A list item's first paragraph as shown (no task box, no markup), on one line. */
 function itemText(item: MarkdownNode): string {
   const paragraph = childrenOf(item).find((child) => child.type === 'paragraph')
-  return oneLine(paragraph === undefined ? '' : shownText(paragraph))
+  return oneLine(paragraph === undefined ? '' : textOf(paragraph))
 }
 
 /**
  * The items of the plan's top-level numbered lists, or, when it numbers
- * none, of its top-level bulleted lists, as the panel parses them, empty
- * ones left out. Nested items and further paragraphs belong to their item.
+ * none, of its top-level bulleted lists, as the panel shows them, empty ones
+ * left out. Nested items and further paragraphs belong to their item.
  */
 export function listItems(body: string): readonly string[] {
   const ordered: string[] = []
   const bullets: string[] = []
-  const blocks = childrenOf(parseMarkdown(body))
+  const blocks = childrenOf(shownTree(body))
   for (const list of blocks) {
     if (list.type !== 'list') {
       continue
@@ -155,5 +139,14 @@ export function listItems(body: string): readonly string[] {
   return ordered.length > 0 ? ordered : bullets
 }
 
-/** All three, as dist/planMarkdown.js exports them. */
-export const PLAN_MARKDOWN: PlanMarkdown = { topHeading, listItems, hasHiddenMarkup }
+/**
+ * The plan as the model gets it: the tree the panel shows, written back as
+ * Markdown. Every text in it is text the panel rendered (raw HTML aside,
+ * which the caller refuses in a reply).
+ */
+export function briefText(text: string): string {
+  return toMarkdown(shownTree(text), BRIEF_OPTIONS)
+}
+
+/** All four, as dist/planMarkdown.js exports them. */
+export const PLAN_MARKDOWN: PlanMarkdown = { topHeading, listItems, hasRawHtml, briefText }

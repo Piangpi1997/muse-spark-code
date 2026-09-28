@@ -216,7 +216,7 @@ suite('the plan reader bundle', () => {
         },
       },
     })
-    assert.equal(reader().hasHiddenMarkup('1. Do it.\n\n```js`\n<!-- hidden -->\n```'), true)
+    assert.equal(reader().hasRawHtml('1. Do it.\n\n```js`\n<!-- hidden -->\n```'), true)
     assert.deepEqual(reader().listItems('1. One.\n2. Two.'), ['One.', 'Two.'])
     assert.deepEqual(errors, [])
   })

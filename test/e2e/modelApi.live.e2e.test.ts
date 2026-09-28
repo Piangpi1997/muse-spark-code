@@ -969,6 +969,7 @@ function livePanel(rig: Rig): LivePanel {
       refresh: () => Promise.resolve(signedIn),
       markAuthRequired: () => signedIn,
       markBackendError: () => signedIn,
+      checkAgain: () => Promise.resolve(signedIn),
     },
     ensureHost: () => rig.manager.ensureHost(),
     workspaceRoot: rig.workspace,

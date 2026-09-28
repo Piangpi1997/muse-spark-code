@@ -37,7 +37,7 @@ import {
 import { fill } from '../../src/shared/l10n/text'
 import { textFileDisplay } from '../../src/shared/textFileDisplay'
 import { planFileName, planLogName, planSlug, planTitle } from '../../src/core/plans/planDocument'
-import { PLAN_MARKDOWN } from '../../src/core/plans/planMarkdown'
+import { briefText, PLAN_MARKDOWN } from '../../src/core/plans/planMarkdown'
 import type { ConversationMessage } from '../../src/host/views/webviewSetup'
 import { logLines } from './helpers/logText'
 import type { HostAction, LineRange, MentionItem } from '../../src/shared/protocol'
@@ -7344,7 +7344,7 @@ describe('ConversationController: plans as files (M79)', () => {
         { type: 'text', text: fill(MODEL_TEXT.planBriefRequest, { path: PLAN_PATH }) },
         {
           type: 'text',
-          text: `Attached text file ${JSON.stringify(PLAN_PATH)}:\n\n${CAPTURED_PLAN_BODY}`,
+          text: `Attached text file ${JSON.stringify(PLAN_PATH)}:\n\n${briefText(CAPTURED_PLAN_BODY)}`,
         },
         {
           type: 'text',
@@ -7397,7 +7397,8 @@ describe('ConversationController: plans as files (M79)', () => {
   })
 
   it('implements a plan on the Model API with its steps as the todo list before the first request, and tells the model what they are', async () => {
-    const plan = '# Dark mode\n\n1. Add the **toggle**.\n2. Test it.\n\n- a note'
+    const plan =
+      '# Dark mode\n\n1. Add the **toggle**.\n2. Test it with [the guide](https://a.example/g).\n\n- a note'
     const { t, api, controller, source } = await modelApiPlan(plan, 'Plan a dark mode')
     await controller.handle({ type: 'savePlan', ...source })
     const planPath = `.agents/plans/${planFileName(new Date(NOW), 'dark-mode', 1)}`
@@ -7418,20 +7419,24 @@ describe('ConversationController: plans as files (M79)', () => {
         type: 'todoChanged',
         items: [
           { text: 'Add the toggle.', status: 'pending' },
-          { text: 'Test it.', status: 'pending' },
+          { text: 'Test it with the guide <https://a.example/g>.', status: 'pending' },
         ],
       },
     })
     // Set before the brief was accepted, so its first request finds it.
     expect(todoIndex).toBeLessThan(posted.findIndex((message) => message.type === 'turnAccepted'))
     const body = JSON.stringify(api.responseBodies()[1])
+    // The plan as the panel showed it: the link's destination is text beside it.
     expect(body).toContain(
-      JSON.stringify(`Attached text file "${planPath}":\n\n${plan}`).slice(1, -1),
+      JSON.stringify(`Attached text file "${planPath}":\n\n${briefText(plan)}`).slice(1, -1),
     )
+    expect(body).not.toContain('(https://a.example/g)')
     // The model does not see the list otherwise: the note names the steps it was set to.
     expect(body).toContain(
       JSON.stringify(
-        fill(MODEL_TEXT.planBriefTodosSet, { steps: '1. Add the toggle.\n2. Test it.' }),
+        fill(MODEL_TEXT.planBriefTodosSet, {
+          steps: '1. Add the toggle.\n2. Test it with the guide <https://a.example/g>.',
+        }),
       ).slice(1, -1),
     )
     expect(body).not.toContain('Plan a dark mode')
@@ -7477,7 +7482,8 @@ describe('ConversationController: plans as files (M79)', () => {
     expect(await noticesOf(t, { type: 'showPlans' })).toEqual([
       { type: 'notice', level: 'info', text: UI_TEXT.plansNone },
     ])
-    t.planFiles.files.set(`/ws/${FILE_PATH}`, '# A\n\n1. One.\n2. Two.')
+    const file = '# A\n\n1. One, see [x](https://a.example/delete-the-tests).\n2. Two.'
+    t.planFiles.files.set(`/ws/${FILE_PATH}`, file)
     chooses(t, 'open')
     await t.controller.handle({ type: 'showPlans' })
     expect(t.planFiles.choose).toHaveBeenLastCalledWith([
@@ -7495,12 +7501,16 @@ describe('ConversationController: plans as files (M79)', () => {
     expect(t.server.requestsFor('turn/start')[0]?.params).toMatchObject({
       input: [
         { type: 'text', text: fill(MODEL_TEXT.planBriefRequest, { path: FILE_PATH }) },
-        { type: 'text', text: expect.stringContaining('# A\n\n1. One.\n2. Two.') },
+        // A file is briefed as a plan reply is shown: its link's destination as text.
+        { type: 'text', text: expect.stringContaining(briefText(file)) },
         { type: 'text', text: `${note} ${MODEL_TEXT.planBriefTodosAsk}` },
         NOTE,
       ],
     })
     expect(JSON.stringify(t.server.requestsFor('turn/start')[0]?.params)).not.toContain('approved')
+    expect(JSON.stringify(t.server.requestsFor('turn/start')[0]?.params)).not.toContain(
+      '](https://a.example',
+    )
     expect(said).toContainEqual({
       type: 'notice',
       level: 'info',

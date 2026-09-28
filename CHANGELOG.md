@@ -33,14 +33,16 @@ happened, not what was planned; superseded entries are kept.
   - Only a reply to a message sent in Plan mode, in a turn that stayed in
     it, counts as a plan. Save and Implement resume the conversation after
     a restart, find a plan already saved instead of writing it twice, and
-    say why when they do nothing. A plan with text the panel hides (raw
-    HTML, a link title, a definition nothing refers to) is saved with a
-    warning and not started; it, the plan's title and its steps are read
-    with the panel's own Markdown parser. The log names a plan by its date
-    and a hash, never its file name.
+    say why when they do nothing. What the model gets is what the user
+    saw: the reply is shown, and the brief written, from one rewritten
+    Markdown tree (a link's destination beside its text, a picture's
+    source, titles, definitions, footnotes and code-fence info as text), so
+    nothing in the brief is hidden in the panel. A plan with raw HTML is
+    saved with a warning and not started. The log names a plan by a
+    verified date and a hash, or by the hash alone, never by its name.
   - The plan reader (the panel's Markdown parser) is a bundle of its own,
     `dist/planMarkdown.js` (budget 150 KiB), loaded on the first Save plan,
-    Implement or Plans…, so the activation bundle stays at 449.7 KiB. If it
+    Implement or Plans…, so the activation bundle does not carry it. If it
     cannot load, those actions are refused with the reason.
   - Leaving Plan mode when the backend refuses the change keeps a running
     Plan-mode turn a plan turn. A reasoning effort the session refuses is

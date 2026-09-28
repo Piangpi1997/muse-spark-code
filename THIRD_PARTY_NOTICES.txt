@@ -117,6 +117,8 @@ unist-util-stringify-position (MIT)
   https://github.com/syntax-tree/unist-util-stringify-position
 unist-util-visit-parents (MIT)
   https://github.com/syntax-tree/unist-util-visit-parents
+zwitch (MIT)
+  https://github.com/wooorm/zwitch
 ------------------------------------------------------------------------
 
 (The MIT License)

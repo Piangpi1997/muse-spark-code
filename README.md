@@ -320,22 +320,24 @@ says why when it cannot.
   - A plan may be up to 256 KB.
   - The file is published by a hard link; on a file system without hard
     links the save is refused rather than risk replacing a file.
-  - A plan holding text that the panel does not show (raw HTML such as a
-    comment or a tag, a link title, a definition nothing refers to) is
-    saved with a warning to read the file. The plan is read with the
-    panel's own Markdown parser, so this is exactly what the panel leaves
-    out.
+  - The reply you approve is shown as the model will get it: a link's
+    destination follows its text (`details <https://…>`), a picture is its
+    alt text and source, and definitions, footnotes, titles and a code
+    block's whole info string are shown as text. Raw HTML (a comment, a
+    tag) is the one thing the panel never shows: a plan holding it is saved
+    with a warning to read the file.
   - Restricted Mode saves nothing.
 - **Implement in a fresh conversation** saves the plan (unless it is
   already saved), then starts a new conversation on the same backend:
-  - the plan file is attached as named text, the same way a picked text
-    file is (both backends);
+  - the plan is attached as named text, the same way a picked text file
+    is (both backends), written from what the panel showed of it, so
+    every character the model gets is one you saw;
   - nothing else from the planning conversation comes along, and it stays
     in History;
   - Plan mode gives way to your starting mode (`museSpark.initialPermissionMode`,
     or Manual when that is Plan; never Bypass in a remote window);
-  - a plan holding text that the panel does not show is saved but not
-    started: read the file, then implement it from Plans….
+  - a plan holding raw HTML is saved but not started: read the file, then
+    implement it from Plans….
 - **The todo list.** On the Model API backend, the plan's numbered steps
   (or its bullets, when nothing is numbered) become the todo list before
   the first request, and the brief tells the model what they are. Muse Code

@@ -398,7 +398,10 @@ const AssistantRow = memo(function AssistantRow({
       <span className="tool-dot tool-dot-muted" aria-hidden="true" />
       <div className="message-body">
         {head === '' ? null : <MarkdownView text={head} {...actions} />}
-        {closed === '' ? null : <MarkdownView text={closed} {...actions} />}
+        {closed === '' ? null : (
+          // The reply a plan action would save is shown as its brief would read (M79).
+          <MarkdownView text={closed} {...actions} isPlan={onSavePlan !== undefined} />
+        )}
         {open === undefined ? null : (
           <CodeBlock
             code={open.code}

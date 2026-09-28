@@ -5,7 +5,7 @@
 // dist/extension.js, which the bundle-split gate refuses.
 //
 // There is no fallback without it: the reader is what says whether a plan
-// holds text the panel does not show, so a plan action that cannot load it
+// holds raw HTML and what the model is sent, so a plan action that cannot load it
 // is refused with the reason, and the next action tries again.
 
 import type { PlanMarkdown } from '../core/plans/planDocument'
@@ -13,7 +13,7 @@ import { UI_TEXT } from '../shared/constants'
 import { forgetFile, requireFile } from './lazyBundle'
 import type { Logger } from './logger'
 
-const READER_FUNCTIONS = ['topHeading', 'listItems', 'hasHiddenMarkup'] as const
+const READER_FUNCTIONS = ['topHeading', 'listItems', 'hasRawHtml', 'briefText'] as const
 
 /** The bundle's one export. */
 interface PlanMarkdownBundle {

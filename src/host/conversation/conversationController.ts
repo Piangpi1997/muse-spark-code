@@ -2822,7 +2822,7 @@ export class ConversationController {
         'info',
         fill(outcome.saved.isNew ? UI_TEXT.planSaved : UI_TEXT.planAlreadySaved, { path }),
       )
-      if (outcome.markdown.hasHiddenMarkup(outcome.text)) {
+      if (outcome.markdown.hasRawHtml(outcome.text)) {
         this.say('warning', fill(UI_TEXT.planHiddenMarkup, { path }))
       }
     } catch (error: unknown) {
@@ -2928,7 +2928,7 @@ export class ConversationController {
       if (brief === undefined) {
         return
       }
-      if (brief.hasHiddenMarkup) {
+      if (brief.hasRawHtml) {
         // The user did not see all of what the model would be sent.
         this.say('warning', fill(UI_TEXT.planHiddenMarkupNotStarted, { path: brief.relativePath }))
         return
@@ -2967,11 +2967,13 @@ export class ConversationController {
   }
 
   /**
-   * The brief a plan becomes: a reply saved first (the file then holds
-   * exactly what the user approved, which is what is sent), or a saved file,
-   * which is untrusted content. Implementing either reads workspace text
-   * into the model, so Restricted Mode refuses it. Undefined, with the
-   * reason said, when there is none.
+   * The brief a plan becomes: a reply saved first, or a saved file, which is
+   * untrusted content. Either way the model gets the plan as the panel shows
+   * a plan reply (`briefText`: a link's destination beside its text, a
+   * picture's source, a definition, all as rendered text), never markup it
+   * would not show. Implementing either reads workspace text into the
+   * model, so Restricted Mode refuses it. Undefined, with the reason said,
+   * when there is none.
    */
   private async planBriefFor(
     source: PlanSource,
@@ -2980,7 +2982,7 @@ export class ConversationController {
     | {
         readonly brief: ConversationBrief
         readonly relativePath: string
-        readonly hasHiddenMarkup: boolean
+        readonly hasRawHtml: boolean
       }
     | undefined
   > {
@@ -2990,11 +2992,12 @@ export class ConversationController {
         return undefined
       }
       const { relativePath } = outcome.saved
-      const bytes = new TextEncoder().encode(outcome.text)
+      const { markdown, text } = outcome
+      const bytes = new TextEncoder().encode(markdown.briefText(text))
       return {
-        brief: planBrief(relativePath, bytes, planSteps(outcome.markdown, outcome.text), true),
+        brief: planBrief(relativePath, bytes, planSteps(markdown, text), true),
         relativePath,
-        hasHiddenMarkup: outcome.markdown.hasHiddenMarkup(outcome.text),
+        hasRawHtml: markdown.hasRawHtml(text),
       }
     }
     // Refused with its reason said first: no plans without a workspace folder.
@@ -3007,12 +3010,14 @@ export class ConversationController {
     }
     const { plans } = this.deps
     const plan = await plans.read(source.fileName)
-    const steps = planSteps(plans.markdown(), plan.document.body)
+    const markdown = plans.markdown()
+    const body = plan.document.body
+    const bytes = new TextEncoder().encode(markdown.briefText(body))
     return {
-      brief: planBrief(plan.relativePath, plan.bytes, steps, false),
+      brief: planBrief(plan.relativePath, bytes, planSteps(markdown, body), false),
       relativePath: plan.relativePath,
-      // A file is sent as untrusted content in a mode that asks, and Plans… can open it first.
-      hasHiddenMarkup: false,
+      // A file is sent as untrusted content in a mode that asks, and Plans… opens it whole.
+      hasRawHtml: false,
     }
   }
 

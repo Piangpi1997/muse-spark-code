@@ -68,9 +68,14 @@ export function createMemoryIo(
         mode: MEMORY_STAGE_FILE_MODE,
         // The folder `locate` checked (C2-4): one swapped for a link since is refused.
         ...(checkedPath !== undefined && { expectedDirectory: path.dirname(checkedPath) }),
-        warn: (stage, isPublished, error) => {
+        // The stage is named after the note, which the model named: not logged (M39).
+        warn: (_stage, isPublished, error) => {
           const when = isPublished ? 'after the note was published' : 'after the write failed'
-          options.warn(`memory stage ${stage} could not be removed ${when}: ${String(error)}`)
+          const code =
+            typeof error === 'object' && error !== null && 'code' in error ? error.code : undefined
+          options.warn(
+            `a memory note's hidden stage could not be removed ${when} (${String(code)})`,
+          )
         },
         ...(options.publish !== undefined && { publish: options.publish }),
       }),
