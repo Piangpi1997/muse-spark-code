@@ -705,6 +705,14 @@ class AcpSession {
       return
     }
     this.pending.isCancelled = true
+    // Stopped once its start is answered, as in release(): a stop sent
+    // while the turn is still starting finds no turn, and the turn would
+    // then run on, editing and billing, while the editor is told it ended.
+    try {
+      await this.starting
+    } catch {
+      // The prompt that started it reports the failed start.
+    }
     await this.cancelTurn()
   }
 
@@ -1033,11 +1041,16 @@ class AgentState {
   }
 
   public session(sessionId: string): AcpSession {
-    const found = this.sessions.get(sessionId)
+    const found = this.held(sessionId)
     if (found === undefined) {
       throw RequestError.resourceNotFound(sessionId)
     }
     return found
+  }
+
+  /** The session held under this id, if any (none while it is being set up). */
+  public held(sessionId: string): AcpSession | undefined {
+    return this.sessions.get(sessionId)
   }
 
   /** The editor closes a session: the one held, or one still being set up. */
@@ -1104,6 +1117,8 @@ export function createAcpAgent(deps: AcpAgentDeps): AgentApp {
       stopReason: await state.session(context.params.sessionId).prompt(context.params.prompt),
     }))
     .onNotification('session/cancel', async (context) => {
-      await state.session(context.params.sessionId).cancel()
+      // A notification has no answer: a cancel for a session already
+      // closed, still being set up, or never held stops nothing.
+      await state.held(context.params.sessionId)?.cancel()
     })
 }

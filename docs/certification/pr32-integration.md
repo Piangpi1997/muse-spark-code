@@ -585,3 +585,28 @@ card rule.
 | G2    | a turn whose start failed not stopped                             | exit 1: "closed while its turn is being started, … failed to start"                                         |
 | G3    | updates still delivered after a session is let go                 | exit 1: "denies a paid use answered after its session closed"                                               |
 | G4    | the backend stopping leaves a load being set up held              | exit 1: "lets a load being set up go when its backend stops, and the load fails"                            |
+
+## Muse Code's review of `4eb0156c..496fdeed`: two findings (2026-09-28)
+
+Codex and Grok Build were both at their usage limits, so the last two fix
+rounds were reviewed read-only by Muse Code (`muse-spark-1.3-contributor`,
+three classes). Both findings were real and are fixed:
+
+- **P1, a cancel while the turn is starting.** `cancel()` sent the backend's
+  stop while `sendTurn` was still waiting for its answer, before the turn
+  existed; the turn then ran to its end, editing and billing, while the
+  editor was told `cancelled`. `cancel()` now waits for the start to be
+  answered (a failed start included) and only then stops the turn, as
+  `release()` already did.
+- **P2, a cancel for a session not held.** The `session/cancel`
+  notification looked the session up with `session()`, which throws for an
+  id that is closed, still being set up, or unknown; a notification has no
+  answer, so the SDK only printed "Error handling notification". It now uses
+  `held()` and stops nothing.
+
+| Drill | Broken                                                 | Result                                                                                        |
+| ----- | ------------------------------------------------------ | --------------------------------------------------------------------------------------------- |
+| C1    | `cancel()` no longer waits for the start               | exit 1: "passes a cancel sent while the turn is starting to the backend once the turn exists" |
+| C2    | the notification looks the session up with `session()` | exit 1: "ignores a cancel for a session it does not hold"                                     |
+
+Both restored byte for byte (SHA-256 checked); `acpAgent.test.ts` 61 of 61.

@@ -526,6 +526,58 @@ describe('the ACP agent (M63)', () => {
     expect(response).toEqual({ stopReason: 'cancelled' })
   })
 
+  it('passes a cancel sent while the turn is starting to the backend once the turn exists', async () => {
+    const h = harness()
+    const response = await h.run(async (client) => {
+      const { sessionId } = await start(client)
+      const session = h.host.sessions[0]!
+      const gate = new AbortController()
+      session.sendTurn.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            gate.signal.addEventListener(
+              'abort',
+              () => {
+                resolve({ turnId: 'turn-1', disposition: 'started' })
+              },
+              { once: true },
+            )
+          }),
+      )
+      const answer = prompt(client, sessionId)
+      await until(() => session.sendTurn.mock.calls.length === 1)
+      await client.notify('session/cancel', { sessionId })
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      // A stop sent before the turn exists would find nothing to stop.
+      expect(session.cancel).not.toHaveBeenCalled()
+      gate.abort()
+      await until(() => session.cancel.mock.calls.length === 1)
+      session.emit({ type: 'turnCompleted', turnId: 'turn-1', terminal: 'cancelled' })
+      return await answer
+    })
+    expect(response).toEqual({ stopReason: 'cancelled' })
+  })
+
+  it('ignores a cancel for a session it does not hold', async () => {
+    const h = harness()
+    // The SDK reports a notification handler's exception only here.
+    const reported = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    try {
+      await h.run(async (client) => {
+        const { sessionId } = await start(client)
+        await client.notify('session/cancel', { sessionId: 'not-a-session' })
+        await client.request('session/close', { sessionId })
+        await client.notify('session/cancel', { sessionId })
+        // A request after them is answered in order, so both were handled.
+        await start(client)
+      })
+      expect(reported).not.toHaveBeenCalled()
+    } finally {
+      reported.mockRestore()
+    }
+    expect(h.host.sessions[0]?.cancel).not.toHaveBeenCalled()
+  })
+
   it('turns a failed turn into an error with its reason', async () => {
     const h = harness()
     await expect(
