@@ -706,3 +706,29 @@ Production source hashes above are unchanged. Final test hashes:
 `4ba4dbcd71838fdaebf6dc76559ea4498723b4352bba4cbeccec7630a9982254`.
 The final candidate is restaged and the full gate rerun; earlier failed runs
 remain historical evidence, not passing gate receipts.
+
+### Local platform correction (2026-09-29)
+
+Candidate commit `22f62ed17b28c8ee7ae02e160d05c763592e395c`, tree
+`4068b25e20d465395e1a50b4ed7d26f23566dbc0`, passed the final Windows-host
+`npm run quality` (exit 0: 2,942 tests passed, 23 skipped; 336 accessibility
+pages; security gates clear), staged secret scan and fresh production ACP pack.
+Hosted Hosts run `36637040694` and Forks run `36637040482` passed that SHA.
+CI run `36637041038` passed Linux but failed macOS and Windows: the test
+"preserves a newer explicit grant when an old-generation writer finishes last"
+timed out at the existing 5,000 ms limit on both platforms.
+
+The integrator reproduced that exact timeout on the Windows host by pointing
+only the test child process's `TEMP` and `TMP` at an owned directory junction.
+The existing grant was written at its canonical path by `fsAtomic`, while the
+test held a rename only at its lexical temporary path. The fixture now resolves
+its created directory with `realpathSync`; no production code or timeout changed.
+The original selected case exited 1 at 5,000 ms; all 22 paid tests then passed,
+exit 0, under the same alias. Logs: the system temporary evidence directory
+`muse-goal-evidence-20260929/pr32-temp-alias-958733ff22494f9288a4c7e718be1b0a`,
+`original.log` and `fixed.log`, with their process exits. This is a reproduced
+test-harness failure, separate from the intended production-mutation red proofs.
+
+The owner's available Mac mini, Kubuntu VM and Windows 11 VM must run the final
+candidate before its next push. Independent fixture review, refreshed mutation
+proofs, exact-tree full local gates and the next hosted SHA are pending here.

@@ -89,14 +89,15 @@ happened, not what was planned; superseded entries are kept.
   there, and the agent to npm, each only when its token is set in the
   `marketplace` environment.
 - **Host checks in CI** (the Hosts workflow, `test/hosts/`). Every pull
-  request that touches the product runs the packaged extension in VSCodium
-  and code-server (the 1.99 floor and the latest) and in Eclipse Theia,
+  request that touches the product runs development-extension integration
+  in VSCodium and packaged browser checks in code-server (the 1.99 floor
+  and the latest) and Eclipse Theia,
   and the packaged ACP agent on Linux, macOS and Windows (its key through
   each credential store) and in JupyterLab, Emacs and Neovim, all against
   a fake Muse Code CLI; the latest releases are tried again every Monday.
   A second workflow, Forks, installs the VSIX in the latest Linux builds
-  of Cursor, Devin Desktop (formerly Windsurf), Kiro and Positron and runs
-  the integration tests there, weekly and by hand.
+  of Cursor, Devin Desktop (formerly Windsurf), Kiro and Positron, then
+  runs development-extension integration there, weekly and by hand.
 
 ### Changed
 
@@ -157,6 +158,9 @@ happened, not what was planned; superseded entries are kept.
 
 ### Fixed
 
+- **ACP paid-grant race tests use canonical temporary paths.** Filesystem
+  aliases on macOS and Windows no longer leave the test waiting for a rename
+  under a different name. The production grant storage and timeout stay intact.
 - **ACP sessions keep the newest owner while cancellation finishes.** A
   concurrent reload or close waits for the old turn to stop; an older delayed
   resume cannot replace the newest request. A backend exit while a turn starts

@@ -7859,6 +7859,19 @@ and inspect hosted checks on its exact SHA before merging. The date target does
 not waive a gate or make an unverified draft complete. Record remaining external
 or implementation blockers with their next safe action if the target is missed.
 
+**Local platform proof restored (owner correction, 2026-09-29):** use the
+available Mac mini, Kubuntu VM and Windows 11 VM before pushing a candidate,
+alongside the Windows host. Recover the existing rig workflow from the project's
+Claude memories and verify its current access and toolchain. Bind every result
+to the candidate tree and record process exits; hosted CI confirms that proof.
+PR #32 candidate `22f62ed1` passed the full Windows-host gate, Hosts and Forks,
+but hosted macOS and Windows both timed out in one new paid-grant race test.
+An owned temporary-directory junction reproduced that same failure locally:
+the fixture compared its lexical path with an atomic writer's canonical path.
+Canonicalizing the fixture makes all 22 paid tests pass under that alias.
+Timeouts, production behavior and quality thresholds are unchanged. Fresh full
+gates, independent review and local rig proof remain required before repushing.
+
 **Pre-PR delivery, historical (2026-09-26: trigger merged at `10522223`; first manual
 branch dispatch run `36276240077` succeeded on head `ac9df5a` in all seven
 jobs).** The owner

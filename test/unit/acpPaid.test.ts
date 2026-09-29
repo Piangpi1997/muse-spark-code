@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import type * as Fs from 'node:fs'
 import { link, rename } from 'node:fs/promises'
 import type * as FsPromises from 'node:fs/promises'
@@ -50,7 +50,9 @@ function logger() {
 }
 
 function grantsFile(): string {
-  const folder = mkdtempSync(path.join(tmpdir(), 'acp-paid-grants-'))
+  // Existing atomic-write targets use their real path, including macOS's
+  // /private/var and Windows temporary-directory aliases. Hold the same name.
+  const folder = realpathSync(mkdtempSync(path.join(tmpdir(), 'acp-paid-grants-')))
   folders.push(folder)
   return path.join(folder, 'acp', 'paid-uses.json')
 }
