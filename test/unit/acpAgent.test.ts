@@ -3,7 +3,7 @@ import { MspError } from '@muse-code/sdk'
 import { describe, expect, it, vi } from 'vitest'
 import { type AcpAgentDeps, type BackendReadiness, createAcpAgent } from '../../src/acp/agent'
 import { AcpPaidUse } from '../../src/acp/paid'
-import type { AgentSession, ModelSummary } from '../../src/core/agent/agentBackend'
+import type { AgentHost, AgentSession, ModelSummary } from '../../src/core/agent/agentBackend'
 import type {
   AgentEvent,
   ApprovalChoice,
@@ -15,6 +15,7 @@ import type { PaidUseRequest } from '../../src/shared/paid'
 import { approvalModeFor } from '../../src/shared/permissionModes'
 import { FAKE_MODELS, FakeAgentHost, type FakeAgentSession } from './helpers/fakeAgent'
 import { memoryPaidGrants } from './helpers/paidGrants'
+import { acpMspHost, acpResumeEnvelope, answerMsp } from './helpers/acpMsp'
 
 // M63 (PLAN.md D62): the agent driven by the ACP SDK's own client, in
 // process, against a scripted backend.
@@ -52,6 +53,7 @@ interface Harness {
 }
 
 interface HarnessOptions {
+  readonly backendHost?: AgentHost
   readonly readiness?: BackendReadiness
   readonly answer?: PermissionAnswer
   /** The client's form answer, or a function answering when the test lets it. */
@@ -90,7 +92,7 @@ function harness(options: HarnessOptions = {}): Harness {
         rechecks.push(isRecheck)
         return Promise.resolve(options.readiness ?? { state: 'ready' })
       },
-      hostFor: () => Promise.resolve(host),
+      hostFor: () => Promise.resolve(options.backendHost ?? host),
     },
     version: '0.0.0-test',
     options: {
@@ -148,6 +150,89 @@ async function settled(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, WAIT_MS / 10))
 }
 
+/** Observe overlapping requests immediately, so an expected rejection is never unhandled. */
+async function didRequestSucceed(
+  request: Promise<unknown>,
+  finished?: { isDone: boolean },
+): Promise<boolean> {
+  try {
+    await request
+    return true
+  } catch {
+    return false
+  } finally {
+    if (finished !== undefined) {
+      finished.isDone = true
+    }
+  }
+}
+
+/** The same held form, answered only after a lifecycle boundary. */
+function delayedForm() {
+  const form = Promise.withResolvers<acp.CreateElicitationResponse>()
+  return { form, h: harness({ elicitation: () => form.promise }) }
+}
+
+/** A trusted paid search question whose late answer must never become a grant. */
+function delayedPaidSearch() {
+  const answer = Promise.withResolvers<acp.RequestPermissionResponse>()
+  return {
+    answer,
+    h: harness({
+      kind: 'modelApi',
+      paid: ['webSearch'],
+      isTrusted: true,
+      answer: () => answer.promise,
+    }),
+  }
+}
+
+function colourQuestion(): Extract<AgentEvent, { type: 'questionRequested' }> {
+  return {
+    type: 'questionRequested',
+    userInputId: 'input-1',
+    itemId: 'q1',
+    questions: [
+      {
+        id: 'color',
+        header: 'Colour',
+        question: 'Which colour?',
+        selection: { mode: 'single' },
+        options: [{ label: 'Blue' }, { label: 'Red' }],
+      },
+    ],
+  }
+}
+
+function loadStoredSession(client: acp.ClientContext) {
+  return client.request('session/load', { sessionId: 'old-1', cwd: CWD, mcpServers: [] })
+}
+
+/** Owns one real MSP fixture and client, closing the transport even after a failed assertion. */
+async function withMspSession(
+  op: (client: acp.ClientContext, wire: ReturnType<typeof acpMspHost>) => Promise<void>,
+): Promise<void> {
+  const wire = acpMspHost()
+  const h = harness({ backendHost: wire.host })
+  try {
+    await h.run(async (client) => {
+      await client.request('initialize', { protocolVersion: acp.PROTOCOL_VERSION })
+      await loadStoredSession(client)
+      await op(client, wire)
+    })
+  } finally {
+    await wire.host.close()
+  }
+}
+
+/** Starts a prompt whose turn/start reply is explicitly released by the test. */
+async function pendingMspPrompt(client: acp.ClientContext, wire: ReturnType<typeof acpMspHost>) {
+  wire.server.silence('turn/start')
+  const response = prompt(client, 'old-1')
+  await until(() => wire.server.requestsFor('turn/start').length === 1)
+  return { response }
+}
+
 /** Hands a held session back retained on the next resume, as both hosts do (Grok on 78a74430). */
 function retainOnResume(h: Harness, shared: FakeAgentSession): void {
   const resume = h.host.resumeSession.getMockImplementation()!
@@ -176,6 +261,11 @@ async function start(
     clientCapabilities: capabilities,
   })
   return await client.request('session/new', { cwd: CWD, mcpServers: [] })
+}
+
+async function startFormSession(h: Harness, client: acp.ClientContext) {
+  const { sessionId } = await start(client, { elicitation: { form: {} } })
+  return { sessionId, session: h.host.sessions[0]! }
 }
 
 function prompt(client: acp.ClientContext, sessionId: string, text = 'hello') {
@@ -263,6 +353,20 @@ async function running(h: Harness, client: acp.ClientContext) {
   const response = prompt(client, sessionId)
   await until(() => session.sendTurn.mock.calls.length > 0)
   return { sessionId, session, response }
+}
+
+/** Completes the currently scripted turn after any requested cancellation reached the backend. */
+async function finishRunningPrompt(
+  client: acp.ClientContext,
+  active: Awaited<ReturnType<typeof running>>,
+  terminal: string,
+): Promise<void> {
+  if (terminal === 'cancelled') {
+    await client.notify('session/cancel', { sessionId: active.sessionId })
+    await until(() => active.session.cancel.mock.calls.length === 1)
+  }
+  active.session.emit({ type: 'turnCompleted', turnId: 'turn-1', terminal })
+  await active.response
 }
 
 /** One turn in which the backend asks `approval()`, waits for the decision, then plays `after`. */
@@ -1318,25 +1422,10 @@ describe('the ACP agent (M63)', () => {
   ])(
     'neither answers nor declines a question whose form is %s after its session closed',
     async (_name, settle) => {
-      const form = Promise.withResolvers<acp.CreateElicitationResponse>()
-      const h = harness({ elicitation: () => form.promise })
+      const { form, h } = delayedForm()
       await h.run(async (client) => {
-        const { sessionId } = await start(client, { elicitation: { form: {} } })
-        const session = h.host.sessions[0]!
-        session.emit({
-          type: 'questionRequested',
-          userInputId: 'input-1',
-          itemId: 'q1',
-          questions: [
-            {
-              id: 'color',
-              header: 'Colour',
-              question: 'Which colour?',
-              selection: { mode: 'single' },
-              options: [{ label: 'Blue' }, { label: 'Red' }],
-            },
-          ],
-        })
+        const { sessionId, session } = await startFormSession(h, client)
+        session.emit(colourQuestion())
         await until(() => h.elicitations.length === 1)
         await client.request('session/close', { sessionId })
         settle(form)
@@ -1459,6 +1548,54 @@ async function answersInOneSession(
 }
 
 describe('paid features in the agent (M63c, M58)', () => {
+  it.each(['cancelled', 'completed'])(
+    'never remembers a paid answer arriving after the prompt %s',
+    async (terminal) => {
+      const { answer, h } = delayedPaidSearch()
+      await h.run(async (client) => {
+        const active = await running(h, client)
+        const { sessionId } = active
+        const paid = h.paid.allows(CWD, sessionId, WEB_SEARCH, false)
+        await until(() => h.permissions.length === 1)
+        await finishRunningPrompt(client, active, terminal)
+        answer.resolve({ outcome: { outcome: 'selected', optionId: 'paid-allow-always' } })
+        expect(await paid).toBe(false)
+        expect(h.paid.isRemembered(CWD, 'webSearch')).toBe(false)
+        expect(h.grants.byFolder.size).toBe(0)
+        // A fresh use still asks and can be allowed; only the stale answer was refused.
+        expect(await h.paid.allows(CWD, sessionId, WEB_SEARCH, false)).toBe(true)
+        expect(h.permissions).toHaveLength(2)
+      })
+    },
+  )
+
+  it('denies a paid answer while its prompt is cancelled before its turn starts', async () => {
+    const { answer, h } = delayedPaidSearch()
+    await h.run(async (client) => {
+      const { sessionId } = await start(client)
+      const session = h.host.sessions[0]!
+      let isAllowed = true
+      session.listSkills.mockImplementation(async () => {
+        isAllowed = await h.paid.allows(CWD, sessionId, WEB_SEARCH, false)
+        return []
+      })
+      const response = prompt(client, sessionId)
+      await until(() => h.permissions.length === 1)
+      await client.notify('session/cancel', { sessionId })
+      await until(() =>
+        h.log.info.mock.calls.some(
+          ([message]) =>
+            typeof message === 'string' && message.includes('cancelled before its turn started'),
+        ),
+      )
+      answer.resolve({ outcome: { outcome: 'selected', optionId: 'paid-allow-always' } })
+      expect(await response).toEqual({ stopReason: 'cancelled' })
+      expect(isAllowed).toBe(false)
+      expect(h.grants.byFolder.size).toBe(0)
+      expect(session.sendTurn).not.toHaveBeenCalled()
+    })
+  })
+
   it('denies a paid use answered after its session closed (Grok on 78a74430)', async () => {
     const answer = Promise.withResolvers<acp.RequestPermissionResponse>()
     const h = harness({ kind: 'modelApi', paid: ['webSearch'], answer: () => answer.promise })
@@ -1592,6 +1729,309 @@ describe('paid features in the agent (M63c, M58)', () => {
     )
     expect(row).toMatchObject({
       title: expect.stringContaining('(Billed to your Model API key: $2.50 per 1,000 searches)'),
+    })
+  })
+})
+
+describe('ACP session ownership across asynchronous releases', () => {
+  it.each(['cancelled', 'completed'])(
+    'ignores an ordinary approval answer after its prompt %s and a replacement starts',
+    async (terminal) => {
+      const answer = Promise.withResolvers<acp.RequestPermissionResponse>()
+      const h = harness({ answer: () => answer.promise })
+      await h.run(async (client) => {
+        const active = await running(h, client)
+        const { sessionId, session } = active
+        session.emit(approval())
+        await until(() => h.permissions.length === 1)
+        await finishRunningPrompt(client, active, terminal)
+        const fresh = prompt(client, sessionId)
+        await until(() => session.sendTurn.mock.calls.length === 2)
+        answer.resolve({ outcome: { outcome: 'selected', optionId: 'allow_once' } })
+        await settled()
+        expect(session.decideApproval).not.toHaveBeenCalled()
+        session.emit({ type: 'turnCompleted', turnId: 'turn-2', terminal: 'completed' })
+        expect(await fresh).toEqual({ stopReason: 'end_turn' })
+      })
+    },
+  )
+
+  it('ignores an answer for an approval stage that advanced while the editor was asked', async () => {
+    const oldAnswer = Promise.withResolvers<acp.RequestPermissionResponse>()
+    const nextAnswer = Promise.withResolvers<acp.RequestPermissionResponse>()
+    let answers = 0
+    const h = harness({ answer: () => (++answers === 1 ? oldAnswer.promise : nextAnswer.promise) })
+    await h.run(async (client) => {
+      const { session, response } = await running(h, client)
+      session.emit(approval())
+      await until(() => h.permissions.length === 1)
+      session.emit({
+        type: 'approvalUpdated',
+        approvalId: 'approval-1',
+        requirementId: { approvalId: 'approval-1', sourceIndex: 1 },
+        subject: { kind: 'command', command: 'npm run build' },
+        availableChoices: CHOICES,
+      })
+      await until(() => h.permissions.length === 2)
+      oldAnswer.resolve({ outcome: { outcome: 'selected', optionId: 'allow_once' } })
+      nextAnswer.resolve({ outcome: { outcome: 'selected', optionId: 'abort' } })
+      await until(() => session.decideApproval.mock.calls.length > 0)
+      await settled()
+      expect(session.decideApproval).toHaveBeenCalledTimes(1)
+      expect(session.decideApproval).toHaveBeenCalledWith({
+        approvalId: 'approval-1',
+        choiceId: 'abort',
+        requirementId: { approvalId: 'approval-1', sourceIndex: 1 },
+      })
+      session.emit({ type: 'turnCompleted', turnId: 'turn-1', terminal: 'completed' })
+      await response
+    })
+  })
+
+  it.each(['accept', 'decline', 'failure'])(
+    'neither answers nor declines a question after its prompt finished: %s',
+    async (action) => {
+      const { form, h } = delayedForm()
+      await h.run(async (client) => {
+        const { sessionId, session } = await startFormSession(h, client)
+        const response = prompt(client, sessionId)
+        await until(() => session.sendTurn.mock.calls.length === 1)
+        session.emit(colourQuestion())
+        await until(() => h.elicitations.length === 1)
+        session.emit({ type: 'turnCompleted', turnId: 'turn-1', terminal: 'completed' })
+        await response
+        if (action === 'failure') {
+          form.reject(new Error('form failed'))
+        } else {
+          form.resolve(
+            action === 'accept' ? { action, content: { color: 'Blue' } } : { action: 'decline' },
+          )
+        }
+        await settled()
+        expect(session.answerQuestions).not.toHaveBeenCalled()
+        expect(session.cancelQuestions).not.toHaveBeenCalled()
+      })
+    },
+  )
+
+  it.each(['turn/start', 'turn/cancel'])(
+    'keeps the newest reload waiting while the old %s is unanswered',
+    async (heldMethod) => {
+      await withMspSession(async (client, wire) => {
+        const { response: oldPrompt } = await pendingMspPrompt(client, wire)
+        if (heldMethod === 'turn/cancel') {
+          answerMsp(wire.server, 'turn/start', 0, { turnId: 'turn-1', status: 'accepted' })
+          wire.server.silence('turn/cancel')
+        }
+        const older = didRequestSucceed(loadStoredSession(client))
+        await until(() => wire.server.requestsFor('session/resume').length === 2)
+        if (heldMethod === 'turn/cancel') {
+          await until(() => wire.server.requestsFor('turn/cancel').length === 1)
+        }
+        const newestStatus = { isDone: false }
+        const newest = didRequestSucceed(
+          client.request('session/resume', { sessionId: 'old-1', cwd: CWD }),
+          newestStatus,
+        )
+        await until(() => wire.server.requestsFor('session/resume').length === 3)
+        await settled()
+        const attachedBeforeRelease = wire.server.requestsFor('session/setApprovalMode').length
+        const wasCompletedBeforeRelease = newestStatus.isDone
+        answerMsp(
+          wire.server,
+          heldMethod,
+          0,
+          heldMethod === 'turn/start' ? { turnId: 'turn-1', status: 'accepted' } : {},
+        )
+        const hasOlderSucceeded = await older
+        const hasNewestSucceeded = await newest
+        expect(await oldPrompt).toEqual({ stopReason: 'cancelled' })
+        expect(wasCompletedBeforeRelease).toBe(false)
+        expect(attachedBeforeRelease).toBe(1)
+        expect(hasOlderSucceeded).toBe(false)
+        expect(hasNewestSucceeded).toBe(true)
+        expect(wire.server.requestsFor('turn/cancel')).toHaveLength(1)
+        const fresh = prompt(client, 'old-1')
+        await until(() => wire.server.requestsFor('turn/start').length === 2)
+        answerMsp(wire.server, 'turn/start', 1, { turnId: 'turn-2', status: 'accepted' })
+        wire.server.notify('turn/completed', {
+          sessionId: 'old-1',
+          turnId: 'turn-2',
+          terminal: 'completed',
+        })
+        expect(await fresh).toEqual({ stopReason: 'end_turn' })
+      })
+    },
+  )
+
+  it('waits for a closing session to stop before a newer reload attaches', async () => {
+    await withMspSession(async (client, wire) => {
+      const { response: oldPrompt } = await pendingMspPrompt(client, wire)
+      const closed = client.request('session/close', { sessionId: 'old-1' })
+      await settled()
+      const loadedStatus = { isDone: false }
+      const loaded = didRequestSucceed(
+        client.request('session/resume', { sessionId: 'old-1', cwd: CWD }),
+        loadedStatus,
+      )
+      await until(() => wire.server.requestsFor('session/resume').length === 2)
+      await settled()
+      const wasAttachedBeforeRelease = loadedStatus.isDone
+      answerMsp(wire.server, 'turn/start', 0, { turnId: 'turn-1', status: 'accepted' })
+      await closed
+      expect(await loaded).toBe(true)
+      expect(await oldPrompt).toEqual({ stopReason: 'cancelled' })
+      expect(wasAttachedBeforeRelease).toBe(false)
+      expect(wire.server.requestsFor('turn/cancel')).toHaveLength(1)
+    })
+  })
+
+  it('closes a reload still waiting for the old release, and leaves no session held', async () => {
+    await withMspSession(async (client, wire) => {
+      const { response: oldPrompt } = await pendingMspPrompt(client, wire)
+      const loading = didRequestSucceed(loadStoredSession(client))
+      await until(() => wire.server.requestsFor('session/resume').length === 2)
+      await settled()
+      const closed = didRequestSucceed(client.request('session/close', { sessionId: 'old-1' }))
+      await settled()
+      answerMsp(wire.server, 'turn/start', 0, { turnId: 'turn-1', status: 'accepted' })
+      expect(await closed).toBe(true)
+      expect(await loading).toBe(false)
+      expect(await oldPrompt).toEqual({ stopReason: 'cancelled' })
+      await expect(prompt(client, 'old-1')).rejects.toThrow()
+    })
+  })
+
+  it('refuses an older resume whose backend answer arrives after a newer load', async () => {
+    const h = harness()
+    const firstResume = Promise.withResolvers<Awaited<ReturnType<AgentHost['resumeSession']>>>()
+    const resume = h.host.resumeSession.getMockImplementation()!
+    let older: Awaited<ReturnType<AgentHost['resumeSession']>> | undefined
+    h.host.resumeSession.mockImplementationOnce(async (...args) => {
+      older = await resume(...args)
+      return await firstResume.promise
+    })
+    await h.run(async (client) => {
+      await client.request('initialize', { protocolVersion: acp.PROTOCOL_VERSION })
+      const pending = didRequestSucceed(
+        client.request('session/resume', { sessionId: 'old-1', cwd: CWD }),
+      )
+      await until(() => older !== undefined)
+      await client.request('session/load', { sessionId: 'old-1', cwd: CWD, mcpServers: [] })
+      firstResume.resolve(older!)
+      expect(await pending).toBe(false)
+      await client.request('session/set_mode', { sessionId: 'old-1', modeId: 'plan' })
+    })
+    expect(h.host.sessions[0]?.dispose).toHaveBeenCalledTimes(1)
+    expect(h.host.sessions[1]?.dispose).not.toHaveBeenCalled()
+    expect(h.host.sessions[1]?.setApprovalMode).toHaveBeenLastCalledWith('denyUnmatched')
+  })
+
+  it('releases only a stale resume’s retained hold and leaves the newer real session usable', async () => {
+    await withMspSession(async (client, wire) => {
+      wire.server.silence('session/resume')
+      const older = didRequestSucceed(loadStoredSession(client))
+      await until(() => wire.server.requestsFor('session/resume').length === 2)
+      const newer = didRequestSucceed(loadStoredSession(client))
+      await until(() => wire.server.requestsFor('session/resume').length === 3)
+      answerMsp(wire.server, 'session/resume', 2, acpResumeEnvelope())
+      expect(await newer).toBe(true)
+      answerMsp(wire.server, 'session/resume', 1, acpResumeEnvelope())
+      expect(await older).toBe(false)
+      expect(wire.host.sessionCount).toBe(1)
+      expect(wire.server.requestsFor('task/stopAll')).toEqual([])
+      wire.server.silence('turn/start')
+      const fresh = prompt(client, 'old-1')
+      await until(() => wire.server.requestsFor('turn/start').length === 1)
+      answerMsp(wire.server, 'turn/start', 0, { turnId: 'fresh', status: 'accepted' })
+      wire.server.notify('turn/completed', {
+        sessionId: 'old-1',
+        turnId: 'fresh',
+        terminal: 'completed',
+      })
+      expect(await fresh).toEqual({ stopReason: 'end_turn' })
+    })
+  })
+
+  it('fails a prompt without an unhandled rejection when the real backend exits during turn/start', async () => {
+    const unhandled = vi.fn()
+    process.on('unhandledRejection', unhandled)
+    try {
+      await withMspSession(async (client, wire) => {
+        wire.server.silence('turn/start')
+        const response = didRequestSucceed(prompt(client, 'old-1'))
+        await until(() => wire.server.requestsFor('turn/start').length === 1)
+        wire.exit(1)
+        // The process exit and the pipe ending can arrive on separate ticks.
+        await settled()
+        wire.server.close()
+        expect(await response).toBe(false)
+        await settled()
+        expect(unhandled).not.toHaveBeenCalled()
+        await expect(prompt(client, 'old-1')).rejects.toThrow()
+      })
+    } finally {
+      process.off('unhandledRejection', unhandled)
+    }
+  })
+
+  it('fails a preparing prompt when the backend exits and sends no turn afterward', async () => {
+    const h = harness()
+    const skills = Promise.withResolvers<readonly never[]>()
+    await h.run(async (client) => {
+      const { sessionId } = await start(client)
+      const session = h.host.sessions[0]!
+      session.listSkills.mockImplementation(() => skills.promise)
+      session.sendTurn.mockRejectedValue(new Error('backend stopped'))
+      const response = didRequestSucceed(prompt(client, sessionId))
+      await until(() => session.listSkills.mock.calls.length === 1)
+      h.host.exit('backend stopped')
+      skills.resolve([])
+      expect(await response).toBe(false)
+      expect(session.sendTurn).not.toHaveBeenCalled()
+      expect(session.dispose).toHaveBeenCalledTimes(1)
+    })
+  })
+
+  it.each(['close', 'backend exit'])(
+    'refuses a load whose backend response arrives after %s',
+    async (ending) => {
+      const h = harness()
+      const resumed = Promise.withResolvers<Awaited<ReturnType<AgentHost['resumeSession']>>>()
+      const resume = h.host.resumeSession.getMockImplementation()!
+      let held: Awaited<ReturnType<AgentHost['resumeSession']>> | undefined
+      h.host.resumeSession.mockImplementationOnce(async (...args) => {
+        held = await resume(...args)
+        return await resumed.promise
+      })
+      await h.run(async (client) => {
+        await client.request('initialize', { protocolVersion: acp.PROTOCOL_VERSION })
+        const loading = didRequestSucceed(
+          client.request('session/resume', { sessionId: 'old-1', cwd: CWD }),
+        )
+        await until(() => held !== undefined)
+        if (ending === 'close') {
+          await client.request('session/close', { sessionId: 'old-1' })
+        } else {
+          h.host.exit('backend stopped')
+        }
+        resumed.resolve(held!)
+        expect(await loading).toBe(false)
+        await expect(prompt(client, 'old-1')).rejects.toThrow()
+      })
+      expect(h.host.sessions[0]?.dispose).toHaveBeenCalledTimes(1)
+    },
+  )
+
+  it('forgets a failed resume before a later close', async () => {
+    const h = harness()
+    h.host.resumeSession.mockRejectedValueOnce(new Error('no session'))
+    await h.run(async (client) => {
+      await client.request('initialize', { protocolVersion: acp.PROTOCOL_VERSION })
+      await expect(
+        client.request('session/resume', { sessionId: 'old-1', cwd: CWD }),
+      ).rejects.toThrow()
+      await expect(client.request('session/close', { sessionId: 'old-1' })).rejects.toThrow()
     })
   })
 })

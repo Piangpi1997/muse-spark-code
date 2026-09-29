@@ -27,6 +27,11 @@ product and every Monday; the Forks workflow runs the latest Cursor,
 Devin Desktop, Kiro and Positron every Monday. Zed and the editors that
 need macOS, Windows or a JetBrains download are checked by hand.
 
+VSCodium's integration runner activates the development extension from this
+checkout. Fork runners separately verify VSIX installation and listing, then
+run that development-extension integration suite. These are distinct proofs;
+code-server and Theia's packaged browser checks keep their recorded scope.
+
 ## The most used
 
 | Editor                                             | Route                                         | Milestone | Status    | Evidence and notes                                                                                                                                                                                                                                                |
@@ -53,7 +58,7 @@ need macOS, Windows or a JetBrains download are checked by hand.
 
 | Editor                            | Route                            | Milestone | Status  | Evidence and notes                                                                                                                                                                                                                                                            |
 | --------------------------------- | -------------------------------- | --------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| VSCodium                          | VSIX (Open VSX)                  | M62       | Preview | 2026-09-26: the integration tests pass in 1.99.3 and 1.135 (9 each), installed from the `.vsix`; Open VSX from the next tag                                                                                                                                                   |
+| VSCodium                          | VSIX (Open VSX)                  | M62       | Preview | 2026-09-26: the integration tests pass in 1.99.3 and 1.135 (9 each), using the development extension; Open VSX from the next tag                                                                                                                                              |
 | Kiro IDE                          | VSIX (Open VSX)                  | M62       | Preview | 2026-09-26, `forks.yml`: Kiro 1.1.70 (VS Code 1.131.0, Linux) installs the `.vsix` and passes the integration tests (9); weekly on the latest                                                                                                                                 |
 | Positron                          | VSIX (Open VSX)                  | M62       | Preview | 2026-09-26, `forks.yml`: Positron 2026.09.1 (VS Code 1.130.0, Linux `.deb`) installs the `.vsix` and passes the integration tests (9); weekly on the latest                                                                                                                   |
 | Eclipse Theia IDE                 | VSIX                             | M62       | Preview | 2026-09-26: Theia 1.75 (browser, built from npm; it claims VS Code API 1.134) runs the panel, a conversation and an approval (fake CLI). Its sidebar stays blank until the extension starts (Ctrl+Esc or any Muse Spark command): Theia fires no `onView:` for a webview view |

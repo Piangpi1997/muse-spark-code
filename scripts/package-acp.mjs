@@ -97,7 +97,8 @@ const agentManifest = {
 }
 writeFileSync(path.join(STAGE, 'package.json'), `${JSON.stringify(agentManifest, null, 2)}\n`)
 
-const packed = execFileSync('npm', ['pack', path.resolve(STAGE), '--pack-destination', 'dist'], {
+const packed = execFileSync('npm', ['pack', '--pack-destination', '..'], {
+  cwd: path.resolve(STAGE),
   encoding: 'utf8',
   shell: process.platform === 'win32',
 })

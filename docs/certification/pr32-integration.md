@@ -610,3 +610,99 @@ three classes). Both findings were real and are fixed:
 | C2    | the notification looks the session up with `session()` | exit 1: "ignores a cancel for a session it does not hold"                                     |
 
 Both restored byte for byte (SHA-256 checked); `acpAgent.test.ts` 61 of 61.
+
+## Final independent review and repair of `46ba5406` (2026-09-29)
+
+The owner authorized completing and merging the existing branches, beginning
+with this PR, and parallel independent reviews in separate worktrees. Three
+reviewers examined concurrency/lifecycle, boundary/security, and failure/docs/
+packaging. The integrator independently reviewed the resulting session and
+paid-store repairs; the packaging reviewer separately accepted the integrator's
+fixed invocation. Prior green CI and resolved threads did not close these newly
+reproduced defects.
+
+| Finding                                                                                                                                       | Repair and observable evidence                                                                                                                                                                                                                                                                                                                                                                 |
+| --------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| P1: maps lost the old session while its release awaited turn start/cancel, letting a second reload start and then be cancelled by the old one | A per-session release barrier stays visible; request identity is assigned before resume I/O. Older replies fail instead of replacing the newest owner. Real ACP SDK/MSP regressions hold starts, cancels and out-of-order resumes, including close and backend exit.                                                                                                                           |
+| P1: backend exit rejected a completion promise before the prompt awaited it, causing Node's unhandled rejection                               | Completion outcomes are values until observed by the prompt. Host exit during start/preparation fails the request while the process remains alive; the test observes the separate-turn unhandled-rejection event.                                                                                                                                                                              |
+| P2: cancelled/completed prompt's late paid answer persisted Allow always; ordinary late forms/approval stages had analogous ownership gaps    | Answers are bound to their captured prompt and current approval stage. Cancellation, completion, replacement and preparation invalidate stale answers before any grant or backend decision.                                                                                                                                                                                                    |
+| P2: independent whole-file paid-grant writes restored revoked grants or lost independent additions                                            | `paid-uses.json.d/<feature>/generation.json` contains a validated UUID generation; `<workspaceHash>.<generationUUID>.json` holds that generation's grant. Atomic generation publication/revocation and synchronous before/after reads fail closed. Stale writers cannot replace current-generation records; legacy maps ask again. No lock takeover or unsafe live-record sweep is introduced. |
+| P2: Windows npm packaging split an unquoted absolute stage path                                                                               | npm runs with staging `cwd` and fixed `pack --pack-destination ..` arguments. A real checkout fixture with spaces packages successfully; restoring the original invocation fails with npm looking for the split `package/package.json`; restoring bytes packages successfully again.                                                                                                           |
+| P2: VSCodium evidence said integration tested an installed VSIX                                                                               | `hosts.md` now identifies development-extension integration and the fork runners' separate VSIX install/list proof. Packaged code-server/Theia evidence retains its recorded scope.                                                                                                                                                                                                            |
+
+The new MSP test helper uses the existing M6 captured resume envelope, trimmed
+to required fields, and the real `MuseCodeHost`, `MuseSession` and SDK transport.
+No new wire shape, live model attempt or bill was introduced.
+
+Focused lifecycle tests: `vitest run test/unit/acpAgent.test.ts
+test/unit/acpModelApi.test.ts`, 89 tests passed. The lifecycle suite has 81 tests,
+20 new regressions. Nine disposable production mutations each failed on intended
+assertions, then source bytes restored and all 81 tests passed again. They break
+release barriers, request ownership, completion observation, late prompt answers,
+paid preparation, approval-stage identity, preparing/pre-adopt host exits and
+failed-resume claim cleanup. No startup failure, timeout or zero discovery counts
+as red proof. Receipt and logs: `temp/pr32-lifecycle-drills/receipt.json` and
+its named logs; receipt SHA-256
+`e3843a037898f99bd8961cf938f19ab195c9d3d56d026dd26cde4313ec51811d`.
+Production session source SHA-256:
+`1d2d962cd0ef75b4cf67df203754a6c9c464973acb898db76da8977860e8d5d4`.
+
+Focused paid-store/runtime/model tests: three files, 60 tests passed. Deliberate
+production failures prove independent revocation, generation reread, safe first
+initialization, generation-specific names and no-overwrite publication. All
+mutations were restored byte-for-byte. One initial publication drill first timed
+out and was not counted; its rerun failed the actual lost-grant assertion.
+Production paid-store SHA-256:
+`e1275911f8ae6d5d2fb0cc8d1a087181b6f5312f675a6ef9b5d7fe6c053ee29a`.
+The integrator repeated four guards in a disposable copy with retained logs:
+`temp/pr32-paid-grant-drills/receipt.json`, baseline/restored and named mutation
+logs. All four exited 1 on their intended assertions, all 22 paid tests passed
+before and after, and copied/source SHA-256 remained the value above. A targeted
+single-case run exposed filesystem mocks relying on earlier cases' teardown;
+the suite now installs actual filesystem defaults before every test as well as
+restoring them afterward. The earlier load-related timeout and the pre-fix
+single-case failure are retained separately and are not red proof.
+
+The integrator's final six-suite run (ACP session, paid, runtime, Model API,
+translation and shared consent) passed 184 tests in six files, exit 0. Log:
+`temp/pr32-final-review/focused-final.log`. The test-setup correction subsequently
+passed the disposable paid suite and all four selected red proofs. New Node
+imports made the host API record stale (three occurrence-count rows); the
+unchanged gate failed, then `check:host-api -- --write` regenerated only those
+rows and the record check passed. Its totals remain 201 VS Code APIs, 13 host
+files, 17 Node built-ins and 57 theme variables.
+
+Packaging proof: `temp/pr32-final-review/pack-space-proof.json` and its green,
+red and restored logs; exits 0, 1, 0, source bytes restored by SHA-256. This
+isolated probe used the existing bundles to verify invocation/path behavior;
+fresh final production packaging remains required after the full build.
+
+All scoped host/unit typechecks, zero-warning lint and diff checks passed.
+The final staged-tree full quality gate, staged secret scan, production package
+and exact-head hosted checks are pending; no merge readiness is claimed yet.
+
+### Candidate gate setup and fixture deduplication
+
+The first full candidate gate stopped at lint because disposable source copies
+and runner scripts were still inside the checkout's scan scope. They were moved
+with verified absolute paths to the system temporary evidence directory
+`muse-goal-evidence-20260929/pr32`; their logs and JSON receipts remain at the
+paths above. No ignore, threshold or rule changed. The clean-scratch rerun passed
+format, lint, five typechecks, localization, host inventory, dead-code and cycles,
+then stopped on eleven duplicated test-setup blocks. Those setups now use shared
+fixtures; every assertion and all twenty lifecycle regressions remain. Global
+duplication now reports zero clones.
+
+After this refactor, lifecycle 81/81 and paid 22/22 passed. All nine lifecycle
+mutations and four retained-log paid mutations were repeated against the final
+fixtures: intended assertion failures, exit 1, exact source restoration, then
+81/81 and 22/22 restored green. Updated lifecycle receipt:
+`temp/pr32-lifecycle-drills/refactored-receipt.json`, SHA-256
+`8b6e9f6cf9c58a4d5d163d412264d4c56ae9300d52d1354a0421f1faf38d767d`.
+Production source hashes above are unchanged. Final test hashes:
+`acpAgent.test.ts` —
+`4eae474a6f5e84cdf8f34fc2e18c45dc650117e9797badae172031d27e2282e7`;
+`acpPaid.test.ts` —
+`4ba4dbcd71838fdaebf6dc76559ea4498723b4352bba4cbeccec7630a9982254`.
+The final candidate is restaged and the full gate rerun; earlier failed runs
+remain historical evidence, not passing gate receipts.

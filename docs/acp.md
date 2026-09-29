@@ -254,10 +254,15 @@ that cannot ask counts as Deny.
 
 **Allow always in this workspace** is offered only when the agent runs
 with `--trust-workspace`. It is kept for that folder in the agent's data
-folder (`paid-uses.json` under `%LOCALAPPDATA%\Muse Spark Code\acp`,
+folder (`paid-uses.json.d` under `%LOCALAPPDATA%\Muse Spark Code\acp`,
 `~/Library/Application Support/Muse Spark Code/acp` or
-`$XDG_DATA_HOME/muse-spark-code/acp`), holding feature names only, and
-it lapses in every folder when the agent starts without that feature's
+`$XDG_DATA_HOME/muse-spark-code/acp`), holding feature directories, workspace
+hashes and random revocation identifiers. Each feature has a current generation;
+each workspace grant names that generation. Concurrent processes cannot restore
+a revoked grant or overwrite a newer explicit grant. Legacy `paid-uses.json`
+maps are ignored, so their next use asks again. Storage that cannot safely
+publish a generation keeps the explicit use as Allow once and asks next time.
+The grant lapses in every folder when the agent starts without that feature's
 flag, so turning the flag on again asks again. Every paid row names its
 price, and the agent log counts each billed use. Subagents, scheduled
 prompts and Muse Voice are not offered: the agent has no flag for them

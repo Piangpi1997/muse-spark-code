@@ -306,8 +306,11 @@ hands it, the same way the extension does, and nothing else:
   `~/Library/Application Support/Muse Spark Code` on macOS and
   `$XDG_DATA_HOME/muse-spark-code` elsewhere. Muse Code conversations stay
   in the CLI's own store. The paid features you allowed always in a folder
-  are kept beside them in `acp/paid-uses.json`: each folder's hash and the
-  features' names, nothing else.
+  are kept beside them in `acp/paid-uses.json.d`: feature directories, each
+  folder's hash and random generation identifiers used to revoke old grants.
+  These records contain no prompt, file content, account or credential. Old
+  generations are inert; a stale process cannot restore revoked permission.
+  Legacy `paid-uses.json` maps are ignored and their next use asks again.
 - **The network**: the agent's own requests go to `api.meta.ai` through
   Node's `fetch`, and through a proxy only when its environment asks for
   one (`docs/acp.md`, "Networks and proxies"); VS Code's proxy and

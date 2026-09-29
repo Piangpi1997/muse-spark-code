@@ -280,14 +280,14 @@ Functions, variables, classes, enums and members declared in `@types/vscode`; th
 | --------------------- | ----- |
 | `node:buffer`         | 17    |
 | `node:child_process`  | 8     |
-| `node:crypto`         | 14    |
+| `node:crypto`         | 15    |
 | `node:fs`             | 13    |
-| `node:fs/promises`    | 15    |
+| `node:fs/promises`    | 16    |
 | `node:http`           | 1     |
 | `node:module`         | 1     |
 | `node:net`            | 1     |
 | `node:os`             | 4     |
-| `node:path`           | 44    |
+| `node:path`           | 45    |
 | `node:process`        | 1     |
 | `node:stream`         | 5     |
 | `node:string_decoder` | 1     |

@@ -1,25 +1,24 @@
-// "Allow always in this workspace" for the agent's paid uses (M58, PLAN.md
-// D48, D62), kept in the agent's data folder beside its sessions: one JSON
-// file mapping each folder's key (dataFolder.ts, a hash of its path) to the
-// features allowed always there. Feature names only, no content. The file is
-// read at every question, so a grant another agent process made or dropped
-// counts at once, and replaced whole (host/fsAtomic.ts), so a reader never
-// sees half of it; this process writes one change at a time, each on the
-// file as it then is. A file that cannot be read or parsed counts as no
-// grants when a question reads it, so the question is asked again; a change
-// fails when the file is there but cannot be read, rather than writing over
-// it, and replaces one that does not parse.
+// "Allow always" for the ACP agent (M58, D48, D62). Each feature has a
+// revocation generation, and each workspace a grant for that generation.
+// Independent grants never rewrite a shared map; a writer begun before a
+// revocation can finish later without restoring the old permission. Reads
+// sample the generation around the grant, with no cached authorization.
+// The earlier whole-file map is ignored: its grants ask again.
 
+import { randomUUID } from 'node:crypto'
 import { readFileSync } from 'node:fs'
+import { link, rm } from 'node:fs/promises'
+import path from 'node:path'
 import * as z from 'zod/mini'
 import type { PaidGrantStore } from '../acp/paid'
 import type { CoreLogger } from '../core/logging'
 import { describeStoreError, storeErrorCode } from '../host/backend/storeErrors'
 import { writeFileAtomically } from '../host/fsAtomic'
-import { PAID_FEATURES, type PaidFeature } from '../shared/constants'
+import { ATOMIC_TEMPORARY_SUFFIX, PAID_FEATURES, type PaidFeature } from '../shared/constants'
 import { workspaceKey } from './dataFolder'
 
 export interface PaidGrantFileDeps {
+  /** The legacy map's path; the authoritative records are beside it in `<file>.d`. */
   readonly file: string
   readonly log: CoreLogger
   /** Waits between rename attempts (fsAtomic); injectable so tests do not sleep. */
@@ -27,111 +26,119 @@ export interface PaidGrantFileDeps {
 }
 
 const ENOENT = 'ENOENT'
-// Folder key → feature names; a name that is not a paid feature is dropped.
-const grantsSchema = z.record(z.string(), z.array(z.string()))
-
-type Grants = Map<string, ReadonlySet<PaidFeature>>
-
-function isPaidFeature(name: string): name is PaidFeature {
-  const features: readonly string[] = PAID_FEATURES
-  return features.includes(name)
-}
+const EEXIST = 'EEXIST'
+const GENERATION_FILE = 'generation.json'
+const generationSchema = z.object({ id: z.uuid(), isInitial: z.boolean() })
+const grantSchema = z.uuid()
+type Generation = z.infer<typeof generationSchema>
 
 export function paidGrantFile(deps: PaidGrantFileDeps): PaidGrantStore {
-  let writing: Promise<void> = Promise.resolve()
+  const featureFolder = (feature: PaidFeature) => path.join(`${deps.file}.d`, feature)
+  const generationFile = (feature: PaidFeature) =>
+    path.join(featureFolder(feature), GENERATION_FILE)
+  const grantFile = (workspaceRoot: string, feature: PaidFeature, generation: string) =>
+    path.join(featureFolder(feature), `${workspaceKey(workspaceRoot)}.${generation}.json`)
 
-  /** The file's grants; `isChanging` makes a file that is there but unreadable an error. */
-  const readAll = (isChanging: boolean): Grants => {
-    let text: string
+  /** A missing record grants nothing; damaged or unreadable records fail closed. */
+  const read = <T>(file: string, schema: z.ZodMiniType<T>, isChanging = false): T | undefined => {
     try {
-      text = readFileSync(deps.file, 'utf8')
+      const text = readFileSync(file, 'utf8')
+      let raw: unknown
+      try {
+        raw = JSON.parse(text)
+      } catch {
+        throw new Error('not valid JSON')
+      }
+      const parsed = schema.safeParse(raw)
+      if (!parsed.success) {
+        throw new Error('not a valid paid-use record')
+      }
+      return parsed.data
     } catch (error: unknown) {
       if (storeErrorCode(error) === ENOENT) {
-        return new Map()
+        return undefined
       }
+      const reason = describeStoreError(error)
       if (isChanging) {
-        throw new Error(`${deps.file} could not be read: ${describeStoreError(error)}`, {
-          cause: error,
-        })
+        throw new Error(`${file} could not be read: ${reason}`, { cause: error })
       }
-      deps.log.warn(`Paid-use grants in ${deps.file} ignored: ${describeStoreError(error)}`)
-      return new Map()
+      deps.log.warn(`Paid-use grants in ${file} ignored: ${reason}`)
+      return undefined
     }
-    let raw: unknown
+  }
+
+  const write = (file: string, record: string | Generation) =>
+    writeFileAtomically(file, `${JSON.stringify(record)}\n`, { sleep: deps.sleep })
+
+  /**
+   * Captures an existing generation before any await. The first generation
+   * is published complete with a no-replace hard link, so concurrent first
+   * writers cannot overwrite one another or expose half a record. A writer
+   * that began before a revocation cannot join the replacement generation.
+   * A crash's leftover temporary record grants nothing.
+   */
+  const generationFor = async (feature: PaidFeature): Promise<Generation> => {
+    const file = generationFile(feature)
+    const existing = read(file, generationSchema, true)
+    if (existing !== undefined) {
+      return existing
+    }
+    const created: Generation = { id: randomUUID(), isInitial: true }
+    const temporary = `${file}.${created.id}${ATOMIC_TEMPORARY_SUFFIX}`
     try {
-      raw = JSON.parse(text)
-    } catch (error: unknown) {
-      deps.log.warn(`Paid-use grants in ${deps.file} ignored: ${describeStoreError(error)}`)
-      return new Map()
-    }
-    const parsed = grantsSchema.safeParse(raw)
-    if (!parsed.success) {
-      deps.log.warn(`Paid-use grants in ${deps.file} ignored: not a map of folders to features`)
-      return new Map()
-    }
-    return new Map(
-      Object.entries(parsed.data).map(([key, names]) => [
-        key,
-        new Set(names.filter(isPaidFeature)),
-      ]),
-    )
-  }
-
-  const writeAll = async (grants: Grants): Promise<void> => {
-    const kept = [...grants].filter(([, features]) => features.size > 0)
-    const content = Object.fromEntries(kept.map(([key, features]) => [key, [...features]]))
-    await writeFileAtomically(deps.file, `${JSON.stringify(content, undefined, 2)}\n`, {
-      sleep: deps.sleep,
-    })
-  }
-
-  /** Applies `hasChanged` to the file as it is once `previous` is done; writes what changed. */
-  const apply = async (
-    previous: Promise<void>,
-    hasChanged: (grants: Grants) => boolean,
-  ): Promise<void> => {
-    try {
-      await previous
-    } catch {
-      // That change already failed its own caller; this one starts afresh.
-    }
-    const grants = readAll(true)
-    if (hasChanged(grants)) {
-      await writeAll(grants)
+      await write(temporary, created)
+      try {
+        await link(temporary, file)
+        return created
+      } catch (error: unknown) {
+        if (storeErrorCode(error) !== EEXIST) {
+          throw error
+        }
+        const winner = read(file, generationSchema, true)
+        if (winner?.isInitial !== true) {
+          throw new Error('Paid-use grants were revoked while this grant was being initialized', {
+            cause: error,
+          })
+        }
+        return winner
+      }
+    } finally {
+      await rm(temporary, { force: true })
     }
   }
 
-  /** One change at a time in this process, each on the file as it is then. */
-  const change = (hasChanged: (grants: Grants) => boolean): Promise<void> => {
-    writing = apply(writing, hasChanged)
-    return writing
+  const add = async (workspaceRoot: string, feature: PaidFeature): Promise<void> => {
+    const generation = await generationFor(feature)
+    // The generation came through zod (or randomUUID) before entering a path.
+    // A stale writer cannot replace a newer generation's explicit grant.
+    await write(grantFile(workspaceRoot, feature, generation.id), generation.id)
   }
 
   return {
-    read: (workspaceRoot) => readAll(false).get(workspaceKey(workspaceRoot)) ?? new Set(),
-    add: (workspaceRoot, features) =>
-      change((grants) => {
-        const key = workspaceKey(workspaceRoot)
-        const held = grants.get(key) ?? new Set()
-        const added = features.filter((feature) => !held.has(feature))
-        if (added.length === 0) {
-          return false
-        }
-        grants.set(key, new Set([...held, ...added]))
-        return true
-      }),
-    forget: (features) =>
-      change((grants) => {
-        let isChanged = false
-        for (const [key, granted] of grants) {
-          const kept = [...granted].filter((feature) => !features.includes(feature))
-          if (kept.length === granted.size) {
-            continue
+    read: (workspaceRoot) =>
+      new Set(
+        PAID_FEATURES.filter((feature) => {
+          const file = generationFile(feature)
+          const before = read(file, generationSchema)
+          if (
+            before === undefined ||
+            read(grantFile(workspaceRoot, feature, before.id), grantSchema) !== before.id
+          ) {
+            return false
           }
-          grants.set(key, new Set(kept))
-          isChanged = true
-        }
-        return isChanged
-      }),
+          // Another process may revoke while the grant is read.
+          return read(file, generationSchema)?.id === before.id
+        }),
+      ),
+    add: async (workspaceRoot, features) => {
+      await Promise.all(features.map((feature) => add(workspaceRoot, feature)))
+    },
+    forget: async (features) => {
+      await Promise.all(
+        features.map((feature) =>
+          write(generationFile(feature), { id: randomUUID(), isInitial: false }),
+        ),
+      )
+    },
   }
 }

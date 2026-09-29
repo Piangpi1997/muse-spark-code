@@ -5,7 +5,8 @@ import path from 'node:path'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { createAcpAgent } from '../../src/acp/agent'
 import { createRuntimeBackend } from '../../src/runtime/backends'
-import { paidGrantsFile, workspaceKey } from '../../src/runtime/dataFolder'
+import { paidGrantsFile } from '../../src/runtime/dataFolder'
+import { paidGrantFile } from '../../src/runtime/paidGrants'
 import { type AcpPaidFeature, SECRET_KEYS, UI_TEXT } from '../../src/shared/constants'
 import { memorySecrets } from './helpers/fakes'
 import { fakeModelApi } from './helpers/fakeModelApi'
@@ -350,9 +351,8 @@ describe('the ACP agent on the Model API backend (M63)', () => {
       env: { XDG_DATA_HOME: first.data, LOCALAPPDATA: first.data },
       homeDir: first.data,
     })
-    expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual({
-      [workspaceKey(first.workspace)]: ['webSearch'],
-    })
+    const grants = paidGrantFile({ file, log: first.log, sleep: () => Promise.resolve() })
+    expect(grants.read(first.workspace)).toEqual(new Set(['webSearch']))
     await first.runtime.close()
 
     // Started again with the flag, the folder still asks nothing.
@@ -367,7 +367,7 @@ describe('the ACP agent on the Model API backend (M63)', () => {
     // Started without it, the grant lapses, so with it again the folder asks again.
     const without = setup(answerPaid('paid-deny'), [], true, first)
     await without.runtime.forgetUnflaggedGrants()
-    expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual({})
+    expect(grants.read(first.workspace)).toEqual(new Set())
     await without.runtime.close()
     const flaggedAgain = setup(answerPaid('paid-deny'), ['webSearch'], true, first)
     await flaggedAgain.runtime.forgetUnflaggedGrants()

@@ -3024,9 +3024,14 @@ modelApi` (the key of D61). There is no "auto", so the bill is never a
     an option it did not offer, or a failed request is Deny.
   - "Allow always in this workspace" is offered and honoured only with
     `--trust-workspace`, as the panel offers it only in a trusted workspace.
-    It is kept per folder in the agent's data folder (`acp/paid-uses.json`,
-    the folder's hash to feature names, `src/runtime/paidGrants.ts`), read
-    at every question so other agent processes' changes count, and it
+    It is kept per folder in the agent's data folder (`acp/paid-uses.json.d`,
+    per-feature generations and workspace-hash/generation grant records,
+    `src/runtime/paidGrants.ts`), read at every question so other agent
+    processes' changes count. Independent records and atomic generation
+    revocation prevent cross-process stale writes from restoring a revoked
+    grant or replacing a newer one; the earlier JSON map is ignored and asks
+    again. A filesystem that cannot safely publish the generation remembers
+    nothing and keeps the explicit use as Allow once. The grant
     lapses in every folder when the agent starts without that feature's
     flag, so turning the flag on again asks again (the panel's grant
     generation, D48, in the agent's terms).
@@ -7826,6 +7831,33 @@ joined with M57, M58 and PR #49's sign-in
   or the log; every gate green.
 
 ## 7. Gates
+
+**PR #32 final review reopened (2026-09-29, head `46ba5406`):** independent
+reviews found a pending-release/reload ownership race in the ACP session state,
+cross-process whole-file paid-grant updates that can resurrect a revoked grant,
+and an unquoted absolute staging argument in Windows npm packaging. Repair
+session ownership across awaited release, replace shared grant read/modify/write
+with authoritative independent records and revocation, and run npm packaging
+from its staging working directory with fixed relative arguments. Add realistic
+regressions and red/restored proofs; correct VSCodium/fork evidence wording to
+distinguish development-extension integration from packaged installation.
+`docs/certification/pr32-integration.md` records findings, fixes and fresh gates.
+The same review also found an unobserved prompt-completion rejection when the
+backend exits while a turn starts, and a late paid-use answer that can install
+an always grant after its prompt was cancelled. Observe completion failures from
+creation and bind permission answers to the owning active prompt, with SDK and
+real MSP/session regressions for these lifecycle siblings.
+
+**Merge-completion goal (owner authorization, 2026-09-29):** complete and
+properly merge the existing cloud-work branches and open PRs into main by the
+end of the owner's day (America/Los_Angeles). Start with PR #32's final review;
+then choose integration order from dependencies and verified readiness. Parallel
+agents may review and fix separate worktrees; one integrator owns merges and
+aggregate gates. Preserve existing work and the D49 acceptance contracts. Fix
+findings, perform the required red proofs, review and gate each final candidate,
+and inspect hosted checks on its exact SHA before merging. The date target does
+not waive a gate or make an unverified draft complete. Record remaining external
+or implementation blockers with their next safe action if the target is missed.
 
 **Pre-PR delivery, historical (2026-09-26: trigger merged at `10522223`; first manual
 branch dispatch run `36276240077` succeeded on head `ac9df5a` in all seven

@@ -142,6 +142,18 @@ interface PendingPrompt {
   isCancelled: boolean
 }
 
+type PromptOutcome = { readonly reason: StopReason } | { readonly error: unknown }
+
+interface PreparingPrompt {
+  isCancelled: boolean
+  error?: unknown
+}
+
+/** Identity of the latest load or resume; kept while earlier releases finish. */
+interface SessionClaim {
+  readonly sessionId: string
+}
+
 const CANCELLED_TERMINAL = 'cancelled'
 const FAILED_TERMINAL = 'failed'
 // Turns that finished before `sendTurn` answered with their id; a few suffice.
@@ -178,7 +190,7 @@ class AcpSession {
    * A prompt before its turn starts, while the session's skills are first
    * announced: the session is busy, and a cancel ends the prompt there.
    */
-  private preparing: { isCancelled: boolean } | undefined
+  private preparing: PreparingPrompt | undefined
   private skills: readonly SkillSummary[] = []
   private areCommandsAnnounced = false
   private effort: EffortLevel = DEFAULT_EFFORT
@@ -376,12 +388,16 @@ class AcpSession {
   }
 
   private async askPermission(event: ApprovalRequest): Promise<void> {
+    const pending = this.pending
     let choice = editAutomaticallyChoice(event, this.mode)
     if (choice === undefined) {
       let response: RequestPermissionResponse | undefined
       try {
         // The tool call the request names has gone out first.
         await this.outbox
+        if (!this.isCurrentPrompt(pending) || this.approvals.get(event.approvalId) !== event) {
+          return
+        }
         response = permissionResponse(
           await this.client.request('session/request_permission', {
             sessionId: this.sessionId,
@@ -396,7 +412,7 @@ class AcpSession {
       }
       choice = decidedChoice(response, event.availableChoices)
     }
-    if (this.isDisposed) {
+    if (!this.isCurrentPrompt(pending) || this.approvals.get(event.approvalId) !== event) {
       // Let go while the editor was asked: the answer is for a session it
       // no longer shows, which another session may now hold.
       return
@@ -423,6 +439,7 @@ class AcpSession {
   }
 
   private async ask(event: QuestionRequest): Promise<void> {
+    const pending = this.pending
     try {
       if (this.clientCapabilities.elicitation?.form == null) {
         this.send({
@@ -437,7 +454,7 @@ class AcpSession {
           requestedSchema: questionForm(event.questions),
         }
         const response = await this.client.request('elicitation/create', request)
-        if (this.isDisposed) {
+        if (!this.isCurrentPrompt(pending)) {
           return
         }
         const answers = formAnswers(event.questions, response)
@@ -449,13 +466,17 @@ class AcpSession {
           `ACP session ${this.sessionId}: question ${event.userInputId} declined: the form came back without an answer that fits each question`,
         )
       }
-      await this.session.cancelQuestions(event.userInputId)
+      if (this.isCurrentPrompt(pending)) {
+        await this.session.cancelQuestions(event.userInputId)
+      }
     } catch (error: unknown) {
       this.deps.log.warn(
         `ACP session ${this.sessionId}: question ${event.userInputId}: ${failureForLog(error)}`,
       )
       // A form that failed is declined, so the turn goes on without the answer.
-      await this.declineQuestions(event.userInputId)
+      if (this.isCurrentPrompt(pending)) {
+        await this.declineQuestions(event.userInputId)
+      }
     }
   }
 
@@ -467,6 +488,22 @@ class AcpSession {
     if (this.isDisposed) {
       throw RequestError.resourceNotFound(this.sessionId)
     }
+  }
+
+  /** A late answer belongs only to the prompt that asked, while that prompt still runs. */
+  private isCurrentPrompt(pending: PendingPrompt | undefined): boolean {
+    return !this.isDisposed && this.pending === pending && pending?.isCancelled !== true
+  }
+
+  private isCurrentPaidPrompt(
+    pending: PendingPrompt | undefined,
+    preparing: PreparingPrompt | undefined,
+  ): boolean {
+    return (
+      this.isCurrentPrompt(pending) &&
+      this.preparing === preparing &&
+      preparing?.isCancelled !== true
+    )
   }
 
   private async cancelTurn(): Promise<void> {
@@ -496,6 +533,8 @@ class AcpSession {
    * popup's answers. Anything but Allow once or Allow always is Deny.
    */
   public async askPaidUse(request: PaidUseRequest, canRemember: boolean): Promise<PaidUseAnswer> {
+    const pending = this.pending
+    const preparing = this.preparing
     // Unique for the client's lifetime: a session loaded again starts afresh.
     const toolCallId = `${ACP_PAID_TOOL_CALL_PREFIX}${randomUUID()}`
     const { title, detail } = paidUseQuestion(request)
@@ -511,6 +550,9 @@ class AcpSession {
     let answer: PaidUseAnswer = 'deny'
     try {
       await this.outbox
+      if (!this.isCurrentPaidPrompt(pending, preparing)) {
+        return 'deny'
+      }
       const params: RequestPermissionRequest = {
         sessionId: this.sessionId,
         toolCall: { toolCallId, title, status: 'pending', content },
@@ -518,7 +560,9 @@ class AcpSession {
       }
       const response = await this.client.request('session/request_permission', params)
       // A session let go while the editor was asked is billed for nothing.
-      answer = this.isDisposed ? 'deny' : paidUseAnswer(permissionResponse(response), canRemember)
+      answer = this.isCurrentPaidPrompt(pending, preparing)
+        ? paidUseAnswer(permissionResponse(response), canRemember)
+        : 'deny'
     } catch (error: unknown) {
       this.deps.log.warn(
         `ACP session ${this.sessionId}: the paid-use question failed, denying: ${failureForLog(error)}`,
@@ -654,6 +698,7 @@ class AcpSession {
   }
 
   public async prompt(blocks: readonly ContentBlock[]): Promise<StopReason> {
+    this.ensureHeld()
     if (this.pending !== undefined || this.preparing !== undefined) {
       throw RequestError.invalidRequest(undefined, UI_TEXT.acpPromptBusy)
     }
@@ -661,19 +706,33 @@ class AcpSession {
     if (!parsed.ok) {
       throw RequestError.invalidParams(undefined, parsed.reason)
     }
-    const preparing = { isCancelled: false }
+    const preparing: PreparingPrompt = { isCancelled: false }
     this.preparing = preparing
     try {
       await this.announceCommands()
     } finally {
       this.preparing = undefined
     }
+    if ('error' in preparing) {
+      throw preparing.error
+    }
     if (preparing.isCancelled) {
       await this.outbox
       return 'cancelled'
     }
-    const finished = new Promise<StopReason>((resolve, reject) => {
-      this.pending = { resolve, reject, turnId: undefined, isCancelled: false }
+    // Outcomes are values: a host exit before turn/start answers must not
+    // reject a promise that the prompt has not yet reached (Node would exit).
+    const finished = new Promise<PromptOutcome>((resolve) => {
+      this.pending = {
+        resolve: (reason) => {
+          resolve({ reason })
+        },
+        reject: (error: unknown) => {
+          resolve({ error })
+        },
+        turnId: undefined,
+        isCancelled: false,
+      }
     })
     try {
       const starting = this.session.sendTurn(this.withSkill(parsed.parts), parsed.displayText)
@@ -683,16 +742,23 @@ class AcpSession {
     } catch (error: unknown) {
       this.pending = undefined
       if (this.isDisposed) {
-        // Let go while the turn was starting: the prompt ended cancelled.
-        return 'cancelled'
+        // Let go while starting: a close cancels; a host exit fails.
+        const outcome = await finished
+        if ('error' in outcome) {
+          throw outcome.error
+        }
+        return outcome.reason
       }
       throw error
     } finally {
       this.starting = undefined
     }
-    const reason = await finished
+    const outcome = await finished
+    if ('error' in outcome) {
+      throw outcome.error
+    }
     await this.outbox
-    return reason
+    return outcome.reason
   }
 
   public async cancel(): Promise<void> {
@@ -718,7 +784,11 @@ class AcpSession {
 
   /** The backend went away: the running prompt ends with its reason. */
   public hostExited(description: string): void {
-    this.pending?.reject(RequestError.internalError(undefined, description))
+    const error = RequestError.internalError(undefined, description)
+    if (this.preparing !== undefined) {
+      this.preparing.error = error
+    }
+    this.pending?.reject(error)
     this.pending = undefined
   }
 
@@ -766,7 +836,11 @@ class AgentState {
   private readonly sessions = new Map<string, AcpSession>()
   /** Sessions being set up (`adopt`), by id: a newer load or a close lets them go too. */
   private readonly adopting = new Map<string, AcpSession>()
+  private readonly claims = new Map<string, SessionClaim>()
+  /** Remains visible even when the session is no longer available for requests. */
+  private readonly releasing = new Map<string, Promise<unknown>>()
   private readonly watchedHosts = new WeakSet<AgentHost>()
+  private readonly exitedHosts = new WeakSet<AgentHost>()
   private clientCapabilities: ClientCapabilities = {}
 
   public constructor(private readonly deps: AcpAgentDeps) {}
@@ -821,6 +895,7 @@ class AgentState {
     cwd: string,
     client: AgentContext,
     models: readonly ModelSummary[],
+    claim: SessionClaim,
     prepare: (acp: AcpSession) => Promise<void>,
   ): Promise<AcpSession> {
     // A session loaded again replaces the one held, and one still being set
@@ -831,12 +906,11 @@ class AgentState {
     const { sessionId } = session
     let acp: AcpSession | undefined
     try {
-      // Until each has stopped its turn and let go: only then does this one
-      // follow the session, whose open prompts Muse Code hands a new
-      // listener. Another load may start meanwhile, so it looks again.
-      while (this.sessions.has(sessionId) || this.adopting.has(sessionId)) {
-        await this.releaseAll(sessionId)
-      }
+      this.ensureClaim(claim, host)
+      // One shared barrier survives removal from the request maps. The
+      // latest request alone can attach after the old turn is stopped.
+      await this.releaseAll(sessionId)
+      this.ensureClaim(claim, host)
       acp = new AcpSession(
         session,
         host,
@@ -850,6 +924,7 @@ class AgentState {
       )
       this.adopting.set(sessionId, acp)
       await prepare(acp)
+      this.ensureClaim(claim, host)
       if (acp.isReleased) {
         // A newer load of this session, or a close, let it go meanwhile.
         throw RequestError.resourceNotFound(sessionId)
@@ -860,6 +935,9 @@ class AgentState {
       } else {
         await acp.release()
       }
+      if (this.claims.get(sessionId) === claim) {
+        this.claims.delete(sessionId)
+      }
       throw error
     } finally {
       if (this.adopting.get(sessionId) === acp) {
@@ -868,6 +946,18 @@ class AgentState {
     }
     this.sessions.set(sessionId, acp)
     return acp
+  }
+
+  private claimSession(sessionId: string): SessionClaim {
+    const claim = { sessionId }
+    this.claims.set(sessionId, claim)
+    return claim
+  }
+
+  private ensureClaim(claim: SessionClaim, host: AgentHost): void {
+    if (this.claims.get(claim.sessionId) !== claim || this.exitedHosts.has(host)) {
+      throw RequestError.resourceNotFound(claim.sessionId)
+    }
   }
 
   /**
@@ -881,8 +971,20 @@ class AgentState {
     )
     this.sessions.delete(sessionId)
     this.adopting.delete(sessionId)
-    await Promise.all(found.map((acp) => acp.release()))
-    return found.length > 0
+    const previous = this.releasing.get(sessionId)
+    if (previous === undefined && found.length === 0) {
+      return false
+    }
+    const released = Promise.all([previous, ...found.map((acp) => acp.release())])
+    this.releasing.set(sessionId, released)
+    try {
+      await released
+    } finally {
+      if (this.releasing.get(sessionId) === released) {
+        this.releasing.delete(sessionId)
+      }
+    }
+    return true
   }
 
   private watch(host: AgentHost): void {
@@ -891,22 +993,15 @@ class AgentState {
     }
     this.watchedHosts.add(host)
     host.onExit((exit) => {
+      this.exitedHosts.add(host)
       this.deps.log.warn(`The ${host.info.kind} backend stopped: ${exit.description}`)
-      for (const [sessionId, acp] of this.sessions) {
+      for (const [sessionId, acp] of [...this.sessions, ...this.adopting]) {
         if (acp.host !== host) {
           continue
         }
         acp.hostExited(exit.description)
-        this.sessions.delete(sessionId)
-      }
-      // One being set up is let go, so its load fails rather than hold a
-      // session on a backend that has gone; it runs no prompt to stop.
-      for (const [sessionId, acp] of this.adopting) {
-        if (acp.host !== host) {
-          continue
-        }
-        this.adopting.delete(sessionId)
-        void acp.release()
+        this.claims.delete(sessionId)
+        void this.releaseAll(sessionId)
       }
     })
   }
@@ -983,7 +1078,8 @@ class AgentState {
       ...(mcpServers !== undefined && { mcpServers }),
     })
     // The mode and model went with the start; the effort is set here.
-    const acp = await this.adopt(host, session, cwd, client, models, (started) =>
+    const claim = this.claimSession(session.sessionId)
+    const acp = await this.adopt(host, session, cwd, client, models, claim, (started) =>
       started.applyEffort(DEFAULT_EFFORT),
     )
     return { sessionId: session.sessionId, modes: acp.modes(), configOptions: acp.configOptions() }
@@ -996,26 +1092,45 @@ class AgentState {
     client: AgentContext,
     isReplayed: boolean,
   ) {
-    const { host, models } = await this.openHost(cwd)
-    const loaded = await host.resumeSession(
-      sessionId,
-      startingModel(models),
-      this.forwardedMcp(host, requestedMcp),
-    )
-    // A session resumes on the approval mode, model and effort it last had,
-    // which may differ from what the editor is told (a more permissive mode,
-    // a hidden model): they are set before anything is replayed, as the
-    // panel sets its own on a resume. Nothing is shown that does not run:
-    // if the backend refuses, the load fails instead.
-    const acp = await this.adopt(host, loaded.session, cwd, client, models, async (resumed) => {
-      await resumed.matchAdvertised()
-      if (!isReplayed) {
-        return
+    // Claimed before backend I/O: a slow older resume cannot replace a
+    // newer request, and a close can invalidate one still loading.
+    const claim = this.claimSession(sessionId)
+    try {
+      const { host, models } = await this.openHost(cwd)
+      this.ensureClaim(claim, host)
+      const loaded = await host.resumeSession(
+        sessionId,
+        startingModel(models),
+        this.forwardedMcp(host, requestedMcp),
+      )
+      // A session resumes on the approval mode, model and effort it last had,
+      // which may differ from what the editor is told (a more permissive mode,
+      // a hidden model): they are set before anything is replayed, as the
+      // panel sets its own on a resume. Nothing is shown that does not run:
+      // if the backend refuses, the load fails instead.
+      const acp = await this.adopt(
+        host,
+        loaded.session,
+        cwd,
+        client,
+        models,
+        claim,
+        async (resumed) => {
+          await resumed.matchAdvertised()
+          if (!isReplayed) {
+            return
+          }
+          await resumed.replay([...loaded.history.items])
+          resumed.sendPlan(loaded.history.todos)
+        },
+      )
+      return { modes: acp.modes(), configOptions: acp.configOptions() }
+    } catch (error: unknown) {
+      if (this.claims.get(sessionId) === claim) {
+        this.claims.delete(sessionId)
       }
-      await resumed.replay([...loaded.history.items])
-      resumed.sendPlan(loaded.history.todos)
-    })
-    return { modes: acp.modes(), configOptions: acp.configOptions() }
+      throw error
+    }
   }
 
   public async listSessions(
@@ -1055,7 +1170,9 @@ class AgentState {
 
   /** The editor closes a session: the one held, or one still being set up. */
   public async closeSession(sessionId: string): Promise<void> {
-    if (!(await this.releaseAll(sessionId))) {
+    const wasClaimed = this.claims.delete(sessionId)
+    const wasReleased = await this.releaseAll(sessionId)
+    if (!wasClaimed && !wasReleased) {
       throw RequestError.resourceNotFound(sessionId)
     }
   }

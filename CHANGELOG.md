@@ -157,6 +157,22 @@ happened, not what was planned; superseded entries are kept.
 
 ### Fixed
 
+- **ACP sessions keep the newest owner while cancellation finishes.** A
+  concurrent reload or close waits for the old turn to stop; an older delayed
+  resume cannot replace the newest request. A backend exit while a turn starts
+  fails its prompt without an unobserved rejection terminating the agent.
+- **Late ACP answers affect only their owning prompt.** Cancelled or completed
+  prompts reject late paid-use, approval and question answers; a stale paid
+  answer cannot install an Allow always grant for a later prompt.
+- **ACP paid grants survive independent process updates safely.** Per-feature
+  revocation generations and generation-specific workspace records replace the
+  shared JSON map. A stale writer cannot restore revoked permission or replace
+  a newer explicit grant. Legacy grants ask again; storage that cannot publish
+  safely remembers nothing and retains only the explicit Allow once use.
+- **ACP packaging works from Windows paths containing spaces.** npm runs in
+  the staging directory with fixed relative arguments. Host documentation now
+  distinguishes development-extension integration tests from VSIX installation.
+
 - **Signing out of Muse Code finishes, and a signed-out CLI no longer reads
   as signed in** (PLAN.md D26).
   - **The cause.** `muse logout` rewrites the CLI's `auth.json` with no

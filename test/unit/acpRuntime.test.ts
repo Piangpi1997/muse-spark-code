@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events'
-import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { PassThrough } from 'node:stream'
@@ -12,7 +12,6 @@ import { takeCredentials, withoutCredentials } from '../../src/runtime/credentia
 import {
   agentDataFolder,
   paidGrantsFile,
-  workspaceKey,
   workspaceSessionsFolder,
 } from '../../src/runtime/dataFolder'
 import { walkFiles } from '../../src/runtime/fileWalk'
@@ -23,6 +22,7 @@ import {
   keyringSecretStore,
 } from '../../src/runtime/keyStore'
 import { displayLanguage } from '../../src/runtime/locale'
+import { paidGrantFile } from '../../src/runtime/paidGrants'
 import { stderrLogger } from '../../src/runtime/stderrLog'
 import { webReadable } from '../../src/runtime/webStreams'
 import { SECRET_KEYS, UI_TEXT } from '../../src/shared/constants'
@@ -535,9 +535,9 @@ describe('createRuntimeBackend', () => {
     const home = folder()
     const env = { XDG_DATA_HOME: home, LOCALAPPDATA: home }
     const file = paidGrantsFile({ platform: process.platform, env, homeDir: home })
-    const grants = { [workspaceKey(path.resolve('work'))]: ['webSearch'] }
-    mkdirSync(path.dirname(file), { recursive: true })
-    writeFileSync(file, JSON.stringify(grants))
+    const workspace = path.resolve('work')
+    const grants = paidGrantFile({ file, log, sleep: () => Promise.resolve() })
+    await grants.add(workspace, ['webSearch'])
     const runtimeOn = (backend: ServeOptions['backend']) =>
       createRuntimeBackend({
         options: { ...DEFAULTS, backend },
@@ -555,9 +555,9 @@ describe('createRuntimeBackend', () => {
       })
     // A Muse Code agent beside it leaves the Model API agent's grants alone.
     await runtimeOn('museCode').forgetUnflaggedGrants()
-    expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual(grants)
+    expect(grants.read(workspace)).toEqual(new Set(['webSearch']))
     await runtimeOn('modelApi').forgetUnflaggedGrants()
-    expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual({})
+    expect(grants.read(workspace)).toEqual(new Set())
   })
 
   it('keeps paid-use grants in the agent’s data folder (M58)', () => {
