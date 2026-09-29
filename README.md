@@ -653,8 +653,8 @@ files, and before the next request to Meta:
   command would ask** (every permission mode but Bypass permissions), and
   never runs in Plan mode or Restricted Mode. "Always allow in this session"
   allows that check for the conversation (never the agent's own shell call
-  of the same command, which asks as it always did), but after the agent
-  edits a
+  of the same command, which asks as it always did, nor does a shell grant
+  answer for the check), but after the agent edits a
   file that decides what the command runs (`package.json`, a `Makefile`, a
   config the tools load, or a file the command names; for a command with
   quotes, variables or other shell syntax, any file) it asks again until

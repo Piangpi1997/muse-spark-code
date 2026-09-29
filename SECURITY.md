@@ -104,10 +104,18 @@ Only the latest release on the Visual Studio Marketplace receives fixes.
   but Bypass permissions), never run in Plan mode or Restricted Mode, and
   run with the shell tool's runner, job object and time cap. The agent can
   change what a check runs (a `package.json` script), which is why they
-  ask; after the agent edits a file that decides what a command runs (the
-  manifest, a `Makefile`, a tool's configuration, a file the command
-  names), "Always allow in this session" no longer answers for it until the
-  user's next message. Edited file names reach a check only as quoted
+  ask. Their "Always allow in this session" is kept apart from the shell
+  tool's rules (in both directions: a check's grant never answers for the
+  agent's own shell call of the same command, nor a shell grant for the
+  check), and after the agent edits a file that may decide what a command
+  runs (the manifest, a `Makefile`, a tool's configuration, a file the
+  command names by its path, its name, its path without extension, as a
+  dotted module or as its folder's entry file; for a command with quotes,
+  escapes, variables, substitutions, globs or operators, any file) it no
+  longer answers until the user's next message. That is judged on the
+  command the rule is keyed on (after a hook's rewrite) and again right
+  before the command runs. The shell tool's own session rules keep their
+  earlier behaviour (PLAN §3 Q10). Edited file names reach a check only as quoted
   arguments after `--`, and only files that exist in the workspace; a name
   that starts with `-` or `@` or holds a control character keeps the check
   from running, and on Windows so does one holding `"`, `&`, `|`, `<`, `>`,

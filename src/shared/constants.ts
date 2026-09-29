@@ -1455,6 +1455,11 @@ export const CODE_LOADING_FILE_PATTERNS: readonly RegExp[] = [
   /^(package\.json|\.pnpmfile\.cjs|biome\.jsonc?|deno\.jsonc?)$/i,
 ]
 export const INSTALLED_PACKAGES_DIR = 'node_modules'
+// The names (without extension) of the file a runtime runs when a command
+// names its folder: `node .` (index.js), `go run ./cmd/x` (main.go),
+// `python -m pkg` (__main__.py), a Rust module folder (mod.rs). An edit to
+// one changes what a command naming its folder runs (M68).
+export const ENTRY_FILE_STEMS: ReadonlySet<string> = new Set(['index', 'main', '__main__', 'mod'])
 // Files that decide what a check command runs besides the ones above (a
 // package script, a make target, a build tool's wrapper). A turn that edited
 // one asks again for every check, however it was allowed for the session.

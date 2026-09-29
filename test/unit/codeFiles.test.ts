@@ -61,6 +61,22 @@ describe('canChangeWhatRuns (the M68 review)', () => {
     expect(canChangeWhatRuns('src/a.ts', 'npx eslint --max-warnings=0 src/b.ts')).toBe(false)
   })
 
+  // The review of PR #54's fourth round: names a runtime resolves.
+  it('holds for a file named without its extension, as a module, or as its folder’s entry', () => {
+    expect(canChangeWhatRuns('scripts/check.js', 'node scripts/check')).toBe(true)
+    expect(canChangeWhatRuns('scripts/check.e2e.js', 'node scripts/check.e2e')).toBe(true)
+    expect(canChangeWhatRuns('scripts/check.ps1', './scripts/check')).toBe(true)
+    expect(canChangeWhatRuns('tools/check.py', 'python -m tools.check')).toBe(true)
+    expect(canChangeWhatRuns('tools/__main__.py', 'python -m tools')).toBe(true)
+    expect(canChangeWhatRuns('cmd/check/main.go', 'go run ./cmd/check')).toBe(true)
+    expect(canChangeWhatRuns('cmd/check/main.go', 'go run ./cmd/check/')).toBe(true)
+    expect(canChangeWhatRuns('index.js', 'node .')).toBe(true)
+    expect(canChangeWhatRuns('index.js', 'node ./')).toBe(true)
+    // A folder's other files are not what a runtime runs for it.
+    expect(canChangeWhatRuns('cmd/check/util.go', 'go run ./cmd/check')).toBe(false)
+    expect(canChangeWhatRuns('src/a.ts', 'node .')).toBe(false)
+  })
+
   // PR #54, fourth Codex round: a command whose words cannot be told for certain.
   it('holds for a file the command names in quotes, and for any file when its words are uncertain', () => {
     expect(canChangeWhatRuns('scripts/my check.js', 'node "scripts/my check.js"')).toBe(true)

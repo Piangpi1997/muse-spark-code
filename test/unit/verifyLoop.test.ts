@@ -379,16 +379,19 @@ async function allowThenEdit(
   files: Record<string, string>,
   check: CheckCommandSetting,
   edit: Record<string, string>,
-): Promise<Awaited<ReturnType<typeof start>>> {
+): Promise<Awaited<ReturnType<typeof start>> & { readonly t: Setup }> {
   const t = setup({ files, checks: [check], isDiagnosticsOn: false })
   const started = await start(t, 'onRequest', () => 'allow_session')
+  // Two edits of src/a.ts (the second answered by the rule when the command
+  // is plain), then `edit`.
   t.api.script(
     { calls: [editCall('1', '2')] },
+    { calls: [editCall('2', '3')] },
     { calls: [{ name: 'edit_file', arguments: JSON.stringify(edit) }] },
     { text: 'ok' },
   )
   await started.turn()
-  return started
+  return { ...started, t }
 }
 
 /** An edit of package.json, which decides what `npm run lint` runs. */
@@ -1798,9 +1801,32 @@ describe('a check that runs a script by a quoted path', () => {
       mine,
       { path: 'scripts/my check.js', find: 'check', replace: 'x' },
     )
+    // A command with quotes: any edit lapses the rule, so every round asks.
     expect(cards.map((card) => card.subject)).toEqual([
       { kind: 'shell', command: mine.command },
       { kind: 'shell', command: mine.command },
+      { kind: 'shell', command: mine.command },
+    ])
+  })
+})
+
+// The review of PR #54's fourth round: the grant answers until the named file is edited.
+describe('a check that runs a script by a plain path', () => {
+  it('lets the rule answer for other edits, and asks again once the script is edited', async () => {
+    const script: CheckCommandSetting = { name: 'script', command: 'node scripts/check' }
+    const { cards, t } = await allowThenEdit(
+      { 'src/a.ts': 'const a = 1\n', 'scripts/check.js': 'check()\n' },
+      script,
+      { path: 'scripts/check.js', find: 'check', replace: 'x' },
+    )
+    expect(cards.map((card) => card.subject)).toEqual([
+      { kind: 'shell', command: script.command },
+      { kind: 'shell', command: script.command },
+    ])
+    expect(t.io.shellCalls.map((call) => call.command)).toEqual([
+      script.command,
+      script.command,
+      script.command,
     ])
   })
 })
