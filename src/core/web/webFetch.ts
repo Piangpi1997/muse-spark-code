@@ -284,6 +284,7 @@ function requestPinned(
   targets: readonly PinnedTarget[],
   deps: WebFetchDeps,
   signal: AbortSignal,
+  ensureAllowed: () => void,
 ): Promise<PinnedResponse> {
   return new Promise((resolve, reject) => {
     const attempts: AbortController[] = []
@@ -322,11 +323,20 @@ function requestPinned(
       if (isSettled || winner !== undefined || target === undefined) {
         return
       }
+      try {
+        ensureAllowed()
+      } catch (error: unknown) {
+        settle(() => {
+          reject(error instanceof Error ? error : new Error(String(error)))
+        })
+        stopOthers(-1)
+        return
+      }
       next += 1
       const attempt = new AbortController()
       attempts.push(attempt)
       const connected = () => {
-        if (winner !== undefined) {
+        if (isSettled || winner !== undefined) {
           return
         }
         winner = index
@@ -363,6 +373,10 @@ function requestPinned(
           )
         } catch (error: unknown) {
           onFailure(error)
+          return
+        }
+        if (isSettled) {
+          response.close()
           return
         }
         connected()
@@ -762,7 +776,7 @@ async function fetchHops(
     ensureAllowed()
     const targets = await pin(current, deps, signal)
     ensureAllowed()
-    const response = await requestPinned(targets, deps, signal)
+    const response = await requestPinned(targets, deps, signal, ensureAllowed)
     try {
       if (!HTTP_REDIRECT_STATUSES.has(response.status)) {
         return await readPage(response, { requested: first.url, final: current.url }, deps, signal)

@@ -140,3 +140,33 @@ describe('describeNetworkFailure (M56, PLAN.md D43)', () => {
     )
   })
 })
+
+describe('the ACP agent’s advice (PLAN.md D62, Q66)', () => {
+  it('names the agent’s environment, never VS Code’s settings, for the same failures', async () => {
+    const refused = await refusedFetch()
+    const cases: readonly [unknown, string, string][] = [
+      [capturedCertificateFailure(), UI_TEXT.acpNetworkUntrustedCertificate, 'NODE_EXTRA_CA_CERTS'],
+      [capturedProxyFailure(407), UI_TEXT.acpNetworkProxyCredentials, 'HTTPS_PROXY'],
+      [refused, UI_TEXT.acpNetworkUnreachable, 'NODE_USE_ENV_PROXY=1'],
+    ]
+    for (const [error, advice, variable] of cases) {
+      const message = networkFailureMessage(error, 'agent')
+      expect(message).toBe(`${advice} (${describeNetworkFailure(error).detail})`)
+      expect(message).toContain(variable)
+      expect(message).not.toMatch(/http\.(proxy|systemCertificates)|VS Code/)
+    }
+  })
+
+  it('shares the proxy’s refusal, which names no setting, and leaves the extension’s advice as it was', () => {
+    expect(networkFailureMessage(capturedProxyFailure(403), 'agent')).toBe(
+      networkFailureMessage(capturedProxyFailure(403)),
+    )
+    expect(networkFailureMessage(capturedCertificateFailure(), 'vscode')).toBe(
+      networkFailureMessage(capturedCertificateFailure()),
+    )
+    expect(networkFailureMessage(capturedProxyFailure(407), 'vscode')).toContain(
+      UI_TEXT.networkProxyCredentials,
+    )
+    expect(networkFailureMessage(new Error('odd'), 'agent')).toBe('odd')
+  })
+})

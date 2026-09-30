@@ -12,8 +12,10 @@ security notes for contributors are in `PLAN.md` §9.
   pick for attachment in a trusted, indexed workspace, the contents of files you
   `@`-mention, the open file or selection when the "attach open file" setting
   is on, and the outputs of the tools the agent runs (file contents,
-  command output, Problems-panel diagnostics) are sent to Meta so the model
-  can answer. Nothing is sent until you press Send.
+  command output, Problems-panel diagnostics, and what VS Code's language
+  services answer about your code: definitions, references, symbols, hover
+  text) are sent to Meta so the model can answer. Nothing is sent until you
+  press Send.
 - **Your own shell commands (`!`).** A message that starts with `!` runs on
   your machine, and the command with what it printed goes to Meta with the
   next request, so the model knows what you ran; Muse Code also keeps it in
@@ -29,9 +31,10 @@ security notes for contributors are in `PLAN.md` §9.
   saves never passes through the extension. What the CLI sends
   beyond your messages (its system prompt, its own telemetry, if any) is
   governed by Meta's Muse Code terms, not by this extension.
-  For the Problems panel, web fetch and, when turned on, paid images, the
-  extension serves Muse Code a tool server bound to `127.0.0.1` with a
-  per-window token; nothing else on the network can reach it.
+  For the Problems panel, code intelligence, web fetch and, when turned on,
+  paid images, the extension serves Muse Code a tool server bound to
+  `127.0.0.1` with a per-window token; nothing else on the network can
+  reach it.
   A picked text file is sent as named text. Muse Code retains a readable
   `[Muse Spark Code attached text files: …]` annotation in the message's
   display text so the extension can mark its file card after History resume;
@@ -134,6 +137,15 @@ security notes for contributors are in `PLAN.md` §9.
   lists as changed, and the subjects of the last five commits (never file
   contents or diffs); in Restricted Mode git is not run and none of this is
   sent. The Muse Code CLI assembles its own context under Meta's terms.
+- **The repo map (Model API backend, off by default).** With
+  `museSpark.modelApiRepoMap` on, in a trusted workspace, the instructions
+  sent with every request of a conversation (its child tasks' included)
+  carry a map of the workspace made on its first turns: file
+  paths, and the names, kinds and lines of the definitions other files use
+  most. To make it the extension counts names in your files on your machine
+  (their text is not sent) and asks VS Code's language services where each
+  is defined. The `repo_map` tool sends the same kind of map when the model
+  calls it, setting or not.
 - **Contributor-tier models.** Meta may use traffic to the models whose id
   ends in `-contributor` to train its models. The extension asks once per
   conversation before using one, and refuses them entirely when the
@@ -295,6 +307,56 @@ fields, never raw configuration or failed-command output.
   its global storage folder.
 - The "Muse Spark" output channel logs what the extension does, with keys
   and tokens redacted. It is not written to disk by the extension.
+
+## The agent for other editors
+
+`muse-spark-code-acp` (the npm package, `docs/acp.md`) runs Muse Spark in
+editors that speak the Agent Client Protocol. It sends what the editor
+hands it, the same way the extension does, and nothing else:
+
+- **Your prompts** and what the editor attaches to them (files, excerpts,
+  images) go to Meta through the backend the editor started it with, as
+  above: the Muse Code CLI under Meta's Muse Code terms, or `api.meta.ai`
+  with your key. Which files and selections ride along is the editor's
+  choice, not the agent's.
+- **The editor's MCP servers** (their commands, arguments, environments,
+  URLs and headers) are handed to the Muse Code CLI for the session, which
+  starts or calls them; the agent logs only their names. The Model API
+  backend runs none.
+- **Muse Code's sign-in** is read as the extension reads it (above): the
+  structure of `auth.json` only, and `account/read` on a short-lived
+  `muse serve` where only the CLI can say.
+- **The key** is kept by `auth set` in the operating system's credential
+  store under "Muse Spark Code (Unofficial)" (Windows Credential Manager,
+  the macOS Keychain, the Secret Service on Linux), never in a file, and
+  is never read from an environment variable or an argument, logged, or
+  passed to Muse Code. `auth clear` deletes it. On Linux without an
+  unlocked Secret Service the Model API backend is unavailable; there is
+  no plaintext fallback.
+- **Model API conversations** are saved as in the extension, one folder
+  per workspace named by a hash of its path, under
+  `%LOCALAPPDATA%\Muse Spark Code` on Windows,
+  `~/Library/Application Support/Muse Spark Code` on macOS and
+  `$XDG_DATA_HOME/muse-spark-code` elsewhere. Muse Code conversations stay
+  in the CLI's own store. The paid features you allowed always in a folder
+  are kept beside them in `acp/paid-uses.json.d`: feature directories, each
+  folder's hash and random generation identifiers used to revoke old grants.
+  These records contain no prompt, file content, account or credential. Old
+  generations are inert; a stale process cannot restore revoked permission.
+  Legacy `paid-uses.json` maps are ignored and their next use asks again.
+- **The network**: the agent's own requests go to `api.meta.ai` through
+  Node's `fetch`, and through a proxy only when its environment asks for
+  one (`docs/acp.md`, "Networks and proxies"); VS Code's proxy and
+  certificate settings do not apply to it.
+- **The log** goes to stderr, which the editor shows or keeps as its agent
+  log; keys and tokens are redacted.
+- The folder's rules, skills and memory are read only with
+  `--trust-workspace`; contributor-tier models are listed only with
+  `--allow-contributor-models`; web search and image generation only with
+  `--web-search` or `--image-generation`, and each use only once you allow
+  it in the editor's prompt, which names the price (Allow once, Allow
+  always in this workspace with `--trust-workspace`, or Deny).
+  It has no telemetry either.
 
 ## Your choices
 

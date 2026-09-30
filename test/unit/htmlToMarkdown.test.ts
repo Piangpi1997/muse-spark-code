@@ -48,6 +48,36 @@ describe('htmlToMarkdown (M69)', () => {
     ).toBe('- one\n- two\n  - two a\n\n3. three\n4. four\n\n> quoted\n\n> again')
   })
 
+  it('keeps picture fallback images and alt text without selecting source alternatives', () => {
+    expect(
+      markdown(
+        '<p>Before <picture><source srcset="/wide.webp 2x" media="(min-width: 800px)" ' +
+          'type="image/webp"><source srcset="/small.webp" alt="Not the image">' +
+          '<img src="../diagram.png" srcset="/retina.png 2x" alt="  Diagram &amp; label  ">' +
+          '</picture> after.</p>',
+      ),
+    ).toBe('Before ![Diagram & label](https://docs.example.com/diagram.png) after.')
+    expect(markdown('<picture><source srcset="/only.webp" alt="No fallback"></picture>')).toBe('')
+  })
+
+  it('keeps image refusals and structural exclusions around picture fallback images', () => {
+    for (const image of [
+      '<img src="/empty.png" alt="  ">',
+      '<img src="/no-alt.png">',
+      '<img alt="No source">',
+      '<img src="javascript:alert(1)" alt="Unsafe">',
+      '<img src="data:image/png;base64,AAAA" alt="Bytes">',
+    ]) {
+      expect(markdown(`<p>before<picture>${image}</picture>after</p>`), image).toBe('beforeafter')
+    }
+    const picture =
+      '<picture><source srcset="/wide.webp"><img src="/x.png" alt="Omitted"></picture>'
+    for (const wrapper of ['template', 'noscript', 'audio', 'video', 'object', 'canvas']) {
+      expect(markdown(`<${wrapper}>${picture}</${wrapper}><p>kept</p>`), wrapper).toBe('kept')
+    }
+    expect(markdown(`<svg><foreignObject>${picture}</foreignObject></svg><p>kept</p>`)).toBe('kept')
+  })
+
   it('fences code blocks with their language and keeps their spacing', () => {
     expect(
       markdown(

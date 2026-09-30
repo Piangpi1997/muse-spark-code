@@ -66,8 +66,11 @@ export interface ToolIoDeps {
   readonly searchWorkerPath: string
   /** Where a failed tree kill is reported. */
   readonly log: (message: string) => void
-  /** Whether an editor holds unsaved changes to the file (VS Code's documents, D27). */
-  readonly hasUnsavedChanges: (absolutePath: string) => boolean
+  /**
+   * The files open in an editor with unsaved changes, by the paths VS
+   * Code's documents give (D27).
+   */
+  readonly unsavedFiles: () => readonly string[]
   /** Windows: the job helper's assembly, undefined where jobs are unavailable (M27). */
   readonly shellJobAssembly?: (() => Promise<string | undefined>) | undefined
 }
@@ -241,8 +244,12 @@ export function shellEnvironment(
   return clean
 }
 
-/** Hooks get Muse Code's narrow environment; provider credentials never pass. */
-function isForbiddenHookEnv(name: string): boolean {
+/**
+ * A provider credential's variable: any `*_API_KEY`, and the named ones.
+ * Hooks never get one (Muse Code's narrow environment), nor does any process
+ * the ACP agent starts but Muse Code's own (runtime/credentialVariables.ts).
+ */
+export function isCredentialVariable(name: string): boolean {
   const upper = name.toUpperCase()
   return upper.endsWith('_API_KEY') || HOOK_FORBIDDEN_ENV_NAMES.has(upper)
 }
@@ -258,7 +265,7 @@ export function hookEnvironment(
       ? [...HOOK_ENV_NAMES, ...WINDOWS_HOOK_ENV_NAMES, ...extraNames]
       : [...HOOK_ENV_NAMES, ...extraNames]
   for (const name of names) {
-    if (isForbiddenHookEnv(name)) {
+    if (isCredentialVariable(name)) {
       continue
     }
     const value = environmentValue(env, platform, name)
@@ -607,7 +614,9 @@ export function createToolIo(deps: ToolIoDeps): ToolIo {
         release,
       }
     },
-    hasUnsavedChanges: deps.hasUnsavedChanges,
+    hasUnsavedChanges: (absolutePath) =>
+      deps.unsavedFiles().some((open) => isSamePath(open, absolutePath, deps.platform)),
+    unsavedFiles: deps.unsavedFiles,
     listFiles: deps.listFiles,
     searchFiles: (job) => searchOnWorker(deps.searchWorkerPath, job, SEARCH_TIMEOUT_MS),
     realPath: canonicalPath,

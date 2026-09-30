@@ -87,6 +87,17 @@ export const VSCODE_COMMANDS = {
   openWalkthrough: 'workbench.action.openWalkthrough',
   // A folder in a window of its own (M32's new worktree).
   openFolder: 'vscode.openFolder',
+  // VS Code's language services (M67): the code intelligence tools.
+  executeDefinitionProvider: 'vscode.executeDefinitionProvider',
+  executeReferenceProvider: 'vscode.executeReferenceProvider',
+  executeHoverProvider: 'vscode.executeHoverProvider',
+  executeDocumentSymbolProvider: 'vscode.executeDocumentSymbolProvider',
+  executeWorkspaceSymbolProvider: 'vscode.executeWorkspaceSymbolProvider',
+  prepareCallHierarchy: 'vscode.prepareCallHierarchy',
+  provideIncomingCalls: 'vscode.provideIncomingCalls',
+  provideOutgoingCalls: 'vscode.provideOutgoingCalls',
+  prepareRename: 'vscode.prepareRename',
+  executeDocumentRenameProvider: 'vscode.executeDocumentRenameProvider',
 } as const
 
 // Settings (package.json `contributes.configuration`). Keys are relative to
@@ -143,10 +154,10 @@ export const HTTP_SETTINGS_SECTION = 'http'
 export const HTTP_PROXY_SETTING = 'proxy'
 export const HTTP_NO_PROXY_SETTING = 'noProxy'
 // VS Code's network settings the Diagnostics report states (M56, PLAN.md
-// D43). VS Code 1.125 and later route an extension's global `fetch` and
-// `WebSocket` through its proxy support and the operating system's
-// certificates while these allow it; the extension relies on that rather
-// than a proxy client of its own.
+// D43). VS Code routes an extension's global `fetch` (every version from the
+// 1.99 floor) and `WebSocket` (from 1.112.0) through its proxy support and
+// the operating system's certificates while these allow it; the extension
+// relies on that rather than a proxy client of its own.
 export const HTTP_POSTURE_SETTINGS = {
   proxySupport: 'proxySupport',
   proxyStrictSsl: 'proxyStrictSSL',
@@ -155,6 +166,18 @@ export const HTTP_POSTURE_SETTINGS = {
   fetchAdditionalSupport: 'fetchAdditionalSupport',
   webSocketAdditionalSupport: 'webSocketAdditionalSupport',
 } as const
+// Each global, and the global VS Code's extension host sets beside it when it
+// installs its proxy-aware version (`proxyResolver.ts`: `fetch` at 1.99.0
+// and after, `WebSocket` from 1.112.0 with `@vscode/proxy-agent` 0.39.1).
+// Diagnostics reads them to say whether this editor routes each one at all
+// (M62, PLAN.md D43): VS Code 1.101 to 1.111 have a WebSocket they do not
+// route, and an editor that does not run VS Code's extension host routes
+// neither.
+export const VSCODE_ROUTED_GLOBALS = {
+  fetch: { name: 'fetch', marker: '__vscodeOriginalFetch' },
+  webSocket: { name: 'WebSocket', marker: '__vscodeOriginalWebSocket' },
+} as const
+export const VSCODE_WEBSOCKET_ROUTED_SINCE = '1.112'
 // VS Code's defaults for the settings above, for a value it does not report.
 export const HTTP_PROXY_SUPPORT_DEFAULT = 'override'
 export const HTTP_PROXY_SUPPORT_MODES = ['off', 'on', 'fallback', 'override'] as const
@@ -173,6 +196,27 @@ export const PROXY_VARIABLE_SPELLINGS = [
   'https_proxy',
   'http_proxy',
   'all_proxy',
+] as const
+// Node's own switch for `fetch` and a proxy (the ACP agent, PLAN.md D62,
+// Q66): only "1" turns the variable on; the flag works on the command line
+// or in NODE_OPTIONS; Node 22.21 on the 22 line and every release from 24
+// have it (23 never did). Measured 2026-09-27 against a local proxy.
+export const NODE_ENV_PROXY = {
+  variable: 'NODE_USE_ENV_PROXY',
+  on: '1',
+  flag: '--use-env-proxy',
+  since: { lineMajor: 22, lineMinor: 21, allFromMajor: 24 },
+  // node:https uses the switch from 24.5; fetch already uses it from 24.0.
+  httpsLineMinor: 5,
+} as const
+export const NODE_OPTIONS_VARIABLE = 'NODE_OPTIONS'
+// The proxy variables Node reads with the switch on (HTTPS_PROXY falls back to
+// HTTP_PROXY); ALL_PROXY is not among them.
+export const NODE_PROXY_VARIABLES = [
+  'HTTPS_PROXY',
+  'https_proxy',
+  'HTTP_PROXY',
+  'http_proxy',
 ] as const
 export const NO_PROXY_VARIABLE = 'NO_PROXY'
 export const NO_PROXY_SPELLINGS = [NO_PROXY_VARIABLE, 'no_proxy'] as const
@@ -235,6 +279,9 @@ export const SETTING_DEFAULTS = {
   // Hook commands are user code outside the agent sandbox (M51). A machine
   // setting must explicitly enable them on the Model API backend.
   modelApiHooks: false,
+  // M67 (PLAN.md D49): the repo map in the Model API's system prompt. It
+  // spends tokens on every request, so it is off until the user turns it on.
+  modelApiRepoMap: false,
 } as const
 export const ARCHIVE_DAY_CHOICES = [1, 2, 7, 14, 0] as const
 // Settings a repository's `.vscode/settings.json` must never set (PLAN.md
@@ -257,6 +304,8 @@ export const MACHINE_SCOPED_SETTINGS = [
   'modelApiScheduledPrompts',
   'modelApiSubagents',
   'modelApiHooks',
+  // The repo map is billed as prompt tokens on the key (M67): the user's choice.
+  'modelApiRepoMap',
 ] as const
 
 // Muse Code SDK 1.3.0 hook process limits (PLAN.md M51).
@@ -552,6 +601,8 @@ export const FILE_EDIT_TOOLS: ReadonlySet<string> = new Set([
   'write_file',
   'edit_file',
   'apply_patch',
+  // M67: the Model API's rename, one patch across the files it changed.
+  'rename_symbol',
 ])
 export const FILE_READ_TOOLS: ReadonlySet<string> = new Set(['read_file'])
 // Muse Code's own tool families whose rows read their JSON results (M43,
@@ -617,6 +668,115 @@ export const IMAGE_PREVIEW_TOOLS: ReadonlySet<string> = new Set([
   'mcp__ide__generateImage',
   'mcp__ide__editImage',
 ])
+
+// --- Code intelligence (M67, PLAN.md D49) ---
+//
+// The tools over VS Code's language services: native on the Model API
+// backend, and on the `ide` server for Muse Code by the camel-case names
+// its other tools use (`getDiagnostics`).
+export const CODE_INTEL_TOOLS = {
+  findDefinition: 'find_definition',
+  findReferences: 'find_references',
+  workspaceSymbols: 'workspace_symbols',
+  documentSymbols: 'document_symbols',
+  hover: 'hover',
+  callHierarchy: 'call_hierarchy',
+  repoMap: 'repo_map',
+  renameSymbol: 'rename_symbol',
+} as const
+export type CodeIntelTool = keyof typeof CODE_INTEL_TOOLS
+export const IDE_CODE_INTEL_TOOLS = {
+  findDefinition: 'findDefinition',
+  findReferences: 'findReferences',
+  workspaceSymbols: 'workspaceSymbols',
+  documentSymbols: 'documentSymbols',
+  hover: 'hover',
+  callHierarchy: 'callHierarchy',
+  repoMap: 'repoMap',
+  renameSymbol: 'renameSymbol',
+} as const satisfies Readonly<Record<CodeIntelTool, string>>
+// MCP tool annotations (2025-06-18 schema): a tool that changes nothing
+// says so, and Muse Code may run it as a read (D49's rule for `ide`).
+export const MCP_ANNOTATIONS_READ_ONLY = { readOnlyHint: true } as const
+// What one answer lists at most; the rest are counted, never silently cut.
+export const CODE_INTEL_MAX_LOCATIONS = 100
+export const CODE_INTEL_MAX_SYMBOLS = 200
+export const CODE_INTEL_MAX_CALLS = 50
+// Call sites listed per caller or callee; the rest are counted.
+export const CODE_INTEL_MAX_CALL_SITES = 5
+// Other symbols of the same name a lookup by name lists, so the model can pick one.
+export const CODE_INTEL_MAX_NAME_MATCHES = 10
+// Nesting `document_symbols` shows (a class, its members, their locals).
+export const CODE_INTEL_SYMBOL_DEPTH = 3
+export const CODE_INTEL_HOVER_MAX_CHARS = 4000
+// A result's source line, as `search` shows one.
+export const CODE_INTEL_PREVIEW_MAX_CHARS = 200
+export const CODE_INTEL_NAME_MAX_CHARS = 200
+// A language server that does not answer (a stuck one, a project still
+// loading) ends the call with that reason instead of holding it.
+export const CODE_INTEL_TIMEOUT_MS = 20_000
+// A rename touching more files than this is refused (a rename that large is
+// a refactor for the user); its card names a few and counts the rest.
+export const RENAME_MAX_FILES = 200
+export const RENAME_CARD_FILES_SHOWN = 5
+// VS Code's `SymbolKind`, by value (vscode.d.ts): the words the model reads.
+export const SYMBOL_KIND_NAMES = [
+  'file',
+  'module',
+  'namespace',
+  'package',
+  'class',
+  'method',
+  'property',
+  'field',
+  'constructor',
+  'enum',
+  'interface',
+  'function',
+  'variable',
+  'constant',
+  'string',
+  'number',
+  'boolean',
+  'array',
+  'object',
+  'key',
+  'null',
+  'enum member',
+  'struct',
+  'event',
+  'operator',
+  'type parameter',
+] as const
+// The repo map (Aider's idea, over VS Code's services): files ranked by how
+// often other files use the names they define. The names are counted in
+// the files' text; where each is defined comes from workspace symbols.
+export const REPO_MAP_MAX_FILES = 1000
+export const REPO_MAP_MAX_FILE_CHARS = 131_072
+// The names looked up (the most widely used first), and how many at once.
+export const REPO_MAP_MAX_LOOKUPS = 300
+export const REPO_MAP_CONCURRENCY = 8
+// Shorter names (`i`, `id`) are too common to rank by.
+export const REPO_MAP_MIN_NAME_CHARS = 3
+export const REPO_MAP_SYMBOLS_PER_FILE = 8
+// The tool's default budget and its ceiling; the system prompt's (opt in).
+export const REPO_MAP_DEFAULT_TOKENS = 1024
+export const REPO_MAP_MAX_TOKENS = 8192
+export const REPO_MAP_PROMPT_TOKENS = 1024
+// The rough characters-per-token figure OpenAI and Meta both quote.
+export const REPO_MAP_CHARS_PER_TOKEN = 4
+// The lookups stop here, and the map says it is partial.
+export const REPO_MAP_TIME_BUDGET_MS = 10_000
+export const REPO_MAP_PROMPT_TIME_BUDGET_MS = 5000
+// The prompt's map is tried on this many turns of a session at most: a try
+// that fails or comes out empty (TypeScript's workspace symbols stay empty
+// until one of the project's files is open) is not kept, and the next turn
+// tries again.
+export const REPO_MAP_PROMPT_TRIES = 3
+// The edit tools whose failed row may still carry the patch of what they
+// wrote (M67: a rename stopped partway), so its review and rewind stay on.
+export const PARTIAL_EDIT_TOOLS: ReadonlySet<string> = new Set(['rename_symbol'])
+
 // --- Meta Model API backend (M7, PLAN.md D1 / D2 / §5.1) ---
 
 export const MODEL_API_BASE_URL = 'https://api.meta.ai/v1'
@@ -1139,6 +1299,62 @@ export const MODEL_API_OUTPUT_ENCODING = 'utf8'
 // Model API sessions persist as one JSON file each under the workspace
 // storage directory (PLAN.md D14); the version guards the shape.
 export const MODEL_API_SESSIONS_DIR = 'modelapi-sessions'
+// --- The ACP agent (M63, PLAN.md D61, D62) ---
+// The executable other editors run, and how it names itself to them.
+export const ACP_AGENT_NAME = 'muse-spark-code-acp'
+export const ACP_AGENT_TITLE = 'Muse Spark Code (Unofficial)'
+// The OS credential store's entry for the Model API key (D61); the account
+// is the name the extension's SecretStorage uses (SECRET_KEYS.modelApiKey).
+export const KEYRING_SERVICE = 'Muse Spark Code (Unofficial)'
+// Which account pays is chosen at launch, never guessed (D62).
+export const ACP_BACKENDS = ['museCode', 'modelApi'] as const
+export type AcpBackendKind = (typeof ACP_BACKENDS)[number]
+export const ACP_DEFAULT_BACKEND: AcpBackendKind = 'museCode'
+// The terminal sign-ins `initialize` offers: the ids, and the arguments the
+// client runs the agent with for each.
+export const ACP_AUTH_METHODS = {
+  museCodeLogin: { id: 'muse-code-login', args: ['login'] },
+  modelApiKey: { id: 'model-api-key', args: ['auth', 'set'] },
+} as const
+export const ACP_CONFIG_IDS = { model: 'model', effort: 'effort' } as const
+// The paid Model API features the agent can use (M63c, PLAN.md D30): each
+// only with its flag, and each use asked in the editor (M58, D48). Muse
+// Voice needs the panel's microphone, so the agent has none.
+export const ACP_PAID_FEATURES = [
+  'webSearch',
+  'imageGeneration',
+] as const satisfies readonly PaidFeature[]
+export type AcpPaidFeature = (typeof ACP_PAID_FEATURES)[number]
+export const ACP_PAID_FLAGS = {
+  webSearch: 'web-search',
+  imageGeneration: 'image-generation',
+} as const satisfies Readonly<Record<AcpPaidFeature, string>>
+// The question before each paid use (M58, PLAN.md D48): its tool call row (a
+// count appended) and its answers.
+export const ACP_PAID_TOOL_CALL_PREFIX = 'paid-use-'
+export const ACP_PAID_OPTIONS = {
+  allowOnce: 'paid-allow-once',
+  allowAlways: 'paid-allow-always',
+  deny: 'paid-deny',
+} as const
+// A tool's output as the client sees it; the full text stays with the backend.
+export const ACP_TOOL_OUTPUT_MAX_CHARS = 20_000
+export const ACP_SESSION_LIST_LIMIT = 50
+// Model API sessions of the agent, per folder, under the user's data folder:
+// the folder named per platform, and the length of the folder's hash.
+export const ACP_DATA_FOLDER = {
+  win32: 'Muse Spark Code',
+  darwin: 'Muse Spark Code',
+  other: 'muse-spark-code',
+} as const
+export const ACP_SESSIONS_SUBFOLDER = 'acp'
+export const ACP_WORKSPACE_HASH_CHARS = 16
+// "Allow always in this workspace" for paid uses (M58), every folder's in one
+// file beside the folders' own, keyed by the same hash.
+export const ACP_PAID_GRANTS_FILE = 'paid-uses.json'
+// The file walk that stands in for VS Code's file search when git cannot
+// list a folder: what it never descends into.
+export const FILE_WALK_SKIPPED: ReadonlySet<string> = new Set(['.git', 'node_modules'])
 export const STORED_SESSION_VERSION = 1
 // PLAN.md D26: a session store `.tmp` this old is a crash's leftover, not a
 // save in flight (another window on the same workspace may be writing one).
@@ -1343,6 +1559,8 @@ export const CHAT_REFERENCE_LABEL_CHARS = 60
 export const IDE_CONTEXT_TAGS = {
   selection: 'ide_selection',
   openedFile: 'ide_opened_file',
+  // A file or excerpt an ACP client attached to the prompt (M63).
+  attachedContext: 'ide_attached_context',
 } as const
 // Virtual documents holding a file's pre-edit text for the diff view.
 export const MUSE_EDIT_SCHEME = 'muse-edit'
@@ -1727,6 +1945,9 @@ export const WINDOWS_PSMODULEPATH_VARIABLE = 'PSModulePath'
  * that app.
  */
 export const DICTATION_DARWIN_APP_NAME_FLAG = '--app-name'
+// The ACP agent's `login` (PLAN.md D62) runs Muse Code's own terminal sign-in;
+// the panel signs in through MSP's device code instead (M55).
+export const MUSE_LOGIN_ARGS = ['login'] as const
 export const MUSE_LOGOUT_ARGS = ['logout'] as const
 // `Muse Spark: Open in Terminal` runs the CLI with no arguments (its TUI).
 export const MUSE_TERMINAL_NAME = 'Muse Code'
@@ -1906,6 +2127,81 @@ export const MODEL_TEXT = {
   imagePathTaken: 'something already exists at that path; choose a new file name',
   imageAccountChanged: 'the Model API key changed; ask again before buying an image',
   pathChangedAfterApproval: 'path changed after approval; request a new approval',
+  // M67 (PLAN.md D49): the code intelligence tools' answers and refusals.
+  codeIntelInstructions:
+    "For code, find_definition, find_references, workspace_symbols, document_symbols, hover, call_hierarchy and repo_map answer from VS Code's language services, as an IDE does: prefer them to search when you look for where a symbol is defined or used. rename_symbol renames a symbol everywhere it is used.",
+  codeIntelNoService:
+    'no language service answered for {path} (language {language}): VS Code has no provider of this kind for it here, or the file declares no symbols; use search and read_file instead',
+  codeIntelNothingAt:
+    "No {what} at {place}: the file's language service found none there. Not every language's service provides {what}, so use search to be sure.",
+  codeIntelUnsavedPosition:
+    '{path} has unsaved changes in an editor, so its lines differ from what read_file shows; name the symbol without a line, or ask the user to save the file',
+  codeIntelUnsavedNote:
+    "[unsaved changes in an editor: {paths}; their lines here are the editor's, not what read_file shows]",
+  codeIntelHoverHeldBack:
+    'The hover is held back: this symbol is defined only outside the workspace ({count} definitions), in files the tools do not show.',
+  codeIntelTimedOut:
+    'the language service did not answer within {seconds} seconds; it may still be loading the project, so try again shortly or use search',
+  codeIntelOutside:
+    '[left out {count} outside the workspace: library declarations or other folders]',
+  codeIntelMore: '[{count} more not shown]',
+  codeIntelNoTarget:
+    'name the symbol by path, line and column; by path, line and symbol; by path and symbol; or by symbol alone',
+  codeIntelBadPosition: 'line and column must be whole numbers from 1',
+  codeIntelBadName: '{field} must be a single line of 1 to {max} characters',
+  codeIntelNotInFile: '`{symbol}` does not occur in {place}',
+  codeIntelNoSymbolNamed:
+    "no workspace symbol is named `{symbol}`: workspace symbols come from the languages' services (TypeScript's needs one of the project's files open), so give a path, or use search",
+  codeIntelUsing: 'Using `{symbol}` at {place}.',
+  codeIntelOtherMatches: 'Also named `{symbol}`: {places}.',
+  codeIntelNoSymbolsMatch:
+    "No workspace symbols match `{query}` in the workspace. Workspace symbols come from the languages' services: TypeScript's needs one of the project's files open, and a language without a service has none.",
+  codeIntelNoCallHierarchy:
+    'nothing at {place} has a call hierarchy here; place the position on a function or method name, or the language has no call hierarchy in VS Code',
+  codeIntelCallsTo: 'Calls to {symbol} at {place}:',
+  codeIntelCallsFrom: 'Calls from {symbol} at {place}:',
+  codeIntelCallSites: 'calls at {sites}',
+  codeIntelCalledAt: 'called at {sites}',
+  codeIntelCalledOutside: 'called at {sites} of its file outside the workspace',
+  codeIntelOtherCallItems:
+    "[{count} more functions share this position (overloads or merged declarations) and were not asked; ask at each one's own declaration for its calls]",
+  codeIntelOutsideWorkspace: 'outside the workspace',
+  codeIntelNoCalls: 'No calls found.',
+  renameFileOperations:
+    'this rename would also create, move or delete files, which rename_symbol does not do; nothing was changed',
+  renameFileOperationsUnknown:
+    'VS Code did not say whether this rename also creates, moves or deletes files, so rename_symbol does not apply it; nothing was changed',
+  renameSameName: 'the new name `{name}` is already the name there; nothing to rename',
+  renameOutside:
+    'this rename would also change {count} files outside the workspace; nothing was changed',
+  renameTooMany: 'this rename would change {count} files, more than {max}; nothing was changed',
+  renameStale:
+    "the language service's rename does not match {path} as it is now (it differs between VS Code and the disk, has unsaved changes, or changed after the service last read it); nothing was changed, so call rename_symbol again shortly",
+  renameNothing: 'nothing to rename at {place}',
+  renameChanged:
+    '{path} changed after the rename was planned; nothing was changed, so call rename_symbol again',
+  renameChangedPartway:
+    '{path} changed after the rename was planned, so it was not written. The rename was written to {written} of {total} files ({paths}); the rest are unchanged, and the row can revert what was written',
+  renameDone:
+    'Renamed `{from}` to `{to}`: {edits} edits in {files} files ({paths}). Read a file again before replacing it with write_file.',
+  renamePartial:
+    'writing {path} failed: {reason}. The rename was written to {written} of {total} files ({paths}); the rest are unchanged, and the row can revert what was written',
+  renameEditsLead:
+    'The rename of `{from}` to `{to}`: {edits} edits in {files} files. This tool changed nothing: apply the diff below with your own edit tool.',
+  repoMapLead:
+    'Files ranked by how often other files use the names they define (names counted in the text, definitions from workspace symbols), each with its most used definitions:',
+  repoMapPartial: '[partial: looked up {done} of {total} names within the time budget]',
+  repoMapFilesCapped: '[ranked the first {count} of {total} files]',
+  repoMapFilesRead: '[partial: read {done} of {total} files within the time budget]',
+  repoMapNoFiles: "[partial: the workspace's files were not listed within the time budget]",
+  repoMapNoService:
+    "no language service answered workspace symbols here (TypeScript's needs one of the project's files open); use list_files and search instead",
+  repoMapEmpty:
+    'No workspace file defines a name that other files use, as far as the workspace symbols show.',
+  repoMapBudgetTooSmall:
+    "max_tokens {tokens} cannot hold the map's own lead and notes; ask again with max_tokens of at least {needed}",
+  repoMapSection: '# Repo map',
+  repoMapSectionLead: 'The workspace as this session began (repo_map gives a fresh one):',
   // The user said no in the price confirmation (M44): nothing was bought.
   imageDeclined: 'the user declined to buy this image; nothing was bought or written',
   // M45 (PLAN.md D38): the goal loop on the Model API backend, in Muse Code's

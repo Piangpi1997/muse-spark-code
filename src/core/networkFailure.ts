@@ -7,6 +7,10 @@
 // the likely fix (which VS Code setting, which store) and keeps the
 // technical detail beside it. Pure; no `vscode` import. The shapes are the
 // ones Node 24 throws (captured 2026-09-25, docs/certification/m56.md).
+//
+// The ACP agent (PLAN.md D62, Q66) runs outside VS Code, where its
+// settings do not reach: there the same failure names the variables the
+// agent's own environment takes instead. The host says which it is.
 
 import {
   CONNECTION_ERROR_CODES,
@@ -21,6 +25,12 @@ import { redactSecrets } from './redact'
 
 export type NetworkFailureKind =
   'certificate' | 'proxyCredentials' | 'proxyRefused' | 'unreachable' | 'other'
+
+/**
+ * Whose settings the advice names: VS Code's `http.*` settings in the
+ * extension, the agent's environment variables in the ACP agent.
+ */
+export type NetworkAdvice = 'vscode' | 'agent'
 
 export interface NetworkFailure {
   readonly kind: NetworkFailureKind
@@ -114,20 +124,21 @@ export function networkFailureCodes(error: unknown): string {
 }
 
 /** The advice for a kind, read when shown (PLAN.md D33); none for an unrecognised failure. */
-function adviceFor(failure: NetworkFailure): string | undefined {
+function adviceFor(failure: NetworkFailure, advice: NetworkAdvice): string | undefined {
+  const isAgent = advice === 'agent'
   switch (failure.kind) {
     case 'certificate': {
-      return UI_TEXT.networkUntrustedCertificate
+      return isAgent ? UI_TEXT.acpNetworkUntrustedCertificate : UI_TEXT.networkUntrustedCertificate
     }
     case 'proxyCredentials': {
-      return UI_TEXT.networkProxyCredentials
+      return isAgent ? UI_TEXT.acpNetworkProxyCredentials : UI_TEXT.networkProxyCredentials
     }
     case 'proxyRefused': {
       // A status code, not a quantity: never grouped or localised.
       return fill(UI_TEXT.networkProxyRefused, { status: String(failure.proxyStatus) })
     }
     case 'unreachable': {
-      return UI_TEXT.networkUnreachable
+      return isAgent ? UI_TEXT.acpNetworkUnreachable : UI_TEXT.networkUnreachable
     }
     case 'other': {
       return undefined
@@ -135,9 +146,13 @@ function adviceFor(failure: NetworkFailure): string | undefined {
   }
 }
 
-/** The advice, with the technical detail in parentheses; the detail alone when there is none. */
-export function networkFailureMessage(error: unknown): string {
+/**
+ * The advice, with the technical detail in parentheses; the detail alone
+ * when there is none. A proxy's refusal names no setting, so both hosts
+ * share it.
+ */
+export function networkFailureMessage(error: unknown, advice: NetworkAdvice = 'vscode'): string {
   const failure = describeNetworkFailure(error)
-  const advice = adviceFor(failure)
-  return advice === undefined ? failure.detail : `${advice} (${failure.detail})`
+  const text = adviceFor(failure, advice)
+  return text === undefined ? failure.detail : `${text} (${failure.detail})`
 }

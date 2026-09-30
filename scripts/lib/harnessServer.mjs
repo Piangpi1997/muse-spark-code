@@ -95,6 +95,7 @@ export const SCENARIOS = [
   'muse-workflow-map',
   'schedules',
   'schedules-narrow',
+  'code-intel',
 ]
 const CONTENT_TYPES = {
   '.html': 'text/html; charset=utf-8',

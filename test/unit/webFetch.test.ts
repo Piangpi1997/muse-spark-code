@@ -1,6 +1,6 @@
 import { Buffer } from 'node:buffer'
 import { brotliCompressSync, gzipSync } from 'node:zlib'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import type { HtmlConversion, HtmlJob } from '../../src/core/web/htmlConversion'
 import { convertHtmlJob } from '../../src/core/web/htmlToMarkdown'
 import { nat64PrefixesOf } from '../../src/core/web/publicAddress'
@@ -390,20 +390,12 @@ describe('fetchWebPage (M69)', () => {
     expect(failure(never).visibleReason).toBe(UI_TEXT.webFetchWithdrawn)
     expect(w.lookups).toEqual([])
     // Withdrawn while the name was being looked up: nothing is requested.
-    let asked = 0
-    const duringLookup = await fetchWebPage(DOCS, w.deps, stop, () => {
-      asked += 1
-      return asked < 2
-    })
+    const duringLookup = await fetchWebPage(DOCS, w.deps, stop, () => w.lookups.length === 0)
     expect(failureKind(duringLookup)).toBe('withdrawn')
     expect(w.lookups).toEqual(['docs.example.com'])
     expect(w.requests).toEqual([])
     // Withdrawn after the first hop: the redirect's hop is not looked up.
-    asked = 0
-    const beforeRedirect = await fetchWebPage(DOCS, w.deps, stop, () => {
-      asked += 1
-      return asked <= 2
-    })
+    const beforeRedirect = await fetchWebPage(DOCS, w.deps, stop, () => w.requests.length === 0)
     expect(failureKind(beforeRedirect)).toBe('withdrawn')
     expect(w.lookups).toEqual(['docs.example.com', 'docs.example.com'])
     expect(w.requests.map((target) => target.url.href)).toEqual([DOCS])
@@ -468,6 +460,64 @@ describe('fetchWebPage (M69)', () => {
     // The hanging attempt is stopped once the other connected.
     expect(w.stopped).toContain(V6)
     expect(w.stopped).not.toContain(PUBLIC)
+  })
+
+  it.each(['failure', 'delay'])(
+    'starts no fallback after permission withdrawal during the first address (%s)',
+    async (trigger) => {
+      const w = world({
+        answers: { 'docs.example.com': [[V6, PUBLIC]] },
+        replies: { [DOCS]: { headers: { 'content-type': 'text/plain' }, body: 'ok' } },
+        unreachable: trigger === 'failure' ? [V6] : [],
+        hanging: trigger === 'delay' ? [V6] : [],
+      })
+      let isAllowed = true
+      const result = await fetchWebPage(
+        DOCS,
+        {
+          ...w.deps,
+          request: (target, signal, connected) => {
+            const response = w.deps.request(target, signal, connected)
+            isAllowed = false
+            return response
+          },
+        },
+        new AbortController().signal,
+        () => isAllowed,
+      )
+      expect(failureKind(result)).toBe('withdrawn')
+      expect(w.requests.map((target) => target.address)).toEqual([V6])
+      expect(w.stopped).toEqual([V6])
+    },
+  )
+
+  it('closes a late answer from an attempt stopped by permission withdrawal', async () => {
+    const w = world({ answers: { 'docs.example.com': [[V6, PUBLIC]] } })
+    const held = Promise.withResolvers<PinnedResponse>()
+    let isAllowed = true
+    const result = await fetchWebPage(
+      DOCS,
+      {
+        ...w.deps,
+        request: () => {
+          isAllowed = false
+          return held.promise
+        },
+      },
+      new AbortController().signal,
+      () => isAllowed,
+    )
+    expect(failureKind(result)).toBe('withdrawn')
+    const close = vi.fn()
+    held.resolve({
+      status: 200,
+      headers: {},
+      body: bodyOf({}, new AbortController().signal),
+      close,
+    })
+    await vi.waitFor(() => {
+      expect(close).toHaveBeenCalledOnce()
+    })
   })
 
   it('names the host and the addresses tried when none answers, in its own words', async () => {

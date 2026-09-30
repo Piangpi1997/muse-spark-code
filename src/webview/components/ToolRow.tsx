@@ -13,6 +13,7 @@ import type { LineRange } from '../../shared/protocol'
 import { type DiffRow, type FileDiff, parsePatchDocument, parseUnifiedText } from '../diff'
 import {
   failedOutcomeText,
+  hasLandedEdits,
   isFailedStatus,
   type OutputPage,
   type ToolImageState,
@@ -329,9 +330,10 @@ function ToolRowView({
       ? fetchedSize(entry.output)
       : undefined)
   const isFailed = isFailedStatus(entry.status) || entry.status === TOOL_STATUS_INTERRUPTED
-  // A finished edit with a stored patch can be reviewed in the editor.
+  // An edit whose changes are on disk (a finished one, or a rename stopped
+  // partway, M67) can be reviewed and reverted in the editor.
   const reviewRef =
-    presentation.body === 'edit' && entry.status === 'completed' ? entry.patchRef : undefined
+    presentation.body === 'edit' && hasLandedEdits(entry) ? entry.patchRef : undefined
   usePatchPages(entry, isOpen, patchPage, onReadOutput)
   // Parsed once per page, not per render (M25); a partial document parses to nothing.
   const patchContent = patchPage?.isEof === true ? patchPage.content : undefined

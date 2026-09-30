@@ -11,7 +11,9 @@
 // page's text as served, which can include text a browser would not show,
 // and all of it reaches the model between the markers that call the page
 // untrusted (webFetch.ts). A declarative shadow root's content is served
-// page text too, written where its template is.
+// page text too, written where its template is. A picture's fallback img
+// uses the same alt and safe-source rules as any image; source alternatives
+// are not selected or fetched.
 //
 // The page is parsed by parse5, which implements the HTML standard's
 // parsing algorithm, so where each element ends (implied ends, misnested
@@ -50,7 +52,6 @@ const OMITTED = new Set([
   'canvas',
   'audio',
   'video',
-  'picture',
   'select',
   'button',
   'textarea',

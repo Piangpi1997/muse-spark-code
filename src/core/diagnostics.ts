@@ -13,6 +13,7 @@ import {
   DIAGNOSTIC_MESSAGE_MAX_CHARS,
   DIAGNOSTICS_MAX_ENTRIES,
   IDE_MCP_TOOL_DIAGNOSTICS,
+  MCP_ANNOTATIONS_READ_ONLY,
 } from '../shared/constants'
 import type { McpTool } from './mcp'
 import { resolveAgainstRoot } from './workspaceRoot'
@@ -148,6 +149,8 @@ export function diagnosticsTool(deps: DiagnosticsToolDeps): McpTool {
         },
       },
     },
+    // It only reads the Problems panel (D49's rule for tools on `ide`, M67).
+    annotations: MCP_ANNOTATIONS_READ_ONLY,
     // A request that names no workspace file rejects, so the server answers
     // with an error result the model can read.
     call: (args) => {

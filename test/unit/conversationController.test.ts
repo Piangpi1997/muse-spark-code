@@ -19,8 +19,7 @@ import {
   type PickedFile,
   type SessionMemory,
 } from '../../src/host/conversation/conversationController'
-import type { DictationListener } from '../../src/core/voice/dictation'
-import type { DictationSetup } from '../../src/host/voice/dictationHost'
+import type { DictationListener, DictationSetup } from '../../src/core/voice/dictation'
 import {
   CHOICE_STEERING_NOTE,
   MAX_DOCUMENT_BYTES,

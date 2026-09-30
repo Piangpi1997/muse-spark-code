@@ -20,6 +20,12 @@ const BUDGETS = [
   // 201.2 KiB when split out (parse5 122.7 of it), plus room.
   { path: 'dist/pageWorker.js', budgetKiB: 300 },
   { path: 'dist/webview/main.js', budgetKiB: 900 },
+  // The ACP agent (M63, PLAN.md D62), a process of its own installed once,
+  // never loaded by VS Code: the engine without the webview or the Model API
+  // backend (dist/modelApi.js, M57), plus the ACP SDK and the classic zod it
+  // imports (445.2 of 713.2 KiB when set, 257.6 of them zod's locales). The
+  // measured size plus about 15 %, rounded up to 50 KiB (D6 amendment).
+  { path: 'dist/acp.js', budgetKiB: 850 },
 ]
 
 let hasFailure = false

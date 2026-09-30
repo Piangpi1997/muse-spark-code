@@ -22,6 +22,7 @@ import {
   HIDDEN_ITEM_KINDS,
   MAX_ATTACHMENTS_PER_MESSAGE,
   MILLISECONDS_PER_SECOND,
+  PARTIAL_EDIT_TOOLS,
   type PermissionMode,
   type TaskRequest,
   TOOL_STATUS_INTERRUPTED,
@@ -378,6 +379,7 @@ const OUTPUT_FIELD = 'output'
 const TEXT_FIELD = 'text'
 const IN_PROGRESS = 'inProgress'
 const COMPLETED = 'completed'
+const FAILED = 'failed'
 const REJECTED = 'rejected'
 const CANCELLED = 'cancelled'
 const USER_MESSAGE_KIND = 'userMessage'
@@ -488,6 +490,22 @@ function dictationAnnouncement(
     return UI_TEXT.announceListening
   }
   return next === 'idle' && previous === 'listening' ? UI_TEXT.announceStoppedListening : undefined
+}
+
+/**
+ * Whether a tool row's edits are on disk: a completed row with a patch, or
+ * a rename stopped partway (M67), whose failed row carries the patch of the
+ * files it did write. Review, revert and rewind cover both.
+ */
+export function hasLandedEdits(entry: {
+  readonly status: string
+  readonly tool: string
+  readonly patchRef?: OutputRef | undefined
+}): boolean {
+  return (
+    entry.patchRef !== undefined &&
+    (entry.status === COMPLETED || (entry.status === FAILED && PARTIAL_EDIT_TOOLS.has(entry.tool)))
+  )
 }
 
 /** Whether a tool status is an outcome the row shows as a failure (not running, done or cut off). */
@@ -1094,7 +1112,9 @@ function replayChild(
  * of the same row keeps it.
  */
 function stampCompletion(entry: TranscriptEntry, seq: number): TranscriptEntry {
-  return entry.kind === 'tool' && entry.status === COMPLETED && entry.completedSeq === undefined
+  return entry.kind === 'tool' &&
+    (entry.status === COMPLETED || hasLandedEdits(entry)) &&
+    entry.completedSeq === undefined
     ? { ...entry, completedSeq: seq }
     : entry
 }
@@ -2368,7 +2388,7 @@ export function editsAfter(state: UiState, entryId: string): readonly EditRef[] 
         readonly patchRef: OutputRef
       } =>
         entry.kind === 'tool' &&
-        entry.status === COMPLETED &&
+        hasLandedEdits(entry) &&
         entry.patchRef !== undefined &&
         entry.completedSeq !== undefined &&
         entry.completedSeq > message.seq,

@@ -35,6 +35,8 @@ import {
   MODEL_API_EFFORT_OFF,
   ISO_DATE_LENGTH,
   MODEL_API_MAX_OUTPUT_TOKENS,
+  CODE_INTEL_TOOLS,
+  type CodeIntelTool,
   MODEL_API_MAX_RETRIES,
   MODEL_API_MAX_TOOL_ROUNDS,
   MAX_ENCODED_MEDIA_CHARS,
@@ -54,6 +56,7 @@ import {
   MODEL_API_VERSION,
   MODEL_API_WEB_SEARCH_TOOL,
   MODEL_TEXT,
+  REPO_MAP_PROMPT_TRIES,
   OUTPUT_REF_PREFIX,
   SCHEDULE_LIFETIME_MS,
   SCHEDULE_MAX_INTERVAL_MS,
@@ -141,6 +144,20 @@ import type { WebFetcher, WebFetchResult } from '../../web/webFetch'
 import type { WebFetchFailure } from '../../web/fetchFailure'
 import { approvalHost, checkPageUrl } from '../../web/pageUrl'
 import type { MemoryStore } from '../../memory/memoryStore'
+import type { CodeIntelDeps } from '../../codeIntel/codeIntelQuery'
+import { codeIntelToolOf } from '../../codeIntel/definitions'
+import type { LanguageServiceHost } from '../../codeIntel/languageService'
+import type { RenamePlanResult } from '../../codeIntel/rename'
+import { repoMapSection } from '../../codeIntel/repoMap'
+import {
+  applyRename,
+  isProtectedRename,
+  planRenameCall,
+  renameCardPath,
+  renameHookFiles,
+  renameRefused,
+  runCodeIntelRead,
+} from './codeIntelCalls'
 import {
   type ConfirmedModelRequest,
   MissingApiKeyError,
@@ -164,6 +181,7 @@ import type { GoalRecord } from './goalRecord'
 import { type EnvironmentFacts, instructionsFor } from './instructions'
 import {
   dispatchHooks,
+  matchingHooks,
   type HookDefinition,
   type HookDispatch,
   type HookEvent,
@@ -252,8 +270,15 @@ export interface ModelApiPaidHooks {
   /**
    * The popup before a paid use (M58, PLAN.md D48): true when it is allowed
    * always in this workspace or allowed now. `requiresAsking` asks even then.
+   * `sessionId` is the conversation the use is for (a child task's parent),
+   * so a host serving several conversations to one client, as the ACP
+   * agent's does (D62), asks in the right one.
    */
-  readonly allowsPaidUse: (request: PaidUseRequest, requiresAsking: boolean) => Promise<boolean>
+  readonly allowsPaidUse: (
+    request: PaidUseRequest,
+    requiresAsking: boolean,
+    sessionId: string,
+  ) => Promise<boolean>
   /** Whether the feature is allowed always in this workspace, asking nothing. */
   readonly isPaidUseRemembered: (feature: PaidFeature) => boolean
   /** Child token cost is a subset of the parent's conversation estimate. */
@@ -314,6 +339,13 @@ export interface ModelApiHostDeps extends ModelApiPaidHooks {
    * in the activation bundle; undefined leaves `web_fetch` out.
    */
   readonly webFetch?: WebFetcher | undefined
+  /**
+   * VS Code's language services (M67, PLAN.md D49): the code intelligence
+   * tools; undefined leaves them out.
+   */
+  readonly codeIntel?: LanguageServiceHost | undefined
+  /** `museSpark.modelApiRepoMap`, read per turn: the repo map in the system prompt (M67). */
+  readonly isRepoMapInPrompt?: (() => boolean) | undefined
 }
 
 const NO_ENVIRONMENT: EnvironmentFacts = { git: undefined }
@@ -1190,6 +1222,14 @@ export class ModelApiSession implements AgentSession {
   private readonly context: WorkspaceContext
   /** The git facts of the prompt's environment section (D15), read on the first turn. */
   private environment: EnvironmentFacts | undefined
+  /**
+   * The repo map of the prompt (M67), made on a turn that has it on and kept
+   * for the session once it has text, so the prompt's prefix stays the same.
+   * A try that failed or came out empty is not kept; a few are made, on
+   * later turns, before the session goes without.
+   */
+  private repoMapText: string | undefined
+  private repoMapTries = 0
   private readonly pendingApprovals = new Map<string, Pending<ApprovalDecision>>()
   /** Live cards for a second surface joining while a decision is still pending. */
   private readonly pendingApprovalEvents = new Map<
@@ -1245,6 +1285,8 @@ export class ModelApiSession implements AgentSession {
   private active: ActiveTurn | undefined
   /** Each file as the model last read or wrote it, for `write_file`'s check (D27). */
   private readonly seenFiles = new Map<string, string>()
+  /** Rename plans made for a call's PreToolUse hooks, which the call then writes (M67). */
+  private readonly hookRenamePlans = new WeakMap<FunctionCallItem, Promise<RenamePlanResult>>()
   /** Keeps each request within the page and encoded-media budgets (M54, PLAN.md D47). */
   private readonly budget: MediaBudget
   private mediaNoticeSent = false
@@ -1377,6 +1419,46 @@ export class ModelApiSession implements AgentSession {
     }
   }
 
+  /** The hooks that run for this session: none in a side chat or with the opt-in off (M51). */
+  private enabledHooks(): readonly HookDefinition[] {
+    return this.isSideChat || this.deps.isHooksEnabled?.() === false ? [] : this.hooks
+  }
+
+  /**
+   * A call's arguments as its PreToolUse hooks see them. A rename also names
+   * the files it would write (M67), planned only when a hook would run and
+   * the mode allows the edit at all; the call then writes that same plan
+   * (`decideAndRunRename`), so a hook never allows one set of files while
+   * another is written.
+   */
+  private async preToolInput(
+    call: FunctionCallItem,
+    signal: AbortSignal,
+  ): Promise<Readonly<Record<string, unknown>>> {
+    const args = argumentsOf(call)
+    const deps = this.codeIntelDeps()
+    if (
+      deps === undefined ||
+      signal.aborted ||
+      call.name !== CODE_INTEL_TOOLS.renameSymbol ||
+      matchingHooks(this.enabledHooks(), 'PreToolUse', toolMatcherNames(call.name)).length === 0 ||
+      this.verdictWithHook({ toolName: call.name, toolClass: 'edit' }, false) === 'deny'
+    ) {
+      return toolHookInput(args)
+    }
+    const planning = planRenameCall(call.arguments, deps)
+    this.hookRenamePlans.set(call, planning)
+    try {
+      const planned = await unlessStopped(planning, signal)
+      return toolHookInput(planned.ok ? { ...args, files: renameHookFiles(planned.plan) } : args)
+    } catch {
+      // A Stop, or the provider's own refusal: the call itself then ends with
+      // its row and its output (a Stop's included), which a throw from here,
+      // before the row exists, would leave without one (D26).
+      return toolHookInput(args)
+    }
+  }
+
   private async runHooks(
     event: HookEvent,
     turnId: string | undefined,
@@ -1386,9 +1468,8 @@ export class ModelApiSession implements AgentSession {
     shouldReplayContext = true,
     shouldShowMessages = true,
   ): Promise<HookDispatch> {
-    const enabledHooks = this.isSideChat || this.deps.isHooksEnabled?.() === false ? [] : this.hooks
     const result = await dispatchHooks(
-      enabledHooks,
+      this.enabledHooks(),
       event,
       this.hookPayload(event, turnId, fields),
       matcher,
@@ -1458,6 +1539,73 @@ export class ModelApiSession implements AgentSession {
     }
   }
 
+  /** What the code intelligence tools work with (M67); undefined without language services. */
+  private codeIntelDeps(): CodeIntelDeps | undefined {
+    const { codeIntel } = this.deps
+    return codeIntel === undefined
+      ? undefined
+      : {
+          service: codeIntel,
+          workspaceRoot: this.deps.workspaceRoot,
+          platform: this.deps.platform,
+          io: this.deps.io,
+          now: this.deps.now,
+        }
+  }
+
+  /**
+   * Whether this request's prompt carries the repo map (M67): the setting
+   * on, now, in a trusted workspace only, since the map repeats the
+   * workspace's file paths and names in every request's instructions.
+   */
+  private isRepoMapOn(): boolean {
+    return (
+      this.deps.codeIntel !== undefined &&
+      this.deps.isWorkspaceTrusted() &&
+      this.deps.isRepoMapInPrompt?.() === true
+    )
+  }
+
+  /** The map this session's prompt carries: a child's is its parent's, never one of its own. */
+  private promptRepoMap(): string | undefined {
+    if (!this.isRepoMapOn()) {
+      return undefined
+    }
+    return this.isSubagent ? this.parentSession?.promptRepoMap() : this.repoMapText
+  }
+
+  /**
+   * The repo map for the prompt (M67) while the setting is on. Never throws:
+   * a map that cannot be made is logged and the prompt goes without it. Only
+   * a map with text is kept; a try that failed or came out empty counts, and
+   * after `REPO_MAP_PROMPT_TRIES` the session stops trying. A Stop ends the
+   * lookups at once and does not count. A child task never builds one.
+   */
+  private async loadRepoMap(signal: AbortSignal): Promise<void> {
+    const deps = this.codeIntelDeps()
+    if (
+      deps === undefined ||
+      this.isSubagent ||
+      this.repoMapText !== undefined ||
+      this.repoMapTries >= REPO_MAP_PROMPT_TRIES ||
+      !this.isRepoMapOn()
+    ) {
+      return
+    }
+    try {
+      const text = await repoMapSection(deps, signal)
+      if (!signal.aborted) {
+        this.repoMapTries += 1
+        this.repoMapText = text
+      }
+    } catch (error: unknown) {
+      if (!signal.aborted) {
+        this.repoMapTries += 1
+      }
+      this.deps.log.warn(`The repo map for the prompt could not be made: ${describe(error)}`)
+    }
+  }
+
   /** Never throws: a describer that fails leaves the section at "no git". */
   private async loadEnvironment(): Promise<EnvironmentFacts> {
     try {
@@ -1498,6 +1646,7 @@ export class ModelApiSession implements AgentSession {
     const hasMemory = hasShell && this.deps.memory !== undefined
     const context = this.context.sections()
     const goalSection = goalInstructions(this.goal, this.goalSteps)
+    const repoMap = this.promptRepoMap()
     const input = this.budget.fit(this.replay.map((entry) => entry.item))
     if (this.budget.omitted && !this.mediaNoticeSent) {
       this.emit({ type: 'backendNotice', level: 'warning', text: UI_TEXT.olderMediaOmitted })
@@ -1514,9 +1663,11 @@ export class ModelApiSession implements AgentSession {
         hasShell,
         hasMemory,
         hasWebFetch: this.isWebFetchOffered(hasShell),
+        hasCodeIntel: this.deps.codeIntel !== undefined,
         today: new Date(this.deps.now()).toISOString().slice(0, ISO_DATE_LENGTH),
         environment: this.environment ?? NO_ENVIRONMENT,
         context,
+        ...(repoMap !== undefined && { repoMap }),
         // Pinned while the goal is active (M45, PLAN.md D38).
         ...(goalSection !== undefined && { goalSection }),
       }),
@@ -1576,6 +1727,7 @@ export class ModelApiSession implements AgentSession {
       hasMemory,
       // Trusted workspaces only, as the shell (M69).
       hasWebFetch: this.isWebFetchOffered(hasShell),
+      hasCodeIntel: this.deps.codeIntel !== undefined,
     })
     const ide = (this.deps.ideTools ?? []).map(
       (tool) => mcpFunctionDefinition(ideFunctionName(tool), tool).definition,
@@ -1613,7 +1765,10 @@ export class ModelApiSession implements AgentSession {
     }
     return this.isSubagent
       ? this.childTaskGrant?.isWebSearchAllowed === true
-      : await unlessStopped(this.deps.allowsPaidUse({ feature: 'webSearch' }, false), signal)
+      : await unlessStopped(
+          this.deps.allowsPaidUse({ feature: 'webSearch' }, false, this.askingSessionId),
+          signal,
+        )
   }
 
   /** The IDE tool or MCP server tool a function name is, when it is one (M50). */
@@ -2384,7 +2539,7 @@ export class ModelApiSession implements AgentSession {
       const stopNotifying = this.notifyWhileAsking(call, signal)
       try {
         const isAllowed = await unlessStopped(
-          this.deps.allowsPaidUse(question.paid, requiresUserApproval),
+          this.deps.allowsPaidUse(question.paid, requiresUserApproval, this.askingSessionId),
           signal,
         )
         return { isApproved: isAllowed, feedback: undefined }
@@ -2852,13 +3007,15 @@ export class ModelApiSession implements AgentSession {
       limit,
       seen: this.seenFiles,
     })
-    const moved = Promise.withResolvers<undefined>()
-    this.foregroundShells.set(itemId, () => {
-      moved.resolve(undefined)
+    // Not `Promise.withResolvers`: VS Code 1.99 and 1.100 run Node 20 (PLAN.md M62).
+    const moved = new Promise<undefined>((resolve) => {
+      this.foregroundShells.set(itemId, () => {
+        resolve(undefined)
+      })
     })
     let finished: ToolOutcome | undefined
     try {
-      finished = await Promise.race([running, moved.promise])
+      finished = await Promise.race([running, moved])
     } finally {
       this.foregroundShells.delete(itemId)
       turnSignal.removeEventListener('abort', onTurnStop)
@@ -3133,6 +3290,7 @@ export class ModelApiSession implements AgentSession {
           },
         },
         false,
+        this.askingSessionId,
       )
       if (!isAccepted) {
         throw new ChildTaskRefusedError('consentDeclined')
@@ -3553,6 +3711,10 @@ export class ModelApiSession implements AgentSession {
         return await this.runShellCall(itemId, call, signal)
       }
       default: {
+        const intelTool = codeIntelToolOf(call.name)
+        if (intelTool !== undefined && intelTool !== 'renameSymbol') {
+          return { outcome: await this.readCode(intelTool, call, signal) }
+        }
         return {
           outcome: await executeTool(call.name, call.arguments, {
             workspaceRoot: this.deps.workspaceRoot,
@@ -3748,6 +3910,69 @@ export class ModelApiSession implements AgentSession {
     return this.permissions.verdict(query) === 'deny' ? this.refusedByMode(call) : undefined
   }
 
+  /** A read-only code intelligence call (M67): a read in every mode, stopped by Stop. */
+  private async readCode(
+    tool: Exclude<CodeIntelTool, 'renameSymbol'>,
+    call: FunctionCallItem,
+    signal: AbortSignal,
+  ): Promise<ToolOutcome> {
+    const deps = this.codeIntelDeps()
+    return deps === undefined
+      ? toolFailure(`unknown tool ${call.name}`)
+      : await unlessStopped(runCodeIntelRead(tool, call.arguments, deps, signal), signal)
+  }
+
+  /**
+   * `rename_symbol` (M67, PLAN.md D49): the edit planned and checked before
+   * any card (a refused rename asks nothing), judged as an edit whose card
+   * names its files (protected if any file is, D24), then written file by
+   * file after every file is checked again.
+   */
+  private async decideAndRunRename(
+    itemId: string,
+    call: FunctionCallItem,
+    signal: AbortSignal,
+    shouldForceApproval: boolean,
+  ): Promise<CallResult> {
+    const deps = this.codeIntelDeps()
+    if (deps === undefined) {
+      return { outcome: toolFailure(`unknown tool ${call.name}`), isRejected: false }
+    }
+    // Plan refuses every edit: the language service is not even asked then.
+    if (this.verdictWithHook({ toolName: call.name, toolClass: 'edit' }, false) === 'deny') {
+      return this.refusedByMode(call)
+    }
+    // The plan the PreToolUse hooks were shown, if they were: it is the one
+    // written, each file checked again for its content after the card. A
+    // hook's new arguments are a new call object, planned afresh.
+    const planning = this.hookRenamePlans.get(call) ?? planRenameCall(call.arguments, deps)
+    this.hookRenamePlans.delete(call)
+    const planned = await unlessStopped(planning, signal)
+    if (!planned.ok) {
+      return { outcome: renameRefused(planned), isRejected: false }
+    }
+    const { plan } = planned
+    const refusal = await this.judge(
+      itemId,
+      call,
+      signal,
+      { toolName: call.name, toolClass: 'edit', isProtected: isProtectedRename(plan) },
+      { kind: 'fileWrite', path: renameCardPath(plan), toolName: call.name },
+      shouldForceApproval,
+    )
+    if (refusal !== undefined) {
+      return refusal
+    }
+    const outcome = await applyRename(plan, {
+      workspaceRoot: this.deps.workspaceRoot,
+      platform: this.deps.platform,
+      io: this.deps.io,
+      seen: this.seenFiles,
+      signal,
+    })
+    return { outcome, isRejected: false }
+  }
+
   /** The permission check and, when it allows, the tool itself. May throw (an abort, an I/O error). */
   private async decideAndRun(
     turnId: string,
@@ -3777,6 +4002,9 @@ export class ModelApiSession implements AgentSession {
     }
     if (toolClass === 'network') {
       return await this.decideAndRunWebFetch(itemId, call, signal, shouldForceApproval)
+    }
+    if (call.name === CODE_INTEL_TOOLS.renameSymbol) {
+      return await this.decideAndRunRename(itemId, call, signal, shouldForceApproval)
     }
     if (
       this.isSubagent &&
@@ -3954,7 +4182,11 @@ export class ModelApiSession implements AgentSession {
     const pre = await this.runHooks(
       'PreToolUse',
       turnId,
-      { tool_name: call.name, tool_input: toolHookInput(argumentsOf(call)), tool_use_id: itemId },
+      {
+        tool_name: call.name,
+        tool_input: await this.preToolInput(call, signal),
+        tool_use_id: itemId,
+      },
       toolMatcherNames(call.name),
       signal,
       false,
@@ -4494,6 +4726,7 @@ export class ModelApiSession implements AgentSession {
     // it never throws, so the user message always follows.
     await this.context.load()
     this.environment ??= await this.loadEnvironment()
+    await this.loadRepoMap(turn.abort.signal)
     // Pending background output and user shell commands precede this turn.
     this.settleNotes(turn.turnId)
     this.touch()
@@ -5022,6 +5255,11 @@ export class ModelApiSession implements AgentSession {
       this.deps.log.warn(`Scheduled prompts could not be refreshed: ${describe(error)}`)
     }
     return submission
+  }
+
+  /** The conversation a paid use is asked in (M58): a child task's is its parent's. */
+  private get askingSessionId(): string {
+    return this.parentSession?.askingSessionId ?? this.sessionId
   }
 
   // --- AgentSession ---
@@ -5810,6 +6048,9 @@ export class ModelApiSession implements AgentSession {
     // The goal as it stands goes with the fork (M45): a goal has no history
     // to cut, so a fork from an earlier turn gets today's goal too.
     target.goal = target.isSideChat ? undefined : this.goal
+    // The prompt's repo map goes with the fork (M67), so it is not made again.
+    target.repoMapText = this.repoMapText
+    target.repoMapTries = this.repoMapTries
     for (const child of this.children.values()) {
       if (!kept.has(child.parentTurnId)) {
         continue
