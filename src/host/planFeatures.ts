@@ -6,6 +6,7 @@
 import { lstat, rm } from 'node:fs/promises'
 import path from 'node:path'
 import type { PlanMarkdown } from '../core/plans/planDocument'
+import { isSamePath } from '../core/paths'
 import { type PlanDirectoryEntry, type PlanIo, PlanStore } from '../core/plans/planStore'
 import {
   ATOMIC_TEMPORARY_SUFFIX,
@@ -19,7 +20,7 @@ import { canonicalPath } from './canonicalPath'
 import { choosePlan } from './commands/planCommands'
 import type { PickOne } from './commands/pickItem'
 import type { PlanFiles } from './conversation/conversationController'
-import { createFileExclusively, isNameTaken } from './fsAtomic'
+import { createFileExclusively, isNameTaken, isOwnedFile } from './fsAtomic'
 import type { Logger } from './logger'
 
 // A save's hidden stage: `.<name>.<uuid><suffix>` (createFileExclusively).
@@ -101,6 +102,12 @@ export function createPlanIo(options: PlanIoOptions): PlanIo {
         try {
           const stats = await lstat(stage)
           if (stats.isFile() && options.now() - stats.mtimeMs > PLAN_STAGE_STALE_MS) {
+            if (
+              !isSamePath(await canonicalPath(stage), stage, process.platform) ||
+              !(await isOwnedFile(stage, stats))
+            ) {
+              continue
+            }
             await rm(stage, { force: true })
             removed += 1
           }

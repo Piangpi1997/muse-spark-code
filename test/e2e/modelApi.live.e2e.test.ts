@@ -31,7 +31,7 @@
 // Measured 2026-09-27 on 0.9.0: a full run of the 18 cases is 59 requests
 // (58 HTTP, one WebSocket) and about $0.033, of which $0.02 is the two
 // images; a case alone is well under a tenth of a cent, case12 aside.
-// case19 (M79, 2026-09-28) drives the panel's own ConversationController
+// case20 (M79; case19 in its 2026-09-28 standalone capture) drives the panel's own ConversationController
 // over the rig's backend: 10 requests, about $0.0008.
 
 import { execFile } from 'node:child_process'
@@ -46,6 +46,11 @@ import { crc32, deflateSync } from 'node:zlib'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import * as z from 'zod/mini'
 import type { AgentSession, TurnPart } from '../../src/core/agent/agentBackend'
+import type {
+  CodeLocation,
+  CodeSymbol,
+  LanguageServiceHost,
+} from '../../src/core/codeIntel/languageService'
 import { APPROVAL_CHOICE_IDS } from '../../src/core/backends/modelapi/permissions'
 import { parseLoopPrompt } from '../../src/core/backends/modelapi/schedules'
 import { type Usage, usageSchema } from '../../src/core/backends/modelapi/schemas'
@@ -574,6 +579,8 @@ interface RigOptions {
   readonly mcpJobPath?: string | undefined
   /** `museSpark.modelApiPromptCacheRetention`; the setting's default when absent. */
   readonly promptCacheRetention?: PromptCacheRetention
+  /** Language services for the code intelligence tools (M67), over the rig's workspace. */
+  readonly codeIntel?: (workspace: string) => LanguageServiceHost
 }
 
 interface Rig {
@@ -665,7 +672,7 @@ async function openRig(options: RigOptions): Promise<Rig> {
     env: () => process.env,
     // Built by `npm run build:dev`; no case here needs the search tool.
     searchWorkerPath: path.join(process.cwd(), 'dist', SEARCH_WORKER_FILE),
-    hasUnsavedChanges: () => false,
+    unsavedFiles: () => [],
     log: (message) => {
       log.warn(message)
     },
@@ -769,6 +776,7 @@ async function openRig(options: RigOptions): Promise<Rig> {
         ),
       // Built by `npm run build:dev`, as in activate (M57).
       bundlePath: path.join(process.cwd(), 'dist', MODEL_API_BUNDLE_FILE),
+      codeIntel: options.codeIntel?.(workspace),
       ideTools: [
         diagnosticsTool({
           getDiagnostics: () => [],
@@ -1149,6 +1157,93 @@ function wordPdf(word: string): Uint8Array {
   document += `xref\n0 ${size}\n0000000000 65535 f \n${starts.join('')}`
   document += `trailer\n<< /Size ${size} /Root 1 0 R >>\nstartxref\n${String(xref)}\n%%EOF\n`
   return new TextEncoder().encode(document)
+}
+
+// The code intelligence case's workspace (M67): one function, used twice.
+const CODE_FILES = {
+  'src/greet.ts': 'export function greet(name: string): string {\n  return `Hello, ${name}`\n}\n',
+  'src/main.ts':
+    "import { greet } from './greet'\n\nexport const pair = [greet('Ada'), greet('Grace')]\n",
+}
+const CODE_SYMBOL = 'greet'
+const CODE_SYMBOL_USE = /\bgreet\b/g
+// VS Code's `SymbolKind.Function`.
+const FUNCTION_KIND = 11
+// A quote that opens or closes a string literal in the case's files.
+const QUOTE = /['"`]/g
+
+/** Whether a column of a line is inside a string literal (the module path `'./greet'`). */
+function isInString(line: string, column: number): boolean {
+  return (line.slice(0, column).match(QUOTE)?.length ?? 0) % 2 === 1
+}
+
+/**
+ * VS Code's language services live only in the extension host. A stand-in
+ * that knows the case's one symbol answers from the files' text, so the
+ * model uses the code intelligence tools against Meta's real API; the real
+ * services' answers are the integration test's (test/integration).
+ */
+function textLanguageService(workspace: string): LanguageServiceHost {
+  const fileOf = (name: string) => path.join(workspace, ...name.split('/'))
+  const uses = (): CodeLocation[] =>
+    Object.keys(CODE_FILES).flatMap((name) =>
+      readFileSync(fileOf(name), 'utf8')
+        .split('\n')
+        .flatMap((line, index) => {
+          const found: CodeLocation[] = []
+          for (const match of line.matchAll(CODE_SYMBOL_USE)) {
+            // As TypeScript's service does, a name inside a string is no use of it.
+            if (!isInString(line, match.index)) {
+              found.push({
+                path: fileOf(name),
+                range: {
+                  start: { line: index, character: match.index },
+                  end: { line: index, character: match.index + CODE_SYMBOL.length },
+                },
+              })
+            }
+          }
+          return found
+        }),
+    )
+  const declaration = (): readonly CodeSymbol[] =>
+    uses()
+      .slice(0, 1)
+      .map((location) => ({
+        name: CODE_SYMBOL,
+        kind: FUNCTION_KIND,
+        detail: undefined,
+        container: undefined,
+        location,
+        selection: location.range,
+        children: [],
+      }))
+  return {
+    open: (file) =>
+      Promise.resolve({
+        languageId: 'typescript',
+        text: readFileSync(file, 'utf8'),
+        isDirty: false,
+      }),
+    definitions: () => Promise.resolve(declaration().map((symbol) => symbol.location)),
+    references: () => Promise.resolve(uses()),
+    hover: () => Promise.resolve(['function greet(name: string): string']),
+    documentSymbols: (file) =>
+      Promise.resolve(file === fileOf('src/greet.ts') ? declaration() : []),
+    workspaceSymbols: (query) => Promise.resolve(CODE_SYMBOL.includes(query) ? declaration() : []),
+    callHierarchy: () => Promise.resolve(undefined),
+    libraryRoots: () => [],
+    rename: (_file, _at, newName) =>
+      Promise.resolve({
+        files: Object.keys(CODE_FILES).map((name) => ({
+          path: fileOf(name),
+          edits: uses()
+            .filter((use) => use.path === fileOf(name))
+            .map((use) => ({ range: use.range, newText: newName })),
+        })),
+        fileOperations: 'none',
+      }),
+  }
 }
 
 function isPngFile(file: string): boolean {
@@ -1971,9 +2066,9 @@ describe.skipIf(!IS_ENABLED)('live Model API sweep (MUSE_LIVE_MODEL_API=1)', () 
   )
 
   it(
-    'case19 plans as files: through the panel’s controller, a Plan-mode reply saved byte for byte, then implemented in a fresh conversation with its steps as the todo list (M79)',
+    'case20 plans as files: through the panel’s controller, a Plan-mode reply saved byte for byte, then implemented in a fresh conversation with its steps as the todo list (M79)',
     async () => {
-      const name = 'case19 plans'
+      const name = 'case20 plans'
       await runCase(name, {}, async (rig) => {
         const panel = livePanel(rig)
         const { controller } = panel
@@ -2034,6 +2129,31 @@ describe.skipIf(!IS_ENABLED)('live Model API sweep (MUSE_LIVE_MODEL_API=1)', () 
         } finally {
           controller.dispose()
         }
+      })
+    },
+    CASE_MS,
+  )
+
+  it(
+    'case19 code intelligence: references, then a rename through its card (M67, D49)',
+    async () => {
+      const options = { files: CODE_FILES, codeIntel: textLanguageService }
+      await runCase('case19 code intelligence', options, async (rig) => {
+        const driver = await startSession(rig, 'promptUnmatched')
+        const finished = await send(
+          driver,
+          'Use the find_references tool on the symbol greet to see where it is used, then use the rename_symbol tool to rename greet to welcome. Reply with how many references find_references listed.',
+        )
+        expectCompleted(finished)
+        const rows = toolsRun(finished)
+        expect(rows).toContain('find_references:completed')
+        expect(rows).toContain('rename_symbol:completed')
+        expect(driver.watch.approved).toContain('rename_symbol')
+        // The import names the new function; its module path is unchanged.
+        expect(readFileSync(path.join(rig.workspace, 'src', 'main.ts'), 'utf8')).toBe(
+          "import { welcome } from './greet'\n\nexport const pair = [welcome('Ada'), welcome('Grace')]\n",
+        )
+        rig.notes.push(`rows ${rows.join(' ')}`, `reply ${JSON.stringify(finished.reply)}`)
       })
     },
     CASE_MS,

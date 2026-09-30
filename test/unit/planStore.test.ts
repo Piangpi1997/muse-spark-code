@@ -5,7 +5,7 @@
 // reads, and the Plans… listing.
 
 import { randomUUID } from 'node:crypto'
-import { realpathSync } from 'node:fs'
+import { realpathSync, renameSync, symlinkSync, writeFileSync } from 'node:fs'
 import {
   mkdir,
   mkdtemp,
@@ -19,7 +19,7 @@ import {
 } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { PLAN_MARKDOWN } from '../../src/core/plans/planMarkdown'
 import { PlanStore } from '../../src/core/plans/planStore'
 import { createPlanIo } from '../../src/host/planFeatures'
@@ -31,6 +31,7 @@ import {
   UI_TEXT,
 } from '../../src/shared/constants'
 import { fill } from '../../src/shared/l10n/text'
+import { fakePlanFiles } from './helpers/fakePlanFiles'
 import { FakeLogOutputChannel } from './helpers/fakes'
 import { CAPTURED_PLAN_BODY } from './helpers/m79Capture'
 import { pdfFixture } from './helpers/pdfFixture'
@@ -144,6 +145,53 @@ describe('PlanStore on the file system (M79)', () => {
     expect(new Set(left)).toEqual(new Set([path.basename(fresh), '2026-09-01-old.md']))
   })
 
+  it.each(['file replacement', 'folder swap', 'in-place refresh'] as const)(
+    'preserves a nonowned or refreshed stale-stage candidate after %s during cleanup',
+    async (change) => {
+      const { root } = await workspace(`cleanup-${change.replaceAll(' ', '-')}`)
+      const folder = plansFolder(root)
+      const elsewhere = path.join(paths.root, `cleanup-outside-${change.replaceAll(' ', '-')}`)
+      await mkdir(folder, { recursive: true })
+      await mkdir(elsewhere)
+      const name = `.a.md.${randomUUID()}${ATOMIC_TEMPORARY_SUFFIX}`
+      const stage = path.join(folder, name)
+      await writeFile(stage, 'owned old stage')
+      const now = Date.now()
+      const old = new Date(now - PLAN_STAGE_STALE_MS - 1000)
+      await utimes(stage, old, old)
+      const io = createPlanIo({
+        log,
+        now: () => {
+          if (change === 'file replacement') {
+            renameSync(stage, `${stage}-moved`)
+            writeFileSync(stage, 'replacement bytes')
+          } else if (change === 'folder swap') {
+            renameSync(folder, `${folder}-moved`)
+            writeFileSync(path.join(elsewhere, name), 'foreign bytes')
+            symlinkSync(elsewhere, folder, 'junction')
+          } else {
+            writeFileSync(stage, 'refreshed bytes')
+          }
+          return now
+        },
+      })
+      await io.removeStaleStages(folder)
+      const survivor = change === 'folder swap' ? path.join(elsewhere, name) : stage
+      const contents = {
+        'in-place refresh': 'refreshed bytes',
+        'file replacement': 'replacement bytes',
+        'folder swap': 'foreign bytes',
+      }[change]
+      await expect(readFile(survivor, 'utf8')).resolves.toBe(contents)
+      if (change === 'in-place refresh') {
+        return
+      }
+      const original =
+        change === 'file replacement' ? `${stage}-moved` : path.join(`${folder}-moved`, name)
+      await expect(readFile(original, 'utf8')).resolves.toBe('owned old stage')
+    },
+  )
+
   it('refuses a plans folder swapped for a junction after it was checked, writing nothing there', async () => {
     const { root } = await workspace('swapped')
     const folder = plansFolder(root)
@@ -210,18 +258,6 @@ describe('PlanStore on the file system (M79)', () => {
     expect([second.fileName, third.fileName]).toEqual(['2026-09-27-x-2.md', '2026-09-27-x-3.md'])
     expect(await readFile(first, 'utf8')).toBe('the user’s own plan')
     expect(await readFile(path.join(plansFolder(root), second.fileName), 'utf8')).toBe('new')
-  })
-
-  it('gives up after the last numeric suffix rather than replace a file', async () => {
-    const { root, store } = await workspace('full')
-    await mkdir(plansFolder(root), { recursive: true })
-    for (let attempt = 1; attempt <= PLAN_NAME_ATTEMPTS; attempt += 1) {
-      const suffix = attempt === 1 ? '' : `-${String(attempt)}`
-      await writeFile(path.join(plansFolder(root), `2026-09-27-x${suffix}.md`), 'taken')
-    }
-    await expect(store.save({ title: 'x', savedAt: NOON, text: 'new' })).rejects.toThrow(
-      UI_TEXT.planNamesTaken,
-    )
   })
 
   it('refuses a plans folder that leads elsewhere through a junction', async () => {
@@ -320,5 +356,67 @@ describe('PlanStore on the file system (M79)', () => {
     expect(await store.has('2026-09-27-new.md')).toBe(true)
     expect(await store.has('folder.md')).toBe(false)
     expect(await store.has('2026-09-27-none.md')).toBe(false)
+  })
+})
+
+// The complete suffix range is a store contract. Repeating the real
+// stage/write/fsync/link/cleanup cycle 100 times exceeds the unchanged
+// 5-second test timeout on hosted Windows; the cases above keep the real
+// no-clobber publication, confinement and cleanup checks.
+describe('PlanStore numeric suffix boundary (M79)', () => {
+  const names = Array.from({ length: PLAN_NAME_ATTEMPTS }, (_, index) => {
+    const attempt = index + 1
+    const suffix = attempt === 1 ? '' : `-${String(attempt)}`
+    return `/ws/.agents/plans/2026-09-27-x${suffix}.md`
+  })
+  const lastName = `/ws/.agents/plans/2026-09-27-x-${String(PLAN_NAME_ATTEMPTS)}.md`
+  const content = { title: 'x', savedAt: NOON, text: 'new' }
+  const lastSaved = {
+    fileName: path.posix.basename(lastName),
+    relativePath: lastName.slice('/ws/'.length),
+  }
+
+  it('gives up after the last numeric suffix rather than replace a file', async () => {
+    const { files, plans } = fakePlanFiles()
+    for (const name of names) {
+      files.set(name, 'taken')
+    }
+    const before = new Map(files)
+    const attempted = vi.spyOn(files, 'has')
+    await expect(plans.save(content)).rejects.toThrow(UI_TEXT.planNamesTaken)
+    expect(attempted.mock.calls.map(([name]) => name)).toEqual(names)
+    expect(files).toEqual(before)
+  })
+
+  it('uses the last numeric suffix when it is the only free name', async () => {
+    const { files, plans } = fakePlanFiles()
+    const occupied = names.slice(0, -1)
+    for (const name of occupied) {
+      files.set(name, 'taken')
+    }
+    const before = new Map(files)
+    const attempted = vi.spyOn(files, 'has')
+    await expect(plans.save(content)).resolves.toEqual({
+      ...lastSaved,
+      isNew: true,
+    })
+    expect(attempted.mock.calls.map(([name]) => name)).toEqual(names)
+    expect(files).toEqual(new Map([...before, [lastName, content.text]]))
+  })
+
+  it('reuses the same plan saved under the last numeric suffix', async () => {
+    const { files, plans } = fakePlanFiles()
+    for (const name of names) {
+      files.set(name, name === lastName ? content.text : 'taken')
+    }
+    const before = new Map(files)
+    await expect(plans.find(content)).resolves.toEqual(lastSaved)
+    const attempted = vi.spyOn(files, 'has')
+    await expect(plans.save(content)).resolves.toEqual({
+      ...lastSaved,
+      isNew: false,
+    })
+    expect(attempted.mock.calls.map(([name]) => name)).toEqual(names)
+    expect(files).toEqual(before)
   })
 })

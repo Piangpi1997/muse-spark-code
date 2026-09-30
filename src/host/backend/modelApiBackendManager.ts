@@ -12,14 +12,17 @@
 
 import { createHash } from 'node:crypto'
 import type { EnvironmentFacts } from '../../core/backends/modelapi/instructions'
+import type { NetworkAdvice } from '../../core/networkFailure'
 import type { McpPoolSnapshot, McpToolSource } from '../../core/backends/modelapi/mcp/pool'
 import type { ModelApiHost, ModelApiPaidHooks } from '../../core/backends/modelapi/ModelApiHost'
 import type { SessionStore } from '../../core/backends/modelapi/sessionStore'
 import type { ScheduleStore } from '../../shared/schedule'
 import type { ToolIo } from '../../core/backends/modelapi/tools'
 import type { ContextIo } from '../../core/context/contextFiles'
+import type { LanguageServiceHost } from '../../core/codeIntel/languageService'
 import type { McpTool } from '../../core/mcp'
 import type { MemoryStore } from '../../core/memory/memoryStore'
+import type { WebFetcher } from '../../core/web/webFetch'
 import { MODEL_API_BASE_URL, type PromptCacheRetention, UI_TEXT } from '../../shared/constants'
 import { uiLocale } from '../../shared/l10n/text'
 import { forgetFile, requireFile } from '../lazyBundle'
@@ -59,12 +62,22 @@ export interface ModelApiBackendManagerDeps extends ModelApiPaidHooks {
     | undefined
   /** The extension's own IDE tools, offered in process (M50). */
   readonly ideTools?: readonly McpTool[] | undefined
+  /** The window's web fetch, run in this bundle for the backend's `web_fetch` (M69). */
+  readonly webFetch?: WebFetcher | undefined
+  /** VS Code's language services, for the code intelligence tools (M67). */
+  readonly codeIntel?: LanguageServiceHost | undefined
+  /** `museSpark.modelApiRepoMap`, read per turn (M67). */
+  readonly isRepoMapInPrompt?: (() => boolean) | undefined
   /** Muse Code's memory, shared with the Memory view (M49, PLAN.md D41). */
   readonly memory: MemoryStore | undefined
   /** The Model API bundle, dist/modelApi.js beside the running bundle (M57, PLAN.md D6). */
   readonly bundlePath: string
   /** How the bundle is loaded: Node's `require` unless a test hands in the source module. */
   readonly loadBundle?: ((file: string) => unknown) | undefined
+  /** Whose settings a failed request names: VS Code's unless the ACP agent says its own (Q66). */
+  readonly networkAdvice?: NetworkAdvice | undefined
+  /** What a missing or damaged bundle says: reinstall the extension, unless the agent says its own. */
+  readonly bundleUnavailable?: (() => string) | undefined
 }
 
 const MANAGER_DISPOSED = 'The Model API backend was stopped while it was starting'
@@ -104,6 +117,11 @@ export class ModelApiBackendManager {
     return host
   }
 
+  /** The sentence a missing or damaged bundle shows, read when shown (D33). */
+  private unavailableText(): string {
+    return this.deps.bundleUnavailable?.() ?? UI_TEXT.modelApiBundleUnavailable
+  }
+
   /** The bundle's factory; a missing or corrupt file is logged and refused in the user's words. */
   private loadBundle(): ModelApiBundle {
     const { bundlePath, loadBundle = requireFile } = this.deps
@@ -114,14 +132,14 @@ export class ModelApiBackendManager {
       this.deps.log.error(
         `The Model API bundle ${bundlePath} could not be loaded: ${describe(error)}`,
       )
-      throw new Error(UI_TEXT.modelApiBundleUnavailable, { cause: error })
+      throw new Error(this.unavailableText(), { cause: error })
     }
     if (!isModelApiBundle(loaded)) {
       this.deps.log.error(`${bundlePath} does not export the Model API backend's factory`)
       if (this.deps.loadBundle === undefined) {
         forgetFile(bundlePath)
       }
-      throw new Error(UI_TEXT.modelApiBundleUnavailable)
+      throw new Error(this.unavailableText())
     }
     return loaded
   }
@@ -143,6 +161,7 @@ export class ModelApiBackendManager {
         now: this.deps.now,
         random: this.deps.random,
         log: this.deps.log,
+        ...(this.deps.networkAdvice !== undefined && { networkAdvice: this.deps.networkAdvice }),
       },
       host: {
         workspaceRoot,
@@ -165,6 +184,9 @@ export class ModelApiBackendManager {
         notePaidUse: this.deps.notePaidUse,
         promptCacheRetention: this.deps.promptCacheRetention,
         ideTools: this.deps.ideTools,
+        webFetch: this.deps.webFetch,
+        codeIntel: this.deps.codeIntel,
+        isRepoMapInPrompt: this.deps.isRepoMapInPrompt,
         allowsPaidUse: this.deps.allowsPaidUse,
         isPaidUseRemembered: this.deps.isPaidUseRemembered,
         noteSubagentUsage: this.deps.noteSubagentUsage,

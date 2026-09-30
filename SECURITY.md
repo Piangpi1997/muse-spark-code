@@ -57,7 +57,7 @@ Only the latest release on the Visual Studio Marketplace receives fixes.
   a trusted workspace. The settings that choose what runs and what is
   billed (`museBinaryPath`, `environmentVariables`, `backend`,
   `shellSandbox`, `sandboxNetwork`, `initialPermissionMode`,
-  `allowDangerouslySkipPermissions`, `modelApiHooks`,
+  `allowDangerouslySkipPermissions`, `modelApiHooks`, `modelApiRepoMap`,
   `modelApiPromptCacheRetention` and the five paid `modelApi*` features)
   are machine-scoped in every workspace, trusted or not: a repository's
   `.vscode/settings.json` cannot point the extension at its own executable. In a remote window a dev container
@@ -74,6 +74,33 @@ Only the latest release on the Visual Studio Marketplace receives fixes.
   rewind apply the same check before writing a file back. Windows names
   that would be reinterpreted are refused: alternate data streams
   (`a.txt:x`), device names (`NUL`, `COM1`), trailing dots or spaces.
+- **Code intelligence (both backends).** The file a code intelligence tool
+  is asked about is confined the same way, and a result VS Code's language
+  service returns from outside the workspace (a library's declarations,
+  another folder, a file reached through a link that leaves it) is left out
+  and counted: its location and lines are never shown. A hover shows what a
+  declaration says, so a hover for a symbol defined only outside the
+  workspace is held back, unless the definition is in a language's library
+  inside VS Code's installation or an extension's folder. What a language
+  service infers still flows through: a symbol defined in the workspace
+  whose type comes from a file outside it (an import from `../`, a
+  `tsconfig` path) shows that type in its hover and its diagnostics, as it
+  does in the editor. `rename_symbol` refuses a rename that would touch any
+  file outside the workspace, create, move or delete files (seen through
+  the edit's internal entry list, since VS Code's API lists only text
+  edits; an edit that does not show its list is refused too), or change a
+  file with unsaved changes, one VS Code holds differently from the disk,
+  or one whose edit ranges no longer cover the old name (an edit the service
+  made from an older version of the file). On the Model API backend it asks
+  as an edit (a protected write when any of its files is one, named first on
+  the card), and every file is confined and read again after the card and
+  once more right before its own write, so nothing a formatter, a hook or
+  the user wrote meanwhile is overwritten; a Stop before the first write
+  writes nothing. On the Muse Code backend the `ide` server's tools change
+  nothing and declare themselves read-only; its rename returns the edits for
+  Muse Code's own edit tool, and Muse Code 1.4.0 asks its own card for these
+  tools in its on-request mode. The repo map reaches the Model API's
+  instructions only in a trusted workspace.
 - **Protected writes (Model API backend).** Writing `.git/**`, `.husky/**`,
   `.vscode/**`, `.idea/**`, `.devcontainer/**`, `.github/workflows/**`,
   `.agents/**`, `.muse/**`, `AGENTS.md`, `CLAUDE.md`, `.envrc` or
@@ -137,13 +164,45 @@ Only the latest release on the Visual Studio Marketplace receives fixes.
   Windows each stdio server runs in a job object that ends its descendants.
   Remote error bodies and authentication challenges stay out of tool
   errors and logs.
+- **Web fetch (both backends).** The model can ask the extension to read a
+  page. Only `https://` URLs without credentials, of at most 2,048
+  characters, on public internet addresses: the name is resolved on the
+  user's machine and refused when any answer is loopback, private,
+  link-local, carrier-grade NAT, a cloud metadata address or reserved
+  (IPv4 carried inside IPv6, the network's own NAT64 prefix included, is
+  judged as IPv4; while that prefix cannot be learned, no IPv6 answer is
+  used), and local or reserved names, with any trailing dots, are
+  refused before any lookup. The connection is pinned to the checked
+  addresses, raced as RFC 8305 says (TLS verifies the name); through a proxy
+  the tunnel is asked for that address, and only an answer that arrived over
+  TLS is read. Same-host redirects are checked and pinned again (at most
+  five); another host's is handed back to the model, which asks again.
+  5 MiB after decompression, 30 seconds, text types only. HTML is parsed
+  by parse5 on a worker thread per page (at most two at once) stopped at
+  10 seconds or 512 MiB, its output bounded; only what is never page text
+  by structure (scripts, styles, template content, `<noscript>`, embedded
+  media, form controls, SVG, MathML) is left out, and no rendering is
+  emulated, so the model gets the page's text as served, including text a
+  stylesheet, a hiding attribute or a script would keep off screen, all of
+  it marked untrusted; XHTML is refused. On the Model API backend each host asks in
+  every mode but Bypass (Plan refuses), and a `PermissionRequest` hook's
+  allow does not replace that card; on Muse Code the `ide` tool is listed
+  only in a trusted workspace without `sandboxNetwork: restricted`, carries
+  `readOnlyHint: false, openWorldHint: true`, the extension asks before
+  every call, and a call Muse Code stops waiting for (its request closed, or
+  `notifications/cancelled`) fetches nothing more. The page reaches the model
+  between random markers as untrusted content; only short tokens of what a
+  server sent appear outside them. Residual risk: an intranet service on a
+  public address looks like the internet, the URL itself can carry
+  conversation text to the host the user approved, and the proxy decides
+  for the address, not the name (PLAN.md §9).
 - **Webview.** `default-src 'none'`, a per-load script nonce, no remote
   origins, no inline styles; every message between the host and the
   webview is validated against a schema.
 - **Prompt injection.** Workspace files, rules and skills reach the model by
-  design in a trusted workspace; the permission modes and the approval
-  cards are the control, and the Diagnostics report and the log show what
-  ran.
+  design in a trusted workspace, and so do fetched web pages (marked as
+  untrusted content); the permission modes and the approval cards are the
+  control, and the Diagnostics report and the log show what ran.
 - **Release pipeline.** A tag is released only when it names the manifest
   version and points at a commit on `main`; the Marketplace PAT reaches one
   step, after an install that runs no package scripts; no checkout keeps a

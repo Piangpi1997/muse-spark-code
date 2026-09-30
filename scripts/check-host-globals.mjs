@@ -16,6 +16,7 @@ const HOST_BUNDLES = [
   'dist/modelApi.js',
   'dist/planMarkdown.js',
   'dist/searchWorker.js',
+  'dist/pageWorker.js',
 ]
 const NAVIGATOR = /\bnavigator\b/g
 

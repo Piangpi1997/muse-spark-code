@@ -173,12 +173,21 @@ export interface SessionMcpHttpServer {
   readonly headers: Readonly<Record<string, string>>
 }
 
+/** A per-session MCP server the host starts as a child process (MSP `stdio`; M63c, an ACP client's). */
+export interface SessionMcpStdioServer {
+  readonly command: string
+  readonly args: readonly string[]
+  readonly env: Readonly<Record<string, string>>
+}
+
+export type SessionMcpServer = SessionMcpHttpServer | SessionMcpStdioServer
+
 export interface StartSessionOptions {
   readonly workspaceRoot: string
   readonly modelId: string
   readonly approvalMode: string
-  /** IDE tool servers, keyed by name; needs the `sessionMcp` grant. */
-  readonly mcpServers?: Readonly<Record<string, SessionMcpHttpServer>>
+  /** Tool servers, keyed by name: the IDE's, or an ACP client's; needs the `sessionMcp` grant. */
+  readonly mcpServers?: Readonly<Record<string, SessionMcpServer>>
   /** A new conversation kept in a side-chat surface (M53). */
   readonly sideChat?: boolean
 }
@@ -427,7 +436,7 @@ export interface AgentHost {
   resumeSession(
     sessionId: string,
     modelId: string,
-    mcpServers?: Readonly<Record<string, SessionMcpHttpServer>>,
+    mcpServers?: Readonly<Record<string, SessionMcpServer>>,
     options?: { readonly requireSideChat?: boolean },
   ): Promise<LoadedSession>
   forkSession(

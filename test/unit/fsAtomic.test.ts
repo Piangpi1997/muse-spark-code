@@ -2,12 +2,15 @@ import {
   chmod,
   lstat,
   mkdtemp,
+  mkdir,
   readdir,
   readFile,
+  realpath,
   rename,
   rm,
   stat,
   symlink,
+  writeFile,
 } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
@@ -19,7 +22,7 @@ import { removeFolder } from './helpers/temporaryFolders'
 const paths = { root: '' }
 
 beforeAll(async () => {
-  paths.root = await mkdtemp(path.join(tmpdir(), 'muse-atomic-'))
+  paths.root = await realpath(await mkdtemp(path.join(tmpdir(), 'muse-atomic-')))
 })
 
 afterAll(() => removeFolder(paths.root))
@@ -203,6 +206,80 @@ describe('createFileExclusively (M79)', () => {
     })
     await expect(refused).rejects.toThrow(/now leads elsewhere/)
     expect(await readdir(elsewhere)).toEqual(['keep.md'])
+  })
+
+  it('refuses a swapped ancestor before mkdir can create an outside plans folder', async () => {
+    const workspace = path.join(paths.root, 'pre-mkdir-workspace')
+    const ancestor = path.join(workspace, '.agents')
+    const elsewhere = path.join(paths.root, 'pre-mkdir-elsewhere')
+    await mkdir(ancestor, { recursive: true })
+    await mkdir(elsewhere)
+    const checkedDirectory = path.join(ancestor, 'plans')
+    await rename(ancestor, `${ancestor}-moved`)
+    await symlink(elsewhere, ancestor, 'junction')
+    await expect(
+      createFileExclusively(path.join(checkedDirectory, 'plan.md'), 'plan bytes', {
+        mode: 0o666,
+        warn: quiet,
+        expectedDirectory: checkedDirectory,
+      }),
+    ).rejects.toThrow(/now leads elsewhere/)
+    expect(await readdir(elsewhere)).toEqual([])
+    await expect(lstat(path.join(elsewhere, 'plans'))).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
+  it('refuses a replaced stage before publication and leaves the replacement untouched', async () => {
+    const folder = path.join(paths.root, 'replaced-stage')
+    const target = path.join(folder, 'plan.md')
+    let stageName = ''
+    await expect(
+      createFileExclusively(target, 'approved bytes', {
+        mode: 0o666,
+        warn: quiet,
+        staged: async () => {
+          const [name] = await readdir(folder)
+          if (name === undefined) {
+            throw new Error('expected the owned stage')
+          }
+          stageName = name
+          const stage = path.join(folder, name)
+          await rename(stage, `${stage}-moved`)
+          await writeFile(stage, 'replacement bytes')
+        },
+      }),
+    ).rejects.toThrow()
+    await expect(readFile(path.join(folder, stageName), 'utf8')).resolves.toBe('replacement bytes')
+    await expect(readFile(path.join(folder, `${stageName}-moved`), 'utf8')).resolves.toBe(
+      'approved bytes',
+    )
+    await expect(lstat(target)).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
+  it('preserves both a moved owned stage and a same-name foreign file behind a swapped folder', async () => {
+    const folder = path.join(paths.root, 'cleanup-owned-folder')
+    const moved = `${folder}-moved`
+    const elsewhere = path.join(paths.root, 'cleanup-foreign-folder')
+    await mkdir(elsewhere)
+    let stageName = ''
+    await expect(
+      createFileExclusively(path.join(folder, 'plan.md'), 'approved bytes', {
+        mode: 0o666,
+        warn: quiet,
+        staged: async () => {
+          const [name] = await readdir(folder)
+          if (name === undefined) {
+            throw new Error('expected the owned stage')
+          }
+          stageName = name
+          await rename(folder, moved)
+          await writeFile(path.join(elsewhere, name), 'foreign bytes')
+          await symlink(elsewhere, folder, 'junction')
+        },
+      }),
+    ).rejects.toThrow(/now leads elsewhere/)
+    await expect(readFile(path.join(elsewhere, stageName), 'utf8')).resolves.toBe('foreign bytes')
+    await expect(readFile(path.join(moved, stageName), 'utf8')).resolves.toBe('approved bytes')
+    await expect(lstat(path.join(elsewhere, 'plan.md'))).rejects.toMatchObject({ code: 'ENOENT' })
   })
 
   it('removes a held stage again, and says whether the file was published when it cannot', async () => {

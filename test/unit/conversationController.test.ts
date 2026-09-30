@@ -23,8 +23,7 @@ import {
   type PickedFile,
   type SessionMemory,
 } from '../../src/host/conversation/conversationController'
-import type { DictationListener } from '../../src/core/voice/dictation'
-import type { DictationSetup } from '../../src/host/voice/dictationHost'
+import type { DictationListener, DictationSetup } from '../../src/core/voice/dictation'
 import {
   CHOICE_STEERING_NOTE,
   MAX_DOCUMENT_BYTES,
@@ -38,7 +37,7 @@ import { fill } from '../../src/shared/l10n/text'
 import { textFileDisplay } from '../../src/shared/textFileDisplay'
 import { planFileName, planLogName, planSlug, planTitle } from '../../src/core/plans/planDocument'
 import { briefText, PLAN_MARKDOWN } from '../../src/core/plans/planMarkdown'
-import type { ConversationMessage } from '../../src/host/views/webviewSetup'
+import type { ConversationMessage } from '../../src/host/views/chatSurface'
 import { logLines } from './helpers/logText'
 import type { HostAction, LineRange, MentionItem } from '../../src/shared/protocol'
 import type { SubscriptionUsage } from '../../src/shared/usage'
@@ -7679,6 +7678,57 @@ describe('ConversationController: plans as files (M79)', () => {
     ])
     expect(t.surface.posted.some((message) => message.type === 'briefSubmitted')).toBe(false)
   })
+
+  it.each([
+    { phase: 'lookup', boundary: 'trust' },
+    { phase: 'lookup', boundary: 'disposal' },
+    { phase: 'confirmation', boundary: 'trust' },
+    { phase: 'confirmation', boundary: 'disposal' },
+  ])(
+    'refuses a plan write after $boundary changes during held $phase',
+    async ({ phase, boundary }) => {
+      const t = await museCodePlan()
+      const entered = Promise.withResolvers<undefined>()
+      const released = Promise.withResolvers<undefined>()
+      const originalFind = t.planFiles.plans.find.bind(t.planFiles.plans)
+      const finding = vi.spyOn(t.planFiles.plans, 'find')
+      if (phase === 'lookup') {
+        finding.mockImplementationOnce(async (content) => {
+          entered.resolve(undefined)
+          await released.promise
+          return await originalFind(content)
+        })
+      } else {
+        t.planFiles.confirmSave.mockImplementationOnce(async () => {
+          entered.resolve(undefined)
+          await released.promise
+          return true
+        })
+      }
+      const trusted = vi.spyOn(t.deps, 'isWorkspaceTrusted')
+      const implementing = t.controller.handle(IMPLEMENT)
+      try {
+        await entered.promise
+        if (boundary === 'trust') {
+          trusted.mockReturnValue(false)
+        } else {
+          t.controller.dispose()
+        }
+        released.resolve(undefined)
+        await implementing
+        expect(t.planFiles.files.size).toBe(0)
+        expect(t.server.requestsFor('session/start')).toHaveLength(1)
+        expect(t.surface.posted.some((message) => message.type === 'briefSubmitted')).toBe(false)
+        if (boundary === 'trust') {
+          expect(notices(t).at(-1)?.text).toBe(UI_TEXT.planRestricted)
+        }
+      } finally {
+        released.resolve(undefined)
+        finding.mockRestore()
+        trusted.mockRestore()
+      }
+    },
+  )
 
   it('drops a second press while a plan action runs, and says so: one file, one fresh conversation', async () => {
     const t = await museCodePlan()

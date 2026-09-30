@@ -9,6 +9,9 @@ import {
 import { handleMcpMessage } from '../../src/core/mcp'
 import { DIAGNOSTIC_MESSAGE_MAX_CHARS, DIAGNOSTICS_MAX_ENTRIES } from '../../src/shared/constants'
 
+// A caller that never stops waiting (M69 gave tools a signal).
+const NOT_STOPPED = new AbortController().signal
+
 const entries: readonly WorkspaceDiagnostic[] = [
   {
     path: 'src/b.ts',
@@ -109,7 +112,7 @@ describe('diagnosticsTool (Windows root)', () => {
   })
 
   it('reports only the files under the root, by relative path (D27)', async () => {
-    const everything = await tool.call({})
+    const everything = await tool.call({}, NOT_STOPPED)
     expect(everything.split('\n')).toEqual([
       'a.ts:1:1: error: root a',
       'packages/nested/x.ts:1:1: error: nested folder',
@@ -120,30 +123,36 @@ describe('diagnosticsTool (Windows root)', () => {
   })
 
   it('scopes to the one file a URI or path names, exactly, case-insensitively on Windows', async () => {
-    expect(await tool.call({ uri: 'file:///c%3A/ws/src/a.ts' })).toBe('src/a.ts:1:1: error: in a')
-    expect(await tool.call({ uri: 'file:///C:/ws/src/a.ts' })).toBe('src/a.ts:1:1: error: in a')
-    expect(await tool.call({ uri: String.raw`C:\ws\src\b.ts` })).toBe('src/b.ts:1:1: error: in b')
-    expect(await tool.call({ uri: 'SRC/B.TS' })).toBe('src/b.ts:1:1: error: in b')
-    expect(await tool.call({ uri: './src/../a.ts' })).toBe('a.ts:1:1: error: root a')
-    expect(await tool.call({ uri: 'src/none.ts' })).toBe('No diagnostics.')
+    expect(await tool.call({ uri: 'file:///c%3A/ws/src/a.ts' }, NOT_STOPPED)).toBe(
+      'src/a.ts:1:1: error: in a',
+    )
+    expect(await tool.call({ uri: 'file:///C:/ws/src/a.ts' }, NOT_STOPPED)).toBe(
+      'src/a.ts:1:1: error: in a',
+    )
+    expect(await tool.call({ uri: String.raw`C:\ws\src\b.ts` }, NOT_STOPPED)).toBe(
+      'src/b.ts:1:1: error: in b',
+    )
+    expect(await tool.call({ uri: 'SRC/B.TS' }, NOT_STOPPED)).toBe('src/b.ts:1:1: error: in b')
+    expect(await tool.call({ uri: './src/../a.ts' }, NOT_STOPPED)).toBe('a.ts:1:1: error: root a')
+    expect(await tool.call({ uri: 'src/none.ts' }, NOT_STOPPED)).toBe('No diagnostics.')
   })
 
   it('never matches by suffix: a.ts is the root file, not src/a.ts', async () => {
-    expect(await tool.call({ uri: 'a.ts' })).toBe('a.ts:1:1: error: root a')
-    expect(await tool.call({ uri: 'x.ts' })).toBe('No diagnostics.')
+    expect(await tool.call({ uri: 'a.ts' }, NOT_STOPPED)).toBe('a.ts:1:1: error: root a')
+    expect(await tool.call({ uri: 'x.ts' }, NOT_STOPPED)).toBe('No diagnostics.')
   })
 
   it('answers a malformed URI or a file outside the workspace with an error', async () => {
-    await expect(tool.call({ uri: 'file:///c:/ws/%E0%A4%A.ts' })).rejects.toThrow(
+    await expect(tool.call({ uri: 'file:///c:/ws/%E0%A4%A.ts' }, NOT_STOPPED)).rejects.toThrow(
       'file:///c:/ws/%E0%A4%A.ts cannot be read as a file URI or path: URI malformed',
     )
-    await expect(tool.call({ uri: String.raw`C:\second\src\a.ts` })).rejects.toThrow(
+    await expect(tool.call({ uri: String.raw`C:\second\src\a.ts` }, NOT_STOPPED)).rejects.toThrow(
       String.raw`C:\second\src\a.ts does not name a file in the workspace`,
     )
-    await expect(tool.call({ uri: '../second/src/a.ts' })).rejects.toThrow(
+    await expect(tool.call({ uri: '../second/src/a.ts' }, NOT_STOPPED)).rejects.toThrow(
       'does not name a file in the workspace',
     )
-    await expect(tool.call({ uri: 'file://server/share/a.ts' })).rejects.toThrow(
+    await expect(tool.call({ uri: 'file://server/share/a.ts' }, NOT_STOPPED)).rejects.toThrow(
       'does not name a file in the workspace',
     )
   })
@@ -176,8 +185,8 @@ describe('diagnosticsTool (POSIX root and no root)', () => {
       platform: 'linux',
       relativeInRoot: relativeIn('/home/me/ws', 'linux'),
     })
-    expect(await tool.call({ uri: 'src/a.ts' })).toBe('src/a.ts:1:1: error: lower')
-    expect(await tool.call({ uri: 'file:///home/me/ws/src/A.ts' })).toBe(
+    expect(await tool.call({ uri: 'src/a.ts' }, NOT_STOPPED)).toBe('src/a.ts:1:1: error: lower')
+    expect(await tool.call({ uri: 'file:///home/me/ws/src/A.ts' }, NOT_STOPPED)).toBe(
       'src/A.ts:1:1: error: upper',
     )
   })
@@ -189,8 +198,8 @@ describe('diagnosticsTool (POSIX root and no root)', () => {
       platform: 'linux',
       relativeInRoot: () => undefined,
     })
-    expect(await tool.call({})).toBe('No diagnostics.')
-    await expect(tool.call({ uri: 'src/a.ts' })).rejects.toThrow(
+    expect(await tool.call({}, NOT_STOPPED)).toBe('No diagnostics.')
+    await expect(tool.call({ uri: 'src/a.ts' }, NOT_STOPPED)).rejects.toThrow(
       'src/a.ts cannot be read as a file URI or path: src/a.ts is relative and no folder is open',
     )
   })

@@ -13,8 +13,8 @@
 // Windows' hidden and system attributes are not copied.
 
 import { randomUUID } from 'node:crypto'
-import { constants } from 'node:fs'
-import { access, link, mkdir, open, realpath, rename, rm, stat } from 'node:fs/promises'
+import { constants, type Stats } from 'node:fs'
+import { access, link, lstat, mkdir, open, realpath, rename, rm, stat } from 'node:fs/promises'
 import path from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { isSamePath } from '../core/paths'
@@ -54,6 +54,28 @@ function errorCode(error: unknown): string | undefined {
   return typeof error === 'object' && error !== null && 'code' in error
     ? String(error.code)
     : undefined
+}
+
+/** A cleanup may remove only the same regular file, with captured metadata when supplied. */
+export async function isOwnedFile(
+  target: string,
+  identity: Pick<Stats, 'dev' | 'ino'> & Partial<Pick<Stats, 'mtimeMs' | 'size'>>,
+): Promise<boolean> {
+  try {
+    const current = await lstat(target)
+    return (
+      current.isFile() &&
+      current.dev === identity.dev &&
+      current.ino === identity.ino &&
+      (identity.mtimeMs === undefined || current.mtimeMs === identity.mtimeMs) &&
+      (identity.size === undefined || current.size === identity.size)
+    )
+  } catch (error: unknown) {
+    if (errorCode(error) === 'ENOENT') {
+      return false
+    }
+    throw error
+  }
 }
 
 /** Renames `from` over `to`, again while Windows reports the target busy. */
@@ -171,8 +193,7 @@ export async function writeFileAtomically(
     // A retargeted directory must not make cleanup delete a different file.
     try {
       await assertBoundPath(temporary, temporary, options)
-      const current = await stat(temporary)
-      if (current.dev === temporaryIdentity?.dev && current.ino === temporaryIdentity.ino) {
+      if (temporaryIdentity !== undefined && (await isOwnedFile(temporary, temporaryIdentity))) {
         await rm(temporary, { force: true })
       }
     } catch {
@@ -278,7 +299,8 @@ async function removeStage(
  * file and another writer's file is never replaced. File systems without
  * hard links fail closed; copy and rename cannot make both guarantees.
  *
- * The folder is checked against `expectedDirectory` after it is made and
+ * The folder is checked against `expectedDirectory` before it is made,
+ * after it is made and
  * again just before the link, so a folder swapped for a link or junction in
  * between is refused. Node cannot link relative to a held folder handle, so
  * a swap between that last check and the link itself stays outside the
@@ -293,6 +315,7 @@ export async function createFileExclusively(
   const sleep = options.sleep ?? delay
   const directory = path.dirname(absolutePath)
   const expected = options.expectedDirectory ?? (await canonicalPath(directory))
+  await assertSameDirectory(directory, expected, platform)
   try {
     await mkdir(directory, { recursive: true })
   } catch (error: unknown) {
@@ -307,12 +330,13 @@ export async function createFileExclusively(
     directory,
     `.${path.basename(absolutePath)}.${randomUUID()}${ATOMIC_TEMPORARY_SUFFIX}`,
   )
-  let hasOwnedStage = false
+  let stageIdentity: Pick<Stats, 'dev' | 'ino'> | undefined
   let isPublished = false
   try {
     const handle = await open(stage, 'wx', options.mode)
-    hasOwnedStage = true
     try {
+      const held = await handle.stat()
+      stageIdentity = { dev: held.dev, ino: held.ino }
       await handle.writeFile(content, 'utf8')
       await handle.sync()
     } finally {
@@ -320,6 +344,9 @@ export async function createFileExclusively(
     }
     await options.staged?.()
     await assertSameDirectory(directory, expected, platform)
+    if (!(await isOwnedFile(stage, stageIdentity))) {
+      throw new Error(MODEL_TEXT.pathChangedAfterApproval)
+    }
     try {
       await (options.publish ?? link)(stage, absolutePath)
     } catch (error: unknown) {
@@ -327,9 +354,15 @@ export async function createFileExclusively(
     }
     isPublished = true
   } finally {
-    if (hasOwnedStage) {
+    const owned = stageIdentity
+    if (owned !== undefined) {
       try {
-        await removeStage(stage, sleep, options.remove ?? removeFile)
+        await removeStage(stage, sleep, async (file) => {
+          await assertSameDirectory(directory, expected, platform)
+          if (await isOwnedFile(file, owned)) {
+            await (options.remove ?? removeFile)(file)
+          }
+        })
       } catch (error: unknown) {
         // A published file is complete whatever happens to its stage; a
         // stage left beside it is swept later (plans) or harmless (memory).
