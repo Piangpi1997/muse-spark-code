@@ -22,7 +22,8 @@ import {
 } from '../../codeIntel/rename'
 import { isProtectedPath } from '../../protectedPaths'
 import { confineWorkspacePath } from '../../workspacePath'
-import { fingerprint, type ToolIo, type ToolOutcome } from './tools'
+import { fingerprint } from '../../verify/fingerprint'
+import { type ToolIo, type ToolOutcome } from './tools'
 
 const NOT_JSON = 'arguments are not valid JSON'
 
@@ -104,6 +105,8 @@ export interface RenameWriteContext {
   readonly seen: Map<string, string>
   /** The turn's: a Stop before the first write writes nothing. */
   readonly signal: AbortSignal
+  /** Synchronous bookkeeping for each actual write, including a partial outcome. */
+  readonly onWritten?: (file: RenameFile) => void
 }
 
 type Recheck =
@@ -221,6 +224,7 @@ export async function applyRename(
     }
     written.push(file)
     context.seen.set(result.key, fingerprint(file.after))
+    context.onWritten?.(file)
   }
   const output = fill(MODEL_TEXT.renameDone, {
     from: plan.from,

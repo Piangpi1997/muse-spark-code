@@ -11,6 +11,8 @@
 // through the client (M63c).
 
 import { randomUUID } from 'node:crypto'
+import { statSync } from 'node:fs'
+import { stat } from 'node:fs/promises'
 import path from 'node:path'
 import type { AcpBackend, BackendReadiness } from '../acp/agent'
 import { AcpPaidUse } from '../acp/paid'
@@ -20,6 +22,8 @@ import { environmentValue } from '../core/backends/musecode/launch'
 import { personalSkillsRoot } from '../core/context/skills'
 import { memoryDataRoot } from '../core/memory/memoryLocation'
 import { MemoryStore } from '../core/memory/memoryStore'
+import { WorkspaceEdits } from '../core/verify/workspaceEdits'
+import { canonicalPath } from '../host/canonicalPath'
 import { fileContextIo } from '../host/backend/contextIo'
 import { describeEnvironment } from '../host/backend/environment'
 import { createFileSessionStore } from '../host/backend/fileSessionStore'
@@ -40,11 +44,13 @@ import {
   type EnvironmentVariable,
   MENTION_INDEX_LIMIT,
   MODEL_API_BUNDLE_FILE,
+  MODEL_TEXT,
   PAGE_WORKER_FILE,
   SEARCH_WORKER_FILE,
   SECRET_KEYS,
   SETTING_DEFAULTS,
   UI_TEXT,
+  WORKSPACE_IDENTITY_ZERO,
 } from '../shared/constants'
 import { fill } from '../shared/l10n/text'
 import type { ServeOptions } from './cliArgs'
@@ -130,9 +136,12 @@ interface MuseHomes {
 function modelApiManager(
   deps: RuntimeBackendDeps,
   credentials: CredentialStore,
+  storedWorkspaceRoot: string,
   workspaceRoot: string,
   homes: MuseHomes,
   paid: AcpPaidUse,
+  workspaceEdits: WorkspaceEdits,
+  assertWorkspaceCurrent: () => void,
 ): ModelApiBackendManager {
   const { options, log, platform } = deps
   const isWorkspaceTrusted = () => options.trustWorkspace
@@ -159,6 +168,7 @@ function modelApiManager(
     log: warn,
     // The agent cannot see the editor's buffers (D62); the client's `fs/*` will (M63c).
     unsavedFiles: () => [],
+    assertWorkspaceCurrent,
     shellJobAssembly:
       platform === 'win32' && systemRoot !== undefined
         ? shellJobAssembly({
@@ -175,7 +185,7 @@ function modelApiManager(
     warn(`Memory: ${message}`)
   }
   const memory = new MemoryStore({
-    io: createMemoryIo(io, { warn: warnMemory }),
+    io: createMemoryIo(io, { warn: warnMemory, assertCanWrite: assertWorkspaceCurrent }),
     platform,
     dataRoot: () =>
       memoryDataRoot({ platform, homeDir: deps.homeDir, xdgDataHome: homes.xdgDataHome }),
@@ -187,6 +197,9 @@ function modelApiManager(
     log,
     getApiKey: () => credentials.getApiKey(),
     workspaceRoot,
+    sessionWorkspaceRoot: storedWorkspaceRoot,
+    assertWorkspaceCurrent,
+    workspaceEdits,
     io,
     contextIo: fileContextIo,
     webFetch: createWebFetcher(log, pageConverter(path.join(deps.distDir, PAGE_WORKER_FILE), log)),
@@ -202,7 +215,7 @@ function modelApiManager(
     }),
     isWorkspaceTrusted,
     store: createFileSessionStore({
-      directory: workspaceSessionsFolder(dataInput, workspaceRoot),
+      directory: workspaceSessionsFolder(dataInput, storedWorkspaceRoot),
       log,
       retentionDays: () => SETTING_DEFAULTS.cleanupPeriodDays,
       now: () => Date.now(),
@@ -226,8 +239,8 @@ function modelApiManager(
     // are paid (M48, D45) and the agent's paid features are its two flags
     // (D62), so `subagents` is never on here and every task is denied.
     allowsPaidUse: (request, requiresAsking, sessionId) =>
-      paid.allows(workspaceRoot, sessionId, request, requiresAsking),
-    isPaidUseRemembered: (feature) => paid.isRemembered(workspaceRoot, feature),
+      paid.allows(storedWorkspaceRoot, sessionId, request, requiresAsking),
+    isPaidUseRemembered: (feature) => paid.isRemembered(storedWorkspaceRoot, feature),
     noteSubagentUsage: (modelId) => {
       log.warn(`A subagent's usage on ${modelId} was reported, but the agent runs no subagents`)
     },
@@ -245,7 +258,11 @@ function modelApiManager(
 export function createRuntimeBackend(deps: RuntimeBackendDeps): RuntimeBackend {
   const museCode = museCodeManager(deps, undefined)
   const museCodeHosts = new Map<string, MuseCodeBackendManager>()
-  const modelApiHosts = new Map<string, ModelApiBackendManager>()
+  const modelApiHosts = new Map<
+    string,
+    { readonly manager: ModelApiBackendManager; readonly identity: string }
+  >()
+  const workspaceEdits = new Map<string, WorkspaceEdits>()
   const credentials = new CredentialStore(
     deps.secrets,
     (message) => {
@@ -336,11 +353,59 @@ export function createRuntimeBackend(deps: RuntimeBackendDeps): RuntimeBackend {
       : { state: 'ready' }
   }
 
+  const modelApiHostFor = async (cwd: string): Promise<AgentHost> => {
+    const canonical = await canonicalPath(cwd)
+    const identity = await stat(canonical, { bigint: true })
+    if (
+      !identity.isDirectory() ||
+      identity.ino <= WORKSPACE_IDENTITY_ZERO ||
+      identity.dev < WORKSPACE_IDENTITY_ZERO
+    ) {
+      throw new Error(UI_TEXT.modelApiNeedsFolder)
+    }
+    const key = `${identity.dev.toString()}:${identity.ino.toString()}`
+    const existing = modelApiHosts.get(cwd)
+    if (existing !== undefined) {
+      if (existing.identity !== key) {
+        throw new Error(MODEL_TEXT.pathChangedAfterApproval)
+      }
+      return await existing.manager.ensureHost()
+    }
+    const assertWorkspaceCurrent = () => {
+      try {
+        for (const root of [cwd, canonical]) {
+          const current = statSync(root, { bigint: true })
+          if (
+            !current.isDirectory() ||
+            current.dev !== identity.dev ||
+            current.ino !== identity.ino
+          ) {
+            throw new Error(MODEL_TEXT.pathChangedAfterApproval)
+          }
+        }
+      } catch {
+        throw new Error(MODEL_TEXT.pathChangedAfterApproval)
+      }
+    }
+    const edits = workspaceEdits.get(key) ?? new WorkspaceEdits()
+    workspaceEdits.set(key, edits)
+    const manager = modelApiManager(
+      deps,
+      credentials,
+      cwd,
+      canonical,
+      homes,
+      paid,
+      edits,
+      assertWorkspaceCurrent,
+    )
+    modelApiHosts.set(cwd, { manager, identity: key })
+    return await manager.ensureHost()
+  }
+
   const hostFor = (cwd: string): Promise<AgentHost> => {
     if (deps.options.backend === 'modelApi') {
-      const manager = modelApiHosts.get(cwd) ?? modelApiManager(deps, credentials, cwd, homes, paid)
-      modelApiHosts.set(cwd, manager)
-      return manager.ensureHost()
+      return modelApiHostFor(cwd)
     }
     const manager = museCodeHosts.get(cwd) ?? museCodeManager(deps, cwd)
     museCodeHosts.set(cwd, manager)
@@ -361,7 +426,10 @@ export function createRuntimeBackend(deps: RuntimeBackendDeps): RuntimeBackend {
     close: async () => {
       // A probe still waiting on its short-lived host ends with the agent.
       accountHosts.close()
-      const managers = [...museCodeHosts.values(), ...modelApiHosts.values()]
+      const managers = [
+        ...museCodeHosts.values(),
+        ...Array.from(modelApiHosts.values(), ({ manager }) => manager),
+      ]
       await Promise.all(managers.map((manager) => manager.dispose()))
     },
   }

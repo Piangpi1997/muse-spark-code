@@ -18,11 +18,15 @@ import type { ModelApiHost, ModelApiPaidHooks } from '../../core/backends/modela
 import type { SessionStore } from '../../core/backends/modelapi/sessionStore'
 import type { ScheduleStore } from '../../shared/schedule'
 import type { ToolIo } from '../../core/backends/modelapi/tools'
+import type { VerifyHooks } from '../../core/backends/modelapi/verifyLoop'
 import type { ContextIo } from '../../core/context/contextFiles'
 import type { LanguageServiceHost } from '../../core/codeIntel/languageService'
 import type { McpTool } from '../../core/mcp'
 import type { MemoryStore } from '../../core/memory/memoryStore'
 import type { WebFetcher } from '../../core/web/webFetch'
+import { WorkspaceEdits, type WorkspaceEditRecorder } from '../../core/verify/workspaceEdits'
+import type { AgentSession } from '../../core/agent/agentBackend'
+import type { EditedFile } from '../../core/verify/diagnosticsReport'
 import { MODEL_API_BASE_URL, type PromptCacheRetention, UI_TEXT } from '../../shared/constants'
 import { uiLocale } from '../../shared/l10n/text'
 import { forgetFile, requireFile } from '../lazyBundle'
@@ -70,6 +74,13 @@ export interface ModelApiBackendManagerDeps extends ModelApiPaidHooks {
   readonly isRepoMapInPrompt?: (() => boolean) | undefined
   /** Muse Code's memory, shared with the Memory view (M49, PLAN.md D41). */
   readonly memory: MemoryStore | undefined
+  /** The verify loop's settings and the editor's diagnostics and formatter (M68, PLAN.md D49). */
+  readonly verify?: VerifyHooks | undefined
+  /** The runtime can share notices across aliases without changing its saved-session identity. */
+  readonly workspaceEdits?: WorkspaceEdits | undefined
+  readonly sessionWorkspaceRoot?: string | undefined
+  /** Runtime owners refuse a retargeted or replaced workspace before use. */
+  readonly assertWorkspaceCurrent?: (() => void) | undefined
   /** The Model API bundle, dist/modelApi.js beside the running bundle (M57, PLAN.md D6). */
   readonly bundlePath: string
   /** How the bundle is loaded: Node's `require` unless a test hands in the source module. */
@@ -96,8 +107,12 @@ export class ModelApiBackendManager {
   private building: Promise<ModelApiHost> | undefined
   /** Bumped by every dispose: a build that finishes after one is closed, not kept. */
   private generation = 0
+  /** Exists before the lazy host, and is shared by all surfaces using this manager. */
+  public readonly workspaceEdits: WorkspaceEdits
 
-  public constructor(private readonly deps: ModelApiBackendManagerDeps) {}
+  public constructor(private readonly deps: ModelApiBackendManagerDeps) {
+    this.workspaceEdits = deps.workspaceEdits ?? new WorkspaceEdits()
+  }
 
   /** One build, owned by the generation it was started in. */
   private async buildOnce(generation: number): Promise<ModelApiHost> {
@@ -192,6 +207,9 @@ export class ModelApiBackendManager {
         noteSubagentUsage: this.deps.noteSubagentUsage,
         isHooksEnabled: this.deps.isHooksEnabled,
         memory: this.deps.memory,
+        verify: this.deps.verify,
+        workspaceEdits: this.workspaceEdits,
+        sessionWorkspaceRoot: this.deps.sessionWorkspaceRoot,
       },
       hookSettingsPath: this.deps.hookSettingsPath,
       createMcpServers:
@@ -205,6 +223,7 @@ export class ModelApiBackendManager {
 
   /** The host, created on first use with the stored sessions read. Rejects without a workspace. */
   public ensureHost(): Promise<ModelApiHost> {
+    this.deps.assertWorkspaceCurrent?.()
     if (this.host !== undefined) {
       return Promise.resolve(this.host)
     }
@@ -224,6 +243,42 @@ export class ModelApiBackendManager {
   /** A skill file changed: the running host re-reads its catalogue. */
   public async refreshSkills(): Promise<void> {
     await this.host?.refreshSkills()
+  }
+
+  /** Host-origin writes notify without loading a backend or reading its key. */
+  public captureExternalEditOwner(session: AgentSession): WorkspaceEditRecorder | undefined {
+    return this.host?.externalEditRecorder(session)
+  }
+
+  /** Notices use the recorder captured before asynchronous lookup/confirmation. */
+  public beginExternalEdit(
+    record: WorkspaceEditRecorder | undefined,
+    files: readonly EditedFile[],
+  ): (wasWritten: boolean) => void {
+    const completions: (() => void)[] = []
+    try {
+      for (const file of files) {
+        completions.push(this.workspaceEdits.beginEdit(file, [file.relative]))
+      }
+    } catch (error: unknown) {
+      for (const complete of completions) {
+        complete()
+      }
+      throw error
+    }
+    return (wasWritten) => {
+      try {
+        if (wasWritten) {
+          for (const file of files) {
+            record?.(file)
+          }
+        }
+      } finally {
+        for (const complete of completions) {
+          complete()
+        }
+      }
+    }
   }
 
   /** Closes the host; one still being built closes itself when it is ready. */

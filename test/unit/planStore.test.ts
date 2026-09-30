@@ -22,6 +22,8 @@ import path from 'node:path'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { PLAN_MARKDOWN } from '../../src/core/plans/planMarkdown'
 import { PlanStore } from '../../src/core/plans/planStore'
+import { VerifyLedger } from '../../src/core/backends/modelapi/verifyLedger'
+import { WorkspaceEdits, type WorkspaceEditRecorder } from '../../src/core/verify/workspaceEdits'
 import { createPlanIo } from '../../src/host/planFeatures'
 import {
   ATOMIC_TEMPORARY_SUFFIX,
@@ -70,6 +72,78 @@ function plansFolder(root: string): string {
 }
 
 describe('PlanStore on the file system (M79)', () => {
+  it.each(['created', 'existing', 'failed'])(
+    'brackets a held plan publication and counts only a new file: %s',
+    async (outcome) => {
+      const { root } = await workspace(`publication-${outcome}`)
+      const io = createPlanIo({ log, now: () => Date.now() })
+      const registry = new WorkspaceEdits()
+      const other = new VerifyLedger()
+      registry.add(other)
+      const entered = Promise.withResolvers<undefined>()
+      const held = Promise.withResolvers<undefined>()
+      const finished: boolean[] = []
+      const owners: (WorkspaceEditRecorder | undefined)[] = []
+      const owner = vi.fn()
+      const content = { title: 'Held', savedAt: NOON, text: '# Held' }
+      if (outcome === 'existing') {
+        await new PlanStore({
+          workspaceRoot: root,
+          platform: process.platform,
+          io,
+          markdown: () => PLAN_MARKDOWN,
+        }).save(content)
+      }
+      const store = new PlanStore({
+        workspaceRoot: root,
+        platform: process.platform,
+        markdown: () => PLAN_MARKDOWN,
+        io: {
+          ...io,
+          createFile: async (absolutePath, text) => {
+            entered.resolve(undefined)
+            await held.promise
+            if (outcome === 'failed') {
+              throw new Error('publication failed')
+            }
+            return await io.createFile(absolutePath, text)
+          },
+        },
+        beginEdit: (file, owner) => {
+          owners.push(owner)
+          const complete = registry.beginEdit(file, [file.relative])
+          return (written) => {
+            finished.push(written)
+            complete()
+          }
+        },
+      })
+      const saved = store.save(content, owner)
+      const settled = (async () => {
+        try {
+          return { value: await saved }
+        } catch (error: unknown) {
+          return { error }
+        }
+      })()
+      await entered.promise
+      other.resetForMessage()
+      expect(other.changesWhatRuns('cat .agents/plans/2026-09-27-held.md')).toBe(true)
+      held.resolve(undefined)
+      const result = await settled
+      if ('value' in result) {
+        expect(result.value.isNew).toBe(outcome === 'created')
+      } else {
+        expect(result.error).toBeInstanceOf(Error)
+        expect(outcome).toBe('failed')
+      }
+      expect(finished).toEqual([outcome === 'created'])
+      expect(owners).toEqual([owner])
+      other.resetForMessage()
+      expect(other.changesWhatRuns('cat .agents/plans/2026-09-27-held.md')).toBe(false)
+    },
+  )
+
   it('saves the plan byte for byte to .agents/plans/<date>-<slug>.md', async () => {
     const { root, store } = await workspace('save')
     const saved = await store.save({

@@ -92,6 +92,20 @@ describe('systemPath', () => {
 })
 
 describe('createMemoryIo unsaved changes', () => {
+  it('forwards the runtime owner fence to private note publication', async () => {
+    const guarded = createMemoryIo(fileTools(), {
+      warn: () => undefined,
+      assertCanWrite: () => {
+        throw new Error('workspace owner changed')
+      },
+    })
+    const target = path.join(paths.root, 'owner-private-note.md')
+    await expect(guarded.createFile(target, 'private bytes')).rejects.toThrow(
+      'workspace owner changed',
+    )
+    expect(await readIfPresent(target)).toBeUndefined()
+  })
+
   it('answers from the file tool for a path', () => {
     const open = path.join(paths.workspace, 'open.md')
     expect(io.hasUnsavedChanges(open)).toBe(false)

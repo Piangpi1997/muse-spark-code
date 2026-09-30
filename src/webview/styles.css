@@ -2540,6 +2540,19 @@ body {
   font-size: 0.9em;
 }
 
+/* M68: an edit's then_run under its diff. A run that did not pass is marked
+   with the error colour on the bar, the text in the text colour, as a failed
+   row is (WCAG 1.4.3, M37). */
+.then-run {
+  margin-top: 6px;
+}
+
+.then-run-failed {
+  padding-left: 6px;
+  border-left: 2px solid var(--vscode-errorForeground);
+  color: var(--vscode-foreground);
+}
+
 .goal-objective,
 .schedule-prompt {
   overflow-wrap: anywhere;

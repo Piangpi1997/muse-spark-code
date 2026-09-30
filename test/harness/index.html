@@ -2720,6 +2720,111 @@
           document.body.style.maxWidth = '300px'
           steps.schedules()
         },
+        // --- M68: an edit with then_run, the automatic check after it, and its card ---
+        verify: () => {
+          window.harnessSilent = true
+          window.harnessBackend = 'modelApi'
+          send({ type: 'authState', status: 'signedIn', backend: 'modelApi' })
+          setDraft('Make parse() return a number and run its test')
+          key({ key: 'Enter' })
+          event({ type: 'turnStarted', turnId: 'tv1' })
+          event({
+            type: 'itemCompleted',
+            item: {
+              itemId: 'ed1',
+              kind: 'toolCall',
+              status: 'completed',
+              turnId: 'tv1',
+              tool: 'edit_file',
+              args: '{"path":"src/parse.ts","find":"return text","replace":"return Number(text)","then_run":"npm test -- parse"}',
+              visibleOutput:
+                'edited\n--- original\n+++ updated\n@@\n export function parse(text: string): number {\n-  return text\n+  return Number(text)\n }\n',
+              patchSummary: { files: 1, added: 1, removed: 1 },
+              thenRun: {
+                command: 'npm test -- parse',
+                outcome: 'failed',
+                output: '✗ parses "42" (expected 42, got NaN)\n1 failing',
+                exitCode: 1,
+              },
+            },
+          })
+          event({
+            type: 'itemCompleted',
+            item: {
+              itemId: 've1',
+              kind: 'toolCall',
+              status: 'completed',
+              turnId: 'tv1',
+              tool: 'verify_edits',
+              args: '{"paths":["src/parse.ts"]}',
+              visibleOutput:
+                "Errors and warnings of the files you edited, from the language servers:\nsrc/parse.ts: errors 0, warnings 1 (0 new, 1 fixed since the previous check)\nsrc/parse.ts:3:9: warning: 'radix' is declared but never read. [ts]\n\nThe user's check commands:\n\nlint: passed\n$ npm run lint -- 'src/parse.ts'\n[exit code 0]\n\ntest: failed\n$ npm test\n✗ parses \"42\" (expected 42, got NaN)\n1 failing\n[exit code 1]\n\ntypes: not run, the user rejected it",
+              verifySummary: {
+                files: ['src/parse.ts'],
+                errors: 0,
+                warnings: 1,
+                checks: [
+                  { name: 'lint', outcome: 'passed' },
+                  { name: 'test', outcome: 'failed' },
+                  { name: 'types', outcome: 'notRun', skip: 'rejected' },
+                ],
+              },
+            },
+          })
+          event({
+            type: 'itemCompleted',
+            item: {
+              itemId: 'ed2',
+              kind: 'toolCall',
+              status: 'completed',
+              turnId: 'tv1',
+              tool: 'edit_file',
+              args: '{"path":"src/parse.ts","find":"Number(text)","replace":"Number.parseInt(text, 10)"}',
+              visibleOutput:
+                'edited\n--- original\n+++ updated\n@@\n-  return Number(text)\n+  return Number.parseInt(text, 10)\n',
+              patchSummary: { files: 1, added: 1, removed: 1 },
+            },
+          })
+          event({
+            type: 'itemStarted',
+            item: {
+              itemId: 've2',
+              kind: 'toolCall',
+              status: 'inProgress',
+              turnId: 'tv1',
+              tool: 'verify_edits',
+              args: '{"paths":["src/parse.ts"]}',
+            },
+          })
+          event({
+            type: 'approvalRequested',
+            approvalId: 'av1',
+            itemId: 've2',
+            toolName: 'powershell',
+            rawArgs: '{"command":"npm test","description":"test"}',
+            requirementId: { approvalId: 'av1', sourceIndex: 0 },
+            subject: { kind: 'shell', command: 'npm test' },
+            availableChoices: [
+              { choiceId: 'allow_once', label: 'Allow once', decision: 'approved', scope: 'once' },
+              {
+                choiceId: 'allow_session',
+                label: 'Always allow in this session npm test',
+                decision: 'approvedPolicyAmendment',
+                scope: 'session',
+                rulePreview: 'Always allow in this session npm test',
+              },
+              {
+                choiceId: 'abort',
+                label: 'Reject',
+                decision: 'abort',
+                scope: 'once',
+                acceptsFeedback: true,
+              },
+            ],
+            isJudgeEscalated: false,
+            isProtectedWrite: false,
+          })
+        },
         // --- M25: a refused image says why, and a link out of the workspace is refused ---
         'size-refused': () => {
           send({

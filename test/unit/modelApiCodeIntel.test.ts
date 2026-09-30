@@ -6,6 +6,10 @@
 
 import { describe, expect, it, vi } from 'vitest'
 import { ModelApiHost } from '../../src/core/backends/modelapi/ModelApiHost'
+import { VerifyLedger } from '../../src/core/backends/modelapi/verifyLedger'
+import type { VerifyHooks } from '../../src/core/backends/modelapi/verifyLoop'
+import type { EditedFile } from '../../src/core/verify/diagnosticsReport'
+import { WorkspaceEdits } from '../../src/core/verify/workspaceEdits'
 import type { AgentEvent } from '../../src/shared/agentEvents'
 import { type HookDefinition, parseHookConfig } from '../../src/core/backends/modelapi/hooks'
 import { MODEL_TEXT, type PaidFeature } from '../../src/shared/constants'
@@ -81,6 +85,8 @@ interface StartOptions {
   readonly hookPayloads?: unknown[]
   /** The folder the workspace is opened as: a link to the files' own (/ws). */
   readonly linkedAs?: string
+  readonly workspaceEdits?: WorkspaceEdits
+  readonly verify?: VerifyHooks
 }
 
 async function start(options: StartOptions = {}) {
@@ -140,6 +146,8 @@ async function start(options: StartOptions = {}) {
     codeIntel: service,
     isRepoMapInPrompt: options.isRepoMapOn,
     loadHooks: () => Promise.resolve(options.hooks ?? []),
+    workspaceEdits: options.workspaceEdits,
+    verify: options.verify,
   })
   const session = await host.startSession({
     workspaceRoot: root,
@@ -167,6 +175,25 @@ async function start(options: StartOptions = {}) {
 }
 
 type Started = Awaited<ReturnType<typeof start>>
+
+/** Holds a rename recheck after its card, before the first native write. */
+function holdRenameRead(t: Started, heldRead = 1) {
+  const read = t.io.readFile
+  const held = Promise.withResolvers<undefined>()
+  const entered = Promise.withResolvers<undefined>()
+  let reads = 0
+  t.io.readFile = async (path, expected) => {
+    if (path === A) {
+      reads += 1
+      if (reads === heldRead) {
+        entered.resolve(undefined)
+        await held.promise
+      }
+    }
+    return await read(path, expected)
+  }
+  return { held, entered }
+}
 
 /** The tool rows' final states, in order. */
 function finished(events: readonly AgentEvent[]) {
@@ -297,6 +324,64 @@ describe('code intelligence on the Model API backend', () => {
     expect(outputs(t.api)[0]).toContain('Renamed `greet` to `welcome`: 3 edits in 2 files')
   })
 
+  it.each([false, true])(
+    'notifies pending rename paths and checks only actual writes (second write fails: %s)',
+    async (failsSecondWrite) => {
+      const workspaceEdits = new WorkspaceEdits()
+      const other = new VerifyLedger()
+      workspaceEdits.add(other)
+      const checked: EditedFile[] = []
+      const t = await start({
+        service: GREET_EVERYWHERE,
+        linkedAs: '/linked-workspace',
+        workspaceEdits,
+        verify: {
+          isDiagnosticsOn: () => true,
+          checkCommands: () => [],
+          isFormatOnEdit: () => false,
+          diagnosticsAfterEdit: (files) => {
+            checked.push(...files)
+            return Promise.resolve(files.map((file) => ({ file, entries: [] })))
+          },
+          formatAfterEdit: () => Promise.resolve(undefined),
+        },
+      })
+      await t.turn([RENAME], true)
+      const card = await cardFor(t.events)
+      const { held, entered } = holdRenameRead(t)
+      const write = t.io.writeFile
+      t.io.writeFile = async (path, text, expected) => {
+        if (path === B && failsSecondWrite) {
+          throw new Error('disk full')
+        }
+        await write(path, text, expected)
+      }
+      await t.session.decideApproval({
+        approvalId: card.approvalId,
+        choiceId: 'allow_once',
+        requirementId: card.requirementId,
+      })
+      await entered.promise
+      other.resetForMessage()
+      expect(other.changesWhatRuns('node src/a.ts')).toBe(true)
+      expect(other.changesWhatRuns('node src/b.ts')).toBe(true)
+      held.resolve(undefined)
+      await vi.waitFor(() => {
+        expect(t.events.some((event) => event.type === 'turnCompleted')).toBe(true)
+      })
+      expect(checked.map((file) => file.absolute)).toEqual(failsSecondWrite ? [A] : [A, B])
+      expect(checked.map((file) => file.relative)).toEqual(
+        failsSecondWrite ? ['src/a.ts'] : ['src/a.ts', 'src/b.ts'],
+      )
+      other.resetForMessage()
+      expect(other.changesWhatRuns('node src/a.ts')).toBe(false)
+      expect(other.changesWhatRuns('node src/b.ts')).toBe(false)
+      expect(finished(t.events).find((item) => item.tool === 'rename_symbol')?.status).toBe(
+        failsSecondWrite ? 'failed' : 'completed',
+      )
+    },
+  )
+
   it('writes without a card in Auto, and write_file may then replace a renamed file', async () => {
     const t = await start({ approvalMode: 'onRequest', service: GREET_EVERYWHERE })
     await t.turn([
@@ -397,29 +482,20 @@ describe('code intelligence on the Model API backend', () => {
   it.each([1, 2])(
     'writes nothing when Stop comes during file check %d after approval',
     async (heldRead) => {
-      const t = await start({ service: GREET_EVERYWHERE })
+      const workspaceEdits = new WorkspaceEdits()
+      const other = new VerifyLedger()
+      workspaceEdits.add(other)
+      const t = await start({ service: GREET_EVERYWHERE, workspaceEdits })
       await t.turn([RENAME], true)
       const card = await cardFor(t.events)
-      const read = t.io.readFile
-      const held = Promise.withResolvers<undefined>()
-      const entered = Promise.withResolvers<undefined>()
-      let reads = 0
-      t.io.readFile = async (path, expected) => {
-        if (path === A) {
-          reads += 1
-          if (reads === heldRead) {
-            entered.resolve(undefined)
-            await held.promise
-          }
-        }
-        return await read(path, expected)
-      }
+      const { held, entered } = holdRenameRead(t, heldRead)
       await t.session.decideApproval({
         approvalId: card.approvalId,
         choiceId: 'allow_once',
         requirementId: card.requirementId,
       })
       await entered.promise
+      expect(other.changesWhatRuns('node src/b.ts')).toBe(true)
       await t.session.cancel()
       held.resolve(undefined)
       await vi.waitFor(() => {
@@ -430,6 +506,8 @@ describe('code intelligence on the Model API backend', () => {
       })
       expect(t.io.files.get(A)).toBe(FILES['src/a.ts'])
       expect(t.io.files.get(B)).toBe(FILES['src/b.ts'])
+      other.resetForMessage()
+      expect(other.changesWhatRuns('node src/b.ts')).toBe(false)
     },
   )
 

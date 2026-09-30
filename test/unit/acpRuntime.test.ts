@@ -1,5 +1,16 @@
 import { EventEmitter } from 'node:events'
-import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from 'node:fs'
+import {
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  renameSync,
+  statSync,
+  symlinkSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { PassThrough } from 'node:stream'
@@ -7,6 +18,10 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import type { LaunchResolution } from '../../src/core/backends/musecode/launch'
 import { authClear, authSet, authStatus, login } from '../../src/runtime/authCommands'
 import { createRuntimeBackend } from '../../src/runtime/backends'
+import { WorkspaceEdits } from '../../src/core/verify/workspaceEdits'
+import { VerifyLedger } from '../../src/core/backends/modelapi/verifyLedger'
+import { isSamePath } from '../../src/core/paths'
+import * as atomicWrites from '../../src/host/fsAtomic'
 import { parseCommandLine, type ServeOptions } from '../../src/runtime/cliArgs'
 import { takeCredentials, withoutCredentials } from '../../src/runtime/credentialVariables'
 import {
@@ -25,9 +40,9 @@ import { displayLanguage } from '../../src/runtime/locale'
 import { paidGrantFile } from '../../src/runtime/paidGrants'
 import { stderrLogger } from '../../src/runtime/stderrLog'
 import { webReadable } from '../../src/runtime/webStreams'
-import { SECRET_KEYS, UI_TEXT } from '../../src/shared/constants'
+import { MODEL_TEXT, SECRET_KEYS, UI_TEXT } from '../../src/shared/constants'
 import { memorySecrets } from './helpers/fakes'
-import { fakeModelApi } from './helpers/fakeModelApi'
+import { FAKE_MODEL_API_KEY, fakeModelApi } from './helpers/fakeModelApi'
 import { buildModelApiBundle } from './helpers/modelApiBundle'
 import { removeFolder } from './helpers/temporaryFolders'
 
@@ -37,7 +52,7 @@ const KEY = 'LLM|123456|secret-value'
 const folders: string[] = []
 
 function folder(): string {
-  const created = mkdtempSync(path.join(tmpdir(), 'acp-runtime-'))
+  const created = realpathSync.native(mkdtempSync(path.join(tmpdir(), 'acp-runtime-')))
   folders.push(created)
   return created
 }
@@ -453,6 +468,7 @@ describe('createRuntimeBackend', () => {
     secrets = memorySecrets(),
     env: NodeJS.ProcessEnv = {},
     distDir = dist.folder,
+    fetch: typeof globalThis.fetch = fakeModelApi().fetch,
   ) {
     return createRuntimeBackend({
       options: { ...DEFAULTS, ...options },
@@ -464,7 +480,7 @@ describe('createRuntimeBackend', () => {
       secrets,
       runGit: () => Promise.reject(new Error('no git')),
       museCodeCredentials: [],
-      fetch: fakeModelApi().fetch,
+      fetch,
       sleep: () => Promise.resolve(),
       log,
     })
@@ -530,6 +546,157 @@ describe('createRuntimeBackend', () => {
       expect.stringContaining(`The Model API bundle ${path.join(empty, 'modelApi.js')}`),
     )
   })
+
+  it('shares edit notices for native workspace aliases without joining distinct directories', async () => {
+    const secrets = memorySecrets()
+    secrets.values.set(SECRET_KEYS.modelApiKey, KEY)
+    const runtime = backend({ backend: 'modelApi' }, secrets)
+    const root = folder()
+    const alias = path.join(folder(), 'alias')
+    symlinkSync(root, alias, 'junction')
+    const caseRoot = folder()
+    const upper = path.join(caseRoot, 'Case')
+    const lower = path.join(caseRoot, 'case')
+    mkdirSync(upper)
+    mkdirSync(lower, { recursive: true })
+    const added = vi.spyOn(WorkspaceEdits.prototype, 'add')
+    try {
+      for (const cwd of [root, alias, folder(), upper, lower]) {
+        const host = await runtime.backend.hostFor(cwd)
+        await host.startSession({
+          workspaceRoot: cwd,
+          modelId: 'muse-spark-1.3',
+          approvalMode: 'onRequest',
+        })
+      }
+      expect(added).toHaveBeenCalledTimes(5)
+      const [first, linked, distinct, upperRegistry, lowerRegistry] = added.mock.contexts
+      expect(first).toBe(linked)
+      expect(first).not.toBe(distinct)
+      const upperIdentity = statSync(upper, { bigint: true })
+      const lowerIdentity = statSync(lower, { bigint: true })
+      if (upperIdentity.dev === lowerIdentity.dev && upperIdentity.ino === lowerIdentity.ino) {
+        expect(upperRegistry).toBe(lowerRegistry)
+      } else {
+        expect(upperRegistry).not.toBe(lowerRegistry)
+      }
+    } finally {
+      added.mockRestore()
+      await runtime.close()
+    }
+  })
+
+  it('refuses an unreadable or non-directory Model API workspace before building its host', async () => {
+    const runtime = backend({ backend: 'modelApi' })
+    const root = folder()
+    const file = path.join(root, 'file.txt')
+    writeFileSync(file, 'ordinary file')
+    await expect(runtime.backend.hostFor(file)).rejects.toThrow(UI_TEXT.modelApiNeedsFolder)
+    await expect(runtime.backend.hostFor(path.join(root, 'missing'))).rejects.toThrow()
+    await runtime.close()
+  })
+
+  it.each(['alias', 'directory'])(
+    'refuses a cached and held writer after its owned workspace changes: %s',
+    async (kind) => {
+      const a = folder()
+      const b = folder()
+      const named = kind === 'alias' ? path.join(folder(), 'alias') : a
+      if (kind === 'alias') {
+        symlinkSync(a, named, 'junction')
+      }
+      writeFileSync(path.join(a, 'note.txt'), 'before A')
+      writeFileSync(path.join(b, 'note.txt'), 'before B')
+      const secrets = memorySecrets()
+      secrets.values.set(SECRET_KEYS.modelApiKey, FAKE_MODEL_API_KEY)
+      const api = fakeModelApi()
+      const runtime = backend(
+        { backend: 'modelApi', trustWorkspace: true },
+        secrets,
+        {},
+        dist.folder,
+        api.fetch,
+      )
+      const added = vi.spyOn(WorkspaceEdits.prototype, 'add')
+      const realWrite = atomicWrites.writeFileAtomically
+      const entered = Promise.withResolvers<undefined>()
+      const held = Promise.withResolvers<undefined>()
+      const writing = vi
+        .spyOn(atomicWrites, 'writeFileAtomically')
+        .mockImplementation(async (target, text, options) => {
+          if (isSamePath(target, path.join(a, 'note.txt'), process.platform)) {
+            entered.resolve(undefined)
+            await held.promise
+          }
+          await realWrite(target, text, options)
+        })
+      try {
+        const host = await runtime.backend.hostFor(named)
+        const writer = await host.startSession({
+          workspaceRoot: named,
+          modelId: 'muse-spark-1.3',
+          approvalMode: 'onRequest',
+        })
+        const peerHost = await runtime.backend.hostFor(b)
+        await peerHost.startSession({
+          workspaceRoot: b,
+          modelId: 'muse-spark-1.3',
+          approvalMode: 'onRequest',
+        })
+        const peerRegistry = added.mock.contexts[1]
+        if (!(peerRegistry instanceof WorkspaceEdits)) {
+          throw new TypeError('peer did not receive its workspace registry')
+        }
+        const peer = new VerifyLedger()
+        peerRegistry.add(peer)
+        peer.record('passed', peer.snapshot('lint', 'project'))
+        const completed = Promise.withResolvers<undefined>()
+        writer.onEvent((event) => {
+          if (event.type === 'turnCompleted') {
+            completed.resolve(undefined)
+          }
+        })
+        api.script(
+          {
+            calls: [
+              { name: 'read_file', arguments: JSON.stringify({ path: 'note.txt' }) },
+              {
+                name: 'write_file',
+                arguments: JSON.stringify({ path: 'note.txt', content: 'changed' }),
+              },
+            ],
+          },
+          { text: 'done' },
+        )
+        await writer.sendTurn([{ type: 'text', text: 'edit the note' }])
+        await entered.promise
+        let oldA = a
+        if (kind === 'alias') {
+          expect(lstatSync(named).isSymbolicLink()).toBe(true)
+          unlinkSync(named)
+          symlinkSync(b, named, 'junction')
+        } else {
+          oldA = path.join(folder(), 'old-A')
+          renameSync(a, oldA)
+          mkdirSync(a)
+          writeFileSync(path.join(a, 'note.txt'), 'replacement')
+        }
+        await expect(runtime.backend.hostFor(named)).rejects.toThrow()
+        held.resolve(undefined)
+        await completed.promise
+        expect(readFileSync(path.join(oldA, 'note.txt'), 'utf8')).toBe('before A')
+        expect(readFileSync(path.join(b, 'note.txt'), 'utf8')).toBe('before B')
+        expect(peer.hasCurrentRun('lint', 'project')).toBe(true)
+        const after = api.responseBodies().at(-1)?.['input']
+        expect(JSON.stringify(after)).toContain(MODEL_TEXT.pathChangedAfterApproval)
+      } finally {
+        held.resolve(undefined)
+        writing.mockRestore()
+        added.mockRestore()
+        await runtime.close()
+      }
+    },
+  )
 
   it('lets "always" lapse at start only for the Model API agent, which has the flags (M58)', async () => {
     const home = folder()

@@ -155,6 +155,52 @@ describe('IdeMcpServer', () => {
     expect(body).toMatchObject({ error: { code: -32_700 } })
   })
 
+  // M68: a caller that goes away (Muse Code's turn stopped) ends the tool's
+  // wait, such as the diagnostics tool's for a language server.
+  it('stops a tool call whose caller went away', async () => {
+    const started = Promise.withResolvers<AbortSignal>()
+    const waiting: McpTool = {
+      ...tool,
+      call: (_args, signal) => {
+        expect(signal).toBeInstanceOf(AbortSignal)
+        started.resolve(signal)
+        return new Promise((resolve) => {
+          signal.addEventListener('abort', () => {
+            resolve('stopped')
+          })
+        })
+      },
+    }
+    const server = new IdeMcpServer(() => [waiting], new FakeLogOutputChannel())
+    servers.push(server)
+    const endpoint = await server.start()
+    const client = new AbortController()
+    const request = (async (): Promise<unknown> => {
+      try {
+        return await fetch(endpoint.url, {
+          method: 'POST',
+          headers: { ...endpoint.headers, 'content-type': 'application/json' },
+          body: JSON.stringify({
+            jsonrpc: '2.0',
+            id: 1,
+            method: 'tools/call',
+            params: { name: 'getDiagnostics', arguments: {} },
+          }),
+          signal: client.signal,
+        })
+      } catch (error: unknown) {
+        return error
+      }
+    })()
+    const signal = await started.promise
+    expect(signal.aborted).toBe(false)
+    client.abort()
+    await vi.waitFor(() => {
+      expect(signal.aborted).toBe(true)
+    })
+    expect(await request).toBeInstanceOf(Error)
+  })
+
   it('starts once and forgets its endpoint on close', async () => {
     const { server } = await start()
     const first = server.current

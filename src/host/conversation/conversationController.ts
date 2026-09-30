@@ -44,6 +44,7 @@ import {
   type SaveOutcome,
   planTooLargeText,
 } from '../../core/plans/planStore'
+import type { WorkspaceEditRecorder } from '../../core/verify/workspaceEdits'
 import { isProfileWorkspace, type ShellSandboxPosture } from '../../core/backends/musecode/sandbox'
 import { chatReferenceText } from '../../core/chatReference'
 import { textFileDisplay } from '../../shared/textFileDisplay'
@@ -203,6 +204,8 @@ export interface PlanChoice {
  * the Plans… pick. Undefined without a workspace folder.
  */
 export interface PlanFiles extends Pick<PlanStore, 'find' | 'save' | 'has' | 'read' | 'list'> {
+  /** Captured while the verified plan session is still attached, before lookup/confirmation. */
+  readonly captureOwner?: (session: AgentSession) => WorkspaceEditRecorder | undefined
   /**
    * The yes a save needs: `.agents/` is a protected path (PLAN.md D24), so
    * writing a plan there asks first, as a protected write does.
@@ -328,6 +331,13 @@ export interface ConversationDeps {
   readonly allowsPaidUse: (request: PaidUseRequest) => Promise<boolean>
   /** Account & usage's "Ask again": every paid feature asks again in this workspace (M58). */
   readonly forgetPaidUse: () => Promise<void>
+  /**
+   * The verify loop's note to Muse Code (M68, PLAN.md D49), read for each
+   * message: check the diagnostics of what it edits (only when the session
+   * has the `ide` server), run the user's checks. Undefined when there is
+   * nothing to say.
+   */
+  readonly verifyGuidance?: (hasIdeServer: boolean) => string | undefined
   readonly now: () => number
   readonly log: Logger
 }
@@ -642,6 +652,8 @@ export class ConversationController {
   /** User cards whose file bytes rewind cannot restore across every backend/history path. */
   private readonly fileMessageIds = new Set<string>()
   /** Fresh cards use local IDs until Muse Code serves their durable user item IDs. */
+  /** Sessions started or resumed with the `ide` server, whose tools they can call (M68). */
+  private readonly ideSessions = new WeakSet<AgentSession>()
   private readonly acceptedUserCards = new Map<
     string,
     { readonly turnId: string; readonly text: string }
@@ -2023,6 +2035,9 @@ export class ConversationController {
       ...(this.isSideChat && { sideChat: true }),
       ...(mcpServers !== undefined && { mcpServers }),
     })
+    if (mcpServers !== undefined) {
+      this.ideSessions.add(session)
+    }
     if (this.isDisposed || this.attachmentGeneration !== generation) {
       // The surface closed while the session was starting: nobody would listen.
       session.dispose()
@@ -2056,13 +2071,17 @@ export class ConversationController {
       return undefined
     }
     let loaded: LoadedSession
+    const mcpServers = await this.mcpServersFor(host)
     try {
       loaded = await host.resumeSession(
         target.sessionId,
         this.modelId,
-        await this.mcpServersFor(host),
+        mcpServers,
         this.sideResumeOptions(host),
       )
+      if (mcpServers !== undefined) {
+        this.ideSessions.add(loaded.session)
+      }
     } catch (error: unknown) {
       this.notice('warning', `${UI_TEXT.sessionNotContinued}: ${describe(error)}`)
       return undefined
@@ -2383,12 +2402,16 @@ export class ConversationController {
         return
       }
       this.watchList(host)
+      const mcpServers = await this.mcpServersFor(host)
       const loaded = await host.resumeSession(
         sessionId,
         this.modelId,
-        await this.mcpServersFor(host),
+        mcpServers,
         this.sideResumeOptions(host),
       )
+      if (mcpServers !== undefined) {
+        this.ideSessions.add(loaded.session)
+      }
       if (generation !== this.sendInvalidationEpoch || this.isDisposed) {
         loaded.session.dispose()
         return
@@ -2659,6 +2682,8 @@ export class ConversationController {
         /** The message it answered, as typed (the card's text, a text file's note after it). */
         readonly prompt: string | undefined
         readonly name: string | undefined
+        /** Captured from the validated live host/session, never the webview's argument alone. */
+        readonly ownerRecorder: WorkspaceEditRecorder | undefined
       }
     | undefined
   > {
@@ -2705,7 +2730,13 @@ export class ConversationController {
       return undefined
     }
     const prompt = items[promptIndex]?.text?.split(TEXT_FILE_DISPLAY_MARKER)[0]
-    return { text, prompt, name: history.name }
+    return {
+      text,
+      prompt,
+      name: history.name,
+      ownerRecorder:
+        host.info.kind === 'modelApi' ? this.deps.plans?.captureOwner?.(session) : undefined,
+    }
   }
 
   /** Current authority after asynchronous plan preparation, lookup or confirmation. */
@@ -2788,7 +2819,7 @@ export class ConversationController {
     if (!this.canUsePlans()) {
       return undefined
     }
-    const saved = await plans.save(content)
+    const saved = await plans.save(content, reply.ownerRecorder)
     // The file's date and a hash of its name, and the conversation, never the plan (M39).
     this.deps.log.info(
       `Plan ${saved.isNew ? 'saved' : 'found saved'} as ${planLogName(saved.fileName)} from session ${sourceSessionId}`,
@@ -3271,8 +3302,18 @@ export class ConversationController {
       if (this.sessionKind !== host.info.kind) {
         throw new Error(UI_TEXT.turnStoppedByRestart)
       }
+      // Muse Code also hears how to check its edits (M68): the Model API
+      // backend checks them itself and says so in its instructions.
+      const verifyNote =
+        host.info.kind === 'museCode'
+          ? this.deps.verifyGuidance?.(this.ideSessions.has(session))
+          : undefined
+      const verifyParts: readonly TurnPart[] =
+        verifyNote === undefined ? [] : [{ type: 'text', text: verifyNote }]
       const note: readonly TurnPart[] =
-        host.info.kind === 'museCode' ? [{ type: 'text', text: CHOICE_STEERING_NOTE }] : []
+        host.info.kind === 'museCode'
+          ? [{ type: 'text', text: CHOICE_STEERING_NOTE }, ...verifyParts]
+          : []
       // A brief's first message (M79): what to do with it, for the model only.
       const hasSetTodos =
         brief !== undefined && brief.todos.length > 0 && session.setTodos !== undefined

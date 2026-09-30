@@ -89,6 +89,19 @@ describe('handleMcpMessage', () => {
     expect(tool.call).toHaveBeenLastCalledWith({ text: 'x' }, stop.signal)
   })
 
+  // M68: a caller that goes away stops a tool's wait (the diagnostics tool's).
+  it('hands the call the stop its caller gave', async () => {
+    const tool = echoTool()
+    const gone = new AbortController()
+    await handleMcpMessage(
+      request(6, 'tools/call', { name: 'echo', arguments: { text: 'hi' } }),
+      [tool],
+      info,
+      gone.signal,
+    )
+    expect(tool.call).toHaveBeenCalledWith({ text: 'hi' }, gone.signal)
+  })
+
   it('reports an unknown tool and a throwing tool as tool errors, not protocol errors', async () => {
     const failing: McpTool = { ...echoTool(), call: () => Promise.reject(new Error('boom')) }
     expect(

@@ -3,6 +3,7 @@
 // touch a tool.
 
 import type { SearchHit, ShellResult, ToolIo } from '../../../src/core/backends/modelapi/tools'
+import { fingerprint } from '../../../src/core/verify/fingerprint'
 
 export interface MemoryToolIo extends ToolIo {
   readonly files: Map<string, string>
@@ -97,6 +98,17 @@ export function memoryToolIo(
       files.set(absolutePath.replaceAll('\\', '/'), content)
       return Promise.resolve()
     },
+    // The conditional write (M68): only over the expected text.
+    writeFileIfUnchanged: (absolutePath, expectedFingerprint, content, options) => {
+      const key = keyOf(absolutePath)
+      const current = files.get(key)
+      const isUnsaved = options.unsavedAt.some((path) => unsaved.has(keyOf(path)))
+      if (isUnsaved || current === undefined || fingerprint(current) !== expectedFingerprint) {
+        return Promise.resolve('changed')
+      }
+      files.set(key, content)
+      return Promise.resolve('written')
+    },
     listFiles: () =>
       Promise.resolve(Array.from(files.keys(), (absolute) => absolute.slice(root.length + 1))),
     // A literal-substring matcher stands in for the worker; `(` is the one
@@ -131,6 +143,7 @@ export const noopToolIo: ToolIo = {
   readFile: () => Promise.resolve(undefined),
   readBytes: () => Promise.resolve(undefined),
   writeFile: () => Promise.resolve(),
+  writeFileIfUnchanged: () => Promise.resolve('changed'),
   pathExists: () => Promise.resolve(false),
   reserveFile: () =>
     Promise.resolve({ fill: () => Promise.resolve(), release: () => Promise.resolve() }),

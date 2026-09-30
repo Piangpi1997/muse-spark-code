@@ -58,8 +58,10 @@ Only the latest release on the Visual Studio Marketplace receives fixes.
   billed (`museBinaryPath`, `environmentVariables`, `backend`,
   `shellSandbox`, `sandboxNetwork`, `initialPermissionMode`,
   `allowDangerouslySkipPermissions`, `modelApiHooks`, `modelApiRepoMap`,
-  `modelApiPromptCacheRetention` and the five paid `modelApi*` features)
-  are machine-scoped in every workspace, trusted or not: a repository's
+  `modelApiPromptCacheRetention`, the verify loop's `checkCommands`,
+  `formatOnEdit` and `diagnosticsAfterEdits`, and the five paid
+  `modelApi*` features) are machine-scoped in every workspace, trusted or
+  not: a repository's
   `.vscode/settings.json` cannot point the extension at its own executable. In a remote window a dev container
   definition can write machine settings, so there Bypass permissions is
   never the starting mode and needs an explicit confirmation.
@@ -145,6 +147,66 @@ Only the latest release on the Visual Studio Marketplace receives fixes.
   without the sandbox for a Windows workspace under the user's profile
   (where the sandbox cannot enter), and `off` never sandboxes; both leave
   the approval cards in place.
+- **Check commands and `then_run` (Model API backend).** The commands the
+  extension runs after the agent's edits (`museSpark.checkCommands`,
+  machine-scoped, none by default) and the one an edit's `then_run` names
+  take the shell tool's own hooks and permission path: the user's
+  PreToolUse, PostToolUse and PostToolUseFailure hooks see each as a call
+  of the shell tool (a denial, a rewrite or a demanded question holds), as
+  does PermissionRequest wherever the shell's card would show; they ask wherever a shell command would ask (every mode
+  but Bypass permissions), never run in Plan mode or Restricted Mode, and
+  run with the shell tool's runner, job object and time cap. The agent can
+  change what a check runs (a `package.json` script), which is why they
+  ask. Their "Always allow in this session" is kept apart from the shell
+  tool's rules (in both directions: a check's grant never answers for the
+  agent's own shell call of the same command, nor a shell grant for the
+  check), and before any live Model API conversation or subagent in this
+  workspace starts writing a file that may decide what a command
+  runs (the manifest, a `Makefile`, a tool's configuration, a file the
+  command names by its path, its name, its path without extension, as a
+  dotted module or as its folder's entry file; for a command with quotes,
+  escapes, variables, substitutions, globs or operators, any file) it no
+  longer answers until the user's next message. A pending write still
+  invalidates the grant after a new message and in newly opened sessions;
+  a check started during the write cannot certify its completed state.
+  Project memory writes and a new note's index notify the same ledger when
+  inside the workspace. That is judged on the
+  command the rule is keyed on (after a hook's rewrite) and again right
+  before the command runs. The shell tool's own session rules keep their
+  earlier behaviour (PLAN §3 Q12). Edited file names reach a check only as quoted
+  arguments after `--`, and only files that exist in the workspace; a name
+  that starts with `-` or `@` or holds a control character keeps the check
+  from running, and on Windows so does one holding `"`, `&`, `|`, `<`, `>`,
+  `^`, `%` or `!`, which Windows PowerShell 5.1's argument passing and
+  `cmd.exe` (for a `.cmd` or `.bat` program) would read as syntax (measured:
+  `x&echo.INJECTED` ran a second command through a `.cmd`). `then_run` runs
+  only if the file still holds what the edit wrote.
+- **Opening files for their diagnostics.** VS Code's language servers
+  report only on files an editor shows, so the verify loop and the
+  `getDiagnostics` tool open files. Opening a file can make an extension
+  load its configuration as code (an ESLint or Prettier JavaScript config,
+  `package.json`, `node_modules`), so neither ever opens or formats such a
+  file, and once any live conversation or subagent starts writing one the
+  loop opens and formats nothing
+  more until the user's next message. `getDiagnostics` opens only a file
+  inside the workspace by its real path (links and junctions resolved).
+  Every later act on an edited file (format on edit's write-back, `then_run`,
+  the diagnostics' show and read, a check's file arguments) uses the real
+  path and canonical name confinement found at the edit and checks, just
+  before, that the file is still there and still holds what the edit left
+  (a check's arguments: still there). Format on edit's write-back is a
+  conditional write: the file's bytes are compared with what the edit wrote
+  before the write and again immediately before the rename, and a changed
+  or removed file, or one an editor holds unsaved text for (by either name), is left alone (its folder is not made again). What
+  remains is the moment between the last comparison and the rename: on
+  POSIX a change saved in it is replaced, and a program still writing
+  through a handle it held on the old file writes into a file that no
+  longer has a name; on Windows a program holding the file open makes the
+  rename wait and compare again, but a change saved and closed in that
+  moment is replaced.
+  Muse Code's own edits are not seen by the extension, so after Muse Code
+  writes such a config, a later `getDiagnostics` request for an ordinary
+  file can still open that file and let the extension load the config.
 - **Installing Muse Code.** The panel runs only Meta's published install
   command for the platform (`constants.ts` `MUSE_INSTALL_COMMANDS`), and
   only after a confirmation that shows it, in a visible terminal. It never

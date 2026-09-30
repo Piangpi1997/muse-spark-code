@@ -17,7 +17,7 @@ import { MemoryStore } from './core/memory/memoryStore'
 import { terminalArgument } from './core/shellQuote'
 import { renderSupportReport } from './core/support/report'
 import { type CliInvocation, isSandboxNetworkApplied } from './core/backends/musecode/sandbox'
-import { type DiagnosticEntry, type DiagnosticSeverity, diagnosticsTool } from './core/diagnostics'
+import { DIAGNOSTIC_SEVERITIES, type DiagnosticEntry, diagnosticsTool } from './core/diagnostics'
 import type { EditorContext } from './core/editorContext'
 import type { MentionSource } from './core/mention'
 import { MentionIndex } from './core/mentionIndex'
@@ -60,6 +60,8 @@ import {
 } from './host/backend/toolIo'
 import { EditorContextTracker } from './host/editor/editorContextTracker'
 import { EditReview } from './host/editor/editReview'
+import { createVerifyEditor } from './host/editor/verifyEditor'
+import { verifyGuidance } from './core/verify/checkCommands'
 import { IdeMcpServer } from './host/ide/ideMcpServer'
 import { createRulesFile } from './host/commands/createRulesFile'
 import { insertMentionReference } from './host/commands/insertMention'
@@ -208,13 +210,6 @@ function editorSnapshot(): EditorContext | undefined {
     selectedText: selection.isEmpty ? undefined : editor.document.getText(editor.selection),
   }
 }
-
-const DIAGNOSTIC_SEVERITIES: readonly DiagnosticSeverity[] = [
-  'error',
-  'warning',
-  'information',
-  'hint',
-]
 
 /** Every diagnostic VS Code holds, by root-relative path; the tool reports the root's only (D27). */
 function collectDiagnostics(): readonly DiagnosticEntry[] {
@@ -849,11 +844,22 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         .filter((document) => document.isDirty && document.uri.scheme === FILE_SCHEME)
         .map((document) => document.uri.fsPath),
   })
+  // The verify loop (M68, PLAN.md D49): what the language servers report on
+  // edited files, which only an editor showing a file makes them do, and the
+  // formatter over the Model API backend's edits.
+  const verifyEditor = createVerifyEditor({
+    platform: process.platform,
+    log,
+    workspaceRoot,
+    realPath: canonicalPath,
+  })
+  context.subscriptions.push(verifyEditor)
   const diagnostics = diagnosticsTool({
     getDiagnostics: collectDiagnostics,
     workspaceRoot,
     platform: process.platform,
     relativeInRoot: (absolutePath) => relativePathInWorkspace(vscode.Uri.file(absolutePath)),
+    settleFile: (absolutePath, signal) => verifyEditor.settleFile(absolutePath, signal),
   })
   // Images for Muse Code (M44, PLAN.md D37): made here with the stored key,
   // never by `muse serve`, each one confirmed with its price.
@@ -1046,6 +1052,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           workspaceRoot,
           platform: process.platform,
           io: createPlanIo({ log, now: () => Date.now() }),
+          beginEdit: (file, ownerRecorder) => modelApi.beginExternalEdit(ownerRecorder, [file]),
+          captureOwner: (session) => modelApi.captureExternalEditOwner(session),
           pick: showPickOne,
           confirm: async (message, detail, action) =>
             (await vscode.window.showWarningMessage(message, { modal: true, detail }, action)) ===
@@ -1140,6 +1148,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       paid.usage.addSubagentUsage(modelId, usage)
     },
     memory,
+    // The settings are read at each use; a repository cannot set them (D15).
+    verify: {
+      isDiagnosticsOn: () => currentSettings().diagnosticsAfterEdits,
+      checkCommands: () => currentSettings().checkCommands,
+      isFormatOnEdit: () => currentSettings().formatOnEdit,
+      diagnosticsAfterEdit: (files, signal) => verifyEditor.diagnosticsAfterEdit(files, signal),
+      formatAfterEdit: (absolutePath, text) => verifyEditor.formatAfterEdit(absolutePath, text),
+    },
     // Its own bundle, loaded when this backend first starts (M57, PLAN.md D6).
     bundlePath: vscode.Uri.joinPath(context.extensionUri, 'dist', MODEL_API_BUNDLE_FILE).fsPath,
   })
@@ -1471,6 +1487,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         allowsPaidUse: async (request) => await paid.consent.allows(request),
         forgetPaidUse: async () => {
           await paid.consent.forget()
+        },
+        // Muse Code checks its own edits (M68): its checks run through its own
+        // shell, so none are named while Restricted Mode runs no shell (D13).
+        // The diagnostics sentence only for a session that has the ide server.
+        verifyGuidance: (hasIdeServer) => {
+          const settings = currentSettings()
+          return verifyGuidance(
+            settings.diagnosticsAfterEdits && hasIdeServer,
+            vscode.workspace.isTrusted ? settings.checkCommands : [],
+          )
         },
         now: () => Date.now(),
         log,

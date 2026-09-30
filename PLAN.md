@@ -3138,6 +3138,7 @@ modelApi` (the key of D61). There is no "auto", so the bill is never a
 | Q64 | **Resolved 2026-09-26:** "the top editors come first but i want them all or as close to all as possible": the order is D62's.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | Q65 | **Answered 2026-09-26:** after npm held the owner's account for suspicious activity, the owner set `NPM_TOKEN` in the `marketplace` environment. The name `muse-spark-code-acp` was free that day; the next tag publishes it, and each GitHub Release still carries the package.                                                                                                                                                                                                                                                                                                                                                                                                             |
 | Q66 | **Resolved 2026-09-27: loud, not re-routed.** The ACP agent's own requests (the Model API backend) use Node's `fetch`, which ignores `HTTPS_PROXY` unless `NODE_USE_ENV_PROXY=1` (Node 22.21+ or 24+; measured on seven releases). The owner: the agent does not re-route by itself or add undici. It warns once at start, in its log, when a proxy variable is set for the Model API backend and Node's switch is off or missing (`src/runtime/proxyWarning.ts`), and a request that never reaches Meta gets advice naming the agent's environment variables instead of VS Code's `http.*` settings (M56's classifier, told by the runtime which host it serves: `networkAdvice: 'agent'`). | Closed; `docs/acp.md` "Networks and proxies", `docs/certification/pr32-integration.md`. |
+| Q12 | Should a shell tool session rule ("Always allow in this session" for a shell command) lapse when the model edits a file the command names or that decides what it runs, as the verify loop's rules do since M68? Today the shell tool keeps its pre-M68 behaviour: its rules are keyed on the exact command line and answer whatever the model edited. The verify loop's grants are kept apart from it (PR #54).                                                                                                                                                                                                                                                                             | The shell tool's rules keep answering; only the verify loop's lapse.                    |
 
 ## 4. Architecture
 
@@ -7123,6 +7124,41 @@ code-intel` on VS Code stable and 1.125.0; live case19 of the Model
 
 ### M68 — Verify loop (D49)
 
+**Resume integration, 2026-09-29 (source preparation only).** Join M68 and
+its reviewed workspace-edit repair onto main `f7db5715` (M79 and PR51 included), preserving
+the M67/M69 tools, required MCP cancellation signals, unsaved-file access,
+ACP key isolation and the VS Code 1.99/Node 20.18 floor. Move the existing
+workspace-edit registry unchanged to a core structural-observer module;
+the backend manager owns and injects it before a lazy host can start, so
+pending writes reach new conversations and children without loading the
+lazy verify ledger in activation or ACP. The ACP runtime shares registries
+by an existing canonical directory's native bigint device/inode identity,
+refusing unreadable, non-directory or unusable identities. Bind actual tool
+and context paths to the immutable canonical root, keep the raw cwd only for
+saved-session identity, and fence the raw and canonical roots' captured native
+identity before mutations, commands and final publications after awaited
+staging. Cached aliases never silently rebind after retargeting. Native alias,
+retargeting, directory replacement and distinct-directory
+controls remain unverified until the Windows, macOS and Linux rig slot.
+Rename begins notices for every
+planned canonical/alias path before rechecks, records only successful
+writes in the originating session, and completes all notices in finally.
+Keep the current first-write Stop guard. M79's plan publication brackets each
+checked create attempt with shared notices, records only a true new-file result
+in its captured live Model API owner, and always completes in finally. A changed
+conversation never becomes the saved plan's invented owner. Preserve M79's
+owned-stage cleanup with M68's conditional writer. M77's winner-apply binding
+remains a later integration seam. No verifier or certification claim is made
+during preparation. The frozen behavior tree `1c3dbea9` has current host,
+unit, e2e and webview types, scoped lint and the normal duplication gate all
+at exit 0. Fifty-two bounded acceptance tests passed before and after 16
+deliberate production failures; every mutated source hash restored exactly.
+Fifteen failures reached intended assertions, and the lazy-injection failure
+reached its exact subscription-contract TypeError, labeled separately.
+The host API inventory regenerated successfully. Full exact-tree quality,
+independent staged review, installed ACP/VS Code and native rig controls
+remain required; this evidence makes no live-model or full-rig claim.
+
 - **Goal.** Every edit is checked, and the model sees the result without
   asking.
 - **Scope.**
@@ -7163,6 +7199,21 @@ code-intel` on VS Code stable and 1.125.0; live case19 of the Model
 - **Acceptance.** Check commands and `then_run` never run in Plan or
   Restricted Mode, and never run unapproved where a shell command would
   ask. `then_run` shows in the row as one call with two results.
+  - **Workspace edit review, 2026-09-29:** before an approved `write_file`
+    or `edit_file` can write or format, notify every live Model API session
+    in this workspace, including parents, children and siblings. Pending
+    names must lapse the verify loop's grants even during a new message;
+    checks over pending writes cannot count as current. Completion or
+    failure releases the pending state and invalidates runs that started
+    during the write. New sessions join active notices; disposed sessions
+    leave them. Keep each session's successful-edit diagnostics and fix
+    loop separate, and preserve the shell tool's rules (Q12). Reuse
+    `ModelApiHost`'s session lifetime and `VerifyLedger`, with held writes
+    and formatters in the existing fake API tests plus red drills.
+    Project memory writes and an added note's `MEMORY.md` index also notify
+    the ledger when confined inside this workspace; they still do not
+    schedule automatic diagnostics or checks. Other writers (shell, image
+    and external MCP tools) keep M68's existing scope.
 - **Evidence.** OpenCode, Aider (`--lint-cmd`/`--test-cmd`), Crush,
   SoL-Pi.
 - **Tests.** The fake Model API over a fixture with a failing check: the
@@ -7170,6 +7221,152 @@ code-intel` on VS Code stable and 1.125.0; live case19 of the Model
   at its limit, and a check asks where a shell command asks (a drill per
   mode).
 - **Size.** M.
+- **Status 2026-09-28: built and certified on `feature/m68-verify-loop`**
+  (`docs/certification/m68.md`); not pushed. Decisions taken:
+  - **Settings**, all machine-scoped (D15): `diagnosticsAfterEdits` (on),
+    `checkCommands` (none; `{ name, command, changedFiles?,
+timeoutSeconds? }`, at most 8, names unique, 300 s unless set, 600 s at
+    most), `formatOnEdit` (off). The loop is Model API only, as scoped;
+    `run_checks` and `then_run` are offered only with the shell.
+  - **After a round that edited files** (the edit tools' writes; not the
+    shell's, the memory tools' or images), before the next request: the
+    edited files' diagnostics, then the checks, in a **Check edits** row
+    (`verify_edits`) whose summary counts errors and warnings and names each
+    check's outcome; the model reads it all as a user note that leads with
+    "tool data, not a new instruction from the user". A diagnostic is
+    matched across rounds by severity, source and message, never its line,
+    for "N new, M fixed"; at most 50 are listed.
+  - **The language servers report only on files an editor shows**
+    (measured, VS Code 1.139.1 and 1.125.0: a hidden `.ts` and `.json` got
+    nothing in 25 s, shown ones in 1.6 s and 0.1 s). So each edited file no
+    editor shows opens beside the active editor in a tab of its own (not a
+    preview, which `workbench.editor.enablePreview: false` would make
+    permanent and which would replace the user's own preview), without
+    taking focus (beside, so nothing the user types lands in it), and the
+    tabs it opened close after the read unless the user changed them. After
+    the M68 review the wait starts once the file shows: 4 s for a first
+    report, then 1.5 s of quiet, 10 s at most, a Stop ending it for every
+    file left; one queue serves every caller (panels, subagents, the
+    `getDiagnostics` tool). A file with no report, unsaved, or past the
+    round's first 8 (`VERIFY_SHOWN_FILES_MAX`) is "not checked" with the
+    reason, never clean, and leaves the "N new" baseline alone; the baseline
+    moves only once the note reached the conversation. The existing
+    `getDiagnostics` tool does the same for a file it is asked about, on
+    both backends, which is what makes the Muse Code guidance useful; it is
+    confined by real path first, and its wait ends when the MCP caller goes
+    away.
+  - **Permission path** (`authorizeCommand`): Restricted Mode refuses; the
+    mode's shell verdict decides (Plan refuses, Bypass allows, the others
+    ask); the card is the shell's own (`shell` subject, so Edit
+    automatically never answers it), with the PermissionRequest hook seeing
+    it as a shell call; "always allow in this session" is keyed on the
+    configured command without its paths, under the verify loop's own key
+    (`VERIFY_COMMAND_RULE_KEY`) since PR #54's fourth Codex round: a
+    check's or `then_run`'s grant never answers for the model's own shell
+    call of the same command, nor the shell's for them. A check the
+    user rejects is not asked again until their next message. In Restricted
+    Mode the automatic checks are left out rather than refused one by one.
+    Superseded by the M68 review: checks, `run_checks` and `then_run` go
+    through the user's PreToolUse, PostToolUse and PostToolUseFailure hooks
+    as calls of the shell tool (`runVerifyCommand`: a block is "a hook
+    denied it" with the hook's words, `updatedInput.command` replaces the
+    line and the rule key, a demanded question asks even in Bypass, a
+    PostToolUse context or reason follows the output, and `continue: false`
+    ends the turn); a PermissionRequest hook's denial is told apart from the
+    user's Reject, whose feedback is kept. The session rule stays keyed on
+    the configured command, which is safe because a path can no longer
+    inject (below), but it does not answer after the conversation, since
+    the user's message, edited a file that decides what the command runs
+    (`canChangeWhatRuns`: `COMMAND_DEFINING_FILES`, code-loading files, a
+    file whose path occurs in the command's text or a plain word of it
+    names, or, since PR #54's fourth Codex round, any edited file when the
+    command holds shell syntax that makes its words uncertain: quotes,
+    escapes, variables, substitutions, globs, operators). The judgement is
+    made on the command the rule is keyed on, a hook's rewrite included.
+  - **Paths reaching a check** (the M68 review, P1): only edited files that
+    exist, or `run_checks` paths that exist in the workspace; a leading `-`
+    or `@`, or a control character, refuses the check, and on Windows so do
+    `"`, `&`, `|`, `<`, `>`, `^`, `%` and `!` (`WINDOWS_ARGUMENT_SYNTAX`):
+    measured, Windows PowerShell 5.1 passed `["a\"","b --inject"]` to
+    node.exe as `a b`, `--inject`, and a `.cmd` ran `x&echo.INJECTED` as a
+    second command, expanded `%OS%` and dropped `^`, while spaces, both
+    quotes, `$`, `;`, `,`, `=`, parentheses, braces and non-ASCII passed
+    intact through both.
+  - **Code the editor runs** (the M68 review): a linter's or formatter's
+    JavaScript config, `package.json`, `node_modules`
+    (`CODE_LOADING_FILE_PATTERNS`) is never shown or formatted, and once the
+    conversation writes one nothing more is shown or formatted until the
+    user's next message ("not checked" with the reason).
+  - **One budget**: the verify note, diagnostics and every check together,
+    is at most `VERIFY_NOTE_MAX_CHARS` (64,000), shared equally; so is a
+    `run_checks` result. A check the model ran since the round's last edit
+    (`run_checks` over the edits, or a `then_run` of its own command) is not
+    run again after the round, and nothing runs after the turn's last round.
+  - **The fix loop**: `CHECK_FIX_MAX_ROUNDS` (3) failing verdicts in a row
+    stop the checks until the user's next message. Since PR #54's third
+    review the state is one `VerifyLedger` per session: every check that
+    ran is recorded against the file state it ran on, a round is judged
+    when a run since the previous verdict is current, and it passes only
+    when no current run of any check failed. A user's message, once
+    admitted, resets it all; a steered message resets the count, the
+    rejections and the runs, but not what the conversation wrote; a goal's
+    wake, and a parent model's message to a subagent, reset nothing.
+    `run_checks` honours the stop and the rejections too. The model is told
+    to stop fixing and say what still fails; the panel shows a warning. The
+    diagnostics go on.
+  - **`then_run`** (SoL-Pi's Action Fusion, reimplemented from its public
+    description, no code ported, so the notices generator is unchanged and
+    M73 stays the first milestone that may port): after the edit (and its
+    format), the command takes the permission path above (a hook's forced
+    question carries over), then runs only if the file's SHA-256 still
+    equals the fingerprint the edit left; else "not run: the file changed".
+    The row keeps the edit's diff and adds a **Then ran** block (command,
+    output, exit or reason). A Stop at its card keeps the edit's result and
+    diff. The shell's default 120 s cap applies.
+  - **Format on edit**: `vscode.executeFormatDocumentProvider` over the
+    document once it shows what the tool wrote (2 s to catch up, else
+    skipped), within 5 s; edits applied to the written text (BOM kept, the
+    file's CRLF kept), written back by the tool, the patch and fingerprint
+    taken after. A formatter that fails or overlaps leaves the edit as
+    written and is logged; so does a write-back that fails (the M68 review),
+    and a formatter that does not answer in time is logged too.
+  - **Muse Code**: a second `<harness_note>` with each message, from
+    `MODEL_TEXT`: call `mcp__ide__getDiagnostics` on each edited file (only
+    when the session got the `ide` server) and fix what the edit broke, and
+    run the named check commands (named only in a trusted workspace). The template AGENTS.md is unchanged; no skill is
+    installed. Automatic checks after Muse Code's own edits need an MSP
+    event ("a turn's edits finished", or an edit completion hook), still to
+    be asked of Meta upstream: the owner's to file.
+  - **Evidence**: 27 unit tests over the fake Model API (a fixture whose
+    lint fails), 11 over the editor adapter, an integration test inside VS
+    Code 1.139.1 and 1.125.0 (TypeScript and JSON diagnostics, the JSON
+    formatter), a harness scenario `verify`, 26 red drills, and a live case
+    (case19: 3 requests a run, two runs, contributor model, `then_run` used
+    and passed, the check note accepted by Meta). After the M68 review (one
+    pass over three reviewers' 2 P1 and 18 P2 findings, 16 of them
+    distinct): 47 loop tests, 18 editor tests, 12 check-command tests (two
+    real round trips through Windows PowerShell 5.1, one into a `.cmd`), the
+    harness scenario fixed and reshot, 40 red drills, and the integration
+    test rerun on both versions. That run caught a regression the tab
+    cleanup made: the JSON server clears a file's diagnostics when its tab
+    closes, so `settleFile` now returns what it read while the file showed
+    and the diagnostics tool answers with that. Codex's review of PR #54
+    added four, fixed with drills R41 to R46: a hook's stop ends the
+    remaining checks; a queued editor caller stops while it waits; an
+    already shown file's report since the write, or a shown document that
+    holds the disk text, counts; `run_checks` rounds without edits count for
+    the fix loop. Its second round added three, closed as a class: every act on
+    a file after an await uses the confined real path and canonical name
+    and checks the file (its real path, and what the edit left) just
+    before; a reused background tab keeps its preview state and the tab
+    that was in front comes back (drills R47 to R56). Its third round
+    (four findings) was answered by a redesign: one conditional write in
+    `fsAtomic` for every verify-loop writer, and one `VerifyLedger` per
+    session that records each check against the file state it ran on,
+    judges a round only by runs on the latest state, and resets on any
+    admitted user input, queued or steered (drills R57 to R68).
+  - **Open for the owner**: the side editor group, the upstream MSP ask, and
+    the `diagnosticsAfterEdits` default (on).
 
 ### M69 — Web fetch (D49; folds in M44b)
 
@@ -8568,6 +8765,8 @@ Every lint or scanner suppression (`eslint-disable`, `@ts-expect-error`, `nosemg
 | `src/host/backend/modelApiBundle.ts`     | `value is ModelApiBundle` (`isModelApiBundle`, a type predicate)   | `require` of `dist/modelApi.js` returns `unknown`; the guard checks that `createModelApiHost` is a function, but not its parameter and result types, which no run-time check can see. Both bundles come from one source tree in one `npm run build` and ship in one package, this module types the factory on both sides, and `modelApiBundle.test.ts` builds the real bundle and runs a turn through it (M57).                                                                                                                                                                        | 2026-09-27 |
 | `src/host/codeIntel/languageServices.ts` | `Reflect.get(edit, '_allEntries')`, an undocumented member         | VS Code's `WorkspaceEdit` API lists only text edits (`entries()`, and `size` counts them), so a rename that also moves or creates files looks plain. The internal `_allEntries()` (1.99.0 to 1.139.0) lists every entry with its `_type`; it is read as `unknown` and parsed with zod, and a missing member or a changed shape answers `unknown`, which refuses the rename rather than applying half of it (M67). `languageServices.test.ts` and the integration suite cover both.                                                                                                     | 2026-09-28 |
 | `src/runtime/main.ts`                    | `nosemgrep` on `spawn` (`detect-child-process`)                    | The ACP agent's `login` (M63, D62) runs `muse login` in the user's terminal the way the agent starts `muse serve`: the command is the CLI `MuseCodeBackendManager.resolveLaunch` found (the install layout, `PATH`, or an absolute `--muse-binary` that must exist, D1a, D4), the arguments its launcher's fixed prefix and `MUSE_LOGIN_ARGS`, passed as an array with no shell. Nothing from an editor, the model or a workspace reaches it. Found by the first local SAST run on PR #32's code (2026-09-27).                                                                         | 2026-09-27 |
+| -------------------------------------    | ------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------- |
+| `test/unit/verifyEditor.test.ts`         | `as unknown as` on five `vscode` stubs                             | The `vscode` mock has no `TextDocument`, `TextEditor`, `Diagnostic`, `TextEdit` or `WorkspaceConfiguration` classes; the M68 verify editor's tests stub only the members it reads (a document's `uri`, `isDirty`, `eol`, `getText`, `offsetAt`; an editor's `document.uri`; a diagnostic's severity, range start, message and source; an edit's range and text; a configuration's `get`), so a structural cast is the honest shape. Test-only.                                                                                                                                         | 2026-09-28 |
 
 ## 9. Security assumptions and accepted residual risk
 
@@ -8618,6 +8817,41 @@ Every lint or scanner suppression (`eslint-disable`, `@ts-expect-error`, `nosemg
   the extension writing the same note in the same instant keep only one of
   the two writes. Notes reach every later session, the personal scope every
   project, so a model's write asks in Manual (Muse Code's does not).
+- Opening files for their diagnostics (M68): VS Code's language servers
+  report only on shown files, and showing a file can make an extension load
+  its configuration as code. The verify loop never shows or formats a
+  code-loading file (`CODE_LOADING_FILE_PATTERNS`, `node_modules`) and,
+  once the Model API conversation wrote one, shows and formats nothing more
+  until the user's next message. Residual risk: the extension does not see
+  Muse Code's own writes, so after Muse Code writes, say, `eslint.config.js`
+  (with its own approval), a later `getDiagnostics` request for an ordinary
+  file still shows that file, and the ESLint extension may then load the new
+  config. The pattern list is also a named list, not every tool's
+  convention; a config an extension loads under another name is not
+  covered. Check paths on Windows are refused by character, a deny list
+  over PowerShell 5.1's and `cmd.exe`'s syntax as measured, with only
+  existing workspace files passed.
+  Every act the verify loop takes on a file after an await (format on
+  edit's open and write-back, `then_run`, the diagnostics' show and read,
+  `getDiagnostics`, a check's path arguments) uses the real path and
+  canonical name confinement found and checks the file just before (the
+  Codex review of PR #54; the sites are listed in the M68 certification).
+  Residual risk: a moment remains between that check and the act (no
+  compare-and-swap on the file system; an atomic rename cannot be
+  conditional), and a folder on the real path swapped for a link in that
+  moment is not caught. Format on edit's write-back goes through the one
+  conditional write (`fsAtomic.writeFileIfUnchanged`, PR #54's third
+  review), which compares the target's bytes first and again immediately
+  before each rename attempt. No file system offers a conditional rename.
+  On POSIX the rename replaces the name whoever has the file open: a change
+  saved between the last comparison and the rename is replaced, and a
+  program still writing through its open handle to the old file writes
+  into a file that no longer has a name. On Windows the rename is refused
+  while another program holds the file without sharing delete, and each
+  retry compares again; a change saved and closed between the last
+  comparison and the rename is still replaced. The verify ledger knows a
+  file by its real path: two hard links to one file are two files there,
+  so an edit through one does not make a run over the other stale.
 
 - M50's Windows stdio server inherits the extension's three binary pipes
   unchanged. A hidden helper creates it suspended, assigns it to a fresh

@@ -15,7 +15,13 @@ import {
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
-import { createFileExclusively, isNameTaken, writeFileAtomically } from '../../src/host/fsAtomic'
+import {
+  createFileExclusively,
+  isNameTaken,
+  writeFileAtomically,
+  writeFileIfUnchanged,
+} from '../../src/host/fsAtomic'
+import { fingerprint } from '../../src/core/verify/fingerprint'
 import { isSamePath } from '../../src/core/paths'
 import { removeFolder } from './helpers/temporaryFolders'
 
@@ -35,6 +41,36 @@ function coded(code: string): Error {
 }
 
 describe('writeFileAtomically (D27)', () => {
+  it('rechecks its owner after a busy publication attempt without replacing the target', async () => {
+    const folder = path.join(paths.root, 'owner-atomic-retry')
+    await mkdir(folder)
+    const target = path.join(folder, 'note.txt')
+    await writeFile(target, 'before')
+    let isCurrent = true
+    let attempts = 0
+    await expect(
+      writeFileAtomically(target, 'after', {
+        sleep: noWait,
+        assertCanWrite: () => {
+          if (!isCurrent) {
+            throw new Error('workspace owner changed')
+          }
+        },
+        rename: async (from, to) => {
+          attempts += 1
+          if (attempts === 1) {
+            isCurrent = false
+            throw coded('EBUSY')
+          }
+          await rename(from, to)
+        },
+      }),
+    ).rejects.toThrow('workspace owner changed')
+    expect(attempts).toBe(1)
+    await expect(readFile(target, 'utf8')).resolves.toBe('before')
+    expect(await readdir(folder)).toEqual(['note.txt'])
+  })
+
   it('creates the folder, replaces the file and leaves no temporary file', async () => {
     const target = path.join(paths.root, 'nested', 'a.txt')
     const sleep = vi.fn(() => Promise.resolve())
@@ -124,6 +160,69 @@ describe('writeFileAtomically (D27)', () => {
   })
 })
 
+// The one conditional write (M68; the Codex review of PR #54, third round).
+describe('writeFileIfUnchanged', () => {
+  it('replaces the file only while it holds the expected text', async () => {
+    const target = path.join(paths.root, 'conditional', 'c.txt')
+    await writeFileAtomically(target, 'as edited', { sleep: noWait })
+    await expect(
+      writeFileIfUnchanged(target, fingerprint('as edited'), 'formatted', { sleep: noWait }),
+    ).resolves.toBe('written')
+    await expect(readFile(target, 'utf8')).resolves.toBe('formatted')
+    await expect(
+      writeFileIfUnchanged(target, fingerprint('as edited'), 'again', { sleep: noWait }),
+    ).resolves.toBe('changed')
+    await expect(readFile(target, 'utf8')).resolves.toBe('formatted')
+    // A file that is gone is not what was expected either.
+    await expect(
+      writeFileIfUnchanged(path.join(paths.root, 'conditional', 'gone.txt'), fingerprint(''), 'x', {
+        sleep: noWait,
+      }),
+    ).resolves.toBe('changed')
+    expect(await readdir(path.dirname(target))).toEqual(['c.txt'])
+    // Nor is a file whose folder is gone, and the folder is not made again.
+    const removed = path.join(paths.root, 'conditional', 'removed')
+    await expect(
+      writeFileIfUnchanged(path.join(removed, 'e.txt'), fingerprint(''), 'x', { sleep: noWait }),
+    ).resolves.toBe('changed')
+    await expect(stat(removed)).rejects.toThrow('ENOENT')
+  })
+
+  it('asks its last word right before the rename, and leaves the file when told no', async () => {
+    const target = path.join(paths.root, 'conditional', 'f.txt')
+    await writeFileAtomically(target, 'as edited', { sleep: noWait })
+    await expect(
+      writeFileIfUnchanged(target, fingerprint('as edited'), 'formatted', {
+        sleep: noWait,
+        isReplaceable: () => false,
+      }),
+    ).resolves.toBe('changed')
+    await expect(readFile(target, 'utf8')).resolves.toBe('as edited')
+  })
+
+  it('compares immediately before each rename, so a change during the write stands', async () => {
+    const target = path.join(paths.root, 'conditional', 'd.txt')
+    await writeFileAtomically(target, 'as edited', { sleep: noWait })
+    let refusals = 1
+    const wrote = await writeFileIfUnchanged(target, fingerprint('as edited'), 'formatted', {
+      sleep: noWait,
+      rename: async (from, to) => {
+        if (refusals > 0) {
+          // The first attempt is refused, and meanwhile someone writes the file.
+          refusals -= 1
+          await writeFile(target, 'someone else')
+          throw coded('EBUSY')
+        }
+        await rename(from, to)
+      },
+    })
+    expect(wrote).toBe('changed')
+    await expect(readFile(target, 'utf8')).resolves.toBe('someone else')
+    const names = await readdir(path.dirname(target))
+    expect(names.toSorted((a, b) => a.localeCompare(b))).toEqual(['c.txt', 'd.txt', 'f.txt'])
+  })
+})
+
 describe('isSamePath (D27)', () => {
   it('ignores case and separators on Windows only', () => {
     expect(isSamePath(String.raw`C:\Ws\A.ts`, 'c:/ws/a.ts', 'win32')).toBe(true)
@@ -146,6 +245,29 @@ async function failureOf(promise: Promise<unknown>): Promise<unknown> {
 }
 
 describe('createFileExclusively (M79)', () => {
+  it('rechecks its owner after awaited staging before publishing a private new file', async () => {
+    const folder = path.join(paths.root, 'owner-final-publication')
+    const target = path.join(folder, 'note.md')
+    let isCurrent = true
+    await expect(
+      createFileExclusively(target, 'private bytes', {
+        mode: 0o666,
+        warn: quiet,
+        assertCanWrite: () => {
+          if (!isCurrent) {
+            throw new Error('workspace owner changed')
+          }
+        },
+        staged: async () => {
+          await Promise.resolve()
+          isCurrent = false
+        },
+      }),
+    ).rejects.toThrow('workspace owner changed')
+    await expect(lstat(target)).rejects.toMatchObject({ code: 'ENOENT' })
+    expect(await readdir(folder)).toEqual([])
+  })
+
   it('publishes a new file and names a taken name as such, leaving the old file and no stage', async () => {
     const target = path.join(paths.root, 'new', 'plan.md')
     await createFileExclusively(target, 'first', { mode: 0o666, warn: quiet })

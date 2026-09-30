@@ -19,6 +19,60 @@ happened, not what was planned; superseded entries are kept.
 
 ### Added
 
+- **The agent checks its own edits** (M68, PLAN.md D49). On the Model API
+  backend, after each round of tool calls that edited files, the next
+  request carries the edited files' errors and warnings from VS Code's
+  language servers, with what changed since each file's previous check
+  (`museSpark.diagnosticsAfterEdits`, on by default), and the results of
+  your **check commands** (`museSpark.checkCommands`: lint, test or
+  type-check commands, none by default), within one 64,000-character
+  budget. A **Check edits** row shows the files, their problems, how many
+  were **not checked** (no report arrived, unsaved, or past the first 8;
+  never reported clean) and how each check ended.
+- **Check commands take the shell tool's hooks and permission path.** Your
+  PreToolUse, PostToolUse and PostToolUseFailure hooks see each check and
+  `then_run` command as a shell call (deny, rewrite, ask, add context, stop
+  the turn), and a hook's denial is shown apart from your Reject. Each asks
+  wherever a shell command would ask (every mode but Bypass permissions),
+  "Always allow in this session" allows that check (never the agent's own
+  shell call of the same command, nor the other way round) until the agent
+  edits a
+  file that decides what it runs (`package.json`, a `Makefile`, a config
+  the tools load, a file it names; any file, for a command with quotes,
+  variables or other shell syntax), and none runs in Plan mode or Restricted
+  Mode. `changedFiles` passes the edited files that still exist after `--`,
+  each quoted as one argument, and refuses a file name that starts with `-`
+  or `@`, or on Windows holds `"`, `&`, `|`, `<`, `>`, `^`, `%` or `!`;
+  `timeoutSeconds` caps each run. A rejected check is not asked again, and
+  after three failing rounds in a row the checks stop, until your next
+  message (a message you add while the agent works starts them again too);
+  the model and the panel say so. A round counts as failing only by checks
+  run on the files as they now are, and passes only when none of those
+  fails; an edit's `then_run` of the own command of a check that does not
+  take the changed files counts as that check (a pass only when the check's
+  time limit is no shorter than the shell's). No such check runs twice for
+  the same state of the files, and nothing runs after the turn's last
+  round.
+- **`run_checks`**, the model's own call of the checks (on files that exist
+  in the workspace, or those edited since your message), and **`then_run`**
+  on `write_file` and `edit_file`: one command run right after the edit,
+  asked for like any shell command, run only if the file still holds what
+  the edit wrote, and shown under the diff as the call's second result
+  (SoL-Pi's Action Fusion, reimplemented from its description).
+- **Format on edit** (`museSpark.formatOnEdit`, off by default): the file's
+  formatter runs on each file the Model API backend's edit tools write,
+  before anything checks it. The formatted text is written only while the
+  file still holds what the edit wrote and has no unsaved changes in an
+  editor; otherwise, or when it cannot be written, the edit stays as
+  written and the log says why.
+- **Code the editor runs is never opened or formatted by the loop**
+  (`eslint.config.js`, `.prettierrc.cjs`, `package.json`, `node_modules`),
+  and once the agent writes such a file nothing more is opened or formatted
+  until your next message.
+- **Muse Code** is told with each message to check the files it edits with
+  `mcp__ide__getDiagnostics` (when the session has the IDE tool server) and
+  to run your check commands.
+
 - **Plans as files** (M79, PLAN.md D49). In Plan mode the latest reply gets
   two buttons, **Save plan** and **Implement in a fresh conversation**.
   Pressing one is the approval: neither backend marks a plan or its approval
@@ -258,6 +312,14 @@ happened, not what was planned; superseded entries are kept.
 
 ### Changed
 
+- **The diagnostics tool reads a file no editor shows.** VS Code's language
+  servers report only on files an editor shows (TypeScript and JSON,
+  measured in VS Code 1.139.1 and 1.125.0), so when the agent asks
+  `getDiagnostics` about one such file, on either backend, the extension
+  opens it in a tab beside your editor without taking focus, waits up to 10
+  seconds for its report, and closes the tab again; a file outside the
+  workspace by its real path, or code the editor runs, is not opened, and a
+  file no report arrived for is "not checked", never clean.
 - **VS Code 1.99 or newer** (was 1.125; M62, PLAN.md A8), so editors built
   on VS Code 1.99 or later can install the extension. The extension uses
   no VS Code API newer than 1.85, checked against every published
@@ -354,6 +416,17 @@ happened, not what was planned; superseded entries are kept.
   `<img>` and its alt text under the existing safe-source rules. Source
   alternatives are not selected or fetched; images inside inert templates
   or embedded media remain excluded.
+- The Model API verify loop hears about workspace writes before they write
+  or format, in every live conversation and subagent. A parent's, child's
+  or sibling's cached check grant cannot silently run a changed script
+  while its writer waits for formatting. Pending writes survive a new user
+  message, reach newly opened sessions, and release on failure; checks
+  that start during a write cannot certify its completed state. Project
+  memory notes and their index also invalidate checks that name them.
+- Symbol renames notify the verify loop before their rechecks, release pending
+  notices after Stop or failure, and check only the files actually written.
+  ACP conversations opened through native aliases share workspace notices
+  without changing their saved-session folder identity.
 
 - **Windows plan-store test stability** (M79). The complete numeric suffix
   range is checked through the existing in-memory file port, with exact

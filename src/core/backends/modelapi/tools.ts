@@ -6,14 +6,15 @@
 // Open diff and Revert (M5) work unchanged.
 
 import { Buffer } from 'node:buffer'
-import { createHash } from 'node:crypto'
 import path from 'node:path'
 import * as z from 'zod/mini'
 import {
   type PatchSummary,
   type Question,
   questionSchema,
+  type ThenRunResult,
   todoItemSchema,
+  type VerifySummary,
 } from '../../../shared/agentEvents'
 import {
   CODE_INTEL_TOOLS,
@@ -39,7 +40,9 @@ import {
   TOOL_OUTPUT_CLIP_MARKER,
   TOOL_OUTPUT_ELIDED_MARKER,
   TOOL_OUTPUT_MAX_CHARS,
+  type CheckCommandSetting,
   UI_TEXT,
+  VERIFY_TOOLS,
 } from '../../../shared/constants'
 import { ADD_MARKER, type PatchFile, REMOVE_MARKER } from '../../../shared/patchDocument'
 import { fill, formatNumber, plural } from '../../../shared/l10n/text'
@@ -48,6 +51,7 @@ import { changeHunk } from '../../codeIntel/codeText'
 import { MODEL_API_CODE_INTEL_DEFINITIONS } from '../../codeIntel/definitions'
 import { readImageInfo } from '../../imageDimensions'
 import { isPdf, pdfPageCount } from '../../pdf'
+import { fingerprint } from '../../verify/fingerprint'
 import { WEB_FETCH_DESCRIPTION, WEB_FETCH_PARAMETERS } from '../../web/webFetchDefinition'
 import { confineWorkspacePath } from '../../workspacePath'
 import { compileGlob } from './glob'
@@ -63,6 +67,7 @@ import { MEMORY_TOOL_DEFINITIONS } from './memoryTools'
 import type { ToolClass } from './permissions'
 import type { FunctionOutputPart, FunctionToolDefinition } from './schemas'
 import { SUBAGENT_TOOL_DEFINITIONS } from './subagentTools'
+import { runChecksDefinition, THEN_RUN_PROPERTY } from './verifyTools'
 
 export interface ShellResult {
   readonly stdout: string
@@ -152,6 +157,21 @@ export interface ToolIo {
   ): Promise<Uint8Array | undefined>
   /** Replaces the file whole (a temporary file renamed into place), folders created. */
   writeFile(absolutePath: string, content: string, expectedCanonicalPath?: string): Promise<void>
+  /**
+   * `writeFile`, only while the file still holds the text whose fingerprint
+   * is `expectedFingerprint`, compared immediately before the rename (M68,
+   * `fsAtomic.writeFileIfUnchanged`): `changed`, and nothing written, when not.
+   */
+  writeFileIfUnchanged(
+    absolutePath: string,
+    expectedFingerprint: string,
+    content: string,
+    options: {
+      readonly expectedCanonicalPath: string
+      /** Refused when an editor holds unsaved text at any of them, checked just before the rename. */
+      readonly unsavedAt: readonly string[]
+    },
+  ): Promise<ConditionalWrite>
   /** Whether anything (a file, a folder, a link) is at the path. */
   pathExists(absolutePath: string): Promise<boolean>
   /**
@@ -224,9 +244,30 @@ export interface ToolContext {
    * model has seen (D27).
    */
   readonly seen: Map<string, string>
+  /** Format on edit (M68); present only while it is on. */
+  readonly formatter?: EditFormatter
 }
 
-const FINGERPRINT_HASH = 'sha256'
+/** A file an edit just wrote, as format on edit sees it (M68). */
+export interface FormatTarget {
+  /** The path as the model named it, and its real form. */
+  readonly absolute: string
+  readonly checkedAbsolute: string
+  /** Workspace-relative as the model named it, and after links are resolved. */
+  readonly relative: string
+  readonly canonical: string
+}
+
+/** Format on edit (M68): the formatter over a written file, and where its failures go. */
+export interface EditFormatter {
+  /** The text the file's formatter makes of what the edit wrote, or undefined for none. */
+  readonly format: (target: FormatTarget, text: string) => Promise<string | undefined>
+  /** A formatted text that could not be written back, for the log. */
+  readonly warn: (message: string) => void
+}
+
+/** What a conditional write did (M68): wrote the file, or found it changed and left it. */
+export type ConditionalWrite = 'written' | 'changed'
 
 /** A PDF or an image `read_file` read whole for the model to see (M54, PLAN.md D47). */
 export interface VisibleFile {
@@ -247,6 +288,10 @@ export interface ToolOutcome {
   readonly patch?: { readonly document: string; readonly summary: PatchSummary }
   /** `read_file` of a PDF or an image: the file itself, sent after the round's outputs. */
   readonly visibleFile?: VisibleFile
+  /** `run_checks` (M68): what the row sums up. */
+  readonly verifySummary?: VerifySummary
+  /** An edit's `then_run` (M68): the command's result beside the edit's. */
+  readonly thenRun?: ThenRunResult
 }
 
 const TOOL_CLASSES: Readonly<Record<string, ToolClass>> = {
@@ -277,6 +322,9 @@ const TOOL_CLASSES: Readonly<Record<string, ToolClass>> = {
   [MODEL_API_TOOLS.getGoal]: 'interactive',
   [MODEL_API_TOOLS.updateGoal]: 'interactive',
   [MODEL_API_TOOLS.reportProgress]: 'interactive',
+  // M68: the call itself asks nothing; each check it runs takes the shell
+  // tool's permission path, one command at a time.
+  [VERIFY_TOOLS.runChecks]: 'interactive',
   // M69 (PLAN.md D49): a network tool, asked per host.
   [MODEL_API_TOOLS.webFetch]: 'network',
   // M67 (PLAN.md D49): the language services read, in every mode; a rename is an edit.
@@ -344,6 +392,8 @@ export interface ToolDefinitionOptions {
   readonly isSubagent?: boolean
   /** Muse Code's memory tools, trusted workspaces only (M49, PLAN.md D41). */
   readonly hasMemory?: boolean
+  /** The user's check commands (M68): `run_checks` is offered with the shell while there are any. */
+  readonly checks?: readonly CheckCommandSetting[]
   /** Web fetch, trusted workspaces only, when the host has a fetch (M69, PLAN.md D49). */
   readonly hasWebFetch?: boolean
   /** The code intelligence tools, while VS Code's language services are at hand (M67). */
@@ -358,6 +408,10 @@ export function toolDefinitions(
   options: ToolDefinitionOptions = DEFAULT_TOOL_OPTIONS,
 ): readonly FunctionToolDefinition[] {
   const shell = shellToolFor(platform)
+  // `then_run` needs the shell, so it is offered only with it (M68).
+  const thenRun = options.hasShell ? THEN_RUN_PROPERTY : {}
+  const checks = options.hasShell ? (options.checks ?? []) : []
+  const runChecks = checks.length === 0 ? undefined : runChecksDefinition(checks)
   const define = (
     name: string,
     description: string,
@@ -393,13 +447,14 @@ export function toolDefinitions(
         path: PATH_PROPERTY,
         find: { type: 'string', description: 'The exact text to replace' },
         replace: { type: 'string', description: 'The replacement text' },
+        ...thenRun,
       },
       ['path', 'find', 'replace'],
     ),
     define(
       MODEL_API_TOOLS.writeFile,
       'Create or overwrite a file with the given content.',
-      { path: PATH_PROPERTY, content: { type: 'string' } },
+      { path: PATH_PROPERTY, content: { type: 'string' }, ...thenRun },
       ['path', 'content'],
     ),
     define(
@@ -441,6 +496,9 @@ export function toolDefinitions(
           ),
         ]
       : []),
+    ...(runChecks === undefined
+      ? []
+      : [define(runChecks.name, runChecks.description, runChecks.properties, runChecks.required)]),
     ...(options.hasImageGeneration === true
       ? [
           define(
@@ -643,9 +701,60 @@ function fileText(text: string, shape: TextShape): string {
   return shape.hasBom ? `${BOM}${body}` : body
 }
 
-/** What the model last saw of a file, to know it is not overwriting an unseen change. */
-export function fingerprint(raw: string): string {
-  return createHash(FINGERPRINT_HASH).update(raw).digest('hex')
+/**
+ * Format on edit (M68): what the edit wrote, as the file's formatter leaves
+ * it, written back when it changed; the text on disk either way. It runs
+ * before the fingerprint is taken, so `then_run` checks the formatted file.
+ * The edit has landed by now: a formatted text that cannot be written back
+ * (the write is atomic, so the file still holds what the edit wrote) is
+ * logged and the edit stands as written (the M68 review).
+ */
+async function formatWritten(
+  written: string,
+  target: FormatTarget,
+  context: ToolContext,
+): Promise<string> {
+  const { formatter } = context
+  const formatted = await formatter?.format(target, written)
+  if (formatter === undefined || formatted === undefined || formatted === written) {
+    return written
+  }
+  // Only over what the edit wrote, at the real path the edit wrote it, by the
+  // one conditional write (the Codex review of PR #54): a change made while
+  // the formatter ran stands. The write also refuses a path whose real form
+  // moved. Text the user typed into an editor since stands too (the review
+  // of e4b035a3): the editor would save it over the formatted file.
+  // By the path as named and its real form: an editor may hold either.
+  const paths = [target.absolute, target.checkedAbsolute]
+  if (paths.some((path) => context.io.hasUnsavedChanges(path))) {
+    formatter.warn(`Format on edit skipped ${target.relative}: it has unsaved changes in an editor`)
+    return written
+  }
+  try {
+    const wrote = await context.io.writeFileIfUnchanged(
+      target.checkedAbsolute,
+      fingerprint(written),
+      formatted,
+      { expectedCanonicalPath: target.checkedAbsolute, unsavedAt: paths },
+    )
+    if (wrote === 'changed') {
+      formatter.warn(
+        `Format on edit skipped ${target.relative}: it no longer holds what the edit wrote (changed, replaced or removed while the formatter ran)`,
+      )
+      return written
+    }
+  } catch (error: unknown) {
+    formatter.warn(
+      `Format on edit could not write ${target.relative}; the edit stays as written: ${error instanceof Error ? error.message : String(error)}`,
+    )
+    return written
+  }
+  return formatted
+}
+
+/** The model's result line, and the note when the formatter changed the file. */
+function editedLine(line: string, isFormatted: boolean): string {
+  return isFormatted ? `${line}. ${MODEL_TEXT.formattedAfterEdit}` : line
 }
 
 /**
@@ -849,6 +958,7 @@ async function located(
   | {
       readonly ok: true
       readonly relative: string
+      readonly canonical: string
       readonly absolute: string
       readonly checkedAbsolute: string
       readonly before: string | undefined
@@ -875,6 +985,7 @@ async function located(
   return {
     ok: true,
     relative: resolved.relative,
+    canonical: resolved.canonical,
     absolute: resolved.absolute,
     checkedAbsolute: resolved.checkedAbsolute,
     before,
@@ -908,13 +1019,17 @@ async function writeFile(
   const { before, relative, absolute, checkedAbsolute } = file
   if (before === undefined) {
     await context.io.writeFile(checkedAbsolute, args.content, checkedAbsolute)
-    context.seen.set(absolute, fingerprint(args.content))
+    const created = await formatWritten(args.content, file, context)
+    context.seen.set(absolute, fingerprint(created))
     return patchOutcome(
       relative,
       undefined,
-      args.content,
+      created,
       `created ${relative}`,
-      `created ${relative} (${String(args.content.length)} characters)`,
+      editedLine(
+        `created ${relative} (${String(args.content.length)} characters)`,
+        created !== args.content,
+      ),
     )
   }
   // Claude Code's rule: a file is replaced only as the model last saw it (D27).
@@ -930,13 +1045,14 @@ async function writeFile(
       : normalized
   const after = fileText(text, shape)
   await context.io.writeFile(checkedAbsolute, after, checkedAbsolute)
-  context.seen.set(absolute, fingerprint(after))
+  const final = await formatWritten(after, file, context)
+  context.seen.set(absolute, fingerprint(final))
   return patchOutcome(
     relative,
     modelText(before, shape),
-    text,
+    final === after ? text : modelText(final, shapeOf(final)),
     `wrote ${relative}`,
-    `wrote ${relative} (${String(args.content.length)} characters)`,
+    editedLine(`wrote ${relative} (${String(args.content.length)} characters)`, final !== after),
   )
 }
 
@@ -975,8 +1091,15 @@ async function editFile(
   const updated = `${current.slice(0, first)}${replace}${current.slice(first + find.length)}`
   const after = fileText(updated, shape)
   await context.io.writeFile(checkedAbsolute, after, checkedAbsolute)
-  context.seen.set(absolute, fingerprint(after))
-  return patchOutcome(relative, current, updated, 'edited', `edited ${relative}`)
+  const final = await formatWritten(after, file, context)
+  context.seen.set(absolute, fingerprint(final))
+  return patchOutcome(
+    relative,
+    current,
+    final === after ? updated : modelText(final, shapeOf(final)),
+    'edited',
+    editedLine(`edited ${relative}`, final !== after),
+  )
 }
 
 async function listMatching(
@@ -1097,8 +1220,8 @@ async function shell(args: z.infer<typeof shellArgs>, context: ToolContext): Pro
  * What a finished command printed: each stream keeps its beginning and its
  * end within its share of the output budget (D27).
  */
-export function shellText(result: ShellResult): string {
-  const streamBudget = Math.floor(TOOL_OUTPUT_MAX_CHARS / SHELL_STREAMS)
+export function shellText(result: ShellResult, maxChars: number = TOOL_OUTPUT_MAX_CHARS): string {
+  const streamBudget = Math.floor(maxChars / SHELL_STREAMS)
   return [result.stdout.trimEnd(), result.stderr.trimEnd()]
     .filter((part) => part !== '')
     .map((part) => clipMiddle(part, streamBudget))
@@ -1109,16 +1232,20 @@ export function shellText(result: ShellResult): string {
  * A finished command as the model and the row read it (the shell tool, and
  * the user's own `!` command on this backend, M46): what it printed, then an
  * exit line that is never clipped, so a flood of output still says how the
- * command ended (D27).
+ * command ended (D27). A check's output takes its share of one budget (M68).
  */
-export function shellOutcome(result: ShellResult, timeoutMs: number): ToolOutcome {
+export function shellOutcome(
+  result: ShellResult,
+  timeoutMs: number,
+  maxChars: number = TOOL_OUTPUT_MAX_CHARS,
+): ToolOutcome {
   let exit = `exit code ${String(result.exitCode ?? 'unknown')}`
   if (result.isCancelled) {
     exit = SHELL_STOPPED_BY_USER
   } else if (result.isTimedOut) {
     exit = `stopped after ${String(timeoutMs)} ms`
   }
-  const body = `${shellText(result)}\n[${exit}]`.trim()
+  const body = `${shellText(result, maxChars)}\n[${exit}]`.trim()
   return {
     output: body,
     visibleOutput: body,

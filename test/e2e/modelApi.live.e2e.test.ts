@@ -52,6 +52,7 @@ import type {
   LanguageServiceHost,
 } from '../../src/core/codeIntel/languageService'
 import { APPROVAL_CHOICE_IDS } from '../../src/core/backends/modelapi/permissions'
+import type { VerifyHooks } from '../../src/core/backends/modelapi/verifyLoop'
 import { parseLoopPrompt } from '../../src/core/backends/modelapi/schedules'
 import { type Usage, usageSchema } from '../../src/core/backends/modelapi/schemas'
 import { parseSse } from '../../src/core/backends/modelapi/sse'
@@ -113,6 +114,7 @@ import {
   SETTING_DEFAULTS,
   SHELL_TOOLS,
   THINKING_OFF_EFFORT,
+  type CheckCommandSetting,
   UI_TEXT,
 } from '../../src/shared/constants'
 import { fill } from '../../src/shared/l10n/text'
@@ -579,6 +581,8 @@ interface RigOptions {
   readonly mcpJobPath?: string | undefined
   /** `museSpark.modelApiPromptCacheRetention`; the setting's default when absent. */
   readonly promptCacheRetention?: PromptCacheRetention
+  /** The verify loop (M68): its settings and a stand-in for the language servers. */
+  readonly verify?: VerifyHooks
   /** Language services for the code intelligence tools (M67), over the rig's workspace. */
   readonly codeIntel?: (workspace: string) => LanguageServiceHost
 }
@@ -776,6 +780,7 @@ async function openRig(options: RigOptions): Promise<Rig> {
         ),
       // Built by `npm run build:dev`, as in activate (M57).
       bundlePath: path.join(process.cwd(), 'dist', MODEL_API_BUNDLE_FILE),
+      ...(options.verify !== undefined && { verify: options.verify }),
       codeIntel: options.codeIntel?.(workspace),
       ideTools: [
         diagnosticsTool({
@@ -2021,6 +2026,93 @@ describe.skipIf(!IS_ENABLED)('live Model API sweep (MUSE_LIVE_MODEL_API=1)', () 
         expectCompleted(skilled)
         expect(skilled.reply).toContain('PAPAYA')
         rig.notes.push(`replies ${JSON.stringify(ruled.reply)} ${JSON.stringify(skilled.reply)}`)
+      })
+    },
+    CASE_MS,
+  )
+
+  it(
+    'case21 verify loop: then_run, the automatic check and the diagnostics after an edit (M68)',
+    async () => {
+      const name = 'case21 verify loop'
+      // The check reads the file it is given after --, or value.txt, and
+      // fails while it still says BROKEN.
+      const files = {
+        'value.txt': 'BROKEN\n',
+        'check.js': [
+          "const fs = require('fs')",
+          "const file = process.argv[3] ?? 'value.txt'",
+          "if (!fs.readFileSync(file, 'utf8').includes('FIXED')) {",
+          "  console.log(file + ' still says BROKEN')",
+          '  process.exit(1)',
+          '}',
+          "console.log('CHECKOK ' + file)",
+          '',
+        ].join('\n'),
+      }
+      const checks: readonly CheckCommandSetting[] = [
+        { name: 'check', command: 'node check.js', changedFiles: true, timeoutSeconds: 60 },
+      ]
+      // No language server runs here: the stand-in reports an error while
+      // the file says BROKEN, as one would.
+      const verify: VerifyHooks = {
+        isDiagnosticsOn: () => true,
+        checkCommands: () => checks,
+        isFormatOnEdit: () => false,
+        diagnosticsAfterEdit: (edited) =>
+          Promise.resolve(
+            edited.map((file) => ({
+              file,
+              entries: readFileSync(file.absolute, 'utf8').includes('BROKEN')
+                ? [
+                    {
+                      path: file.relative,
+                      severity: 'error' as const,
+                      line: 1,
+                      column: 1,
+                      message: 'The value is still BROKEN.',
+                      source: 'live',
+                    },
+                  ]
+                : [],
+            })),
+          ),
+        formatAfterEdit: () => Promise.resolve(undefined),
+      }
+      await runCase(name, { files, verify }, async (rig) => {
+        // Auto: the edit runs, each command asks, and the answerer allows it once.
+        const driver = await startSession(rig)
+        const finished = await send(
+          driver,
+          'In value.txt, replace the word BROKEN with FIXED using edit_file, and set its then_run to: node check.js. Then reply DONE.',
+        )
+        expectCompleted(finished)
+        expect(readFileSync(path.join(rig.workspace, 'value.txt'), 'utf8')).toContain('FIXED')
+        const checked = finished.rows.find((row) => row.tool === 'verify_edits')
+        expect(checked?.verifySummary).toEqual({
+          files: ['value.txt'],
+          errors: 0,
+          warnings: 0,
+          checks: [{ name: 'check', outcome: 'passed' }],
+        })
+        const requests = callsOf(name).filter((call) => isBilledResponse(call))
+        expect(requests[0]?.tools).toEqual(expect.arrayContaining(['run_checks', 'edit_file']))
+        // The request after the edit round (the model may read first): the
+        // round's outputs, then the check as a note, and Meta took it.
+        const afterEdit = requests.filter(
+          (call) =>
+            call.inputKinds.at(-2) === 'function_call_output' &&
+            call.inputKinds.at(-1) === 'message:user',
+        )
+        expect(afterEdit).toHaveLength(1)
+        expect(afterEdit[0]?.status).toBe(HTTP_OK)
+        const edit = finished.rows.find((row) => row.tool === 'edit_file')
+        rig.notes.push(
+          `requests ${requests.map((call) => call.inputKinds.slice(-2).join('+')).join(' | ')}`,
+          `rows ${toolsRun(finished).join(' ')}`,
+          `then_run ${edit?.thenRun === undefined ? 'not used' : `${edit.thenRun.outcome} ${JSON.stringify(edit.thenRun.output)}`}`,
+          `cards ${driver.watch.approved.join(' ')}`,
+        )
       })
     },
     CASE_MS,

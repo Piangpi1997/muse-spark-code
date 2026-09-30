@@ -8,14 +8,18 @@
 // has it and is trusted; and the session goal while one is active (M45).
 
 import {
+  type CheckCommandSetting,
   MEMORY_DIR,
   MEMORY_INDEX_FILE,
   MODEL_API_TOOLS,
   MODEL_TEXT,
   type MemoryScope,
+  THEN_RUN_ARGUMENT,
+  VERIFY_TOOLS,
 } from '../../../shared/constants'
 import type { ContextSections } from '../../context/workspaceContext'
 import type { MemoryScopeSnapshot } from '../../memory/memoryStore'
+import { checkListText } from '../../verify/checkCommands'
 
 export interface GitFacts {
   readonly branch: string
@@ -49,6 +53,11 @@ export interface InstructionFacts {
   readonly today: string
   readonly environment: EnvironmentFacts
   readonly context: ContextSections
+  /** The verify loop (M68): the diagnostics after edits, and the user's check commands. */
+  readonly verify?: {
+    readonly isDiagnosticsOn: boolean
+    readonly checks: readonly CheckCommandSetting[]
+  }
   /**
    * The session goal while it is active (M45, PLAN.md D38, `goals.ts`):
    * last, so the sections before it stay the same from call to call.
@@ -167,11 +176,40 @@ function memoryText(facts: InstructionFacts): string | undefined {
   ].join(PARAGRAPH)
 }
 
+/**
+ * How the model's edits are checked (M68, PLAN.md D49): what arrives after a
+ * round of edits, `run_checks`, and `then_run`; the checks and `then_run`
+ * need the shell, so Restricted Mode leaves them out.
+ */
+function verifyText(facts: InstructionFacts): string | undefined {
+  const isDiagnosticsOn = facts.verify?.isDiagnosticsOn === true
+  const checks = facts.hasShell ? (facts.verify?.checks ?? []) : []
+  const lines = [
+    ...(isDiagnosticsOn
+      ? [
+          "- After each round in which you edit files, a message gives the edited files' errors and warnings from VS Code's language servers, with what changed since their previous check. Fix what your edit broke before you finish.",
+        ]
+      : []),
+    ...(checks.length === 0
+      ? []
+      : [
+          `- The user's check commands run after each round of edits too, asking the user where a shell command would: ${checkListText(checks)}. When one fails, fix the cause; after a few failing rounds in a row they stop, and you tell the user what still fails. Run them yourself with ${VERIFY_TOOLS.runChecks}.`,
+        ]),
+    ...(facts.hasShell
+      ? [
+          `- ${MODEL_API_TOOLS.writeFile} and ${MODEL_API_TOOLS.editFile} take ${THEN_RUN_ARGUMENT}: one command to run right after the edit, such as the test of the code you changed. Its output comes back with the edit's result.`,
+        ]
+      : []),
+  ]
+  return lines.length === 0 ? undefined : ['# Checking your work', lines.join(LINE)].join(PARAGRAPH)
+}
+
 export function instructionsFor(facts: InstructionFacts): string {
   const sections = [
     baseText(facts).join(PARAGRAPH),
     environmentText(facts),
     WORKING_RULES,
+    verifyText(facts),
     facts.context.rules === undefined
       ? undefined
       : `# Workspace rules${PARAGRAPH}${facts.context.rules}`,

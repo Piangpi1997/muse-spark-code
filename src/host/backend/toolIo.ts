@@ -52,7 +52,7 @@ import {
   WINDOWS_POWERSHELL_UTF8_PREAMBLE,
 } from '../../shared/constants'
 import { canonicalPath } from '../canonicalPath'
-import { writeFileAtomically } from '../fsAtomic'
+import { writeFileAtomically, writeFileIfUnchanged } from '../fsAtomic'
 import { killTree, type ProcessTreeDeps, type ShellJob, treeSpawnOptions } from '../processTree'
 import { joinStatement, newShellJob } from './shellJob'
 
@@ -71,6 +71,8 @@ export interface ToolIoDeps {
    * Code's documents give (D27).
    */
   readonly unsavedFiles: () => readonly string[]
+  /** Runtime workspace identity, sampled at mutation and command boundaries. */
+  readonly assertWorkspaceCurrent?: (() => void) | undefined
   /** Windows: the job helper's assembly, undefined where jobs are unavailable (M27). */
   readonly shellJobAssembly?: (() => Promise<string | undefined>) | undefined
 }
@@ -490,6 +492,8 @@ export function toolImagePreviewIo(
 
 export function createToolIo(deps: ToolIoDeps): ToolIo {
   const interpreter = shellInterpreter(deps.platform, deps.systemRoot, deps.env(), existsSync)
+  const hasUnsavedChanges = (absolutePath: string) =>
+    deps.unsavedFiles().some((open) => isSamePath(open, absolutePath, deps.platform))
   const configuredHookShell = deps.env()['SHELL']
   const hookProgram = hookProgramFor(deps, configuredHookShell)
   return {
@@ -545,8 +549,22 @@ export function createToolIo(deps: ToolIoDeps): ToolIo {
       // The write is atomic (D27): an interrupted one leaves the old file.
       await writeFileAtomically(absolutePath, content, {
         sleep: pause,
+        ...(deps.assertWorkspaceCurrent !== undefined && {
+          assertCanWrite: deps.assertWorkspaceCurrent,
+        }),
         ...(expectedCanonicalPath !== undefined && { expectedCanonicalPath }),
         platform: deps.platform,
+      })
+    },
+    async writeFileIfUnchanged(absolutePath, expectedFingerprint, content, options) {
+      return await writeFileIfUnchanged(absolutePath, expectedFingerprint, content, {
+        sleep: pause,
+        ...(deps.assertWorkspaceCurrent !== undefined && {
+          assertCanWrite: deps.assertWorkspaceCurrent,
+        }),
+        expectedCanonicalPath: options.expectedCanonicalPath,
+        platform: deps.platform,
+        isReplaceable: () => options.unsavedAt.every((path) => !hasUnsavedChanges(path)),
       })
     },
     async pathExists(absolutePath) {
@@ -562,9 +580,11 @@ export function createToolIo(deps: ToolIoDeps): ToolIo {
     },
     async reserveFile(absolutePath, expectedCanonicalPath) {
       await assertCheckedCanonicalPath(absolutePath, expectedCanonicalPath, deps.platform)
+      deps.assertWorkspaceCurrent?.()
       await mkdir(path.dirname(absolutePath), { recursive: true })
       await assertCheckedCanonicalPath(absolutePath, expectedCanonicalPath, deps.platform)
       // `wx`: created here or refused, never an existing file replaced (M34).
+      deps.assertWorkspaceCurrent?.()
       const handle = await open(absolutePath, 'wx')
       let identity: { readonly dev: number; readonly ino: number }
       try {
@@ -604,6 +624,7 @@ export function createToolIo(deps: ToolIoDeps): ToolIo {
         fill: async (bytes) => {
           try {
             await checkedOpenedFile(absolutePath, handle, expectedCanonicalPath, deps.platform)
+            deps.assertWorkspaceCurrent?.()
             await handle.writeFile(bytes)
             await close()
           } catch (error: unknown) {
@@ -619,8 +640,7 @@ export function createToolIo(deps: ToolIoDeps): ToolIo {
         release,
       }
     },
-    hasUnsavedChanges: (absolutePath) =>
-      deps.unsavedFiles().some((open) => isSamePath(open, absolutePath, deps.platform)),
+    hasUnsavedChanges,
     unsavedFiles: deps.unsavedFiles,
     listFiles: deps.listFiles,
     searchFiles: (job) => searchOnWorker(deps.searchWorkerPath, job, SEARCH_TIMEOUT_MS),
@@ -638,6 +658,7 @@ export function createToolIo(deps: ToolIoDeps): ToolIo {
       }
       const assembly = deps.platform === 'win32' ? await deps.shellJobAssembly?.() : undefined
       const job = assembly === undefined ? undefined : newShellJob(assembly)
+      deps.assertWorkspaceCurrent?.()
       return await runCommand({
         file: interpreter,
         args: shellArguments(deps.platform, command, job),
@@ -678,6 +699,7 @@ export function createToolIo(deps: ToolIoDeps): ToolIo {
               job,
             )
           : ['-c', command]
+      deps.assertWorkspaceCurrent?.()
       return await runCommand({
         file,
         args,

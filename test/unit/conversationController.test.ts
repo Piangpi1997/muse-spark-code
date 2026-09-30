@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import type { AgentHost, SessionMcpHttpServer } from '../../src/core/agent/agentBackend'
+import { verifyGuidance } from '../../src/core/verify/checkCommands'
 import {
   ModelApiHost,
   type ModelApiHostDeps,
@@ -218,6 +219,8 @@ function setup(
     userProfileDir?: string
     editorContext?: EditorContext
     isAutosaveEnabled?: boolean
+    /** The verify loop's note to Muse Code (M68). */
+    verifyGuidance?: (hasIdeServer: boolean) => string | undefined
     /** Files the fake mention index lists (for the selection-text rule). */
     indexed?: readonly string[]
     ideMcpEndpoint?: SessionMcpHttpServer
@@ -479,6 +482,7 @@ function setup(
     shellSandbox: () => options.shellSandbox ?? { isSandboxed: true, reason: 'default' },
     editorContext: () => options.editorContext,
     isAutosaveEnabled: () => options.isAutosaveEnabled ?? false,
+    ...(options.verifyGuidance !== undefined && { verifyGuidance: options.verifyGuidance }),
     saveAll,
     unsavedFiles: () => unsaved.files,
     applyCode: (text: string) => {
@@ -2216,6 +2220,41 @@ describe('ConversationController: editor integration (M5)', () => {
     expect(turnStartParams(off)['input']).toEqual([{ type: 'text', text: 'explain' }, NOTE])
     // The note rides along, so the durable transcript keeps the typed text (M14).
     expect(turnStartParams(off)['displayText']).toBe('explain')
+  })
+
+  // M68 (PLAN.md D49): Muse Code is told to check its edits, as model text in the turn.
+  it('sends the verify guidance after the choice note, read for each message', async () => {
+    const guidance = verifyGuidance(true, [{ name: 'lint', command: 'npm run lint' }])
+    let current: string | undefined = guidance
+    const t = setup({ verifyGuidance: () => current })
+    await t.send('l1', 'fix the parser')
+    expect(turnStartParams(t)['input']).toEqual([
+      { type: 'text', text: 'fix the parser' },
+      NOTE,
+      { type: 'text', text: guidance },
+    ])
+    expect(turnStartParams(t)['displayText']).toBe('fix the parser')
+    current = undefined
+    const quiet = setup({ verifyGuidance: () => current })
+    await quiet.send('l1', 'hi')
+    expect(turnStartParams(quiet)['input']).toEqual([{ type: 'text', text: 'hi' }, NOTE])
+  })
+
+  // The M68 review: the note names getDiagnostics only when the session has the ide server.
+  it('tells the guidance whether the session got the IDE tool server', async () => {
+    const endpoint = { url: 'http://127.0.0.1:1/mcp', headers: { Authorization: 'Bearer t' } }
+    const withServer = vi.fn<(hasIdeServer: boolean) => string | undefined>()
+    const granted = setup({
+      ideMcpEndpoint: endpoint,
+      grantedCapabilities: ['sessionMcp'],
+      verifyGuidance: withServer,
+    })
+    await granted.send('l1', 'hi')
+    expect(withServer).toHaveBeenCalledWith(true)
+    const without = vi.fn<(hasIdeServer: boolean) => string | undefined>()
+    const denied = setup({ ideMcpEndpoint: endpoint, verifyGuidance: without })
+    await denied.send('l1', 'hi')
+    expect(without).toHaveBeenCalledWith(false)
   })
 
   it('saves every editor before the turn when autosave is on, and never otherwise', async () => {

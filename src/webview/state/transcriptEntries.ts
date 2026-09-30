@@ -17,7 +17,9 @@ import {
   patchSummarySchema,
   questionSchema,
   requirementRefSchema,
+  thenRunResultSchema,
   tokenUsageSchema,
+  verifySummarySchema,
   workflowRunFields,
 } from '../../shared/agentEvents'
 import { PAID_FEATURES, TASK_REQUESTS } from '../../shared/constants'
@@ -141,6 +143,10 @@ const toolEntrySchema = z.object({
   paid: z.optional(z.enum(PAID_FEATURES)),
   /** Pictures the tool reported the model saw (`modelVisibleContent`, M43), by path. */
   images: z.optional(z.readonly(z.array(z.string()))),
+  /** The verify loop's row (M68): the files, their errors and warnings, each check. */
+  verifySummary: z.optional(verifySummarySchema),
+  /** An edit's `then_run` (M68): the second result of the call. */
+  thenRun: z.optional(thenRunResultSchema),
   approval: z.optional(pendingApprovalSchema),
   approvalOutcome: z.optional(z.object({ decision: z.string(), resolvedBy: z.string() })),
   question: z.optional(pendingQuestionSchema),

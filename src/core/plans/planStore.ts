@@ -16,6 +16,8 @@ import {
 import { fill } from '../../shared/l10n/text'
 import { hasBinaryControlCharacters } from '../attachments'
 import { confineWorkspacePath, type RealPathIo } from '../workspacePath'
+import type { EditedFile } from '../verify/diagnosticsReport'
+import type { WorkspaceEditRecorder } from '../verify/workspaceEdits'
 import {
   isPlanFileName,
   type PlanContent,
@@ -65,6 +67,11 @@ export interface PlanStoreDeps {
    * loaded on first use); throws, with the reason, when it cannot load.
    */
   readonly markdown: () => PlanMarkdown
+  /** Host-owned notices; only a true new-file result counts as the captured owner's edit. */
+  readonly beginEdit?: (
+    file: EditedFile,
+    ownerRecorder: WorkspaceEditRecorder | undefined,
+  ) => (wasWritten: boolean) => void
 }
 
 /** Where a saved plan landed. */
@@ -182,7 +189,10 @@ export class PlanStore {
    * `-<n>` after it. A name that already holds exactly this plan is the
    * plan's (saved before, from this or another panel): no second copy.
    */
-  public async save(content: PlanContent): Promise<SaveOutcome> {
+  public async save(
+    content: PlanContent,
+    ownerRecorder?: WorkspaceEditRecorder,
+  ): Promise<SaveOutcome> {
     const bytes = new TextEncoder().encode(content.text)
     if (bytes.byteLength > PLAN_FILE_MAX_BYTES) {
       throw new Error(planTooLargeText())
@@ -193,7 +203,17 @@ export class PlanStore {
     for (let attempt = 1; attempt <= PLAN_NAME_ATTEMPTS; attempt += 1) {
       const fileName = planFileName(content.savedAt, slug, attempt)
       const place = await this.planPlace(fileName)
-      if (await this.deps.io.createFile(place.checkedAbsolute, content.text)) {
+      const complete = this.deps.beginEdit?.(
+        { relative: place.relativePath, absolute: place.checkedAbsolute },
+        ownerRecorder,
+      )
+      let wasWritten = false
+      try {
+        wasWritten = await this.deps.io.createFile(place.checkedAbsolute, content.text)
+      } finally {
+        complete?.(wasWritten)
+      }
+      if (wasWritten) {
         return { fileName, relativePath: place.relativePath, isNew: true }
       }
       if (await this.holds(fileName, bytes)) {

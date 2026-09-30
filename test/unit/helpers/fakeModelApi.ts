@@ -367,14 +367,16 @@ function urlOf(input: string | URL | Request): URL {
 }
 
 /** A client on the fake API with no waits and a fixed clock. */
-const FAKE_API_KEY = 'LLM|1|secret'
-export const FAKE_MODEL_API_ACCOUNT_ID = createHash('sha256').update(FAKE_API_KEY).digest('hex')
+export const FAKE_MODEL_API_KEY = 'LLM|1|secret'
+export const FAKE_MODEL_API_ACCOUNT_ID = createHash('sha256')
+  .update(FAKE_MODEL_API_KEY)
+  .digest('hex')
 
 export function fakeModelApiClient(api: FakeModelApi, log: CoreLogger): ModelApiClient {
   return new ModelApiClient({
     fetch: api.fetch,
     baseUrl: 'https://api.example.test/v1',
-    apiKey: () => Promise.resolve(FAKE_API_KEY),
+    apiKey: () => Promise.resolve(FAKE_MODEL_API_KEY),
     sleep: () => Promise.resolve(),
     now: () => 0,
     random: () => 0,

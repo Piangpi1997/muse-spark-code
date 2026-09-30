@@ -7,7 +7,12 @@ import { lstat, rm } from 'node:fs/promises'
 import path from 'node:path'
 import type { PlanMarkdown } from '../core/plans/planDocument'
 import { isSamePath } from '../core/paths'
-import { type PlanDirectoryEntry, type PlanIo, PlanStore } from '../core/plans/planStore'
+import {
+  type PlanDirectoryEntry,
+  type PlanIo,
+  PlanStore,
+  type PlanStoreDeps,
+} from '../core/plans/planStore'
 import {
   ATOMIC_TEMPORARY_SUFFIX,
   PLAN_FILE_MODE,
@@ -132,6 +137,8 @@ export interface PlanFeatureDeps {
   readonly confirm: (message: string, detail: string, action: string) => Promise<boolean>
   /** The plan reader, dist/planMarkdown.js on first use (`planMarkdownLoader`). */
   readonly markdown: () => PlanMarkdown
+  readonly beginEdit?: PlanStoreDeps['beginEdit']
+  readonly captureOwner?: PlanFiles['captureOwner']
 }
 
 export function createPlanFiles(deps: PlanFeatureDeps): PlanFiles {
@@ -140,11 +147,13 @@ export function createPlanFiles(deps: PlanFeatureDeps): PlanFiles {
     platform: deps.platform,
     io: deps.io,
     markdown: deps.markdown,
+    ...(deps.beginEdit !== undefined && { beginEdit: deps.beginEdit }),
   })
   return {
+    ...(deps.captureOwner !== undefined && { captureOwner: deps.captureOwner }),
     markdown: deps.markdown,
     find: (content) => store.find(content),
-    save: (content) => store.save(content),
+    save: (content, ownerRecorder) => store.save(content, ownerRecorder),
     has: (fileName) => store.has(fileName),
     read: (fileName) => store.read(fileName),
     list: () => store.list(),

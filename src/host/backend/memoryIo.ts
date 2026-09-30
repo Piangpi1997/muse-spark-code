@@ -57,6 +57,8 @@ export function createMemoryIo(
     readonly warn: (message: string) => void
     /** Replace the hard-link call in a deterministic publication test. */
     readonly publish?: (stage: string, target: string) => Promise<void>
+    /** Runtime owners fence publication after asynchronous staging. */
+    readonly assertCanWrite?: () => void
   },
 ): MemoryIo {
   return {
@@ -66,6 +68,7 @@ export function createMemoryIo(
     createFile: (absolutePath, content, checkedPath) =>
       createFileExclusively(absolutePath, content, {
         mode: MEMORY_STAGE_FILE_MODE,
+        ...(options.assertCanWrite !== undefined && { assertCanWrite: options.assertCanWrite }),
         // The folder `locate` checked (C2-4): one swapped for a link since is refused.
         ...(checkedPath !== undefined && { expectedDirectory: path.dirname(checkedPath) }),
         // The stage is named after the note, which the model named: not logged (M39).

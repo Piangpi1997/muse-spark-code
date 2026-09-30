@@ -17,6 +17,7 @@ import {
   SCHEDULE_TOOLS,
   SHELL_TOOLS,
   UI_TEXT,
+  VERIFY_ROW_TOOLS,
   WEB_FETCH_TOOLS,
   WORKFLOW_TOOL,
 } from '../shared/constants'
@@ -36,6 +37,7 @@ export type ToolBody =
   | 'fetch'
   | 'image'
   | 'workflow'
+  | 'verify'
   | 'generic'
 
 export interface ToolPresentation {
@@ -67,6 +69,8 @@ interface ParsedArgs {
   readonly currentWork: string | undefined
   /** `cron_delete`'s job id (M43). */
   readonly id: string | undefined
+  /** The files a verify row checked (M68). */
+  readonly paths: readonly string[] | undefined
   /** A code intelligence tool's symbol name (M67). */
   readonly symbol: string | undefined
 }
@@ -84,6 +88,7 @@ const NO_ARGS: ParsedArgs = {
   status: undefined,
   currentWork: undefined,
   id: undefined,
+  paths: undefined,
   symbol: undefined,
 }
 
@@ -91,6 +96,15 @@ const NO_ARGS: ParsedArgs = {
 const MCP_TOOL = /^mcp__(.+?)__(.+)$/
 // A path's extension, for the picture check.
 const EXTENSION = /\.[^./\\]+$/
+
+/** A list of strings, or undefined for anything else. */
+function stringList(value: unknown): readonly string[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined
+  }
+  const entries: readonly unknown[] = value
+  return entries.every((entry): entry is string => typeof entry === 'string') ? entries : undefined
+}
 
 function parseArgs(args: string): ParsedArgs {
   try {
@@ -113,6 +127,7 @@ function parseArgs(args: string): ParsedArgs {
       status: pick('status'),
       currentWork: pick('current_work'),
       id: pick('id'),
+      paths: stringList(record['paths']),
       symbol: pick('symbol'),
     }
   } catch {
@@ -196,6 +211,10 @@ function otherPresentation(
   // The run itself is its own card below the row (M47); the row shows the script.
   if (tool === WORKFLOW_TOOL) {
     return { summary: '', body: 'workflow' }
+  }
+  // The verify loop's rows (M68) name the files they checked.
+  if (VERIFY_ROW_TOOLS.has(tool)) {
+    return { summary: parsed.paths?.join(', ') ?? '', body: 'verify' }
   }
   return {
     summary:

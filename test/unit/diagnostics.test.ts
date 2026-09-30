@@ -7,7 +7,12 @@ import {
   type WorkspaceDiagnostic,
 } from '../../src/core/diagnostics'
 import { handleMcpMessage } from '../../src/core/mcp'
-import { DIAGNOSTIC_MESSAGE_MAX_CHARS, DIAGNOSTICS_MAX_ENTRIES } from '../../src/shared/constants'
+import {
+  DIAGNOSTIC_MESSAGE_MAX_CHARS,
+  DIAGNOSTICS_MAX_ENTRIES,
+  MODEL_TEXT,
+} from '../../src/shared/constants'
+import { fill } from '../../src/shared/l10n/text'
 
 // A caller that never stops waiting (M69 gave tools a signal).
 const NOT_STOPPED = new AbortController().signal
@@ -201,6 +206,58 @@ describe('diagnosticsTool (POSIX root and no root)', () => {
     expect(await tool.call({}, NOT_STOPPED)).toBe('No diagnostics.')
     await expect(tool.call({ uri: 'src/a.ts' }, NOT_STOPPED)).rejects.toThrow(
       'src/a.ts cannot be read as a file URI or path: src/a.ts is relative and no folder is open',
+    )
+  })
+
+  // M68: the servers report only on a file an editor shows, so a request for
+  // one file shows it and waits before reading; the whole workspace does not.
+  it('settles a named file and reads it while it shows, and only a named one', async () => {
+    const settled: { readonly path: string; readonly signal: AbortSignal | undefined }[] = []
+    const tool = diagnosticsTool({
+      // A server clears a file's diagnostics when its tab closes (the
+      // integration run), so what VS Code holds after is not what counts.
+      getDiagnostics: () => [],
+      workspaceRoot: '/home/me/ws',
+      platform: 'linux',
+      relativeInRoot: relativeIn('/home/me/ws', 'linux'),
+      settleFile: (absolutePath, signal) => {
+        settled.push({ path: absolutePath, signal })
+        return Promise.resolve([at('src/a.ts', 'reported once shown')])
+      },
+    })
+    expect(await tool.call({}, new AbortController().signal)).toBe('No diagnostics.')
+    expect(settled).toEqual([])
+    const stop = new AbortController()
+    expect(await tool.call({ uri: 'src/a.ts' }, stop.signal)).toBe(
+      'src/a.ts:1:1: error: reported once shown',
+    )
+    // The caller's stop reaches the wait (M68, the review).
+    expect(settled).toEqual([
+      { path: path.posix.join('/home/me/ws', 'src/a.ts'), signal: stop.signal },
+    ])
+    await expect(tool.call({ uri: '../outside.ts' }, stop.signal)).rejects.toThrow(
+      'does not name a file',
+    )
+    expect(settled).toHaveLength(1)
+  })
+
+  it('says a file its server never reported on is not checked, never clean', async () => {
+    let held: readonly DiagnosticEntry[] = []
+    const tool = diagnosticsTool({
+      getDiagnostics: () => held,
+      workspaceRoot: '/home/me/ws',
+      platform: 'linux',
+      relativeInRoot: relativeIn('/home/me/ws', 'linux'),
+      settleFile: () => Promise.resolve(undefined),
+    })
+    const signal = new AbortController().signal
+    expect(await tool.call({ uri: 'src/a.ts' }, signal)).toBe(
+      fill(MODEL_TEXT.diagnosticsNotSettled, { path: 'src/a.ts' }),
+    )
+    // A file an editor already showed keeps what VS Code holds for it.
+    held = [at('src/a.ts', 'held from before')]
+    expect(await tool.call({ uri: 'src/a.ts' }, signal)).toBe(
+      'src/a.ts:1:1: error: held from before',
     )
   })
 })
