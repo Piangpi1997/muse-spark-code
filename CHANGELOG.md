@@ -160,7 +160,8 @@ happened, not what was planned; superseded entries are kept.
 
 - **ACP paid-grant race tests use canonical temporary paths.** Filesystem
   aliases on macOS and Windows no longer leave the test waiting for a rename
-  under a different name. The production grant storage and timeout stay intact.
+  under a different name. Native path resolution also expands Windows 8.3
+  names. The production grant storage and timeout stay intact.
 - **ACP sessions keep the newest owner while cancellation finishes.** A
   concurrent reload or close waits for the old turn to stop; an older delayed
   resume cannot replace the newest request. A backend exit while a turn starts

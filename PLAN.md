@@ -7872,6 +7872,17 @@ Canonicalizing the fixture makes all 22 paid tests pass under that alias.
 Timeouts, production behavior and quality thresholds are unchanged. Fresh full
 gates, independent review and local rig proof remain required before repushing.
 
+**Windows 8.3 follow-up (2026-09-29):** `74f3c2cf` passed all four local
+full gates and hosted Linux/macOS, but hosted Windows still timed out in that
+same fixture. The local junction proof did not cover actual short names.
+`GetShortPathNameW` reproduced the runner's path form locally: JavaScript
+`realpathSync` keeps 8.3 names, while `realpathSync.native` expands them as
+the atomic writer's `fs.promises.realpath` does. The fixture now uses the native
+method. The original short-path case exited 1 at 5,000 ms; all 22 paid tests
+passed afterward under the same short path. Fresh Windows host/VM full gates
+must run with actual short-name temporary paths before the next push; the Mac
+and Kubuntu gates also rerun. No production or timeout change.
+
 **Pre-PR delivery, historical (2026-09-26: trigger merged at `10522223`; first manual
 branch dispatch run `36276240077` succeeded on head `ac9df5a` in all seven
 jobs).** The owner

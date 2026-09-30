@@ -51,8 +51,9 @@ function logger() {
 
 function grantsFile(): string {
   // Existing atomic-write targets use their real path, including macOS's
-  // /private/var and Windows temporary-directory aliases. Hold the same name.
-  const folder = realpathSync(mkdtempSync(path.join(tmpdir(), 'acp-paid-grants-')))
+  // /private/var and Windows junctions and 8.3 names. The native API expands
+  // short names too, matching fs.promises.realpath in the atomic writer.
+  const folder = realpathSync.native(mkdtempSync(path.join(tmpdir(), 'acp-paid-grants-')))
   folders.push(folder)
   return path.join(folder, 'acp', 'paid-uses.json')
 }

@@ -732,3 +732,26 @@ test-harness failure, separate from the intended production-mutation red proofs.
 The owner's available Mac mini, Kubuntu VM and Windows 11 VM must run the final
 candidate before its next push. Independent fixture review, refreshed mutation
 proofs, exact-tree full local gates and the next hosted SHA are pending here.
+
+### Windows 8.3 follow-up (2026-09-29)
+
+Commit `74f3c2cf8966f016af849d31b29e23467d8abda0`, tree
+`00979a65ffccf001401fc721aab789ad4bdbfbd9`, passed full quality on the Windows
+host and VM, Mac mini and Kubuntu, plus nine installed ACP stdio tests on each
+rig. Fresh CI `36645658244` passed Linux and macOS but Windows again timed out
+in the same paid-grant race. The junction tests had missed real 8.3 aliases.
+
+The native Windows `GetShortPathNameW` read-only probe produced an actual short
+path to the owned temporary fixture. JavaScript `realpathSync` retained
+`MUSE-G~1/PR32-T~1`; `realpathSync.native` expanded those components. Under that
+short `TEMP`/`TMP`, the unchanged committed test reproduced the 5,000 ms timeout
+(exit 1). The fixture's native method then passed all 22 paid tests, exit 0.
+The atomic writer already uses native resolution through `fs.promises.realpath`;
+production code, assertions and timeouts are unchanged.
+
+Retained logs in the same system temporary evidence directory named above:
+`short-original.log`, `short-original.exit`, `short-fixed.log`, `short-fixed.exit`.
+All four final full gates must rebind to the new candidate. Windows host and VM
+use actual short-name temporary paths; the VM also retains its junction case.
+The earlier platform and hosted receipts are historical and do not certify the
+new fixture. Independent review and final hosted proof remain pending.
