@@ -7,8 +7,65 @@ happened, not what was planned; superseded entries are kept.
 
 ## [Unreleased]
 
+### Fixed
+
+- Plan actions recheck current workspace trust and disposal after lookup
+  and confirmation; a plan may still be saved after a conversation change,
+  while its stale implementation is refused. No-clobber writes check their
+  canonical directory before mkdir and their owned stage before publishing
+  or cleanup. Stale plan stages that were replaced, moved or refreshed are
+  retained. Preliminary types, focused tests, lint, duplication and failure
+  proofs pass; final current-main integration and aggregate gates remain.
+
 ### Added
 
+- **Plans as files** (M79, PLAN.md D49). In Plan mode the latest reply gets
+  two buttons, **Save plan** and **Implement in a fresh conversation**.
+  Pressing one is the approval: neither backend marks a plan or its approval
+  on the wire (Muse Code 1.4.0 was captured live).
+  - **Save plan** writes the plan byte for byte to
+    `.agents/plans/YYYY-MM-DD-<slug>.md`, Muse Code's own convention, with a
+    numeric suffix when the name is taken; an existing file is never
+    replaced. A Muse Code plan reply's two handoff lines ("Reply `go` to
+    execute this plan…") are left out. `.agents` is protected, so the save
+    asks first; Restricted Mode refuses it.
+  - **Implement in a fresh conversation** starts a new conversation on the
+    same backend. Its first message is the plan file, attached as named
+    text, and nothing else from the planning conversation, which stays in
+    History. Plan mode gives way to the starting mode.
+  - On the Model API backend, the plan's steps become the todo list before
+    the first request, and the brief names them. On Muse Code, which keeps
+    its todo list to the model, the brief asks Muse to list the steps.
+  - **Plans…** in the palette lists the saved plans, newest date first, to
+    open or implement. A plan file is untrusted content (PLAN.md D49): one
+    implemented from Plans… starts in Manual (Plan when that is the
+    starting mode) and is never presented to the model as approved.
+  - Only a reply to a message sent in Plan mode, in a turn that stayed in
+    it, counts as a plan. Save and Implement resume the conversation after
+    a restart, find a plan already saved instead of writing it twice, and
+    say why when they do nothing. What the model gets is what the user
+    saw: the reply is shown, and the brief written, from one rewritten
+    Markdown tree (a link's destination beside its text, a picture's
+    source, titles, definitions, footnotes and code-fence info as text), so
+    nothing in the brief is hidden in the panel. A plan with raw HTML is
+    saved with a warning and not started; one with a control or format
+    character (a direction override, a zero-width character) is neither
+    saved nor started. The log names a plan by a
+    verified date and a hash, or by the hash alone, never by its name.
+  - The plan reader (the panel's Markdown parser) is a bundle of its own,
+    `dist/planMarkdown.js` (budget 150 KiB), loaded on the first Save plan,
+    Implement or Plans…, so the activation bundle does not carry it. If it
+    cannot load, those actions are refused with the reason.
+  - A reload of the conversation (a delivery gap) keeps Save plan and
+    Implement under a plan reply. A plan that cannot open from Plans… says
+    why in the panel and logs only the kind of failure.
+  - Leaving Plan mode when the backend refuses the change keeps a running
+    Plan-mode turn a plan turn. A reasoning effort the session refuses is
+    no longer shown as applied.
+- **Memory and plans: folder re-check.** A new memory note or plan is
+  refused when its folder was swapped for a link or junction after it was
+  checked (`createFileExclusively` checks again after making the folder and
+  before publishing).
 - **Web fetch on both backends** (M69, PLAN.md D49; folds in M44b). The
   model can read one public web page it found or you named: `web_fetch` on
   the Model API backend, and `mcp__ide__webFetch` on Muse Code, whose own
@@ -294,6 +351,12 @@ happened, not what was planned; superseded entries are kept.
   alternatives are not selected or fetched; images inside inert templates
   or embedded media remain excluded.
 
+- **Windows plan-store test stability** (M79). The complete numeric suffix
+  range is checked through the existing in-memory file port, with exact
+  attempts, unchanged occupied files, the last free name and same-plan reuse
+  at that boundary. This avoids 100 staged file flushes in one test on the
+  hosted Windows runner; the 5-second timeout and real-file-system
+  publication, collision, cleanup and confinement tests are retained.
 - **Signing out of Muse Code finishes, and a signed-out CLI no longer reads
   as signed in** (PLAN.md D26).
   - **The cause.** `muse logout` rewrites the CLI's `auth.json` with no

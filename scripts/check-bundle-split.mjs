@@ -12,6 +12,8 @@
 //   dist/acp.js (a second build of the backend);
 // - a LAZY_ONLY file is missing from dist/modelApi.js (the entry stopped
 //   carrying the backend);
+// - dist/extension.js carries the plan reader (M79) or any of its Markdown
+//   parser, or dist/planMarkdown.js no longer carries the reader.
 // - web fetch's page converter (M69: parse5, the HTML converter and what
 //   they use) is in dist/extension.js or dist/modelApi.js, or missing from
 //   its worker, dist/pageWorker.js, started for each page.
@@ -134,6 +136,43 @@ for (const [output, inputs] of loaders) {
   }
 }
 
+// The plan reader (M79): the panel's Markdown parser, which dist/extension.js
+// requires as dist/planMarkdown.js on the first plan action. The activation
+// bundle carries neither its module, nor its entry, nor any of the parser's
+// packages; the reader's bundle carries the module.
+const PLAN_READER = {
+  output: 'dist/planMarkdown.js',
+  metafile: 'dist/meta/planMarkdown.json',
+  entry: 'src/host/planMarkdownEntry.ts',
+  module: 'src/core/plans/planMarkdown.ts',
+}
+const PARSER_PACKAGES = [
+  'node_modules/micromark',
+  'node_modules/mdast-util-',
+  'node_modules/character-entities',
+  'node_modules/decode-named-character-reference',
+]
+const planReader = inputsOf(PLAN_READER)
+for (const file of [PLAN_READER.entry, PLAN_READER.module]) {
+  if (activation.has(file)) {
+    problems.push(
+      `${BUNDLES.activation.output} carries ${file}, which loads only on the first plan action`,
+    )
+  }
+}
+const parserFiles = activation
+  .keys()
+  .filter((input) => PARSER_PACKAGES.some((prefix) => input.startsWith(prefix)))
+  .toArray()
+if (parserFiles.length > 0) {
+  problems.push(
+    `${BUNDLES.activation.output} carries the plan reader's Markdown parser (${String(parserFiles.length)} files, ${parserFiles[0]} first)`,
+  )
+}
+if (!planReader.has(PLAN_READER.module)) {
+  problems.push(`${PLAN_READER.output} no longer carries ${PLAN_READER.module}`)
+}
+
 const PAGE_WORKER = { output: 'dist/pageWorker.js', metafile: 'dist/meta/pageWorker.json' }
 // What loads only on the page converter's worker, by path prefix.
 const CONVERTER_ONLY = [
@@ -197,6 +236,9 @@ console.log(
 )
 console.log(
   `ok   ${BUNDLES.modelApi.output}: carries the ${String(lazy.size)} files that load only with the backend`,
+)
+console.log(
+  `ok   ${PLAN_READER.output}: carries the plan reader; ${BUNDLES.activation.output} carries none of its parser`,
 )
 console.log(
   `ok   ${PAGE_WORKER.output}: the page converter (parse5 and its parts) loads only there, never at activation`,

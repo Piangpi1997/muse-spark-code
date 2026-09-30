@@ -95,6 +95,9 @@ export const SCENARIOS = [
   'muse-workflow-map',
   'schedules',
   'schedules-narrow',
+  'plan',
+  'plan-brief',
+  'plan-narrow',
   'code-intel',
 ]
 const CONTENT_TYPES = {

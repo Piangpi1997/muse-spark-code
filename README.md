@@ -58,6 +58,9 @@ two.
 - **Rewind the conversation, or take a side chat.** Any sent message can
   branch the conversation before itself; **Side chat** opens a Plan-mode
   branch without stopping the main one.
+- **Plans as files.** A Plan-mode reply can be saved to `.agents/plans/`,
+  or implemented in a fresh conversation, with the plan's steps as the
+  todo list ([Plans as files](#plans-as-files)).
 - **More of Muse Code in the panel.** A row for every tool Muse Code runs,
   workflows as live cards, goals, and background tasks you can stop.
 - **Behind a corporate network.** Muse Code gets VS Code's proxy,
@@ -315,6 +318,66 @@ extension never approves one for you. A note saved with the memory tools is
 the one exception under `.agents`: those tools write only Markdown notes in
 the memory folders, so they are treated as ordinary edits (see
 [Memory](#memory)).
+
+### Plans as files
+
+In Plan mode, the latest reply gets two buttons once it has finished, when
+the message it answers was sent in Plan mode and the turn stayed in it.
+Pressing either one approves the plan; neither backend marks a plan or its
+approval any other way. The extension reads the reply back from the backend
+on every press, so after a restart it resumes the conversation first, and it
+says why when it cannot.
+
+- **Save plan** writes the plan to `.agents/plans/YYYY-MM-DD-<slug>.md`.
+  This is where Muse Code's own `plan` skill keeps plans. The slug comes
+  from the plan's top-level heading, or else from your request. When the
+  name is taken, the file gets `-2`, `-3` and so on; an existing file is
+  never replaced.
+  - The file holds the plan byte for byte. On Muse Code, a plan reply opens
+    and closes with the skill's "Reply `go` to execute this plan…" line;
+    those two lines are left out. Any other reply is saved whole.
+  - Pressing again finds the file already saved with the same content and
+    writes nothing.
+  - `.agents` is a protected folder, so the save asks first.
+  - A plan may be up to 256 KB.
+  - The file is published by a hard link; on a file system without hard
+    links the save is refused rather than risk replacing a file.
+  - The reply you approve is shown as the model will get it: a link's
+    destination follows its text (`details <https://…>`), a picture is its
+    alt text and source, and definitions, footnotes, titles and a code
+    block's whole info string are shown as text. Raw HTML (a comment, a
+    tag) is the one thing the panel never shows: a plan holding it is saved
+    with a warning to read the file. A plan holding a control or format
+    character (a direction override, a zero-width character), which the
+    panel would paint otherwise than the model reads it, is neither saved
+    nor started. That includes emoji joined with U+200D (👨‍👩‍👧) and the
+    left-to-right and right-to-left marks some right-to-left text uses.
+  - Restricted Mode saves nothing.
+- **Implement in a fresh conversation** saves the plan (unless it is
+  already saved), then starts a new conversation on the same backend:
+  - the plan is attached as named text, the same way a picked text file
+    is (both backends), written from what the panel showed of it, so
+    every character the model gets is one you saw;
+  - nothing else from the planning conversation comes along, and it stays
+    in History;
+  - Plan mode gives way to your starting mode (`museSpark.initialPermissionMode`,
+    or Manual when that is Plan; never Bypass in a remote window);
+  - a plan holding raw HTML is saved but not started: read the file, then
+    implement it from Plans….
+- **The todo list.** On the Model API backend, the plan's numbered steps
+  (or its bullets, when nothing is numbered) become the todo list before
+  the first request, and the brief tells the model what they are. Muse Code
+  keeps its todo list to the model, and MSP has no command to set it, so
+  there the brief asks Muse to put the plan's steps on its list.
+- **Plans…** in the palette lists the saved plans, newest date first, to
+  open one or implement it. A plan file may come from anywhere (a cloned
+  repository, a tool), so implementing one from Plans… starts in Manual
+  (Plan when that is your starting mode), whatever your starting mode is,
+  and tells the model nobody confirmed who wrote it.
+
+A side chat stays in Plan mode, so it offers only Save plan. Implementing a
+saved plan is refused in Restricted Mode, because its content goes to the
+model as workspace text.
 
 ## Rules, skills and memory
 
@@ -1808,7 +1871,9 @@ Press **F5** to launch the Extension Development Host with a fresh build.
 **Stack.** TypeScript 6.0.3 (pinned: `typescript-eslint` does not yet
 support TS 7); the extension host bundled with esbuild to CommonJS, with the
 Model API backend as a second bundle (`dist/modelApi.js`) that loads when
-that backend first starts; the webview is React 19 bundled to one IIFE with
+that backend first starts, and the plan reader (the panel's Markdown
+parser) as a third (`dist/planMarkdown.js`) that loads on the first plan
+action; the webview is React 19 bundled to one IIFE with
 its stylesheet; `zod/mini` validates every host ⇄ webview message; the voice
 helpers are Windows PowerShell and Swift with no dependencies.
 

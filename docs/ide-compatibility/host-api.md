@@ -309,32 +309,33 @@ Functions, variables, classes, enums and members declared in `@types/vscode`; th
 | `workspace.textDocuments`                                                            | `src/extension.ts`                                                                                                                                                          |
 | `workspace.workspaceFolders`                                                         | `src/extension.ts`                                                                                                                                                          |
 
-## Node built-ins the host imports (22)
+## Node built-ins the host imports (23)
 
-| Module                | Files |
-| --------------------- | ----- |
-| `node:buffer`         | 19    |
-| `node:child_process`  | 8     |
-| `node:crypto`         | 16    |
-| `node:dns`            | 1     |
-| `node:dns/promises`   | 1     |
-| `node:fs`             | 13    |
-| `node:fs/promises`    | 16    |
-| `node:http`           | 2     |
-| `node:https`          | 1     |
-| `node:module`         | 1     |
-| `node:net`            | 3     |
-| `node:os`             | 4     |
-| `node:path`           | 45    |
-| `node:process`        | 1     |
-| `node:stream`         | 6     |
-| `node:string_decoder` | 1     |
-| `node:tls`            | 1     |
-| `node:url`            | 2     |
-| `node:util`           | 5     |
-| `node:vm`             | 1     |
-| `node:worker_threads` | 4     |
-| `node:zlib`           | 1     |
+| Module                 | Files |
+| ---------------------- | ----- |
+| `node:buffer`          | 19    |
+| `node:child_process`   | 8     |
+| `node:crypto`          | 16    |
+| `node:dns`             | 1     |
+| `node:dns/promises`    | 1     |
+| `node:fs`              | 13    |
+| `node:fs/promises`     | 17    |
+| `node:http`            | 2     |
+| `node:https`           | 1     |
+| `node:module`          | 1     |
+| `node:net`             | 3     |
+| `node:os`              | 4     |
+| `node:path`            | 46    |
+| `node:process`         | 1     |
+| `node:stream`          | 6     |
+| `node:string_decoder`  | 1     |
+| `node:timers/promises` | 1     |
+| `node:tls`             | 1     |
+| `node:url`             | 2     |
+| `node:util`            | 5     |
+| `node:vm`              | 1     |
+| `node:worker_threads`  | 4     |
+| `node:zlib`            | 1     |
 
 ## The webview's host
 

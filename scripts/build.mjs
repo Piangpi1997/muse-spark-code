@@ -42,6 +42,8 @@ const HOST_ENTRY = 'src/extension.ts'
 const HOST_OUTFILE = 'dist/extension.js'
 const MODEL_API_ENTRY = 'src/host/backend/modelApiEntry.ts'
 const MODEL_API_OUTFILE = 'dist/modelApi.js'
+const PLAN_MARKDOWN_ENTRY = 'src/host/planMarkdownEntry.ts'
+const PLAN_MARKDOWN_OUTFILE = 'dist/planMarkdown.js'
 const SEARCH_WORKER_ENTRY = 'src/host/backend/searchWorker.ts'
 const SEARCH_WORKER_OUTFILE = 'dist/searchWorker.js'
 const PAGE_WORKER_ENTRY = 'src/host/web/pageWorker.ts'
@@ -87,6 +89,16 @@ const modelApiOptions = {
   ...common,
   entryPoints: [MODEL_API_ENTRY],
   outfile: MODEL_API_OUTFILE,
+  platform: 'node',
+  format: 'cjs',
+  target: HOST_NODE_TARGET,
+}
+
+/** @type {import('esbuild').BuildOptions} */
+const planMarkdownOptions = {
+  ...common,
+  entryPoints: [PLAN_MARKDOWN_ENTRY],
+  outfile: PLAN_MARKDOWN_OUTFILE,
   platform: 'node',
   format: 'cjs',
   target: HOST_NODE_TARGET,
@@ -162,6 +174,7 @@ if (isWatch) {
   const contexts = await Promise.all([
     esbuild.context(hostOptions),
     esbuild.context(modelApiOptions),
+    esbuild.context(planMarkdownOptions),
     esbuild.context(searchWorkerOptions),
     esbuild.context(pageWorkerOptions),
     esbuild.context(webviewOptions),
@@ -172,6 +185,7 @@ if (isWatch) {
   const shipped = {
     extension: esbuild.build(hostOptions),
     modelApi: esbuild.build(modelApiOptions),
+    planMarkdown: esbuild.build(planMarkdownOptions),
     searchWorker: esbuild.build(searchWorkerOptions),
     pageWorker: esbuild.build(pageWorkerOptions),
     webview: esbuild.build(webviewOptions),
@@ -195,6 +209,7 @@ if (isWatch) {
   console.log('bundle sizes:')
   reportSize(HOST_OUTFILE)
   reportSize(MODEL_API_OUTFILE)
+  reportSize(PLAN_MARKDOWN_OUTFILE)
   reportSize(SEARCH_WORKER_OUTFILE)
   reportSize(PAGE_WORKER_OUTFILE)
   reportSize(path.join(WEBVIEW_OUTDIR, 'main.js'))

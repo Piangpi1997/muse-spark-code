@@ -2071,6 +2071,29 @@ describe('ModelApiSession: turns', () => {
     })
   })
 
+  it('takes a todo list from outside a turn (M79), refused while one runs, and saves it', async () => {
+    const store = memorySessionStore()
+    const t = setup({ store })
+    const { session, events, turnDone } = await startSession(t)
+    const steps = [{ text: 'Step one', status: 'pending' }]
+    session.setTodos(steps)
+    expect(events).toContainEqual({ type: 'todoChanged', items: steps })
+    expect(session.history().todos).toEqual(steps)
+    await vi.waitFor(() => {
+      expect(store.saved.get(session.sessionId)?.todos).toEqual(steps)
+    })
+    const held = Promise.withResolvers<undefined>()
+    t.api.script({ hold: held.promise, text: 'ok' })
+    await session.sendTurn([{ type: 'text', text: 'go' }])
+    // todo_write may be replacing the list while the turn runs.
+    expect(() => {
+      session.setTodos([])
+    }).toThrow(UI_TEXT.planWaitForTurn)
+    held.resolve(undefined)
+    await turnDone()
+    expect(session.history().todos).toEqual(steps)
+  })
+
   it('serves ask_user questions and todo_write, and reports unknown tools', async () => {
     const t = setup()
     const { session, events, turnDone } = await startSession(t)

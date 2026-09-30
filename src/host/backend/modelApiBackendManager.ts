@@ -11,7 +11,6 @@
 // next call tries again.
 
 import { createHash } from 'node:crypto'
-import { createRequire } from 'node:module'
 import type { EnvironmentFacts } from '../../core/backends/modelapi/instructions'
 import type { NetworkAdvice } from '../../core/networkFailure'
 import type { McpPoolSnapshot, McpToolSource } from '../../core/backends/modelapi/mcp/pool'
@@ -26,6 +25,7 @@ import type { MemoryStore } from '../../core/memory/memoryStore'
 import type { WebFetcher } from '../../core/web/webFetch'
 import { MODEL_API_BASE_URL, type PromptCacheRetention, UI_TEXT } from '../../shared/constants'
 import { uiLocale } from '../../shared/l10n/text'
+import { forgetFile, requireFile } from '../lazyBundle'
 import type { Logger } from '../logger'
 import { isModelApiBundle, type McpPoolFactory, type ModelApiBundle } from './modelApiBundle'
 
@@ -81,22 +81,6 @@ export interface ModelApiBackendManagerDeps extends ModelApiPaidHooks {
 }
 
 const MANAGER_DISPOSED = 'The Model API backend was stopped while it was starting'
-
-/** Node's own `require` of an absolute path, from wherever this code was bundled. */
-function requireFile(file: string): unknown {
-  return createRequire(file)(file)
-}
-
-/**
- * Forgets a file Node loaded but that is not the bundle, so the next build
- * reads it again: a module that ran without throwing stays in Node's cache,
- * and a file repaired in place would otherwise never be seen (the review of
- * PR #47). One that threw while loading is never cached.
- */
-function forgetFile(file: string): void {
-  const nodeRequire = createRequire(file)
-  Reflect.deleteProperty(nodeRequire.cache, nodeRequire.resolve(file))
-}
 
 function describe(error: unknown): string {
   return error instanceof Error ? error.message : String(error)

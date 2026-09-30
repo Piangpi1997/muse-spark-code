@@ -1001,8 +1001,12 @@ function settleAll(entries: readonly TranscriptEntry[], at: number): readonly Tr
   return settled.every((entry, index) => entry === entries[index]) ? entries : settled
 }
 
-/** A user card rebuilt from a stored `userMessage` item (M6 replay). */
-function replayedUserEntry(item: ItemSnapshot, seq: number): TranscriptEntry {
+/**
+ * A user card rebuilt from a stored `userMessage` item (M6 replay); sent
+ * in Plan mode when the host says its turn was (M79), which the item does
+ * not record.
+ */
+function replayedUserEntry(item: ItemSnapshot, seq: number, isPlanTurn = false): TranscriptEntry {
   return {
     kind: 'user',
     id: item.itemId,
@@ -1017,6 +1021,7 @@ function replayedUserEntry(item: ItemSnapshot, seq: number): TranscriptEntry {
       ...(attachment.height !== undefined && { height: attachment.height }),
     })),
     ...(item.turnId !== undefined && { turnId: item.turnId }),
+    ...(isPlanTurn && { isPlanTurn: true }),
   }
 }
 
@@ -1030,6 +1035,7 @@ function replayHistory(
   at: number,
   sequence: number,
   previous: readonly TranscriptEntry[],
+  planTurnIds: ReadonlySet<string>,
 ): { readonly entries: readonly TranscriptEntry[]; readonly sequence: number } {
   const entries: TranscriptEntry[] = []
   const knownWorkflows = new Map<string, WorkflowEntry>()
@@ -1042,7 +1048,9 @@ function replayHistory(
   for (const item of items) {
     if (item.kind === USER_MESSAGE_KIND) {
       next += 1
-      entries.push(replayedUserEntry(item, next))
+      entries.push(
+        replayedUserEntry(item, next, item.turnId !== undefined && planTurnIds.has(item.turnId)),
+      )
     } else if (!HIDDEN_ITEM_KINDS.has(item.kind)) {
       next += 1
       const before = item.kind === WORKFLOW_KIND ? knownWorkflows.get(item.itemId) : undefined
@@ -1577,6 +1585,78 @@ function applyAgentEvent(state: UiState, event: AgentEvent, at: number): UiState
   }
 }
 
+/**
+ * A pending user card at the end of the transcript, its chips kept until
+ * the host accepts or refuses it: the composer's Send, or a message the host
+ * sent itself (M79).
+ */
+function withPendingCard(
+  state: UiState,
+  card: {
+    readonly localId: string
+    readonly text: string
+    readonly attachments: readonly AttachmentSummary[]
+    readonly contextLabel?: string | undefined
+    readonly reference?: ChatReference | undefined
+    readonly isPlanTurn?: boolean
+  },
+): UiState {
+  return {
+    ...state,
+    unsentAttachments:
+      card.attachments.length === 0
+        ? state.unsentAttachments
+        : { ...state.unsentAttachments, [card.localId]: card.attachments },
+    sequence: state.sequence + 1,
+    transcript: [
+      ...state.transcript,
+      {
+        kind: 'user',
+        id: card.localId,
+        seq: state.sequence + 1,
+        text: card.text,
+        status: 'pending',
+        attachments: card.attachments,
+        ...(card.contextLabel !== undefined && { contextLabel: card.contextLabel }),
+        ...(card.reference !== undefined && { referenceLabel: referenceLabel(card.reference) }),
+        ...(card.isPlanTurn === true && { isPlanTurn: true }),
+      },
+    ],
+  }
+}
+
+/**
+ * The reply that "Save plan" and "Implement in a fresh conversation" sit
+ * under (M79): the conversation's latest reply, in Plan mode, once no turn
+ * runs and nothing was sent after it, answering a message this panel sent
+ * in Plan mode. Neither backend marks a plan or its approval on the wire,
+ * so the panel offers its own action here; the host checks it all again.
+ */
+export function planReplyIdOf(state: UiState): string | undefined {
+  if (
+    state.permissionMode !== 'plan' ||
+    state.sessionId === undefined ||
+    state.activeTurnId !== undefined ||
+    state.auth.status !== 'signedIn'
+  ) {
+    return undefined
+  }
+  const lastIndex = state.transcript.findLastIndex(
+    (entry) => entry.kind === 'assistant' || entry.kind === 'user',
+  )
+  const last = state.transcript[lastIndex]
+  const asked = state.transcript
+    .slice(0, Math.max(lastIndex, 0))
+    .findLast((entry) => entry.kind === 'user')
+  return last?.kind === 'assistant' &&
+    !last.isStreaming &&
+    last.text.trim() !== '' &&
+    asked?.kind === 'user' &&
+    asked.isPlanTurn === true
+    ? last.id
+    : undefined
+}
+
 /** The conversation dropped: New Conversation here, from a keybinding, or a stale restore. */
 function clearedConversation(state: UiState): UiState {
   return {
@@ -1901,6 +1981,7 @@ function applyHostMessage(state: UiState, message: HostToWebviewMessage, at: num
         at,
         state.sequence,
         isSameSession ? state.transcript : [],
+        new Set(message.planTurnIds),
       )
       const goal = loadedGoal(state, message)
       const editor =
@@ -1939,6 +2020,10 @@ function applyHostMessage(state: UiState, message: HostToWebviewMessage, at: num
         },
         UI_TEXT.announceResumed,
       )
+    }
+    case 'briefSubmitted': {
+      // The host sent it (M79): the composer's draft and chips stay as they are.
+      return withPendingCard(state, message)
     }
     case 'turnAccepted': {
       // A fast turn can finish before its acceptance arrives (M25); the
@@ -2194,34 +2279,17 @@ export function uiReducer(state: UiState, action: UiAction): UiState {
       return { ...state, focusRequests: state.focusRequests + 1 }
     }
     case 'submitted': {
-      return {
-        ...state,
-        draft: '',
-        draftRevision: state.draftRevision + 1,
-        pendingGoalCommand: undefined,
-        attachments: [],
-        unsentAttachments:
-          action.attachments.length === 0
-            ? state.unsentAttachments
-            : { ...state.unsentAttachments, [action.localId]: action.attachments },
-        reference: undefined,
-        sequence: state.sequence + 1,
-        transcript: [
-          ...state.transcript,
-          {
-            kind: 'user',
-            id: action.localId,
-            seq: state.sequence + 1,
-            text: action.text,
-            status: 'pending',
-            attachments: action.attachments,
-            ...(action.contextLabel !== undefined && { contextLabel: action.contextLabel }),
-            ...(action.reference !== undefined && {
-              referenceLabel: referenceLabel(action.reference),
-            }),
-          },
-        ],
-      }
+      return withPendingCard(
+        {
+          ...state,
+          draft: '',
+          draftRevision: state.draftRevision + 1,
+          pendingGoalCommand: undefined,
+          attachments: [],
+          reference: undefined,
+        },
+        { ...action, isPlanTurn: state.permissionMode === 'plan' },
+      )
     }
     case 'editorContextDismissed': {
       return { ...state, dismissedEditorPath: state.editorContext?.relativePath }

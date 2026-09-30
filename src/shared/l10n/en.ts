@@ -740,6 +740,58 @@ export const EN = {
   rewindConversationFailed: 'Could not rewind the conversation',
   sideChatFailed: 'Could not open a side chat',
   sideChatPlanOnly: 'Side chats stay in Plan mode.',
+  // M79 (PLAN.md D49): plans as files. {path} is the plan's workspace path.
+  planActionsLabel: 'Plan actions',
+  savePlan: 'Save plan',
+  implementPlan: 'Implement in a fresh conversation',
+  planImplementDetail: 'A new conversation with this plan as its brief, out of Plan mode',
+  planSaved: 'Plan saved to {path}.',
+  planAlreadySaved: 'This plan is already saved in {path}.',
+  planSaveFailed: 'Could not save the plan',
+  planSaveConfirm: 'Save this plan in .agents/plans?',
+  planSaveConfirmDetail:
+    '.agents is a protected folder: what is in it guides the agents that work here. The plan is saved as a new file; no file is replaced.',
+  planImplementFailed: 'Could not start the plan',
+  planRestricted:
+    'Plans are not saved or implemented in Restricted Mode. Trust this workspace to use them.',
+  planWaitForTurn: 'Wait for the reply to finish, or stop it, first.',
+  planReplyNotLatest: 'Only the latest reply in Plan mode can be saved as a plan.',
+  planImplementSideChat:
+    'Implement a plan from the main conversation; a side chat stays in Plan mode.',
+  planBriefText: 'Implement the plan in {path}.',
+  planTodosByModel:
+    'Muse Code does not let the extension set its todo list, so the brief asks Muse to list the plan’s steps there.',
+  planNamesTaken: 'Every file name for this plan is taken in .agents/plans.',
+  planFileMissing: 'That plan file no longer exists.',
+  // {size}: the limit in KB.
+  planTooLarge: 'This plan is larger than {size} KB, the most a plan may be.',
+  planSessionGone:
+    'That conversation is no longer open in this panel, so this reply can no longer be saved or implemented as a plan.',
+  planNotFromPlanTurn:
+    'This reply was not written in Plan mode here, so it is not saved or implemented as a plan.',
+  planHiddenMarkup:
+    'The plan holds HTML that the panel does not show. Open {path} and read all of it before you implement it.',
+  planHiddenMarkupNotStarted:
+    'Plan saved to {path}, but not started: it holds HTML that the panel does not show. Read the file, then implement it from Plans….',
+  planSavedNotStarted:
+    'Plan saved to {path}, but not started: the conversation changed in the meantime.',
+  planChangedNotStarted: 'The plan was not started: the conversation changed in the meantime.',
+  planActionBusy: 'A plan action is still running.',
+  planUnshownCharacters:
+    'This plan holds a control or format character (such as a direction override or a zero-width character) that makes the panel show it otherwise than the model would read it, so it is not saved or started.',
+  planMarkdownUnavailable:
+    'The plan reader could not be loaded, so plans are not saved, listed or implemented; reinstall the extension and reload the window. The log has the details.',
+  // {mode}: the permission mode's name.
+  planFromFileMode:
+    'A plan picked from Plans… starts in {mode}: the file comes from the workspace, so the conversation asks before it acts.',
+  planOpen: 'Open',
+  plansItem: 'Plans…',
+  plansItemDetail: 'Saved plans in .agents/plans: open one or implement it',
+  plansTitle: 'Plans',
+  plansCount: forms({ one: '{count} saved plan', other: '{count} saved plans' }),
+  plansNone: 'No saved plans yet. Save one from a reply in Plan mode.',
+  plansFailed: 'Could not list the plans',
+  planOpenFailed: 'Could not open the plan',
   sideChatSessionOnly: 'This side chat can open only side-chat conversations.',
   renameFailed: 'Could not rename the conversation',
   sandboxOffProfileNotice:
