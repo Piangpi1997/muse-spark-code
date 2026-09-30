@@ -16,7 +16,8 @@ export function buildModelApiBundle(folder: string): string {
     bundle: true,
     platform: 'node',
     format: 'cjs',
-    target: 'node22',
+    // The extension host of the floor, VS Code 1.99 (scripts/build.mjs, PLAN.md M62).
+    target: 'node20.18',
     logLevel: 'silent',
   })
   return file

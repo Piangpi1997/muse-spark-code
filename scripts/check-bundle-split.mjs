@@ -2,12 +2,14 @@
 // The bundle-split gate (M57, PLAN.md D6), part of `npm run build`. The
 // Model API backend is a bundle of its own, dist/modelApi.js, which the
 // activation bundle (dist/extension.js) requires the first time that backend
-// starts. The production build's metafiles (dist/meta/) name every source
-// file in each bundle; this fails when:
+// starts, and which the ACP agent (dist/acp.js, D62) loads the same way from
+// its own package. The production build's metafiles (dist/meta/,
+// dist/meta-acp/) name every source file in each bundle; this fails when:
 //
 // - a file of src/core/backends/modelapi/ is on neither list below, or on
 //   both, or a listed file no longer exists (a new file needs a decision);
-// - a LAZY_ONLY file, or the bundle's entry, is in dist/extension.js;
+// - a LAZY_ONLY file, or the bundle's entry, is in dist/extension.js or in
+//   dist/acp.js (a second build of the backend);
 // - a LAZY_ONLY file is missing from dist/modelApi.js (the entry stopped
 //   carrying the backend).
 //
@@ -23,6 +25,7 @@ const ENTRY = 'src/host/backend/modelApiEntry.ts'
 const BUNDLES = {
   activation: { output: 'dist/extension.js', metafile: 'dist/meta/extension.json' },
   modelApi: { output: 'dist/modelApi.js', metafile: 'dist/meta/modelApi.json' },
+  acp: { output: 'dist/acp.js', metafile: 'dist/meta-acp/acp.json' },
 }
 
 // The backend's files the activation bundle may carry, each with its reason.
@@ -105,17 +108,27 @@ for (const name of [...ACTIVATION_ALLOWED.keys(), ...lazy]) {
 
 const activation = inputsOf(BUNDLES.activation)
 const modelApi = inputsOf(BUNDLES.modelApi)
+const acp = inputsOf(BUNDLES.acp)
+// The bundles that load the backend from dist/modelApi.js rather than carry it.
+const loaders = [
+  [BUNDLES.activation.output, activation],
+  [BUNDLES.acp.output, acp],
+]
 for (const name of lazy) {
   const file = `${MODEL_API_DIR}/${name}`
-  if (activation.has(file)) {
-    problems.push(`${BUNDLES.activation.output} carries ${file}, which loads only with the backend`)
+  for (const [output, inputs] of loaders) {
+    if (inputs.has(file)) {
+      problems.push(`${output} carries ${file}, which loads only with the backend`)
+    }
   }
   if (!modelApi.has(file)) {
     problems.push(`${BUNDLES.modelApi.output} no longer carries ${file}`)
   }
 }
-if (activation.has(ENTRY)) {
-  problems.push(`${BUNDLES.activation.output} carries the Model API bundle's entry, ${ENTRY}`)
+for (const [output, inputs] of loaders) {
+  if (inputs.has(ENTRY)) {
+    problems.push(`${output} carries the Model API bundle's entry, ${ENTRY}`)
+  }
 }
 
 if (problems.length > 0) {
@@ -139,6 +152,13 @@ for (const [input, bytes] of carried) {
     `       ${name} ${(bytes / BYTES_PER_KIB).toFixed(1)} KiB: ${ACTIVATION_ALLOWED.get(name) ?? ''}`,
   )
 }
+const acpCarried = acp
+  .keys()
+  .filter((input) => input.startsWith(`${MODEL_API_DIR}/`))
+  .toArray()
+console.log(
+  `ok   ${BUNDLES.acp.output}: ${String(acpCarried.length)} of the backend's files, all on the allowed list`,
+)
 console.log(
   `ok   ${BUNDLES.modelApi.output}: carries the ${String(lazy.size)} files that load only with the backend`,
 )

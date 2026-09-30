@@ -394,32 +394,44 @@ describe('code intelligence on the Model API backend', () => {
     })
   })
 
-  it('writes nothing when Stop comes after the card is allowed', async () => {
-    const t = await start({ service: GREET_EVERYWHERE })
-    await t.turn([RENAME], true)
-    const card = await cardFor(t.events)
-    const read = t.io.readFile
-    const held = Promise.withResolvers<undefined>()
-    t.io.readFile = async (path, expected) => {
-      await held.promise
-      return await read(path, expected)
-    }
-    await t.session.decideApproval({
-      approvalId: card.approvalId,
-      choiceId: 'allow_once',
-      requirementId: card.requirementId,
-    })
-    await t.session.cancel()
-    held.resolve(undefined)
-    await vi.waitFor(() => {
-      expect(t.events.some((event) => event.type === 'turnCompleted')).toBe(true)
-    })
-    expect(t.events.find((event) => event.type === 'turnCompleted')).toMatchObject({
-      terminal: 'cancelled',
-    })
-    expect(t.io.files.get(A)).toBe(FILES['src/a.ts'])
-    expect(t.io.files.get(B)).toBe(FILES['src/b.ts'])
-  })
+  it.each([1, 2])(
+    'writes nothing when Stop comes during file check %d after approval',
+    async (heldRead) => {
+      const t = await start({ service: GREET_EVERYWHERE })
+      await t.turn([RENAME], true)
+      const card = await cardFor(t.events)
+      const read = t.io.readFile
+      const held = Promise.withResolvers<undefined>()
+      const entered = Promise.withResolvers<undefined>()
+      let reads = 0
+      t.io.readFile = async (path, expected) => {
+        if (path === A) {
+          reads += 1
+          if (reads === heldRead) {
+            entered.resolve(undefined)
+            await held.promise
+          }
+        }
+        return await read(path, expected)
+      }
+      await t.session.decideApproval({
+        approvalId: card.approvalId,
+        choiceId: 'allow_once',
+        requirementId: card.requirementId,
+      })
+      await entered.promise
+      await t.session.cancel()
+      held.resolve(undefined)
+      await vi.waitFor(() => {
+        expect(t.events.some((event) => event.type === 'turnCompleted')).toBe(true)
+      })
+      expect(t.events.find((event) => event.type === 'turnCompleted')).toMatchObject({
+        terminal: 'cancelled',
+      })
+      expect(t.io.files.get(A)).toBe(FILES['src/a.ts'])
+      expect(t.io.files.get(B)).toBe(FILES['src/b.ts'])
+    },
+  )
 
   it('names the protected file first on the card', async () => {
     // A git hook that sorts last among the files: without the order, the

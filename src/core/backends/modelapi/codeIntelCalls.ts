@@ -208,6 +208,11 @@ export async function applyRename(
             written,
           )
     }
+    // Stop may arrive while the final per-file recheck awaits I/O. Once a
+    // write starts, finish the rename so the button cannot leave it half done.
+    if (written.length === 0) {
+      context.signal.throwIfAborted()
+    }
     try {
       await context.io.writeFile(file.checkedAbsolute, file.after, file.checkedAbsolute)
     } catch (error: unknown) {

@@ -65,6 +65,8 @@ export interface ScriptedReply {
   readonly garbage?: boolean
   /** Fail the fetch itself (network error) instead of answering. */
   readonly networkError?: string
+  /** The socket code under that error, as Node's fetch keeps it in `cause` (M56). */
+  readonly networkErrorCode?: string
   /** A keep-alive with empty data mid-stream and the OpenAI-style `data: [DONE]` at the end. */
   readonly doneSentinel?: boolean
 }
@@ -330,16 +332,23 @@ async function afterGate(
   if (signal?.aborted === true) {
     throw new DOMException('aborted', 'AbortError')
   }
-  const aborted = Promise.withResolvers<never>()
-  const onAbort = () => {
-    aborted.reject(new DOMException('aborted', 'AbortError'))
-  }
-  signal?.addEventListener('abort', onAbort, { once: true })
+  // Not `Promise.withResolvers`: the integration tests load this helper in
+  // VS Code 1.99, whose Node 20.18 lacks it (PLAN.md M62).
+  const listening = new AbortController()
+  const aborted = new Promise<never>((_resolve, reject) => {
+    signal?.addEventListener(
+      'abort',
+      () => {
+        reject(new DOMException('aborted', 'AbortError'))
+      },
+      { once: true, signal: listening.signal },
+    )
+  })
   try {
-    await Promise.race([gate, aborted.promise])
+    await Promise.race([gate, aborted])
     return response
   } finally {
-    signal?.removeEventListener('abort', onAbort)
+    listening.abort()
   }
 }
 
@@ -458,7 +467,14 @@ export function fakeModelApi(): FakeModelApi {
       const reply = replies[Math.min(consumed, replies.length - 1)] ?? { text: 'ok' }
       consumed += 1
       if (reply.networkError !== undefined) {
-        return Promise.reject(new TypeError(reply.networkError))
+        const code = reply.networkErrorCode
+        return Promise.reject(
+          code === undefined
+            ? new TypeError(reply.networkError)
+            : new TypeError(reply.networkError, {
+                cause: Object.assign(new Error(`connect ${code}`), { code }),
+              }),
+        )
       }
       if (reply.httpError !== undefined) {
         return Promise.resolve(

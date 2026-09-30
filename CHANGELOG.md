@@ -50,9 +50,119 @@ happened, not what was planned; superseded entries are kept.
   the budget. `repo_map` gives the same map on request either way, all of
   its text within `max_tokens`; a budget too small for its own lead and
   notes is refused with the size that would do.
+- **Groundwork for editors other than VS Code** (M60, M61, PLAN.md D60).
+  The owner's IDE compatibility plan is filed in `docs/ide-compatibility.md`.
+  A new gate, `npm run check:host-api`, keeps a record of what the
+  extension asks of its host (`docs/ide-compatibility/host-api.md`): the
+  initial 201 VS Code APIs and where, the 13 files that imported `vscode`,
+  the Node built-ins, and what the webview needs (`acquireVsCodeApi` and 57
+  theme variables); it fails when the record goes stale, and when the
+  engine, the protocol, the webview, the conversation controller, either
+  backend or the credential store reaches `vscode`. The webview now talks
+  to VS Code through one host bridge, and the chat surface, the log and the
+  dictation setup carry no VS Code types. Nothing changes in VS Code.
+- **Muse Spark for editors that speak ACP** (M63, PLAN.md D61, D62).
+  `muse-spark-code-acp`, an npm package attached to each GitHub Release,
+  runs Muse Code or the Model API as an Agent Client Protocol agent for
+  Zed, JetBrains IDEs, Neovim, Emacs and the other ACP editors: the chat,
+  tool calls with diffs, the plan, permission prompts (a cancelled or
+  unknown answer rejects), questions as forms, the modes, the model and
+  effort, skills as commands, and sessions listed, loaded and resumed. The
+  backend is chosen when the editor starts it and never switches.
+  `muse-spark-code-acp auth set` keeps a Model API key in the operating
+  system's credential store (Windows Credential Manager, the macOS
+  Keychain, the Secret Service on Linux, with no plaintext fallback); the
+  key is never read from the environment or passed to Muse Code. Paid
+  features (web search, image generation) are off unless the editor
+  starts the agent with `--web-search` or `--image-generation`, and then
+  each use asks first in the editor's permission prompt, naming the price,
+  as the panel's popup does (M58): Allow once, Allow always in this
+  workspace (only with `--trust-workspace`, kept in the agent's data
+  folder and forgotten when the agent starts without the flag) or Deny.
+  Subagents stay off in the agent. The agent loads the Model API backend
+  from the same `dist/modelApi.js` the extension ships (M57), which its
+  package carries. The editor's MCP
+  servers (stdio and HTTP) are passed to Muse Code, so Jupyter AI's
+  notebook tools and Zed's context servers reach it. See `docs/acp.md`;
+  which editors have been tried is tracked in
+  `docs/ide-compatibility/hosts.md` (Zed, Emacs
+  with agent-shell, Neovim with CodeCompanion and JupyterLab with Jupyter
+  AI so far). On the Model API backend, a trusted folder gets Muse Code's
+  memory tools as the panel does; subagents, which are paid, are not
+  offered, and the package carries the C# of the shell tool's Windows job.
+- **The ACP agent and proxies.** The agent runs outside VS Code, so VS
+  Code's proxy and certificate settings do not reach it, and Node's own
+  `fetch` ignores `HTTPS_PROXY` unless `NODE_USE_ENV_PROXY=1` (Node 22.21 or
+  later, or 24). The agent does not re-route by itself: on the Model API
+  backend it warns once in its log at start when a proxy variable is set
+  and would not be used (or this Node cannot use one), and a request that
+  never reaches Meta now names the variables to set in the agent's
+  environment instead of VS Code's `http.*` settings, in all 15 languages.
+  `docs/acp.md` has a new "Networks and proxies" section.
+- **The ACP agent's Muse Code sign-in is read as the panel reads it**
+  (PR #49): from the credential file's structure, and the CLI's
+  `account/read` where only it can say, so an agent after `muse logout`
+  asks for sign-in instead of failing its first turn. A Muse Code agent no
+  longer clears the Model API agent's "Allow always" when it starts, and a
+  Model API agent whose `dist/modelApi.js` is missing says to reinstall the
+  agent, not the extension.
+- **The ACP agent keeps credential variables to Muse Code.** A
+  `META_API_KEY` in the agent's environment still reaches Muse Code and
+  counts as its sign-in, as with the extension, but no shell command, hook
+  or git the agent runs sees it or any other `*_API_KEY` variable. A
+  loaded or resumed session now runs in the mode, model and effort the
+  editor shows (or fails to load), the model as Muse Code reports it; a
+  session the agent could not set up is let go rather than left running,
+  and closing or reloading a session ends its running prompt as
+  cancelled and stops that turn, with any answer still owed to it
+  ignored;
+  a question's form answer is used only
+  when it is one of the form's own options, in the allowed number; and the
+  agent's log names a backend failure by its kind, never its message.
+- **The key outside VS Code, in the rules** (AGENTS.md rule 8, PLAN.md
+  D61). Outside VS Code the operating system's credential store stands in
+  for SecretStorage: the ACP agent's key goes in only through `auth set`'s
+  standard input and never reaches a child process. The one named
+  exception is the planned CI bootstrap (M80), whose step shell pipes the
+  key to `auth set` and unsets it before the run.
+- **Open VSX and npm publishing** in the release workflow. A tag also
+  publishes the VSIX to Open VSX, for VS Code forks that install from
+  there, and the agent to npm, each only when its token is set in the
+  `marketplace` environment.
+- **Host checks in CI** (the Hosts workflow, `test/hosts/`). Every pull
+  request that touches the product runs development-extension integration
+  in VSCodium and packaged browser checks in code-server (the 1.99 floor
+  and the latest) and Eclipse Theia,
+  and the packaged ACP agent on Linux, macOS and Windows (its key through
+  each credential store) and in JupyterLab, Emacs and Neovim, all against
+  a fake Muse Code CLI; the latest releases are tried again every Monday.
+  A second workflow, Forks, installs the VSIX in the latest Linux builds
+  of Cursor, Devin Desktop (formerly Windsurf), Kiro and Positron, then
+  runs development-extension integration there, weekly and by hand.
 
 ### Changed
 
+- **VS Code 1.99 or newer** (was 1.125; M62, PLAN.md A8), so editors built
+  on VS Code 1.99 or later can install the extension. The extension uses
+  no VS Code API newer than 1.85, checked against every published
+  `@types/vscode` from 1.85 on, and its host bundles now need nothing
+  newer than Node 20.18, the Node of VS Code 1.99 and 1.100. Tested in
+  VSCodium 1.99.3 and 1.135 (the integration tests, 9 passing in each) and
+  in code-server 4.99.4 (VS Code 1.99.3: a conversation and an approval
+  in the browser), where the 1.125 floor was refused; and in the latest
+  Cursor, Devin Desktop (formerly Windsurf), Kiro and Positron, which
+  install it and pass the integration tests. On 1.99 and 1.100 Muse Voice
+  says it is unavailable, as their Node has no WebSocket. VS Code routes an
+  extension's WebSocket through its proxy support only from 1.112, so on
+  1.101 to 1.111 Muse Voice's socket goes to Meta without it; **Muse Spark:
+  Diagnostics** now says whether this editor routes the extension's `fetch`
+  and WebSocket at all, instead of reading only the settings, and the
+  README's Proxies and certificates section says what to use. The Model
+  API's requests are routed on every supported version.
+- **README: How this extension is built** (Development): the owner, Claude
+  Code as lead, up to four headless Muse Code builders on the contributor
+  model, Grok Build and Codex as reviewers, and the gates on dedicated test
+  machines and CI.
 - **Every paid use asks first, in a popup** (M58, PLAN.md D48): **Allow
   once**, **Allow always in this workspace**, or **Deny**, in every
   permission mode, Bypass included. It covers each image (on either
@@ -80,8 +190,37 @@ happened, not what was planned; superseded entries are kept.
   the activation bundle (`scripts/check-bundle-split.mjs`). The host-globals
   and third-party-notices checks cover the new bundle, `npm run cycles`
   follows it, and the `.vsix` ships it.
+- **Build: the ACP agent's budget is 850 KiB** (PLAN.md D6). `dist/acp.js`
+  is 713.2 KiB now that it loads the Model API backend from
+  `dist/modelApi.js` (it was 874.1 KiB, over its 800 KiB budget, before
+  M57 reached it); the budget is that plus about 15 %. The agent is
+  installed once and never loaded by VS Code, so the size is a download,
+  not a start-up cost. No other budget changed.
 
 ### Fixed
+
+- **Stop still prevents a rename's first write during its final file check.**
+  A cancellation after approval is checked again after the awaited recheck.
+  Once a write starts, the remaining rename keeps its existing completion path.
+- **ACP paid-grant race tests use canonical temporary paths.** Filesystem
+  aliases on macOS and Windows no longer leave the test waiting for a rename
+  under a different name. Native path resolution also expands Windows 8.3
+  names. The production grant storage and timeout stay intact.
+- **ACP sessions keep the newest owner while cancellation finishes.** A
+  concurrent reload or close waits for the old turn to stop; an older delayed
+  resume cannot replace the newest request. A backend exit while a turn starts
+  fails its prompt without an unobserved rejection terminating the agent.
+- **Late ACP answers affect only their owning prompt.** Cancelled or completed
+  prompts reject late paid-use, approval and question answers; a stale paid
+  answer cannot install an Allow always grant for a later prompt.
+- **ACP paid grants survive independent process updates safely.** Per-feature
+  revocation generations and generation-specific workspace records replace the
+  shared JSON map. A stale writer cannot restore revoked permission or replace
+  a newer explicit grant. Legacy grants ask again; storage that cannot publish
+  safely remembers nothing and retains only the explicit Allow once use.
+- **ACP packaging works from Windows paths containing spaces.** npm runs in
+  the staging directory with fixed relative arguments. Host documentation now
+  distinguishes development-extension integration tests from VSIX installation.
 
 - **Signing out of Muse Code finishes, and a signed-out CLI no longer reads
   as signed in** (PLAN.md D26).

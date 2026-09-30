@@ -212,6 +212,8 @@ function setup(
   const paidUses: { readonly feature: PaidFeature; readonly units: number }[] = []
   // What the paid-use popup was asked (M58), in order, and whether it had to ask.
   const paidRequests: { readonly request: PaidUseRequest; readonly requiresAsking: boolean }[] = []
+  // The conversation each question was asked in, in the same order.
+  const paidSessions: string[] = []
   const subagentUsage: {
     readonly modelId: string
     readonly inputTokens: number
@@ -280,9 +282,11 @@ function setup(
     }),
     mcpServers: options.mcpServers,
     ideTools: options.ideTools,
-    allowsPaidUse: async (request, requiresAsking) => {
+    allowsPaidUse: async (request, requiresAsking, sessionId) => {
       paidRequests.push({ request, requiresAsking })
-      return await (options.allowsPaidUse?.(request, requiresAsking) ?? Promise.resolve(true))
+      paidSessions.push(sessionId)
+      return await (options.allowsPaidUse?.(request, requiresAsking, sessionId) ??
+        Promise.resolve(true))
     },
     isPaidUseRemembered: (feature) => options.remembered?.includes(feature) === true,
     noteSubagentUsage: (modelId, usage) => {
@@ -303,6 +307,7 @@ function setup(
     shellCalls: io.shellCalls,
     paidUses,
     paidRequests,
+    paidSessions,
     advanceClock: (ms: number) => {
       clock += ms
     },
@@ -5714,6 +5719,60 @@ describe('ModelApiSession subagents (M48)', () => {
     await vi.waitFor(() => {
       expect(t.files.get(`${ROOT}/child-note.txt`)).toBe('from child')
     })
+  })
+
+  it('asks each paid use in its conversation, a child’s in its parent’s (M58, PLAN.md D62)', async () => {
+    const t = setupSubagents({
+      paid: ['webSearch', 'imageGeneration'],
+      allowsPaidUse: (request) => Promise.resolve(request.feature !== 'imageGeneration'),
+    })
+    const other = await startSession(t)
+    await answerFirst(t, other.session, other.turnDone)
+    const { session } = await startSession(t)
+    t.api.script(
+      {
+        calls: [
+          {
+            name: 'subagent_spawn',
+            arguments: '{"role":"designer","objective":"Draw the logo"}',
+            callId: 'spawn',
+          },
+        ],
+      },
+      { text: 'Child ready.' },
+      { text: 'Parent continues.' },
+    )
+    await session.sendTurn([{ type: 'text', text: 'delegate the logo' }])
+    await waitForChildReady(t, session)
+    t.api.script(
+      {
+        calls: [
+          {
+            name: 'generate_image',
+            arguments: '{"path":"logo.png","prompt":"a logo"}',
+            callId: 'child_image',
+          },
+        ],
+      },
+      { text: 'Child finished.' },
+    )
+    await session.messageSubagent('subagent-1', 'Draw it now', true)
+    await paidPopupAsked(t, 5)
+    // Web search in each conversation, the spawn, the owner's follow-up, then
+    // the child's image: the host serves both conversations, and the child
+    // asks in its parent's.
+    expect(t.paidRequests.map(({ request }) => request.feature)).toEqual([
+      'webSearch',
+      'webSearch',
+      'subagents',
+      'subagents',
+      'imageGeneration',
+    ])
+    expect(t.paidSessions).toEqual([
+      other.session.sessionId,
+      ...Array.from({ length: 4 }, () => session.sessionId),
+    ])
+    expect(other.session.sessionId).not.toBe(session.sessionId)
   })
 
   it('reuses the same child when a spawn command id is retried', async () => {

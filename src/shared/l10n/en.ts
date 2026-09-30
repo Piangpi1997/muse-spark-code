@@ -1126,10 +1126,66 @@ export const EN = {
   modelApiNeedsFolder: 'Open a folder first; the Model API backend works inside a workspace.',
   modelApiBundleUnavailable:
     'The Model API backend could not be loaded; reinstall the extension and reload the window. The log has the details.',
+  // The same in the ACP agent (D62), whose package ships the bundle.
+  acpModelApiBundleUnavailable:
+    'The Model API backend could not be loaded; reinstall muse-spark-code-acp and restart the agent. The agent’s log has the details.',
   // Why the Muse Code CLI was not found, on the sign-in page and in warnings.
   cliNotFound: 'Muse Code is not installed in any known location.',
   cliPathNotAbsolute: 'museSpark.museBinaryPath must be an absolute path.',
   cliSearched: 'Searched: {paths}',
+  // The ACP agent in other editors (M63, PLAN.md D61, D62): its sign-ins,
+  // the key's commands, its errors and its help.
+  acpAuthMuseCodeName: 'Sign in to Muse Code',
+  acpAuthMuseCodeDetail:
+    'Runs Muse Code’s own sign-in in a terminal. Your Muse subscription pays for the conversations.',
+  acpAuthKeyName: 'Store a Meta Model API key',
+  acpAuthKeyDetail:
+    'Reads your key in a terminal and keeps it in this computer’s credential store. The key is billed for the conversations.',
+  // {command}: the sign-in command, for a client that cannot run it itself.
+  acpSignInByHand: 'Run “{command}” in a terminal, then try again.',
+  acpMuseCodeSignedOut: 'Muse Code is not signed in; sign in and try again.',
+  acpNoStoredKey: 'No Meta Model API key is stored; store one and try again.',
+  acpKeyPrompt: 'Meta Model API key (not shown as you type): ',
+  // {store}: where the key lives (acpStoreNames).
+  acpKeyStored: 'The key is stored in {store}.',
+  acpKeyNotStored: 'No key was entered, so nothing was stored.',
+  acpKeyPresent: 'A Meta Model API key is stored in {store}.',
+  acpKeyAbsent: 'No Meta Model API key is stored.',
+  acpKeyCleared: 'The Meta Model API key was removed from this computer’s credential store.',
+  // {reason}: the operating system's own error.
+  acpStoreUnavailable:
+    'This computer’s credential store cannot be used ({reason}). On Linux the agent needs a running, unlocked Secret Service, such as GNOME Keyring or KWallet.',
+  acpStoreNames: {
+    windows: 'Windows Credential Manager',
+    macos: 'the macOS Keychain',
+    linux: 'the Secret Service keyring',
+  },
+  acpNoModels: 'The backend offers no model this agent may use.',
+  acpPromptBusy: 'A prompt is already running in this session.',
+  acpQuestionFormMessage: 'Muse has a question for you.',
+  acpQuestionAsked:
+    'Muse has a question; this editor cannot show it as a form, so answer in your next message:',
+  acpUnknownArgument: 'Unknown argument: {argument}',
+  // {argument}: the paid feature's flag as typed.
+  acpPaidNeedsModelApi: '{argument} needs --backend modelApi: paid features bill a Model API key.',
+  // {command}: the executable's name. The options and values stay as typed.
+  acpUsage: [
+    'Usage:',
+    '  {command} [options]              Serve the Agent Client Protocol on stdin and stdout',
+    '  {command} [options] login        Sign in to Muse Code in this terminal',
+    '  {command} auth set|status|clear  Store, check or remove the Meta Model API key',
+    'Options:',
+    '  --backend museCode|modelApi      Who pays: Muse Code (the default) or the Model API key',
+    '  --trust-workspace                Load the folder’s rules, skills and memory',
+    '  --muse-binary <path>             The Muse Code CLI to run',
+    '  --shell-sandbox auto|muse|off    Muse Code’s shell sandbox',
+    '  --allow-dangerously-skip-permissions  Offer the Bypass permissions mode',
+    '  --allow-contributor-models       List contributor-tier models (Meta may train on their content)',
+    '  --web-search                     Offer paid web search (Model API backend; its price is asked first)',
+    '  --image-generation               Offer paid image generation (Model API backend; its price is asked first)',
+    '  --verbose                        Log every detail on stderr',
+    '  --help, --version',
+  ].join('\n'),
   // The exported Markdown's own words (M30); what was said and run is copied as it was.
   exportSessionLine: 'Session: `{id}`',
   exportBackendLine: 'Backend: {backend}',
@@ -1357,6 +1413,14 @@ export const EN = {
     'The proxy refused the connection (HTTP {status}). Check that it allows api.meta.ai.',
   networkUnreachable:
     'Meta’s server could not be reached. Check the network connection, and http.proxy and http.proxySupport if you use a proxy.',
+  // The same three in the ACP agent (PLAN.md D62, Q66), where VS Code's
+  // settings do not reach: they name the agent's environment variables.
+  acpNetworkUntrustedCertificate:
+    'The server’s certificate is not trusted. If your network inspects HTTPS, name its root certificate’s file in NODE_EXTRA_CA_CERTS in the agent’s environment, or add --use-system-ca to NODE_OPTIONS there (Node 22.15 or later) to trust the operating system’s store, then restart the agent.',
+  acpNetworkProxyCredentials:
+    'The proxy asked for credentials and did not accept the ones it got. Check the user name and password in the proxy’s address in HTTPS_PROXY (http://user:password@host:port) in the agent’s environment, then restart the agent.',
+  acpNetworkUnreachable:
+    'Meta’s server could not be reached. Check the network connection. Behind a proxy, set HTTPS_PROXY and NODE_USE_ENV_PROXY=1 in the agent’s environment (Node 22.21 or later, or 24) and restart the agent: without NODE_USE_ENV_PROXY the agent does not use the proxy.',
   // Muse Code refused a permission mode above the ceiling its configuration sets.
   approvalModeCeiling:
     'Muse Code’s configuration (its default permission profile, or a policy your administrator manages) does not allow this permission mode. Choose a stricter one, such as Manual, and send again.',

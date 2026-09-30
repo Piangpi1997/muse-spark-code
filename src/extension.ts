@@ -97,7 +97,8 @@ import { readSettings, toSettingsSnapshot } from './host/settings'
 import { ChatViewProvider, SIDEBAR_SURFACE_ID } from './host/views/ChatViewProvider'
 import { openChatPanel, restoreChatPanel } from './host/views/chatPanel'
 import { SurfaceRegistry } from './host/views/surfaceRegistry'
-import type { ChatSurface, WebviewHostContext } from './host/views/webviewSetup'
+import type { ChatSurface } from './host/views/chatSurface'
+import type { WebviewHostContext } from './host/views/webviewSetup'
 import { loadUiTable } from './host/l10n'
 import { createInsightsReader } from './host/usage/traceLogs'
 import { createDictationSetup, createMuseVoiceSetup } from './host/voice/dictationHost'
@@ -1761,6 +1762,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             process.env,
             process.platform,
             backend,
+            globalThis,
           ),
           managedConfiguration: managed,
           homeDir: homedir(),

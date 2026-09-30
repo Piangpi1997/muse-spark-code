@@ -265,8 +265,15 @@ export interface ModelApiPaidHooks {
   /**
    * The popup before a paid use (M58, PLAN.md D48): true when it is allowed
    * always in this workspace or allowed now. `requiresAsking` asks even then.
+   * `sessionId` is the conversation the use is for (a child task's parent),
+   * so a host serving several conversations to one client, as the ACP
+   * agent's does (D62), asks in the right one.
    */
-  readonly allowsPaidUse: (request: PaidUseRequest, requiresAsking: boolean) => Promise<boolean>
+  readonly allowsPaidUse: (
+    request: PaidUseRequest,
+    requiresAsking: boolean,
+    sessionId: string,
+  ) => Promise<boolean>
   /** Whether the feature is allowed always in this workspace, asking nothing. */
   readonly isPaidUseRemembered: (feature: PaidFeature) => boolean
   /** Child token cost is a subset of the parent's conversation estimate. */
@@ -1706,7 +1713,10 @@ export class ModelApiSession implements AgentSession {
     }
     return this.isSubagent
       ? this.childTaskGrant?.isWebSearchAllowed === true
-      : await unlessStopped(this.deps.allowsPaidUse({ feature: 'webSearch' }, false), signal)
+      : await unlessStopped(
+          this.deps.allowsPaidUse({ feature: 'webSearch' }, false, this.askingSessionId),
+          signal,
+        )
   }
 
   /** The IDE tool or MCP server tool a function name is, when it is one (M50). */
@@ -2475,7 +2485,7 @@ export class ModelApiSession implements AgentSession {
       const stopNotifying = this.notifyWhileAsking(call, signal)
       try {
         const isAllowed = await unlessStopped(
-          this.deps.allowsPaidUse(question.paid, requiresUserApproval),
+          this.deps.allowsPaidUse(question.paid, requiresUserApproval, this.askingSessionId),
           signal,
         )
         return { isApproved: isAllowed, feedback: undefined }
@@ -2941,13 +2951,15 @@ export class ModelApiSession implements AgentSession {
       limit,
       seen: this.seenFiles,
     })
-    const moved = Promise.withResolvers<undefined>()
-    this.foregroundShells.set(itemId, () => {
-      moved.resolve(undefined)
+    // Not `Promise.withResolvers`: VS Code 1.99 and 1.100 run Node 20 (PLAN.md M62).
+    const moved = new Promise<undefined>((resolve) => {
+      this.foregroundShells.set(itemId, () => {
+        resolve(undefined)
+      })
     })
     let finished: ToolOutcome | undefined
     try {
-      finished = await Promise.race([running, moved.promise])
+      finished = await Promise.race([running, moved])
     } finally {
       this.foregroundShells.delete(itemId)
       turnSignal.removeEventListener('abort', onTurnStop)
@@ -3222,6 +3234,7 @@ export class ModelApiSession implements AgentSession {
           },
         },
         false,
+        this.askingSessionId,
       )
       if (!isAccepted) {
         throw new ChildTaskRefusedError('consentDeclined')
@@ -5102,6 +5115,11 @@ export class ModelApiSession implements AgentSession {
       this.deps.log.warn(`Scheduled prompts could not be refreshed: ${describe(error)}`)
     }
     return submission
+  }
+
+  /** The conversation a paid use is asked in (M58): a child task's is its parent's. */
+  private get askingSessionId(): string {
+    return this.parentSession?.askingSessionId ?? this.sessionId
   }
 
   // --- AgentSession ---
