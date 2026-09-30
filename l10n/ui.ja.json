@@ -765,7 +765,23 @@
     "TodoWrite": "タスク",
     "snooze_reminder": "リマインダーをスヌーズ",
     "submit_reminder_decision": "リマインダー",
-    "submit_result": "結果"
+    "submit_result": "結果",
+    "find_definition": "定義",
+    "find_references": "参照",
+    "workspace_symbols": "シンボル",
+    "document_symbols": "アウトライン",
+    "hover": "ホバー",
+    "call_hierarchy": "呼び出し",
+    "repo_map": "リポジトリマップ",
+    "rename_symbol": "名前の変更",
+    "mcp__ide__findDefinition": "定義",
+    "mcp__ide__findReferences": "参照",
+    "mcp__ide__workspaceSymbols": "シンボル",
+    "mcp__ide__documentSymbols": "アウトライン",
+    "mcp__ide__hover": "ホバー",
+    "mcp__ide__callHierarchy": "呼び出し",
+    "mcp__ide__repoMap": "リポジトリマップ",
+    "mcp__ide__renameSymbol": "名前の変更"
   },
   "mcpToolLabel": "{tool} ({server})",
   "memoryScopes": {
@@ -1004,6 +1020,12 @@
   "museStoppedBySignal": "Muse Code は {signal} によって停止されました",
   "museUnknownSignal": "不明なシグナル",
   "approvalImageSources": "{paths} から",
+  "renameCardMore": {
+    "other": "{files} ほか {count} 個のファイル"
+  },
+  "codeIntelNoService": "{path} に応答した言語サービスがないか、このファイルがシンボルを宣言していません。",
+  "codeIntelTimedOut": "言語サービスが {seconds} 秒以内に応答しませんでした。",
+  "repoMapNoService": "ワークスペースのシンボルに応答した言語サービスはありません。",
   "imageBuyTitle": "Muse が画像 {path} の作成を求めています",
   "imageBuyEditTitle": "Muse が編集後の画像 {path} の作成を求めています",
   "imageBuyPrompt": "プロンプト: {prompt}",

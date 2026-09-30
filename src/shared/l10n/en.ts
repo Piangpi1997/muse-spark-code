@@ -443,6 +443,15 @@ export const EN = {
   approvalUseTool: 'Muse wants to use {action}',
   // {paths} is the list of images an edit starts from, shown as code.
   approvalImageSources: 'Starting from {paths}',
+  // M67: a rename's card names a few of its files ({files}) and counts the rest.
+  renameCardMore: forms({
+    one: '{files} and {count} more file',
+    other: '{files} and {count} more files',
+  }),
+  // M67: the code intelligence rows when VS Code's language services cannot answer.
+  codeIntelNoService: 'No language service answered for {path}, or it declares no symbols.',
+  codeIntelTimedOut: 'The language service did not answer within {seconds} seconds.',
+  repoMapNoService: 'No language service answered for the workspace’s symbols.',
   // The paid-use popup before an image, on either backend (M34, M44, M58).
   imageBuyTitle: 'Muse wants to create the image {path}',
   imageBuyEditTitle: 'Muse wants to make the edited image {path}',
@@ -911,6 +920,23 @@ export const EN = {
     snooze_reminder: 'Snooze reminder',
     submit_reminder_decision: 'Reminder',
     submit_result: 'Result',
+    // M67: code intelligence, native on the Model API and on the ide server.
+    find_definition: 'Definition',
+    find_references: 'References',
+    workspace_symbols: 'Symbols',
+    document_symbols: 'Outline',
+    hover: 'Hover',
+    call_hierarchy: 'Calls',
+    repo_map: 'Repo map',
+    rename_symbol: 'Rename',
+    mcp__ide__findDefinition: 'Definition',
+    mcp__ide__findReferences: 'References',
+    mcp__ide__workspaceSymbols: 'Symbols',
+    mcp__ide__documentSymbols: 'Outline',
+    mcp__ide__hover: 'Hover',
+    mcp__ide__callHierarchy: 'Calls',
+    mcp__ide__repoMap: 'Repo map',
+    mcp__ide__renameSymbol: 'Rename',
   },
   // A tool from an MCP server the table does not name (`mcp__<server>__<tool>`).
   mcpToolLabel: '{tool} ({server})',

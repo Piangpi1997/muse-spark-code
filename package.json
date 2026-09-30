@@ -531,6 +531,12 @@
           "default": false,
           "description": "%config.modelApiHooks.description%",
           "scope": "machine"
+        },
+        "museSpark.modelApiRepoMap": {
+          "type": "boolean",
+          "default": false,
+          "description": "%config.modelApiRepoMap.description%",
+          "scope": "machine"
         }
       }
     },

@@ -155,7 +155,7 @@ function modelApiManager(
     searchWorkerPath: path.join(deps.distDir, SEARCH_WORKER_FILE),
     log: warn,
     // The agent cannot see the editor's buffers (D62); the client's `fs/*` will (M63c).
-    hasUnsavedChanges: () => false,
+    unsavedFiles: () => [],
     shellJobAssembly:
       platform === 'win32' && systemRoot !== undefined
         ? shellJobAssembly({

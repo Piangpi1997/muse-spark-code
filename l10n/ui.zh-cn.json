@@ -765,7 +765,23 @@
     "TodoWrite": "任务",
     "snooze_reminder": "推迟提醒",
     "submit_reminder_decision": "提醒",
-    "submit_result": "结果"
+    "submit_result": "结果",
+    "find_definition": "定义",
+    "find_references": "引用",
+    "workspace_symbols": "符号",
+    "document_symbols": "大纲",
+    "hover": "悬停",
+    "call_hierarchy": "调用",
+    "repo_map": "仓库地图",
+    "rename_symbol": "重命名",
+    "mcp__ide__findDefinition": "定义",
+    "mcp__ide__findReferences": "引用",
+    "mcp__ide__workspaceSymbols": "符号",
+    "mcp__ide__documentSymbols": "大纲",
+    "mcp__ide__hover": "悬停",
+    "mcp__ide__callHierarchy": "调用",
+    "mcp__ide__repoMap": "仓库地图",
+    "mcp__ide__renameSymbol": "重命名"
   },
   "mcpToolLabel": "{tool}（{server}）",
   "memoryScopes": {
@@ -1004,6 +1020,12 @@
   "museStoppedBySignal": "Muse Code 被 {signal} 停止",
   "museUnknownSignal": "未知信号",
   "approvalImageSources": "从 {paths} 开始",
+  "renameCardMore": {
+    "other": "{files} 及另外 {count} 个文件"
+  },
+  "codeIntelNoService": "没有语言服务对 {path} 作出响应，或者该文件未声明任何符号。",
+  "codeIntelTimedOut": "语言服务未在 {seconds} 秒内响应。",
+  "repoMapNoService": "没有语言服务对工作区符号作出响应。",
   "imageBuyTitle": "Muse 想要创建图片 {path}",
   "imageBuyEditTitle": "Muse 想要制作编辑后的图片 {path}",
   "imageBuyPrompt": "提示词：{prompt}",

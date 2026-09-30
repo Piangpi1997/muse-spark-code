@@ -9,11 +9,52 @@ happened, not what was planned; superseded entries are kept.
 
 ### Added
 
+- **Code intelligence** (M67, PLAN.md D49): the agent finds definitions,
+  references and symbols the way the editor does, from VS Code's own
+  language services, instead of searching text. `find_definition`,
+  `find_references`, `workspace_symbols`, `document_symbols`, `hover`,
+  `call_hierarchy` and `repo_map` are reads in every mode on the Model API
+  backend, Plan and Restricted Mode included; a symbol is named by path,
+  line and column, by its name on a line or in a file, or by name alone.
+  Answers are workspace-relative, sorted and capped, and say how many
+  results outside the workspace (a library's declarations, another folder)
+  they left out; a hover for a symbol defined only outside the workspace
+  (and outside the languages' own libraries) is held back. A file whose
+  language has no service, or that declares nothing, says so instead of
+  answering nothing, and an empty answer says that not every language
+  provides every kind. In a file with unsaved changes a line number is
+  refused and a name is found in the editor's text, said so, the editor
+  matched by the file's real path (a workspace opened through a link). A
+  call hierarchy names the file of each outgoing call site, and counts the
+  other functions a position names (overloads) that it did not ask. On the Muse
+  Code backend the same tools are served to Muse Code as
+  `mcp__ide__findDefinition` and the rest, each marked read-only; Muse Code
+  1.4.0 still shows its own card for them in its on-request mode.
+- **`rename_symbol`** renames a symbol everywhere it is used. On the Model
+  API backend it is an edit: the card names its files, a protected one
+  first (and is a protected write when one of them is); every file is
+  checked again after the card and once more right before its own write,
+  and Stop before the first write writes nothing; the row carries one
+  patch, so Revert and rewind undo it, a rename stopped partway included.
+  It refuses an edit that also creates, moves or deletes files, and one
+  whose ranges no longer cover the old name (made from an older version of
+  a file). A hook matching `Edit` runs for it, with the files it would
+  write, and the rename writes the plan the hook was shown. On Muse Code it changes nothing and hands Muse Code the diff to
+  apply with its own edit tool.
+- **A repo map in the Model API's prompt** (`museSpark.modelApiRepoMap`,
+  off by default, machine-scoped, trusted workspaces only): the files other
+  files use most, with their most used definitions, within about 1,000
+  tokens. It is kept once made, tried again on a later turn when a try finds
+  nothing (three tries at most), and shared with child tasks and forks. It
+  adds those tokens to every request, its heading and notes counted in
+  the budget. `repo_map` gives the same map on request either way, all of
+  its text within `max_tokens`; a budget too small for its own lead and
+  notes is refused with the size that would do.
 - **Groundwork for editors other than VS Code** (M60, M61, PLAN.md D60).
   The owner's IDE compatibility plan is filed in `docs/ide-compatibility.md`.
   A new gate, `npm run check:host-api`, keeps a record of what the
   extension asks of its host (`docs/ide-compatibility/host-api.md`): the
-  201 VS Code APIs it uses and where, the 13 files that import `vscode`,
+  initial 201 VS Code APIs and where, the 13 files that imported `vscode`,
   the Node built-ins, and what the webview needs (`acquireVsCodeApi` and 57
   theme variables); it fails when the record goes stale, and when the
   engine, the protocol, the webview, the conversation controller, either
@@ -158,6 +199,9 @@ happened, not what was planned; superseded entries are kept.
 
 ### Fixed
 
+- **Stop still prevents a rename's first write during its final file check.**
+  A cancellation after approval is checked again after the awaited recheck.
+  Once a write starts, the remaining rename keeps its existing completion path.
 - **ACP paid-grant race tests use canonical temporary paths.** Filesystem
   aliases on macOS and Windows no longer leave the test waiting for a rename
   under a different name. Native path resolution also expands Windows 8.3

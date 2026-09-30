@@ -3077,6 +3077,8 @@ modelApi` (the key of D61). There is no "auto", so the bill is never a
 | Q7  | **Resolved 2026-09-22:** owner pressed F5 and confirmed the Muse Spark chat shell renders in the Extension Development Host (verbal confirmation; no screenshot filed).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      | Closed.                                                                                 |
 | Q8  | **Resolved 2026-09-22:** owner signed in; publisher is `RandyNorthrup`. Publishing ran by hand from the CI artifact with a clipboard PAT for 0.1.0–0.5.0; since 2026-09-23 the `VSCE_PAT` repository secret lets `release.yml` publish every `v*` tag.                                                                                                                                                                                                                                                                                                                                                                                                                                       | Closed.                                                                                 |
 | Q9  | The Muse Code user rules file: `/rules import` writes one into the config root and the model is told "if user and project rules conflict, project rules win", but its file name is not printed by `muse --help`, `muse skills`, the settings skill or the binary's strings. The Model API backend cannot mirror what it cannot name.                                                                                                                                                                                                                                                                                                                                                         | Not loaded on the Model API backend; the CLI backend loads it itself.                   |
+| Q10 | M67's repo map on Muse Code: the plan asks for it "as an opt-in section of the system prompt", but Muse Code's instructions are its own (D13: nothing installed into its folders). It could ride as a hidden note on the first turn of a conversation (as the question-card hint does), billed to the subscription as prompt tokens. Wanted?                                                                                                                                                                                                                                                                                                                                                 | The `repoMap` tool only; no note in Muse Code turns.                                    |
+| Q11 | M67's prompt repo map setting: its name (`museSpark.modelApiRepoMap`), its default (off, since every request pays its tokens) and its fixed ~1,000-token budget, and whether the model should see the map by default once the M75 evaluation measures it.                                                                                                                                                                                                                                                                                                                                                                                                                                    | Off by default, machine-scoped, 1,024 tokens, no budget setting.                        |
 | Q60 | **Answered 2026-09-26:** the owner set up the Open VSX account: the Eclipse Publisher Agreement signed, the namespace `RandyNorthrup` created, the token in `OVSX_PAT`. The release workflow publishes there from the next tag (M62).                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | Q61 | **Resolved 2026-09-26:** the owner approved the ACP SDK. `@agentclientprotocol/sdk` 1.4.0 is pinned: 1.5.0 (2026-09-21) is inside `.npmrc`'s 7-day `min-release-age`, and 1.4.0 speaks the same ACP v1 (D62).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | Q62 | **Resolved 2026-09-26:** "you can install whatever you need". What this container's network lets in is recorded per editor (D62); the rest is qualified in CI or on the owner's machines.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
@@ -6878,6 +6880,12 @@ harness scenario, which is what the accessibility gate checks (D32).
 
 ### M67 — Code intelligence tools (D49)
 
+**Integration review 2026-09-29:** PR #57's candidate is being joined with
+PR #32 before final gates. A Stop during the last awaited check of the first
+rename file could still write; the first-write boundary now rechecks cancellation.
+The two held-check regression cases, independent review and final local rig
+gates are tracked in `docs/certification/m67.md`; no merged status is claimed.
+
 - **Goal.** The model finds definitions, references and symbols the way
   an IDE does, instead of grepping.
 - **Scope.**
@@ -6913,6 +6921,152 @@ harness scenario, which is what the accessibility gate checks (D32).
 - **Tests.** A fake language-service host in unit tests. An integration
   test in VS Code over a TypeScript fixture.
 - **Size.** M.
+- **As built (2026-09-28).** Decisions taken while building, each open to
+  the owner's review:
+  - **One core, two surfaces.** `src/core/codeIntel/` holds the tools
+    (confinement, placing, capping, the repo map, the rename plan) over a
+    `LanguageServiceHost` interface; `src/host/codeIntel/languageServices.ts`
+    implements it with VS Code's `vscode.execute…Provider`,
+    `vscode.prepareCallHierarchy`/`provide…Calls`, `vscode.prepareRename`
+    and `vscode.executeDocumentRenameProvider` commands. The Model API
+    offers `find_definition`, `find_references`, `workspace_symbols`,
+    `document_symbols`, `hover`, `call_hierarchy`, `repo_map`,
+    `rename_symbol`; the `ide` server offers the same as `findDefinition`,
+    …, `renameSymbol` (the camel case of `getDiagnostics`). The core stays
+    outside `src/core/backends/modelapi/**`, since the activation bundle
+    carries it for the `ide` tools.
+  - **Naming a symbol.** Path, line and column (1-based); path, line and
+    name (its first whole-word use on the line); path and name (its first
+    use in the file); or name alone, looked up among the workspace symbols
+    (exact name, TypeScript's `greet()` read as `greet`; the first in place
+    order is used and the others listed).
+  - **"No language service".** VS Code exposes no way to ask whether a
+    provider exists, and its commands answer an empty list either way. An
+    empty answer is therefore checked against the file's document symbols:
+    none means "no language service answered for <file> (language <id>)",
+    worded to allow for a file that declares nothing; some means "No
+    <kind> at <place>". Workspace symbols have no file to check, so an
+    empty answer says that they come from the languages' services and that
+    TypeScript's needs a project file open.
+  - **Placing results.** A result is in the workspace when its path is
+    (textual and canonical confinement, D24) or when its real path is under
+    the root's real path (a workspace opened through a link, whose files a
+    server reports by real path). Everything else, including virtual
+    documents, is left out and counted. Lines come from the disk.
+  - **Caps.** 100 locations, 200 symbols, 50 callers or callees with five
+    call sites each, 4,000 characters of hover, three outline levels; a
+    20-second deadline per language-service call.
+  - **Rename.** Planned before the card from VS Code's rename edit: every
+    file must be placed in the workspace (any outside refuses the whole
+    rename), at most 200 files, no file operations, no unsaved changes, and
+    the document's text equal to the disk's (BOM aside), so the edit lands
+    where the service meant it. On the Model API the card is a `fileWrite`
+    naming up to five files and counting the rest, protected when any file
+    is (D24); after approval every file is confined and read again and
+    nothing is written unless each is unchanged; files are written with the
+    tools' atomic write, one patch across them (per-line hunks, which Edit
+    Review's revert undoes), and the fingerprints `write_file` checks are
+    updated. A failed write stops the rest and names what was written.
+    Plan refuses a rename before the language service is asked. On `ide`
+    the tool returns a unified diff and writes nothing (read-only). The
+    file tools' one-hunk patch (D27's `hunkBetween`) moved beside the
+    rename's hunks as `changeHunk` in `codeText.ts`, unchanged, so the two
+    share one implementation (the duplication gate).
+  - **Repo map.** Aider's idea over VS Code's services: names of three
+    characters or more are counted in the text of up to 1,000 listed files
+    (128 KiB each, read confined); the 300 names used by the most files are
+    looked up as workspace symbols, eight at a time, within 10 seconds (5 for
+    the prompt); each file scores the uses of its names by other files,
+    shared among a name's definers. Document symbols per file were rejected:
+    opening every file would make VS Code open each document for every
+    extension (a linter lints them all). The prompt section is opt in
+    (`museSpark.modelApiRepoMap`, machine-scoped since it bills prompt
+    tokens), made on the first turn that has it on and kept for the session
+    so the prompt's prefix stays cached (a Stop ends it at once, and a map
+    cut short that way is not kept); Muse Code's instructions are its own,
+    so there it is the `repoMap` tool only.
+  - **Annotations.** `McpTool` gained `annotations` (as M69 adds it);
+    `getDiagnostics` and every code intelligence tool declare
+    `readOnlyHint: true`, and all are listed in Restricted Mode.
+  - **Tests.** `codeIntelTools`, `codeText`, `renamePlan`, `repoMap`,
+    `modelApiCodeIntel`, `ideCodeIntelTools`, `languageServices` (the
+    adapter over the `vscode` mock) and `toolPresentation`;
+    `test/integration/codeIntel.test.ts` over `test/fixtures/workspace/
+code-intel` on VS Code stable and 1.125.0; live case19 of the Model
+    API sweep; the `code-intel` harness scenario.
+  - **Review round (after `c5c4045b`).** Three class reviews; every
+    finding fixed in one commit on a merge of `origin/main` (PR #50):
+    - A rename's edit ranges must each cover exactly the old name (the
+      text the edit at the position replaces, read from the text the
+      position came from), and that file must still be that text: an edit
+      the service computed on an older version is refused, never applied.
+    - File operations: VS Code's `WorkspaceEdit.entries()` lists only text
+      edits and `size` counts them (read from the extension hosts of 1.99.0,
+      1.125.0 and 1.139.0), so the old check never fired. The adapter reads the
+      internal `_allEntries()` through zod (`_type` 2 is a text edit, 1 a
+      file operation); a missing or changed list is `unknown`, refused
+      (§8 records the undocumented member).
+    - Writing: every file is checked again after the card, then each once
+      more right before its own write; a change found partway stops with a
+      revertable patch of what was written. Stop before the first write
+      writes nothing; once writing starts the rest follow. A failed
+      `rename_symbol` row with a patch keeps review and rewind
+      (`PARTIAL_EDIT_TOOLS`, `hasLandedEdits`).
+    - The prompt's repo map: trusted workspaces only; only a map with text
+      is kept, a try that fails or comes out empty counts, three at most
+      (`REPO_MAP_PROMPT_TRIES`), and a Stop does not count; child tasks and
+      forks use the conversation's. `Limits` takes its Stop listener off,
+      begins no work past the budget, and holds the file listing to it; the
+      map says how many files it read.
+    - Unsaved files: a line number in one is refused; lines shown are the
+      editor's, and the answer says so.
+    - Hover: held back when every definition is outside the workspace and
+      outside the languages' libraries (VS Code's `appRoot` and each
+      extension's folder, `LanguageServiceHost.libraryRoots`). Types that
+      flow from outside files into workspace symbols remain (§9).
+    - Hooks: `rename_symbol` matches `Edit`, and a matching `PreToolUse`
+      hook gets the planned `files` (planned for it alone, only when one
+      would run and the mode allows edits).
+    - Wording: "no language service" allows a file that declares nothing;
+      an empty answer says the language may lack that provider; the same
+      name, a change after the plan, the header's file name. A rename named
+      by symbol alone has no file button. The card names protected files
+      first.
+    - Captures: live case19 again with a stand-in that skips string
+      literals (4 references, 4 edits, the import asserted); and Muse Code
+      1.4.0-R4302.1 calling `mcp__ide__findReferences` in on-request mode
+      (4 model attempts): it listed our tools with annotations, asked its
+      own card for a `readOnlyHint` tool, and showed our text verbatim.
+      The README's "reads in every mode" is the Model API's alone.
+  - **Second review (Grok Build on `585af100`).** One P1, five P2; all
+    held on inspection and are fixed in one commit:
+    - Unsaved changes by real path: `ToolIo.unsavedFiles()` lists the
+      editors' files, and `unsavedDocumentPath` matches one to a file by its
+      own path, the service's, or its real path (a workspace opened through
+      a link names files by the link in the editor and by the real path in
+      the language service). The plan, the recheck before each write, the
+      lines shown and the target all use it; a target is asked and read at
+      the editor's own path.
+    - Repo map: a batch the time or a Stop cuts off is dropped whole, so
+      nothing it finds later reaches the map or its counts; "no language
+      service" only when every lookup ran and none found anything, a cut
+      map being partial.
+    - A rename planned for its `PreToolUse` hooks is the plan written; a
+      hook's new arguments plan afresh.
+    - Call hierarchy: outgoing call sites name the file of the function
+      asked about; of several items at a position the one declared there is
+      asked, and the answer counts the others.
+  - **Codex on PR #57.** Two P2s, both held and fixed in one commit:
+    - The repo map counts every line it renders against its budget (the
+      lead, the count of files left out, the notes, and the prompt
+      section's heading); `repo_map` refuses a `max_tokens` too small for
+      its own fixed text and names the size that would do.
+    - `document_symbols` opens and outlines the file at the path of an
+      editor holding unsaved changes to it (`openAsEdited`), as the other
+      tools do; no other tool opened a named file directly.
+- **Status.** Built on `feature/m67-code-intel` (2026-09-28); reviewed and
+  fixed the same day. Drills and the live checks in
+  `docs/certification/m67.md`.
 
 ### M68 — Verify loop (D49)
 
@@ -7961,23 +8115,33 @@ remain available.
 
 Every lint or scanner suppression (`eslint-disable`, `@ts-expect-error`, `nosemgrep`), every cast the compiler cannot verify, and every error swallowed inside generated shell, C# or Swift must be listed here with its reason. A TypeScript `catch {}` needs only an inline comment saying why the error is dropped.
 
-| File                                  | Construct                                                          | Reason                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | Added      |
-| ------------------------------------- | ------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------- |
-| `src/host/backend/toolIo.ts`          | `nosemgrep` on `spawn` (`detect-child-process`)                    | The command line is the tool's payload by design: the user approved it on a card, and it runs through PowerShell / bash as an argument array, never a shell string.                                                                                                                                                                                                                                                                                                                                                                                                                    | 2026-09-22 |
-| `src/host/backend/searchWorker.ts`    | `nosemgrep` on `new RegExp(pattern)` (`detect-non-literal-regexp`) | The model's search pattern is evaluated on a worker thread that `toolIo.searchOnWorker` terminates at `SEARCH_TIMEOUT_MS`, and the pattern is capped at `SEARCH_PATTERN_MAX_LENGTH`; a runaway match cannot hang the host.                                                                                                                                                                                                                                                                                                                                                             | 2026-09-22 |
-| `src/host/voice/dictationHost.ts`     | `nosemgrep` on two `spawn` calls (`detect-child-process`)          | The dictation and capture helpers' command lines are fixed by `helperLocation.ts` (Windows PowerShell under `%SystemRoot%` with a bundled script, or the bundled macOS binary with VS Code's own app name (`--app-name`)); M35's Linux recorder is `arecord` or `parec` found by absolute path on PATH, with fixed arguments. Argument arrays; no user, model or workspace input reaches them.                                                                                                                                                                                         | 2026-09-25 |
-| `native/darwin/Dictation.swift`       | `unsafeBitCast(symbol, to: SetDisclaim.self)`                      | `responsibility_spawnattrs_setdisclaim` is a private libsystem call with no header, so it is resolved with `dlsym` and cast to its C signature, `int (posix_spawnattr_t *, int)`, the one Chromium and Qt declare (M28). A missing symbol is handled before the cast (the helper then asks as before); the signature has been stable since macOS 10.14.                                                                                                                                                                                                                                | 2026-09-23 |
-| `src/host/backend/shellJob.ts`        | `catch { }` in the join statement each Windows command starts with | A command whose job cannot be joined (the assembly removed since the self-test, a policy change) must still run as it would without one; its kill then finds no job, logs that, and falls back to taskkill and the sweep (M27), so the failure is reported where it matters.                                                                                                                                                                                                                                                                                                           | 2026-09-23 |
-| `test/unit/App.test.tsx`              | `as unknown as Selection` (four stubs)                             | jsdom offers no usable `Selection`; the quote-menu tests stub the two members the code reads (`toString`, `anchorNode`) and nothing else, so a structural cast is the honest shape. Test-only.                                                                                                                                                                                                                                                                                                                                                                                         | 2026-09-23 |
-| `scripts/capture-themes.mjs`          | `nosemgrep` on `spawn` (`detect-child-process`)                    | A developer script (M37): it starts the VS Code build `@vscode/test-electron` downloaded, with its own fixed arguments, as an argument array with no shell. Nothing from a user, the model or a workspace reaches it, and it never ships.                                                                                                                                                                                                                                                                                                                                              | 2026-09-24 |
-| `scripts/sast.mjs`                    | `nosemgrep` on two `spawnSync` calls (`detect-child-process`)      | The SAST gate's own launcher (M40): it runs `semgrep` or the semgrep executable found in a Python's user Scripts folder, and asks the interpreters in a fixed list (`python`, `python3`, `py`) where that folder is. Every command and argument is the script's own, passed as an argument array with no shell; nothing from a user, the model or a workspace reaches them, and the script never ships.                                                                                                                                                                                | 2026-09-25 |
-| `src/host/backend/mcpProcess.ts`      | `nosemgrep` on `spawn` (`detect-child-process`)                    | A stdio MCP server the user configured in Muse Code's own settings file (M50, D42), started only in a trusted workspace: its command found by absolute path (D24), its arguments passed as an array. A `.cmd`/`.bat` launcher goes through `cmd.exe /d /v:off /s /c` with every part quoted and `"`, `%` and line breaks refused. Nothing the model writes reaches the command line.                                                                                                                                                                                                   | 2026-09-25 |
-| `src/host/backend/mcpJobLaunch.ts`    | `nosemgrep` on `spawn` (`detect-child-process`)                    | On Windows M50 starts only its compiled C# executable in extension storage, with no arguments. The configured command, arguments and allowlisted environment are in a private encoded environment value; C# removes it and builds the server's exact environment before `CreateProcessW`. The server is assigned to its job before its first instruction. Since M56 the launcher's C# ships as `native/windows/MuseSparkMcpLauncher.cs` and the shared `MuseSparkMcpJob.cs`, is read by `jobSourceReader`, and compiles to an executable named by its source's digest (`jobBuild.ts`). | 2026-09-26 |
-| `src/runtime/main.ts`                 | `nosemgrep` on `spawn` (`detect-child-process`)                    | The ACP agent's `login` (M63, D62) runs `muse login` in the user's terminal the way the agent starts `muse serve`: the command is the CLI `MuseCodeBackendManager.resolveLaunch` found (the install layout, `PATH`, or an absolute `--muse-binary` that must exist, D1a, D4), the arguments its launcher's fixed prefix and `MUSE_LOGIN_ARGS`, passed as an array with no shell. Nothing from an editor, the model or a workspace reaches it. Found by the first local SAST run on PR #32's code (2026-09-27).                                                                         | 2026-09-27 |
-| `test/unit/helpers/fakeMcpOrphan.mjs` | `nosemgrep` on `spawn` (`detect-child-process`)                    | The M50 Windows regression fixture starts only this Node with its own fixed file to test an MCP server whose child outlives it. The child self-exits after 12 seconds; no model or workspace input reaches its command line, and the fixture never ships.                                                                                                                                                                                                                                                                                                                              | 2026-09-25 |
-| `src/host/backend/modelApiBundle.ts`  | `value is ModelApiBundle` (`isModelApiBundle`, a type predicate)   | `require` of `dist/modelApi.js` returns `unknown`; the guard checks that `createModelApiHost` is a function, but not its parameter and result types, which no run-time check can see. Both bundles come from one source tree in one `npm run build` and ship in one package, this module types the factory on both sides, and `modelApiBundle.test.ts` builds the real bundle and runs a turn through it (M57).                                                                                                                                                                        | 2026-09-27 |
+| File                                     | Construct                                                          | Reason                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | Added      |
+| ---------------------------------------- | ------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------- |
+| `src/host/backend/toolIo.ts`             | `nosemgrep` on `spawn` (`detect-child-process`)                    | The command line is the tool's payload by design: the user approved it on a card, and it runs through PowerShell / bash as an argument array, never a shell string.                                                                                                                                                                                                                                                                                                                                                                                                                    | 2026-09-22 |
+| `src/host/backend/searchWorker.ts`       | `nosemgrep` on `new RegExp(pattern)` (`detect-non-literal-regexp`) | The model's search pattern is evaluated on a worker thread that `toolIo.searchOnWorker` terminates at `SEARCH_TIMEOUT_MS`, and the pattern is capped at `SEARCH_PATTERN_MAX_LENGTH`; a runaway match cannot hang the host.                                                                                                                                                                                                                                                                                                                                                             | 2026-09-22 |
+| `src/host/voice/dictationHost.ts`        | `nosemgrep` on two `spawn` calls (`detect-child-process`)          | The dictation and capture helpers' command lines are fixed by `helperLocation.ts` (Windows PowerShell under `%SystemRoot%` with a bundled script, or the bundled macOS binary with VS Code's own app name (`--app-name`)); M35's Linux recorder is `arecord` or `parec` found by absolute path on PATH, with fixed arguments. Argument arrays; no user, model or workspace input reaches them.                                                                                                                                                                                         | 2026-09-25 |
+| `native/darwin/Dictation.swift`          | `unsafeBitCast(symbol, to: SetDisclaim.self)`                      | `responsibility_spawnattrs_setdisclaim` is a private libsystem call with no header, so it is resolved with `dlsym` and cast to its C signature, `int (posix_spawnattr_t *, int)`, the one Chromium and Qt declare (M28). A missing symbol is handled before the cast (the helper then asks as before); the signature has been stable since macOS 10.14.                                                                                                                                                                                                                                | 2026-09-23 |
+| `src/host/backend/shellJob.ts`           | `catch { }` in the join statement each Windows command starts with | A command whose job cannot be joined (the assembly removed since the self-test, a policy change) must still run as it would without one; its kill then finds no job, logs that, and falls back to taskkill and the sweep (M27), so the failure is reported where it matters.                                                                                                                                                                                                                                                                                                           | 2026-09-23 |
+| `test/unit/App.test.tsx`                 | `as unknown as Selection` (four stubs)                             | jsdom offers no usable `Selection`; the quote-menu tests stub the two members the code reads (`toString`, `anchorNode`) and nothing else, so a structural cast is the honest shape. Test-only.                                                                                                                                                                                                                                                                                                                                                                                         | 2026-09-23 |
+| `scripts/capture-themes.mjs`             | `nosemgrep` on `spawn` (`detect-child-process`)                    | A developer script (M37): it starts the VS Code build `@vscode/test-electron` downloaded, with its own fixed arguments, as an argument array with no shell. Nothing from a user, the model or a workspace reaches it, and it never ships.                                                                                                                                                                                                                                                                                                                                              | 2026-09-24 |
+| `scripts/sast.mjs`                       | `nosemgrep` on two `spawnSync` calls (`detect-child-process`)      | The SAST gate's own launcher (M40): it runs `semgrep` or the semgrep executable found in a Python's user Scripts folder, and asks the interpreters in a fixed list (`python`, `python3`, `py`) where that folder is. Every command and argument is the script's own, passed as an argument array with no shell; nothing from a user, the model or a workspace reaches them, and the script never ships.                                                                                                                                                                                | 2026-09-25 |
+| `src/host/backend/mcpProcess.ts`         | `nosemgrep` on `spawn` (`detect-child-process`)                    | A stdio MCP server the user configured in Muse Code's own settings file (M50, D42), started only in a trusted workspace: its command found by absolute path (D24), its arguments passed as an array. A `.cmd`/`.bat` launcher goes through `cmd.exe /d /v:off /s /c` with every part quoted and `"`, `%` and line breaks refused. Nothing the model writes reaches the command line.                                                                                                                                                                                                   | 2026-09-25 |
+| `src/host/backend/mcpJobLaunch.ts`       | `nosemgrep` on `spawn` (`detect-child-process`)                    | On Windows M50 starts only its compiled C# executable in extension storage, with no arguments. The configured command, arguments and allowlisted environment are in a private encoded environment value; C# removes it and builds the server's exact environment before `CreateProcessW`. The server is assigned to its job before its first instruction. Since M56 the launcher's C# ships as `native/windows/MuseSparkMcpLauncher.cs` and the shared `MuseSparkMcpJob.cs`, is read by `jobSourceReader`, and compiles to an executable named by its source's digest (`jobBuild.ts`). | 2026-09-26 |
+| `test/unit/helpers/fakeMcpOrphan.mjs`    | `nosemgrep` on `spawn` (`detect-child-process`)                    | The M50 Windows regression fixture starts only this Node with its own fixed file to test an MCP server whose child outlives it. The child self-exits after 12 seconds; no model or workspace input reaches its command line, and the fixture never ships.                                                                                                                                                                                                                                                                                                                              | 2026-09-25 |
+| `src/host/backend/modelApiBundle.ts`     | `value is ModelApiBundle` (`isModelApiBundle`, a type predicate)   | `require` of `dist/modelApi.js` returns `unknown`; the guard checks that `createModelApiHost` is a function, but not its parameter and result types, which no run-time check can see. Both bundles come from one source tree in one `npm run build` and ship in one package, this module types the factory on both sides, and `modelApiBundle.test.ts` builds the real bundle and runs a turn through it (M57).                                                                                                                                                                        | 2026-09-27 |
+| `src/host/codeIntel/languageServices.ts` | `Reflect.get(edit, '_allEntries')`, an undocumented member         | VS Code's `WorkspaceEdit` API lists only text edits (`entries()`, and `size` counts them), so a rename that also moves or creates files looks plain. The internal `_allEntries()` (1.99.0 to 1.139.0) lists every entry with its `_type`; it is read as `unknown` and parsed with zod, and a missing member or a changed shape answers `unknown`, which refuses the rename rather than applying half of it (M67). `languageServices.test.ts` and the integration suite cover both.                                                                                                     | 2026-09-28 |
+| `src/runtime/main.ts`                    | `nosemgrep` on `spawn` (`detect-child-process`)                    | The ACP agent's `login` (M63, D62) runs `muse login` in the user's terminal the way the agent starts `muse serve`: the command is the CLI `MuseCodeBackendManager.resolveLaunch` found (the install layout, `PATH`, or an absolute `--muse-binary` that must exist, D1a, D4), the arguments its launcher's fixed prefix and `MUSE_LOGIN_ARGS`, passed as an array with no shell. Nothing from an editor, the model or a workspace reaches it. Found by the first local SAST run on PR #32's code (2026-09-27).                                                                         | 2026-09-27 |
 
 ## 9. Security assumptions and accepted residual risk
+
+- Code intelligence (M67) shows what VS Code's language services say. A
+  result located outside the workspace is left out and a hover defined only
+  there is held back, but a language service also infers: a workspace
+  symbol whose type comes from an imported file outside the workspace (a
+  `../` import, a `tsconfig` path) carries that type, a literal type
+  included, into its hover and into diagnostics, as the editor shows it.
+  Accepted: it is the language's own view of the workspace the user opened,
+  the same text the Problems panel (`getDiagnostics`) already sends.
 
 - The `muse` CLI is closed source; we trust its stdio protocol as documented
   by Meta's SDK and validate every message shape at our boundary. Residual

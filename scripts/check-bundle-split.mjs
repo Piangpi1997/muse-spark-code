@@ -44,6 +44,8 @@ const ACTIVATION_ALLOWED = new Map([
 // goals, subagents, memory tools, permission engine and MCP client.
 const LAZY_ONLY = [
   'ModelApiHost.ts',
+  // M67: the code intelligence tools' Model API side (reads and the rename's write).
+  'codeIntelCalls.ts',
   'glob.ts',
   'goals.ts',
   'hooks.ts',

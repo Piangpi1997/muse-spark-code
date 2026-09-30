@@ -44,6 +44,8 @@ export interface ExtensionSettings extends SettingsSnapshot {
   readonly modelApiSubagents: boolean
   /** Explicit machine opt-in for external hook commands (M51). */
   readonly modelApiHooks: boolean
+  /** The repo map in the Model API's system prompt (M67). */
+  readonly modelApiRepoMap: boolean
 }
 
 /**
@@ -75,6 +77,7 @@ const settingSchemas = {
   modelApiScheduledPrompts: z.boolean(),
   modelApiSubagents: z.boolean(),
   modelApiHooks: z.boolean(),
+  modelApiRepoMap: z.boolean(),
 } as const
 
 type SettingKey = keyof typeof settingSchemas
@@ -142,6 +145,7 @@ export function readSettings(config: SettingsSource, log: Logger): ExtensionSett
     modelApiScheduledPrompts: readSetting(config, 'modelApiScheduledPrompts', log),
     modelApiSubagents: readSetting(config, 'modelApiSubagents', log),
     modelApiHooks: readSetting(config, 'modelApiHooks', log),
+    modelApiRepoMap: readSetting(config, 'modelApiRepoMap', log),
   }
 }
 

@@ -265,3 +265,31 @@ describe('image edits and the ide server’s images (M44)', () => {
     })
   })
 })
+
+describe('code intelligence rows (M67)', () => {
+  it('label both backends alike, name the symbol, and show a rename as an edit', () => {
+    expect(describeTool('find_references', '{"symbol":"greet"}')).toMatchObject({
+      label: 'References',
+      summary: 'greet',
+      body: 'generic',
+    })
+    expect(describeTool('mcp__ide__findDefinition', '{"path":"src/a.ts","line":2}')).toMatchObject({
+      label: 'Definition',
+      summary: 'src/a.ts',
+    })
+    expect(describeTool('workspace_symbols', '{"query":"Parser"}').summary).toBe('Parser')
+    // An edit row's summary is the file it opens: a rename named by symbol alone has none.
+    expect(describeTool('rename_symbol', '{"symbol":"greet","new_name":"welcome"}')).toMatchObject({
+      label: 'Rename',
+      summary: '',
+      body: 'edit',
+    })
+    expect(describeTool('rename_symbol', '{"path":"src/a.ts","symbol":"greet"}').summary).toBe(
+      'src/a.ts',
+    )
+    expect(describeTool('mcp__ide__renameSymbol', '{}')).toMatchObject({
+      label: 'Rename',
+      body: 'generic',
+    })
+  })
+})

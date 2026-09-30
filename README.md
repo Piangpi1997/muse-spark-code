@@ -78,6 +78,10 @@ Every change is in the [CHANGELOG](CHANGELOG.md).
   diff, the path opens the file with the changed lines selected, **Click to
   expand** opens VS Code's diff editor, and any output opens in an editor tab
   with a click.
+- **Code intelligence from your editor.** The agent finds definitions,
+  references, symbols and callers, reads hovers, maps the repository and
+  renames symbols through VS Code's own language services instead of
+  searching text, on both backends ([more](#code-intelligence)).
 - **Permission modes, like Claude Code.** Manual, Edit automatically, Plan and
   Auto (Bypass behind a setting), switched from the mode button or
   `Shift+Tab`. Gated commands arrive as approval cards with the CLI's own
@@ -565,6 +569,78 @@ this window is in) and deletes the chosen folder. Its branch stays. A
 worktree with uncommitted changes is removed only after a second
 confirmation that says the changes will be lost. Both commands need a
 trusted workspace, since git does not run in Restricted Mode.
+
+## Code intelligence
+
+The agent finds its way around code the way the editor does: from VS Code's
+own language services (the ones behind Go to Definition, Find All
+References, the outline and Rename Symbol), not by searching text. Whatever
+language extensions you have installed answer; TypeScript and JavaScript
+work out of the box.
+
+| Tool                | What the agent gets                                                                     |
+| ------------------- | --------------------------------------------------------------------------------------- |
+| `find_definition`   | Where a symbol is defined, with the line                                                |
+| `find_references`   | Every use of a symbol, its declaration included                                         |
+| `workspace_symbols` | The workspace's classes, functions and variables matching a name                        |
+| `document_symbols`  | A file's outline                                                                        |
+| `hover`             | A symbol's type and documentation, as the editor's hover shows them                     |
+| `call_hierarchy`    | Who calls a function, or what it calls, where the language supports it                  |
+| `repo_map`          | The files other files use most, with their most used definitions, within a token budget |
+| `rename_symbol`     | A rename everywhere the symbol is used                                                  |
+
+- **Naming a symbol.** By path, line and column; by its name on a line or in
+  a file; or by name alone, looked up among the workspace's symbols.
+- **What comes back.** Workspace-relative `path:line:column` with the line's
+  text, sorted, and capped with the rest counted. A result outside the
+  workspace (a library's declarations, another folder) is left out and
+  counted. A hover for a symbol defined only outside the workspace is held
+  back, unless it is defined in a language's own library (TypeScript's
+  `lib.*.d.ts` in VS Code, an extension's bundled stubs). A file whose
+  language has no service in VS Code, or that declares no symbols, says
+  **No language service**; a service that answers for a file but finds
+  nothing at the place says so, and that not every language provides every
+  kind of answer (JSON and YAML have outlines but no references), so an
+  empty answer is not proof that nothing uses a symbol.
+- **Unsaved files.** The language services read the editor's text, while
+  `read_file` reads the disk. In a file with unsaved changes a line number
+  is refused; a name is found in the editor's text, and the answer says its
+  lines are the editor's. An editor is matched to a file by its real path,
+  so a workspace opened through a link (whose files the language service
+  names by their real paths) counts the same editor.
+- **Reads in every mode (Model API).** On the Model API backend all but
+  `rename_symbol` run without a card in every permission mode, Plan and
+  Restricted Mode included.
+- **Renames are edits (Model API).** `rename_symbol` asks like an edit: its
+  card names the files, a protected one first (a protected write when one of
+  them is). Every file is checked again after you approve, and each once more
+  right before it is written, so nothing a formatter or you saved meanwhile
+  is overwritten; Stop before the first atomic file write starts writes nothing,
+  including while its final file check waits. The row keeps
+  one patch across what was written, so Revert and rewind undo it, a rename
+  stopped partway included. It refuses a rename that would touch a file
+  outside the workspace, create, move or delete files (or one VS Code does
+  not say that of), change a file with unsaved changes, or whose edits no
+  longer match the file (the service answered from an older version). A hook
+  that matches `Edit` runs for a rename too, and its `PreToolUse` input
+  names the files it would write: the rename then writes that same plan.
+- **On the Muse Code backend** the same tools reach Muse Code through the
+  extension's tool server as `mcp__ide__findDefinition` and the rest, each
+  marked read-only (`readOnlyHint`). Muse Code decides whether to ask: in
+  its on-request mode it showed its own card for `findReferences` (Muse
+  Code 1.4.0), as for any MCP tool. Its `renameSymbol` changes nothing: it
+  hands Muse Code the diff, and Muse Code's own edit tool applies it under
+  its approvals and rewind.
+- **The repo map in the prompt** (`museSpark.modelApiRepoMap`, off by
+  default, machine-scoped): in a trusted workspace the Model API backend
+  puts the map in its instructions, within about 1,000 tokens, so the model
+  starts out knowing the workspace's layout. It is made once per
+  conversation; a try that finds nothing (TypeScript's service knows the
+  workspace's symbols only once one of the project's files is open) is
+  made again on the next turn, three times at most, and a child task and a
+  fork use the conversation's map. It adds those tokens to every request.
+  Muse Code's instructions are its own, so there the model asks for
+  `repoMap` when it wants one.
 
 ## Session goals
 
@@ -1283,7 +1359,7 @@ All settings live under `museSpark.*`; changes apply to open panels
 immediately. The settings that choose what runs and what is billed
 (`initialPermissionMode`, `backend`, `shellSandbox`, `sandboxNetwork`,
 `allowDangerouslySkipPermissions`, `museBinaryPath`, `environmentVariables`,
-`modelApiHooks`, `modelApiPromptCacheRetention` and the five paid features,
+`modelApiHooks`, `modelApiRepoMap`, `modelApiPromptCacheRetention` and the five paid features,
 `modelApiWebSearch`, `modelApiImageGeneration`, `modelApiVoice`,
 `modelApiSubagents` and `modelApiScheduledPrompts`) are machine-scoped: they
 take effect from your user settings only, never from a repository's
@@ -1320,6 +1396,7 @@ Bypass at once.
 | `modelApiSubagents`               | `false`     | [Paid](#paid-features): Model API child tasks, with a model-rate confirmation and a fresh four-request popup for every task                                                                                                                                                                                                                 |
 | `modelApiScheduledPrompts`        | `false`     | [Paid](#scheduled-prompts-model-api): a due prompt can run only after this machine-scoped gate and a separate confirmation of that occurrence's Model API token rates; never unattended                                                                                                                                                     |
 | `modelApiHooks`                   | `false`     | Run Muse Code's hook commands on the Model API backend in a trusted workspace: your administrator's, yours and the project's. They run as you, outside the agent's sandbox, without the Model API key; review them with **Muse Spark: Hooks** first. Machine-scoped                                                                         |
+| `modelApiRepoMap`                 | `false`     | Put a [repo map](#code-intelligence) in the Model API backend's instructions in a trusted workspace: the workspace's most used files and definitions, made once per conversation in about 1,000 tokens, which every request then carries (billed to your key). Machine-scoped                                                               |
 | `environmentVariables`            | `[]`        | `{ name, value }` pairs for the Muse Code process and the terminals that run the CLI (Open in Terminal, MCP sign-in, `muse logout`); an `XDG_CONFIG_HOME` here is where the extension looks for the CLI's sign-in and settings too. Never put API keys here; use Sign in. Changing it restarts the host                                     |
 
 The Model API backend's shell tool applies `terminal.integrated.env.*` the
@@ -1402,7 +1479,9 @@ stopped and the next message resumes the same session.
   only when you press Send. The exceptions are ones you set up: on the
   Model API backend an MCP server you configured receives its tool calls'
   arguments, and with `museSpark.modelApiHooks` on your hook commands
-  receive your prompt and bounded previews of tool and model calls. By
+  receive your prompt and bounded previews of tool and model calls. With
+  `museSpark.modelApiRepoMap` on, every request also carries the repo map
+  (file paths and definition names, no file contents). By
   default each message also carries the open file's path and any selected
   text (`attachOpenFile`); on the CLI backend each turn carries a short
   hidden note asking the model to offer choices through the question card. The extension has no telemetry

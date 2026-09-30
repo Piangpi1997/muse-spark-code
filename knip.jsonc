@@ -34,6 +34,9 @@
     "test/unit/helpers/fakeMcpPrebindParent.mjs",
     "test/unit/helpers/fakeMcpStartMarker.mjs",
     "test/integration/**/*.test.ts",
+    // The TypeScript fixture VS Code's language service reads in the code
+    // intelligence integration test (M67); main.ts imports the rest.
+    "test/fixtures/workspace/code-intel/main.ts",
     "test/hosts/*.mjs",
     "scripts/**/*.mjs",
     ".vscode-test.mjs"

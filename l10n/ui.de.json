@@ -782,7 +782,23 @@
     "TodoWrite": "Aufgaben",
     "snooze_reminder": "Erinnerung zurückstellen",
     "submit_reminder_decision": "Erinnerung",
-    "submit_result": "Ergebnis"
+    "submit_result": "Ergebnis",
+    "find_definition": "Definition",
+    "find_references": "Verweise",
+    "workspace_symbols": "Symbole",
+    "document_symbols": "Gliederung",
+    "hover": "Hover-Info",
+    "call_hierarchy": "Aufrufe",
+    "repo_map": "Repo-Karte",
+    "rename_symbol": "Umbenennen",
+    "mcp__ide__findDefinition": "Definition",
+    "mcp__ide__findReferences": "Verweise",
+    "mcp__ide__workspaceSymbols": "Symbole",
+    "mcp__ide__documentSymbols": "Gliederung",
+    "mcp__ide__hover": "Hover-Info",
+    "mcp__ide__callHierarchy": "Aufrufe",
+    "mcp__ide__repoMap": "Repo-Karte",
+    "mcp__ide__renameSymbol": "Umbenennen"
   },
   "mcpToolLabel": "{tool} ({server})",
   "memoryScopes": {
@@ -1031,6 +1047,13 @@
   "museStoppedBySignal": "Muse Code wurde durch {signal} angehalten",
   "museUnknownSignal": "ein unbekanntes Signal",
   "approvalImageSources": "Ausgehend von {paths}",
+  "renameCardMore": {
+    "one": "{files} und {count} weitere Datei",
+    "other": "{files} und {count} weitere Dateien"
+  },
+  "codeIntelNoService": "Für {path} hat kein Sprachdienst geantwortet, oder die Datei deklariert keine Symbole.",
+  "codeIntelTimedOut": "Der Sprachdienst hat nicht innerhalb von {seconds} Sekunden geantwortet.",
+  "repoMapNoService": "Für die Symbole des Arbeitsbereichs hat kein Sprachdienst geantwortet.",
   "imageBuyTitle": "Muse möchte das Bild {path} erstellen",
   "imageBuyEditTitle": "Muse möchte das bearbeitete Bild {path} erstellen",
   "imageBuyPrompt": "Prompt: {prompt}",

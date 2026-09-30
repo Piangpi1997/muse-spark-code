@@ -66,8 +66,11 @@ export interface ToolIoDeps {
   readonly searchWorkerPath: string
   /** Where a failed tree kill is reported. */
   readonly log: (message: string) => void
-  /** Whether an editor holds unsaved changes to the file (VS Code's documents, D27). */
-  readonly hasUnsavedChanges: (absolutePath: string) => boolean
+  /**
+   * The files open in an editor with unsaved changes, by the paths VS
+   * Code's documents give (D27).
+   */
+  readonly unsavedFiles: () => readonly string[]
   /** Windows: the job helper's assembly, undefined where jobs are unavailable (M27). */
   readonly shellJobAssembly?: (() => Promise<string | undefined>) | undefined
 }
@@ -611,7 +614,9 @@ export function createToolIo(deps: ToolIoDeps): ToolIo {
         release,
       }
     },
-    hasUnsavedChanges: deps.hasUnsavedChanges,
+    hasUnsavedChanges: (absolutePath) =>
+      deps.unsavedFiles().some((open) => isSamePath(open, absolutePath, deps.platform)),
+    unsavedFiles: deps.unsavedFiles,
     listFiles: deps.listFiles,
     searchFiles: (job) => searchOnWorker(deps.searchWorkerPath, job, SEARCH_TIMEOUT_MS),
     realPath: canonicalPath,

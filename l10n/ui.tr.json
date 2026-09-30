@@ -782,7 +782,23 @@
     "TodoWrite": "Görevler",
     "snooze_reminder": "Hatırlatıcıyı ertele",
     "submit_reminder_decision": "Hatırlatıcı",
-    "submit_result": "Sonuç"
+    "submit_result": "Sonuç",
+    "find_definition": "Tanım",
+    "find_references": "Başvurular",
+    "workspace_symbols": "Semboller",
+    "document_symbols": "Ana hat",
+    "hover": "Bilgi balonu",
+    "call_hierarchy": "Çağrılar",
+    "repo_map": "Depo haritası",
+    "rename_symbol": "Yeniden adlandır",
+    "mcp__ide__findDefinition": "Tanım",
+    "mcp__ide__findReferences": "Başvurular",
+    "mcp__ide__workspaceSymbols": "Semboller",
+    "mcp__ide__documentSymbols": "Ana hat",
+    "mcp__ide__hover": "Bilgi balonu",
+    "mcp__ide__callHierarchy": "Çağrılar",
+    "mcp__ide__repoMap": "Depo haritası",
+    "mcp__ide__renameSymbol": "Yeniden adlandır"
   },
   "mcpToolLabel": "{tool} ({server})",
   "memoryScopes": {
@@ -1031,6 +1047,13 @@
   "museStoppedBySignal": "Muse Code durduruldu (sinyal: {signal})",
   "museUnknownSignal": "bilinmiyor",
   "approvalImageSources": "Başlangıç: {paths}",
+  "renameCardMore": {
+    "one": "{files} ve {count} dosya daha",
+    "other": "{files} ve {count} dosya daha"
+  },
+  "codeIntelNoService": "{path} için hiçbir dil hizmeti yanıt vermedi ya da dosya hiç sembol bildirmiyor.",
+  "codeIntelTimedOut": "Dil hizmeti {seconds} saniye içinde yanıt vermedi.",
+  "repoMapNoService": "Çalışma alanı sembolleri için hiçbir dil hizmeti yanıt vermedi.",
   "imageBuyTitle": "Muse şu görüntüyü oluşturmak istiyor: {path}",
   "imageBuyEditTitle": "Muse şu düzenlenmiş görüntüyü oluşturmak istiyor: {path}",
   "imageBuyPrompt": "İstem: {prompt}",

@@ -765,7 +765,23 @@
     "TodoWrite": "할 일",
     "snooze_reminder": "알림 미루기",
     "submit_reminder_decision": "알림",
-    "submit_result": "결과"
+    "submit_result": "결과",
+    "find_definition": "정의",
+    "find_references": "참조",
+    "workspace_symbols": "기호",
+    "document_symbols": "개요",
+    "hover": "호버",
+    "call_hierarchy": "호출",
+    "repo_map": "저장소 맵",
+    "rename_symbol": "이름 바꾸기",
+    "mcp__ide__findDefinition": "정의",
+    "mcp__ide__findReferences": "참조",
+    "mcp__ide__workspaceSymbols": "기호",
+    "mcp__ide__documentSymbols": "개요",
+    "mcp__ide__hover": "호버",
+    "mcp__ide__callHierarchy": "호출",
+    "mcp__ide__repoMap": "저장소 맵",
+    "mcp__ide__renameSymbol": "이름 바꾸기"
   },
   "mcpToolLabel": "{tool} ({server})",
   "memoryScopes": {
@@ -1004,6 +1020,12 @@
   "museStoppedBySignal": "Muse Code가 {signal}에 의해 중지되었습니다",
   "museUnknownSignal": "알 수 없는 신호",
   "approvalImageSources": "{paths}에서 시작",
+  "renameCardMore": {
+    "other": "{files} 외 파일 {count}개"
+  },
+  "codeIntelNoService": "{path}에 응답한 언어 서비스가 없거나 파일에 선언된 기호가 없습니다.",
+  "codeIntelTimedOut": "언어 서비스가 {seconds}초 안에 응답하지 않았습니다.",
+  "repoMapNoService": "작업 영역 기호에 응답한 언어 서비스가 없습니다.",
   "imageBuyTitle": "Muse가 이미지 {path} 생성을 요청합니다",
   "imageBuyEditTitle": "Muse가 편집된 이미지 {path} 생성을 요청합니다",
   "imageBuyPrompt": "프롬프트: {prompt}",

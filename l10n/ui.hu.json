@@ -782,7 +782,23 @@
     "TodoWrite": "Feladatok",
     "snooze_reminder": "Emlékeztető elhalasztása",
     "submit_reminder_decision": "Emlékeztető",
-    "submit_result": "Eredmény"
+    "submit_result": "Eredmény",
+    "find_definition": "Definíció",
+    "find_references": "Hivatkozások",
+    "workspace_symbols": "Szimbólumok",
+    "document_symbols": "Vázlat",
+    "hover": "Súgó",
+    "call_hierarchy": "Hívások",
+    "repo_map": "Tárolótérkép",
+    "rename_symbol": "Átnevezés",
+    "mcp__ide__findDefinition": "Definíció",
+    "mcp__ide__findReferences": "Hivatkozások",
+    "mcp__ide__workspaceSymbols": "Szimbólumok",
+    "mcp__ide__documentSymbols": "Vázlat",
+    "mcp__ide__hover": "Súgó",
+    "mcp__ide__callHierarchy": "Hívások",
+    "mcp__ide__repoMap": "Tárolótérkép",
+    "mcp__ide__renameSymbol": "Átnevezés"
   },
   "mcpToolLabel": "{tool} ({server})",
   "memoryScopes": {
@@ -1031,6 +1047,13 @@
   "museStoppedBySignal": "A Muse Code-ot a következő jel állította le: {signal}",
   "museUnknownSignal": "egy ismeretlen jel",
   "approvalImageSources": "Kiindulópont: {paths}",
+  "renameCardMore": {
+    "one": "{files} és még {count} fájl",
+    "other": "{files} és még {count} fájl"
+  },
+  "codeIntelNoService": "Egyetlen nyelvi szolgáltatás sem válaszolt erre: {path}, vagy a fájl nem deklarál szimbólumokat.",
+  "codeIntelTimedOut": "A nyelvi szolgáltatás {seconds} másodpercen belül nem válaszolt.",
+  "repoMapNoService": "A munkaterület szimbólumaira egyetlen nyelvi szolgáltatás sem válaszolt.",
   "imageBuyTitle": "A Muse létre szeretné hozni ezt a képet: {path}",
   "imageBuyEditTitle": "A Muse létre szeretné hozni ezt a szerkesztett képet: {path}",
   "imageBuyPrompt": "Prompt: {prompt}",

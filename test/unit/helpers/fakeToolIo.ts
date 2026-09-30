@@ -23,6 +23,14 @@ function keyOf(absolutePath: string): string {
   return absolutePath.replaceAll('\\', '/')
 }
 
+/** A `realPath` for a workspace opened through `link`, a link to `real`. */
+export function realPathThrough(link: string, real: string): (path: string) => Promise<string> {
+  return (path) =>
+    Promise.resolve(
+      path === link || path.startsWith(`${link}/`) ? real + path.slice(link.length) : path,
+    )
+}
+
 export function memoryToolIo(
   initial: Record<string, string>,
   root: string,
@@ -67,6 +75,7 @@ export function memoryToolIo(
     shellCalls,
     unsaved,
     hasUnsavedChanges: (absolutePath) => unsaved.has(absolutePath.replaceAll('\\', '/')),
+    unsavedFiles: () => [...unsaved],
     realPath: (absolutePath) => {
       const forward = absolutePath.replaceAll('\\', '/')
       for (const [relative, target] of Object.entries(links)) {
@@ -126,6 +135,7 @@ export const noopToolIo: ToolIo = {
   reserveFile: () =>
     Promise.resolve({ fill: () => Promise.resolve(), release: () => Promise.resolve() }),
   hasUnsavedChanges: () => false,
+  unsavedFiles: () => [],
   listFiles: () => Promise.resolve([]),
   searchFiles: () => Promise.resolve({ ok: true, hits: [] }),
   runShell: () =>
