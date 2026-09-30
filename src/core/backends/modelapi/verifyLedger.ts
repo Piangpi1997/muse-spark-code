@@ -4,7 +4,7 @@
 // session and the turn.
 //
 // It keeps every file's version (advanced by each edit this session makes,
-// and by each edit its subagents make in the same workspace) and every check
+// and by each edit another live session makes in the same workspace) and every check
 // that ran (automatic, `run_checks`, or an edit's `then_run` of a configured
 // check's own command) against the versions of what it covered. A round is
 // judged only when a run since the previous verdict is still on the latest
@@ -51,6 +51,11 @@ interface RecordedRun extends RunSnapshot {
   readonly outcome: CheckOutcome
 }
 
+interface PendingEdit {
+  readonly file: EditedFile
+  readonly names: readonly string[]
+}
+
 const KEY_SEPARATOR = '\u{0}'
 const PATH_SEPARATOR = '\u{1}'
 const PROJECT_KEY = 'project'
@@ -89,6 +94,7 @@ export class VerifyLedger {
   /** Each file's version, by real path: the project's version at the file's last known edit. */
   private readonly versions = new Map<string, number>()
   private readonly writtenNames = new Set<string>()
+  private readonly pendingEdits = new Set<PendingEdit>()
   private firstCodeFile: string | undefined
   /** Advanced by every edit this session knows of. */
   private projectVersion = 0
@@ -103,6 +109,13 @@ export class VerifyLedger {
 
   private isCurrent(run: RecordedRun): boolean {
     const { coverage } = run
+    if (
+      [...this.pendingEdits].some(
+        ({ file }) => coverage.kind === 'project' || coverage.versions.has(file.absolute),
+      )
+    ) {
+      return false
+    }
     return coverage.kind === 'project'
       ? coverage.version === this.projectVersion
       : [...coverage.versions].every(([absolute, version]) => this.versionOf(absolute) === version)
@@ -150,8 +163,23 @@ export class VerifyLedger {
   }
 
   /**
-   * A file written in this workspace by someone this session answers for (a
-   * subagent), with the names it was written under: runs over it, and over
+   * A workspace write about to start. Pending names survive user-input resets;
+   * runs taken before or during the write cannot certify its completed state.
+   * Even a failed write remains conservatively known until the next message.
+   */
+  public beginEdit(file: EditedFile, names: readonly string[]): () => void {
+    const edit: PendingEdit = { file, names }
+    this.pendingEdits.add(edit)
+    this.noteOutsideEdit(file, names)
+    return () => {
+      this.pendingEdits.delete(edit)
+      this.noteOutsideEdit(file, names)
+    }
+  }
+
+  /**
+   * A file written in this workspace by another live session, with the names
+   * it was written under: runs over it, and over
    * the whole project, are no longer on the latest state, and what it
    * decides (a check's script, code the editor runs) counts as this
    * session's own (Grok's review). It is not this session's to check, so
@@ -170,7 +198,11 @@ export class VerifyLedger {
 
   /** The first file written that the editor's tools run as code, if any. */
   public get codeFile(): string | undefined {
-    return this.firstCodeFile
+    return (
+      this.firstCodeFile ??
+      [...this.pendingEdits].find(({ names }) => names.some((name) => isCodeLoading(name)))?.file
+        .relative
+    )
   }
 
   /** Whether the fix loop stopped the checks. */
@@ -188,7 +220,12 @@ export class VerifyLedger {
 
   /** Whether a file written since the user's message decides what `command` runs. */
   public changesWhatRuns(command: string): boolean {
-    return [...this.writtenNames].some((name) => canChangeWhatRuns(name, command))
+    return (
+      [...this.writtenNames].some((name) => canChangeWhatRuns(name, command)) ||
+      [...this.pendingEdits].some(({ names }) =>
+        names.some((name) => canChangeWhatRuns(name, command)),
+      )
+    )
   }
 
   /** The files written since the user's message: `run_checks`'s default. */

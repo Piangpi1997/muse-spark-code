@@ -83,6 +83,7 @@ export const SCENARIOS = [
   'paid-voice',
   'muse-tools',
   'muse-web',
+  'web-fetch',
   'paid-edit',
   'paid-image-cli',
   'goal',
@@ -95,6 +96,10 @@ export const SCENARIOS = [
   'schedules',
   'schedules-narrow',
   'verify',
+  'plan',
+  'plan-brief',
+  'plan-narrow',
+  'code-intel',
 ]
 const CONTENT_TYPES = {
   '.html': 'text/html; charset=utf-8',

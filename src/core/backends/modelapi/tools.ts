@@ -17,6 +17,7 @@ import {
   type VerifySummary,
 } from '../../../shared/agentEvents'
 import {
+  CODE_INTEL_TOOLS,
   IMAGE_EXTENSIONS,
   LIST_FILES_DEFAULT_LIMIT,
   MAX_DOCUMENT_BYTES,
@@ -34,7 +35,6 @@ import {
   SEARCH_MAX_RESULTS,
   SEARCH_PATTERN_MAX_LENGTH,
   SEARCH_TIMEOUT_MS,
-  PATCH_CONTEXT_LINES,
   SHELL_DEFAULT_TIMEOUT_MS,
   SHELL_MAX_TIMEOUT_MS,
   TOOL_OUTPUT_CLIP_MARKER,
@@ -44,18 +44,15 @@ import {
   UI_TEXT,
   VERIFY_TOOLS,
 } from '../../../shared/constants'
-import {
-  ADD_MARKER,
-  CONTEXT_MARKER,
-  type PatchFile,
-  type PatchHunk,
-  REMOVE_MARKER,
-} from '../../../shared/patchDocument'
+import { ADD_MARKER, type PatchFile, REMOVE_MARKER } from '../../../shared/patchDocument'
 import { fill, formatNumber, plural } from '../../../shared/l10n/text'
 import type { DocumentPart, ImagePart } from '../../agent/agentBackend'
+import { changeHunk } from '../../codeIntel/codeText'
+import { MODEL_API_CODE_INTEL_DEFINITIONS } from '../../codeIntel/definitions'
 import { readImageInfo } from '../../imageDimensions'
 import { isPdf, pdfPageCount } from '../../pdf'
 import { fingerprint } from '../../verify/fingerprint'
+import { WEB_FETCH_DESCRIPTION, WEB_FETCH_PARAMETERS } from '../../web/webFetchDefinition'
 import { confineWorkspacePath } from '../../workspacePath'
 import { compileGlob } from './glob'
 import {
@@ -186,6 +183,8 @@ export interface ToolIo {
   reserveFile(absolutePath: string, expectedCanonicalPath?: string): Promise<FileReservation>
   /** Whether an editor holds unsaved changes to the file (D27). */
   hasUnsavedChanges(absolutePath: string): boolean
+  /** Absolute paths of the files open in an editor with unsaved changes, as the editor names them. */
+  unsavedFiles(): readonly string[]
   /** Workspace-relative, forward-slash paths of every listed file. */
   listFiles(): Promise<readonly string[]>
   /** Evaluates the pattern off the host thread with a time budget (ReDoS containment). */
@@ -326,6 +325,17 @@ const TOOL_CLASSES: Readonly<Record<string, ToolClass>> = {
   // M68: the call itself asks nothing; each check it runs takes the shell
   // tool's permission path, one command at a time.
   [VERIFY_TOOLS.runChecks]: 'interactive',
+  // M69 (PLAN.md D49): a network tool, asked per host.
+  [MODEL_API_TOOLS.webFetch]: 'network',
+  // M67 (PLAN.md D49): the language services read, in every mode; a rename is an edit.
+  [CODE_INTEL_TOOLS.findDefinition]: 'read',
+  [CODE_INTEL_TOOLS.findReferences]: 'read',
+  [CODE_INTEL_TOOLS.workspaceSymbols]: 'read',
+  [CODE_INTEL_TOOLS.documentSymbols]: 'read',
+  [CODE_INTEL_TOOLS.hover]: 'read',
+  [CODE_INTEL_TOOLS.callHierarchy]: 'read',
+  [CODE_INTEL_TOOLS.repoMap]: 'read',
+  [CODE_INTEL_TOOLS.renameSymbol]: 'edit',
 }
 
 export function classifyTool(name: string): ToolClass | undefined {
@@ -363,6 +373,7 @@ const shellArgs = z.object({
 })
 export const askUserArgs = z.object({ questions: z.array(questionSchema) })
 export const readSkillArgs = z.object({ id: z.string() })
+export const webFetchArgs = z.object({ url: z.string() })
 export const todoWriteArgs = z.object({ items: z.array(todoItemSchema) })
 
 const PATH_PROPERTY = { type: 'string', description: 'Workspace-relative path' }
@@ -383,6 +394,10 @@ export interface ToolDefinitionOptions {
   readonly hasMemory?: boolean
   /** The user's check commands (M68): `run_checks` is offered with the shell while there are any. */
   readonly checks?: readonly CheckCommandSetting[]
+  /** Web fetch, trusted workspaces only, when the host has a fetch (M69, PLAN.md D49). */
+  readonly hasWebFetch?: boolean
+  /** The code intelligence tools, while VS Code's language services are at hand (M67). */
+  readonly hasCodeIntel?: boolean
 }
 
 const DEFAULT_TOOL_OPTIONS: ToolDefinitionOptions = { hasShell: true, hasSkills: false }
@@ -582,6 +597,14 @@ export function toolDefinitions(
           define(tool.name, tool.description, tool.properties, tool.required),
         )
       : []),
+    ...(options.hasWebFetch === true
+      ? [define(MODEL_API_TOOLS.webFetch, WEB_FETCH_DESCRIPTION, WEB_FETCH_PARAMETERS, ['url'])]
+      : []),
+    ...(options.hasCodeIntel === true
+      ? MODEL_API_CODE_INTEL_DEFINITIONS.map((tool) =>
+          define(CODE_INTEL_TOOLS[tool.tool], tool.description, tool.properties, tool.required),
+        )
+      : []),
   ]
 }
 
@@ -735,50 +758,12 @@ function editedLine(line: string, isFormatted: boolean): string {
 }
 
 /**
- * The hunk between two texts: the changed lines (common prefix and suffix
- * trimmed) with up to PATCH_CONTEXT_LINES unchanged lines on each side, in
- * unified-diff numbering (PLAN.md D27). An insertion's `oldStart` is the
- * line it follows (0 at the top), never a marker of a created file; a
- * Revert checks the context, so it refuses a file that has moved on.
+ * An edit's row and patch. The hunk is the changed lines (common prefix and
+ * suffix trimmed) with their context, in unified-diff numbering (PLAN.md
+ * D27, `changeHunk`, shared with M67's rename): an insertion's `oldStart` is
+ * the line it follows, never a marker of a created file, and a Revert checks
+ * the context, so it refuses a file that has moved on.
  */
-function hunkBetween(before: string, after: string): PatchHunk | undefined {
-  const old = splitLines(before)
-  const updated = splitLines(after)
-  let start = 0
-  while (start < old.length && start < updated.length && old[start] === updated[start]) {
-    start += 1
-  }
-  let oldEnd = old.length
-  let newEnd = updated.length
-  while (oldEnd > start && newEnd > start && old[oldEnd - 1] === updated[newEnd - 1]) {
-    oldEnd -= 1
-    newEnd -= 1
-  }
-  const removed = old.slice(start, oldEnd)
-  const added = updated.slice(start, newEnd)
-  if (removed.length === 0 && added.length === 0) {
-    return undefined
-  }
-  const contextStart = Math.max(start - PATCH_CONTEXT_LINES, 0)
-  const leading = old.slice(contextStart, start)
-  const trailing = old.slice(oldEnd, oldEnd + PATCH_CONTEXT_LINES)
-  const oldLines = leading.length + removed.length + trailing.length
-  const newLines = leading.length + added.length + trailing.length
-  return {
-    // Unified numbering: a side with no lines starts at the line before it.
-    oldStart: oldLines === 0 ? contextStart : contextStart + 1,
-    oldLines,
-    newStart: newLines === 0 ? contextStart : contextStart + 1,
-    newLines,
-    lines: [
-      ...leading.map((line) => `${CONTEXT_MARKER}${line}`),
-      ...removed.map((line) => `${REMOVE_MARKER}${line}`),
-      ...added.map((line) => `${ADD_MARKER}${line}`),
-      ...trailing.map((line) => `${CONTEXT_MARKER}${line}`),
-    ],
-  }
-}
-
 function patchOutcome(
   relativePath: string,
   before: string | undefined,
@@ -786,7 +771,7 @@ function patchOutcome(
   visibleOutput: string,
   output: string,
 ): ToolOutcome {
-  const hunk = hunkBetween(before ?? '', after)
+  const hunk = changeHunk(before ?? '', after)
   const hunks = hunk === undefined ? [] : [hunk]
   // Said outright (D27): a Revert trashes only a file this edit created.
   const file: PatchFile = { path: relativePath, hunks, created: before === undefined }

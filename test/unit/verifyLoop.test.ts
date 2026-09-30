@@ -21,6 +21,7 @@ import { ModelApiHost, type ModelApiSession } from '../../src/core/backends/mode
 import type { ShellResult, ToolIo } from '../../src/core/backends/modelapi/tools'
 import type { VerifyHooks } from '../../src/core/backends/modelapi/verifyLoop'
 import type { DiagnosticEntry } from '../../src/core/diagnostics'
+import type { MemoryStore } from '../../src/core/memory/memoryStore'
 import type { EditedFile, FileDiagnostics } from '../../src/core/verify/diagnosticsReport'
 import { fingerprint } from '../../src/core/verify/fingerprint'
 import type { ApprovalMode } from '../../src/shared/permissionModes'
@@ -33,6 +34,7 @@ import {
   type ScriptedReply,
 } from './helpers/fakeModelApi'
 import { memoryContextIo } from './helpers/fakeContextIo'
+import { memoryStoreOver } from './helpers/fakeMemoryIo'
 import { type MemoryToolIo, memoryToolIo } from './helpers/fakeToolIo'
 import { logLines } from './helpers/logText'
 
@@ -68,6 +70,8 @@ interface SetupOptions {
   readonly format?: (absolutePath: string, text: string) => Promise<string | undefined>
   readonly io?: MemoryToolIo
   readonly hasVerify?: boolean
+  readonly hasSubagents?: boolean
+  readonly memory?: MemoryStore
   /** The user's hooks (M51), and what each run of one answers. */
   readonly hooks?: readonly HookDefinition[]
   readonly runHook?: HookRunner
@@ -156,13 +160,13 @@ function setup(options: SetupOptions = {}) {
     isWorkspaceTrusted: () => options.isTrusted ?? true,
     getAccountId: () => Promise.resolve(FAKE_MODEL_API_ACCOUNT_ID),
     describeEnvironment: () => Promise.resolve({ git: undefined }),
-    isPaidFeatureOn: () => false,
+    isPaidFeatureOn: (feature) => options.hasSubagents === true && feature === 'subagents',
     notePaidUse: () => undefined,
     promptCacheRetention: () => 'in_memory',
-    allowsPaidUse: () => Promise.resolve(false),
+    allowsPaidUse: () => Promise.resolve(options.hasSubagents === true),
     isPaidUseRemembered: () => false,
     noteSubagentUsage: () => undefined,
-    memory: undefined,
+    memory: options.memory,
     ...(options.hasVerify !== false && { verify }),
     ...(hooks !== undefined && { loadHooks: () => Promise.resolve(hooks) }),
   })
@@ -371,6 +375,263 @@ async function editThroughLink(t: Setup): Promise<void> {
   await turn()
 }
 
+/** Initial edit rounds shared by the session-grant regression fixtures. */
+const INITIAL_EDIT_ROUNDS: readonly ScriptedReply[] = [
+  { calls: [editCall('1', '2')] },
+  { calls: [editCall('2', '3')] },
+]
+
+const SCRIPT_CHECK: CheckCommandSetting = { name: 'script', command: 'node scripts/check.js' }
+const RUN_CHECKS: ScriptedCall = { name: 'run_checks', arguments: '{}' }
+
+/** Acquire one verify grant, then hold the next check while another session writes. */
+async function holdAfterGrant(t: Setup, hold: Promise<unknown>) {
+  const reader = await start(t, 'onRequest', () =>
+    reader.cards.length === 1 ? 'allow_session' : 'abort',
+  )
+  t.api.script({ calls: [RUN_CHECKS] }, { calls: [RUN_CHECKS], hold })
+  const reading = reader.turn()
+  await vi.waitFor(() => {
+    expect(t.api.responseBodies()).toHaveLength(2)
+    expect(t.io.shellCalls).toHaveLength(1)
+  })
+  return { reader, reading }
+}
+
+describe('workspace writes and verify grants', () => {
+  it('new sessions inherit a pending config write, released even when its write fails', async () => {
+    const beforeWrite = Promise.withResolvers<undefined>()
+    const finishWrite = Promise.withResolvers<undefined>()
+    const baseIo = memoryToolIo({ 'src/a.ts': 'const a = 1\n' }, ROOT)
+    const t = setup({
+      io: {
+        ...baseIo,
+        writeFile: async (absolute, content, canonical) => {
+          if (absolute.endsWith('/eslint.config.js')) {
+            beforeWrite.resolve(undefined)
+            await finishWrite.promise
+            throw new Error('write denied')
+          }
+          await baseIo.writeFile(absolute, content, canonical)
+        },
+      },
+      isFormatOnEdit: true,
+    })
+    const writer = await start(t, 'allowAll')
+    t.api.script(
+      { calls: [writeCall('eslint.config.js', 'module.exports = {}')] },
+      { text: 'done' },
+    )
+    const writing = writer.turn()
+    try {
+      await beforeWrite.promise
+      const reader = await start(t, 'allowAll')
+      t.api.script({ calls: [editCall('1', '2')] }, { text: 'done' })
+      await reader.turn()
+      expect(t.formatCalls).toEqual([])
+      expect(t.diagnosticsCalls).toEqual([])
+      expect(completedRows(reader.events, 'verify_edits')[0]?.verifySummary).toMatchObject({
+        files: ['src/a.ts'],
+        unchecked: 1,
+      })
+      finishWrite.resolve(undefined)
+      await writing
+      expect(completedRows(writer.events, 'write_file')[0]?.visibleOutput).toContain('write denied')
+      expect(t.io.files.has(`${ROOT}/eslint.config.js`)).toBe(false)
+      t.api.script({ calls: [editCall('2', '3')] }, { text: 'done' })
+      await reader.turn()
+      expect(t.formatCalls).toEqual([`${ROOT}/src/a.ts`])
+      expect(t.diagnosticsCalls).toHaveLength(1)
+    } finally {
+      finishWrite.resolve(undefined)
+      await writing
+      await t.host.close()
+    }
+  })
+
+  it.each(['note.md', 'MEMORY.md'])(
+    'invalidates another session’s grant when project memory writes %s',
+    async (path) => {
+      const baseIo = memoryToolIo({}, ROOT)
+      const memory = memoryStoreOver(baseIo.files).store
+      const resumeCheck = Promise.withResolvers<undefined>()
+      const check: CheckCommandSetting = {
+        name: 'memory',
+        command: `node .agents/memory/${path}`,
+      }
+      const t = setup({ io: baseIo, memory, checks: [check], isDiagnosticsOn: false })
+      const { reader, reading } = await holdAfterGrant(t, resumeCheck.promise)
+      try {
+        const writer = await start(t, 'allowAll')
+        t.api.script(
+          {
+            calls: [
+              {
+                name: 'add_memory',
+                arguments: '{"scope":"project","path":"note.md","content":"console.log(1)"}',
+              },
+            ],
+          },
+          { text: 'done' },
+        )
+        await writer.turn()
+        expect(t.io.files.has(`${ROOT}/.agents/memory/${path}`)).toBe(true)
+        resumeCheck.resolve(undefined)
+        await reading
+        expect(reader.cards).toHaveLength(2)
+        expect(t.io.shellCalls).toHaveLength(1)
+      } finally {
+        resumeCheck.resolve(undefined)
+        await reading
+        await t.host.close()
+      }
+    },
+  )
+
+  it.each(['write_file', 'edit_file'] as const)(
+    'asks again in another conversation while %s waits for its formatter',
+    async (tool) => {
+      const resumeCheck = Promise.withResolvers<undefined>()
+      const resumeFormat = Promise.withResolvers<string | undefined>()
+      const formatting = Promise.withResolvers<undefined>()
+      const t = setup({
+        files: { 'scripts/check.js': 'old script\n' },
+        checks: [SCRIPT_CHECK],
+        isDiagnosticsOn: false,
+        isFormatOnEdit: true,
+        format: () => {
+          formatting.resolve(undefined)
+          return resumeFormat.promise
+        },
+      })
+      const { reader, reading } = await holdAfterGrant(t, resumeCheck.promise)
+      const writer = await start(t, 'allowAll')
+      t.api.script(
+        {
+          calls: [
+            { name: 'read_file', arguments: '{"path":"scripts/check.js"}' },
+            {
+              name: tool,
+              arguments:
+                tool === 'write_file'
+                  ? String.raw`{"path":"scripts/check.js","content":"new script\n"}`
+                  : '{"path":"scripts/check.js","find":"old","replace":"new"}',
+            },
+          ],
+        },
+        { text: 'done' },
+      )
+      const writing = writer.turn()
+      try {
+        await formatting.promise
+        expect(t.io.files.get(`${ROOT}/scripts/check.js`)).toBe('new script\n')
+        resumeCheck.resolve(undefined)
+        await reading
+        expect(reader.cards).toHaveLength(2)
+        expect(t.io.shellCalls).toHaveLength(1)
+        resumeFormat.resolve('formatted script\n')
+        await writing
+        expect(t.io.files.get(`${ROOT}/scripts/check.js`)).toBe('formatted script\n')
+        expect(t.io.shellCalls).toHaveLength(2)
+      } finally {
+        resumeCheck.resolve(undefined)
+        resumeFormat.resolve(undefined)
+        await Promise.all([reading, writing])
+        await t.host.close()
+      }
+    },
+  )
+
+  it.each([0, 1])(
+    'shares pre-format invalidation between parent and siblings (writer request %s)',
+    async (writerIndex) => {
+      const firstChecks = Promise.withResolvers<undefined>()
+      const nextChecks = Promise.withResolvers<undefined>()
+      const nextWrite = Promise.withResolvers<undefined>()
+      const resumeFormat = Promise.withResolvers<string | undefined>()
+      const formatting = Promise.withResolvers<undefined>()
+      const t = setup({
+        checks: [SCRIPT_CHECK],
+        hasSubagents: true,
+        isDiagnosticsOn: false,
+        isFormatOnEdit: true,
+        format: () => {
+          formatting.resolve(undefined)
+          return resumeFormat.promise
+        },
+      })
+      let grants = 0
+      const parent = await start(t, 'onRequest', (card) => {
+        if (card.subject.kind !== 'shell') {
+          return 'allow_once'
+        }
+        grants += 1
+        return grants <= 3 ? 'allow_session' : 'abort'
+      })
+      t.api.script(
+        {
+          calls: ['first', 'second'].map((role) => ({
+            name: 'subagent_spawn',
+            arguments: JSON.stringify({ role, objective: `Work as ${role}` }),
+          })),
+        },
+        { calls: [RUN_CHECKS], hold: firstChecks.promise },
+      )
+      const running = parent.turn()
+      try {
+        await vi.waitFor(() => {
+          expect(t.api.responseBodies()).toHaveLength(4)
+        })
+        t.api.script(
+          ...Array.from({ length: 3 }, (_, index) =>
+            index === writerIndex
+              ? {
+                  calls: [writeCall('scripts/check.js', 'new script\n')],
+                  hold: nextWrite.promise,
+                }
+              : { calls: [RUN_CHECKS], hold: nextChecks.promise },
+          ),
+          { text: 'done' },
+        )
+        firstChecks.resolve(undefined)
+        await vi.waitFor(() => {
+          expect(t.api.responseBodies()).toHaveLength(7)
+          expect(t.io.shellCalls).toHaveLength(3)
+        })
+        const writerRequest = userText(t.api.responseBodies()[4 + writerIndex])
+        expect(writerRequest.includes(MODEL_TEXT.subagentObjective)).toBe(writerIndex === 0)
+        // All three sessions hold their own grant before one writes.
+        nextWrite.resolve(undefined)
+        await formatting.promise
+        expect(t.io.files.get(`${ROOT}/scripts/check.js`)).toBe('new script\n')
+        nextChecks.resolve(undefined)
+        await vi.waitFor(() => {
+          expect(grants).toBe(5)
+        })
+        expect(t.io.shellCalls).toHaveLength(3)
+        resumeFormat.resolve('formatted script\n')
+        await running
+        await vi.waitFor(() => {
+          expect(parent.session.status).toBe('idle')
+          expect(
+            parent.session
+              .history()
+              .items.filter((item) => item.kind === 'subagent')
+              .map((item) => item.controlStatus),
+          ).toEqual(['resultReady', 'resultReady'])
+        })
+      } finally {
+        firstChecks.resolve(undefined)
+        nextChecks.resolve(undefined)
+        nextWrite.resolve(undefined)
+        resumeFormat.resolve(undefined)
+        await running
+        await t.host.close()
+      }
+    },
+  )
+})
+
 /**
  * A turn in Auto that allows every card for the session: an edit of
  * src/a.ts, then `edit` (an edit_file's arguments), with `check` configured.
@@ -385,8 +646,7 @@ async function allowThenEdit(
   // Two edits of src/a.ts (the second answered by the rule when the command
   // is plain), then `edit`.
   t.api.script(
-    { calls: [editCall('1', '2')] },
-    { calls: [editCall('2', '3')] },
+    ...INITIAL_EDIT_ROUNDS,
     { calls: [{ name: 'edit_file', arguments: JSON.stringify(edit) }] },
     { text: 'ok' },
   )
@@ -689,8 +949,7 @@ describe('an automatic check takes the shell tool’s permission path, per mode'
     const t = setup({ checks: [LINT], shell: lintShell() })
     const { cards, turn } = await start(t, 'onRequest', () => 'allow_session')
     t.api.script(
-      { calls: [editCall('1', '2')] },
-      { calls: [editCall('2', '3')] },
+      ...INITIAL_EDIT_ROUNDS,
       // The model's own shell call of the same command is not allowed by the
       // check's rule (PR #54, fourth Codex round): it asks. The check's rule
       // still answers for the check afterwards.

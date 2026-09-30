@@ -4,6 +4,7 @@
 
 import { describe, expect, it, vi } from 'vitest'
 import { type CheckScope, VerifyLedger } from '../../src/core/backends/modelapi/verifyLedger'
+import { WorkspaceEdits } from '../../src/core/verify/workspaceEdits'
 import { authorizeThenGuard } from '../../src/core/backends/modelapi/verifyLoop'
 import { CHECK_FIX_MAX_ROUNDS, type CheckOutcome } from '../../src/shared/constants'
 
@@ -26,6 +27,70 @@ function hasStoppedAfter(ledger: VerifyLedger, rounds: number): boolean {
 }
 
 describe('VerifyLedger', () => {
+  it('invalidates grants and runs before a workspace write, across a user-message reset', () => {
+    const ledger = new VerifyLedger()
+    const script = { relative: 'scripts/check.js', absolute: '/ws/scripts/check.js' }
+    run(ledger, 'test', 'passed', 'project')
+    const complete = ledger.beginEdit(script, [script.relative])
+    expect(ledger.changesWhatRuns('node scripts/check')).toBe(true)
+    expect(ledger.hasCurrentRun('test', 'project')).toBe(false)
+    ledger.resetForMessage()
+    expect(ledger.changesWhatRuns('node scripts/check')).toBe(true)
+    run(ledger, 'test', 'passed', 'project')
+    expect(ledger.hasCurrentRun('test', 'project')).toBe(false)
+    complete()
+    expect(ledger.hasCurrentRun('test', 'project')).toBe(false)
+    expect(ledger.changesWhatRuns('node scripts/check')).toBe(true)
+    ledger.resetForMessage()
+    expect(ledger.changesWhatRuns('node scripts/check')).toBe(false)
+    run(ledger, 'test', 'passed', 'project')
+    expect(ledger.hasCurrentRun('test', 'project')).toBe(true)
+  })
+
+  it('keeps unrelated file runs current and a config blocked until every pending write ends', () => {
+    const ledger = new VerifyLedger()
+    const config = { relative: 'eslint.config.js', absolute: '/ws/eslint.config.js' }
+    run(ledger, 'lint', 'passed', [A])
+    const first = ledger.beginEdit(config, [config.relative])
+    const second = ledger.beginEdit(config, [config.relative])
+    ledger.resetForMessage()
+    expect(ledger.codeFile).toBe(config.relative)
+    run(ledger, 'lint', 'passed', [A])
+    expect(ledger.hasCurrentRun('lint', [A])).toBe(true)
+    first()
+    ledger.resetForMessage()
+    expect(ledger.codeFile).toBe(config.relative)
+    second()
+    ledger.resetForMessage()
+    expect(ledger.codeFile).toBeUndefined()
+  })
+
+  it('shares pending writes with existing and newly live sessions, and releases disposed ones', () => {
+    const workspace = new WorkspaceEdits()
+    const parent = new VerifyLedger()
+    const child = new VerifyLedger()
+    const sibling = new VerifyLedger()
+    workspace.add(parent)
+    workspace.add(child)
+    const complete = workspace.beginEdit(A, [A.relative])
+    workspace.add(sibling)
+    for (const ledger of [parent, child, sibling]) {
+      ledger.resetForMessage()
+      expect(ledger.changesWhatRuns('node src/a.ts')).toBe(true)
+      run(ledger, 'lint', 'passed', [A])
+      expect(ledger.hasCurrentRun('lint', [A])).toBe(false)
+    }
+    workspace.delete(child)
+    child.resetForMessage()
+    expect(child.changesWhatRuns('node src/a.ts')).toBe(false)
+    complete()
+    for (const ledger of [parent, sibling]) {
+      expect(ledger.hasCurrentRun('lint', [A])).toBe(false)
+      ledger.resetForMessage()
+      expect(ledger.changesWhatRuns('node src/a.ts')).toBe(false)
+    }
+  })
+
   it('judges a round only by the runs on the latest state of what they covered', () => {
     const ledger = new VerifyLedger()
     // A failing whole-project run, then an edit, then a passing run: passed.

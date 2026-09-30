@@ -86,7 +86,9 @@
       "imageBuyPrompt",
       "workflowRowLabel",
       "workflowChildUntitled",
-      "workflowsLabel"
+      "workflowsLabel",
+      "toolLabels.find_definition",
+      "toolLabels.mcp__ide__findDefinition"
     ],
     "es": [
       "usagePlan",

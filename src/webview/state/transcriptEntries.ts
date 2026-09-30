@@ -93,6 +93,8 @@ const userEntrySchema = z.object({
   turnId: z.optional(z.string()),
   /** The Model API replay item's ID; live cards keep their local `id` for UI updates. */
   replayItemId: z.optional(z.string()),
+  /** Sent from this panel in Plan mode (M79): the reply it gets may be a plan. */
+  isPlanTurn: z.optional(z.boolean()),
 })
 
 const assistantEntrySchema = z.object({

@@ -50,6 +50,8 @@ export interface ExtensionSettings extends SettingsSnapshot {
   readonly diagnosticsAfterEdits: boolean
   readonly checkCommands: readonly CheckCommandSetting[]
   readonly formatOnEdit: boolean
+  /** The repo map in the Model API's system prompt (M67). */
+  readonly modelApiRepoMap: boolean
 }
 
 /**
@@ -84,6 +86,7 @@ const settingSchemas = {
   diagnosticsAfterEdits: z.boolean(),
   checkCommands: checkCommandsSchema,
   formatOnEdit: z.boolean(),
+  modelApiRepoMap: z.boolean(),
 } as const
 
 type SettingKey = keyof typeof settingSchemas
@@ -154,6 +157,7 @@ export function readSettings(config: SettingsSource, log: Logger): ExtensionSett
     diagnosticsAfterEdits: readSetting(config, 'diagnosticsAfterEdits', log),
     checkCommands: readSetting(config, 'checkCommands', log),
     formatOnEdit: readSetting(config, 'formatOnEdit', log),
+    modelApiRepoMap: readSetting(config, 'modelApiRepoMap', log),
   }
 }
 
