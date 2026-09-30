@@ -3,6 +3,7 @@ import type { MuseLaunch } from '../../src/core/backends/musecode/launch'
 import {
   elevatedInvocation,
   isProfileWorkspace,
+  isProotEnvironment,
   museCliInvocation,
   parseSandboxCheck,
   resolveShellSandbox,
@@ -152,10 +153,28 @@ describe('isProfileWorkspace', () => {
   })
 })
 
+describe('isProotEnvironment', () => {
+  it('sees Termux directly and through the environment proot inherits', () => {
+    expect(isProotEnvironment({ PREFIX: '/data/data/com.termux/files/usr' })).toBe(true)
+    expect(isProotEnvironment({ PREFIX: '/data/user/0/com.termux/files/usr' })).toBe(true)
+    expect(isProotEnvironment({ TERMUX_VERSION: '0.118.0' })).toBe(true)
+    expect(isProotEnvironment({ ANDROID_ROOT: '/system' })).toBe(true)
+    expect(isProotEnvironment({ ANDROID_DATA: '/data' })).toBe(true)
+  })
+
+  it('ignores an empty environment and a PREFIX outside app storage', () => {
+    expect(isProotEnvironment({})).toBe(false)
+    expect(isProotEnvironment({ PREFIX: '' })).toBe(false)
+    expect(isProotEnvironment({ PREFIX: '/usr/local' })).toBe(false)
+    expect(isProotEnvironment({ PREFIX: '/data/local/tmp' })).toBe(false)
+  })
+})
+
 describe('resolveShellSandbox', () => {
   const windows = {
     platform: 'win32' as const,
     userProfileDir: String.raw`C:\Users\randy`,
+    isProot: false,
   }
 
   it('turns the sandbox off for a Windows profile workspace under auto, and on elsewhere', () => {
@@ -179,6 +198,45 @@ describe('resolveShellSandbox', () => {
         platform: 'linux',
         userProfileDir: undefined,
         workspaceRoot: '/home/randy/x',
+        isProot: false,
+      }),
+    ).toEqual({ isSandboxed: true, reason: 'default' })
+  })
+
+  it('turns the sandbox off under auto on a Termux/proot Linux host', () => {
+    expect(
+      resolveShellSandbox({
+        mode: 'auto',
+        platform: 'linux',
+        userProfileDir: undefined,
+        workspaceRoot: '/home/user/x',
+        isProot: true,
+      }),
+    ).toEqual({ isSandboxed: false, reason: 'proot' })
+  })
+
+  it('lets an explicit setting win over proot, and ignores proot off Linux', () => {
+    const prootLinux = {
+      platform: 'linux' as const,
+      userProfileDir: undefined,
+      workspaceRoot: '/home/user/x',
+      isProot: true,
+    }
+    expect(resolveShellSandbox({ ...prootLinux, mode: 'muse' })).toEqual({
+      isSandboxed: true,
+      reason: 'setting',
+    })
+    expect(resolveShellSandbox({ ...prootLinux, mode: 'off' })).toEqual({
+      isSandboxed: false,
+      reason: 'setting',
+    })
+    expect(
+      resolveShellSandbox({
+        mode: 'auto',
+        platform: 'darwin',
+        userProfileDir: undefined,
+        workspaceRoot: '/Users/user/x',
+        isProot: true,
       }),
     ).toEqual({ isSandboxed: true, reason: 'default' })
   })

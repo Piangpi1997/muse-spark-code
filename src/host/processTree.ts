@@ -359,10 +359,19 @@ export async function killTree(
     try {
       process.kill(-pid, SIGKILL)
     } catch (error: unknown) {
-      // The group may be gone already; the leader itself still gets the signal.
+      // A constrained runtime (proot) can refuse the group signal while the
+      // tree is alive; the leader still gets the signal right away.
       deps.log(`process group ${String(pid)} could not be signalled: ${String(error)}`)
       root.kill(SIGKILL)
     }
+    if ((await deathOf(root, TREE_EXIT_WAIT_MS)) !== undefined) {
+      return
+    }
+    root.kill(SIGKILL)
+    if ((await deathOf(root, TREE_EXIT_WAIT_MS)) !== undefined) {
+      return
+    }
+    deps.log(`${String(pid)} was still running ${String(TREE_EXIT_WAIT_MS)} ms after its tree kill`)
     return
   }
   const { systemRoot } = deps

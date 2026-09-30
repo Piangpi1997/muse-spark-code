@@ -37,6 +37,18 @@ happened, not what was planned; superseded entries are kept.
   and third-party-notices checks cover the new bundle, `npm run cycles`
   follows it, and the `.vsix` ships it.
 
+### Fixed
+
+- **Shell commands work on code-server + proot Ubuntu (Termux)** (M60).
+  `auto` kept Muse Code's OS sandbox on Linux, where proot and Termux have
+  no namespaces for it, so every shell call failed with `sandbox
+  enforcement unavailable` and Linux offered no recovery. `auto` now starts
+  `muse serve` with `--disable-sandbox` on such hosts (reason `proot` in the
+  log and Diagnostics), detected from the Termux environment proot
+  inherits; explicit `muse`/`off` still win, and approval cards keep gating
+  every command. Not yet run: `npm run quality`, the red drill and a live
+  shell turn on the real setup (`docs/certification/m60.md`).
+
 ## [0.9.1] - 2026-09-27
 
 Works with Muse Code 1.4.0, now Meta's stable release, which its launcher

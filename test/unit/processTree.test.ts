@@ -4,14 +4,17 @@
 // normal end leaves its background process alone, and the fallback's sweep
 // finding a child that outlived taskkill; the no-op on a process already
 // gone. Against scripted helpers: the job path, the fallback's rounds, the
-// identity check before each kill, and what it says when it cannot.
+// identity check before each kill, and what it says when it cannot. On
+// POSIX the group signal is verified: a refused signal still ends the
+// leader and resolves only after its death, and a surviving tree gets the
+// leader kill and a log line (M59).
 
 import { execFile, spawn } from 'node:child_process'
 import { mkdtemp } from 'node:fs/promises'
 import { EventEmitter } from 'node:events'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { windowsPowerShellModulePath } from '../../src/core/backends/musecode/launch'
 import { newShellJob, shellJobAssembly } from '../../src/host/backend/shellJob'
 import { shellArguments } from '../../src/host/backend/toolIo'
@@ -24,7 +27,7 @@ import {
   treeSpawnOptions,
   windowsPowerShell,
 } from '../../src/host/processTree'
-import { ORPHAN_SWEEP_ROUNDS } from '../../src/shared/constants'
+import { ORPHAN_SWEEP_ROUNDS, TREE_EXIT_WAIT_MS } from '../../src/shared/constants'
 import { removeFolder } from './helpers/temporaryFolders'
 import { readJobSource } from './helpers/jobSource'
 
@@ -281,6 +284,73 @@ describe('killTree', () => {
   })
 })
 
+function posixWorld() {
+  const logged: string[] = []
+  return {
+    logged,
+    deps: {
+      platform: 'linux' as const,
+      systemRoot: undefined,
+      log: (message: string) => {
+        logged.push(message)
+      },
+    },
+  }
+}
+
+describe('the POSIX verify-after-kill (M59)', () => {
+  it('resolves only after the leader dies when the group signal is refused', async () => {
+    const shell = new FakeShell(4242)
+    shell.survives = true
+    let hasDied = false
+    shell.once('exit', () => {
+      hasDied = true
+    })
+    const attempts: number[] = []
+    const kill = vi.spyOn(process, 'kill').mockImplementation((pid: number) => {
+      attempts.push(pid)
+      throw new Error('EPERM: operation not permitted, kill')
+    })
+    try {
+      const world = posixWorld()
+      // The leader dies on its own shortly after: only the wait sees it.
+      setTimeout(() => {
+        shell.die()
+      }, 50)
+      await killTree(shell, world.deps, Date.now())
+      expect(attempts).toEqual([-4242])
+      expect(shell.kills).toEqual(['SIGKILL'])
+      expect(hasDied).toBe(true)
+      expect(world.logged).toEqual([
+        'process group 4242 could not be signalled: Error: EPERM: operation not permitted, kill',
+      ])
+    } finally {
+      kill.mockRestore()
+    }
+  })
+
+  it('kills the leader and says so when the tree outlives the group signal', async () => {
+    const shell = new FakeShell(4242)
+    shell.survives = true
+    const attempts: number[] = []
+    const kill = vi.spyOn(process, 'kill').mockImplementation((pid: number) => {
+      attempts.push(pid)
+      return true
+    })
+    try {
+      const world = posixWorld()
+      await killTree(shell, world.deps, Date.now())
+      expect(attempts).toEqual([-4242])
+      expect(shell.kills).toEqual(['SIGKILL'])
+      expect(world.logged).toEqual([
+        `4242 was still running ${String(TREE_EXIT_WAIT_MS)} ms after its tree kill`,
+      ])
+    } finally {
+      kill.mockRestore()
+    }
+  }, 60_000)
+})
+
 describe('windowsPowerShell', () => {
   it('gives Windows PowerShell its own module path under one spelling only', () => {
     // PowerShell 7 leaves an upper-case spelling; Windows would hand a child
@@ -304,6 +374,8 @@ class FakeShell extends EventEmitter implements TreeRoot {
   public exitCode: number | null = null
   public signalCode: NodeJS.Signals | null = null
   public readonly kills: (NodeJS.Signals | undefined)[] = []
+  /** When true, the kill is recorded but the shell never dies. */
+  public survives = false
 
   public constructor(public readonly pid: number) {
     super()
@@ -311,7 +383,9 @@ class FakeShell extends EventEmitter implements TreeRoot {
 
   public kill(signal?: NodeJS.Signals): boolean {
     this.kills.push(signal)
-    this.die()
+    if (!this.survives) {
+      this.die()
+    }
     return true
   }
 

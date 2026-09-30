@@ -26,6 +26,7 @@ import {
   withLoopbackBypass,
 } from '../../core/backends/musecode/launch'
 import {
+  isProotEnvironment,
   isSandboxNetworkApplied,
   resolveShellSandbox,
   serveArguments,
@@ -316,6 +317,7 @@ export class MuseCodeBackendManager {
       platform: process.platform,
       workspaceRoot: this.deps.workspaceRoot,
       userProfileDir: this.deps.userProfileDir,
+      isProot: isProotEnvironment(process.env),
     })
   }
 

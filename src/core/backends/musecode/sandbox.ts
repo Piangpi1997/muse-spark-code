@@ -149,20 +149,50 @@ export function isProfileWorkspace(
   )
 }
 
+// Termux sets these in every process on Android; proot passes its parent
+// environment through, so they stay visible inside a proot Ubuntu guest
+// (M60). `PREFIX` alone proves nothing (build tools use the name too), so it
+// counts only under Android's app-storage roots.
+const TERMUX_PREFIX_VARIABLE = 'PREFIX'
+const TERMUX_VERSION_VARIABLE = 'TERMUX_VERSION'
+const ANDROID_ROOT_VARIABLE = 'ANDROID_ROOT'
+const ANDROID_DATA_VARIABLE = 'ANDROID_DATA'
+const ANDROID_APP_STORAGE_PREFIXES = ['/data/data/', '/data/user/'] as const
+
+/**
+ * Whether the extension host runs in Termux's Android runtime, directly or
+ * under proot: Muse Code's OS sandbox has no namespaces to use there, so
+ * every sandboxed shell call fails (M60, PLAN.md D12). A Termux-native host
+ * (code-server started in Termux itself) is equally constrained, so it
+ * counts too. Pure: the environment is injected, so the Termux, proot and
+ * desktop branches are all unit-tested on any OS (PLAN.md D1a).
+ */
+export function isProotEnvironment(env: NodeJS.ProcessEnv): boolean {
+  const prefix = env[TERMUX_PREFIX_VARIABLE] ?? ''
+  return (
+    ANDROID_APP_STORAGE_PREFIXES.some((root) => prefix.startsWith(root)) ||
+    (env[TERMUX_VERSION_VARIABLE] ?? '') !== '' ||
+    (env[ANDROID_ROOT_VARIABLE] ?? '') !== '' ||
+    (env[ANDROID_DATA_VARIABLE] ?? '') !== ''
+  )
+}
+
 export interface ShellSandboxProbe {
   /** `museSpark.shellSandbox`. */
   readonly mode: ShellSandboxMode
   readonly platform: NodeJS.Platform
   readonly workspaceRoot: string | undefined
   readonly userProfileDir: string | undefined
+  /** `isProotEnvironment` on the extension host's environment. */
+  readonly isProot: boolean
 }
 
 /**
  * Why the sandbox is on or off: the setting said so, `auto` turned it off
- * for a Windows profile workspace, or nothing spoke and the CLI default
- * (sandbox on) stands.
+ * for a Windows profile workspace or a Termux/proot Linux host, or nothing
+ * spoke and the CLI default (sandbox on) stands.
  */
-export type ShellSandboxReason = 'setting' | 'profileWorkspace' | 'default'
+export type ShellSandboxReason = 'setting' | 'profileWorkspace' | 'proot' | 'default'
 
 export interface ShellSandboxPosture {
   readonly isSandboxed: boolean
@@ -176,6 +206,11 @@ export function resolveShellSandbox(probe: ShellSandboxProbe): ShellSandboxPostu
   }
   if (probe.mode === 'off') {
     return { isSandboxed: false, reason: 'setting' }
+  }
+  // proot is Linux-only; the same variables leaking elsewhere must not switch
+  // anything off. An explicit `muse` above still wins (the setting said so).
+  if (probe.platform === 'linux' && probe.isProot) {
+    return { isSandboxed: false, reason: 'proot' }
   }
   const isLimited =
     probe.workspaceRoot !== undefined &&

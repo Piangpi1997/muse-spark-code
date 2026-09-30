@@ -2324,6 +2324,7 @@ the price accepted once, then only the row, the badge and the tally).
 | Q7  | **Resolved 2026-09-22:** owner pressed F5 and confirmed the Muse Spark chat shell renders in the Extension Development Host (verbal confirmation; no screenshot filed).                                                                                                                                                                                                                                                                                                                                                                                                                             | Closed.                                                                          |
 | Q8  | **Resolved 2026-09-22:** owner signed in; publisher is `RandyNorthrup`. Publishing ran by hand from the CI artifact with a clipboard PAT for 0.1.0–0.5.0; since 2026-09-23 the `VSCE_PAT` repository secret lets `release.yml` publish every `v*` tag.                                                                                                                                                                                                                                                                                                                                              | Closed.                                                                          |
 | Q9  | The Muse Code user rules file: `/rules import` writes one into the config root and the model is told "if user and project rules conflict, project rules win", but its file name is not printed by `muse --help`, `muse skills`, the settings skill or the binary's strings. The Model API backend cannot mirror what it cannot name.                                                                                                                                                                                                                                                                | Not loaded on the Model API backend; the CLI backend loads it itself.            |
+| Q10 | Proot/Termux sandbox posture (M60): `auto` now starts `muse serve` with `--disable-sandbox` on a Termux/proot Linux host (reason `proot`), since the OS sandbox has no namespaces to use there. Confirm the marker set (`PREFIX` under `/data/`, `TERMUX_VERSION`, `ANDROID_ROOT`/`ANDROID_DATA`) by live capture on code-server + proot Ubuntu, and run one shell turn there.                                                                                                                                                                                                                      | Marker set confirmed by live capture; heuristic stands until then.               |
 
 ## 4. Architecture
 
@@ -6159,6 +6160,79 @@ The CLI itself is not bundled: it is Meta's closed-source binary.
   extension's SecretStorage and a message from its panel); its integration
   test builds a manager of its own over the same path. The live sweep now
   loads `dist/modelApi.js` and was not run for this milestone (no live calls).
+
+### M59 — The POSIX tree kill verifies death (proot/Termux reliability)
+
+- **Goal.** `killTree` on POSIX no longer fires one process-group signal and
+  returns unverified: after signalling the group it waits for the leader's
+  death, falls back to killing the leader, and says in the log when the tree
+  is still alive. On code-server + proot Ubuntu (Termux), where group
+  signals are emulated and can fail or leave grandchildren behind, Stop,
+  tool timeouts and MCP server closes stop leaking processes that hold
+  pipes and ports open.
+- **Scope.** The POSIX branch of `killTree` in `src/host/processTree.ts`
+  only: group signal first (unchanged order), then `deathOf` within
+  `TREE_EXIT_WAIT_MS`, then the leader kill and a second wait, then a
+  `still running` log. No signature change; it still never rejects.
+  `sweepExitedTree` is unchanged (it holds no process handle to verify
+  with); a Linux `/proc` orphan sweep is the follow-up, recorded below.
+- **Files.** `src/host/processTree.ts`, `test/unit/processTree.test.ts`,
+  `CHANGELOG.md`, `docs/certification/m59.md`.
+- **Acceptance.** A refused group signal (proot's EPERM) still ends the
+  leader and resolves only after its death; a tree that outlives the group
+  signal gets the leader kill plus the `still running` log; `ESRCH`
+  semantics unchanged (a dead tree stays a silent no-op via the existing
+  early return).
+- **Tests.** Scripted `TreeRoot`s with a stubbed `process.kill`:
+  async-death-after-fallback, surviving-tree escalation and logging.
+  Each seen to fail before the fix, pass after (`docs/certification/m59.md`).
+- **Gates.** `npm run quality` (notably jscpd at threshold 0 and the
+  typecheck over the overloaded `process.kill` spy).
+- **Left.** `sweepExitedTree` still signals an exited parent's group once
+  without verification; the `/proc` child sweep for genuinely orphaned
+  grandchildren is unscoped future work.
+- **Status.** In progress (2026-09-28).
+
+### M60 — The shell sandbox stays off on Termux/proot Linux (D12)
+
+- **Goal.** On code-server + proot Ubuntu (Termux), `auto` starts `muse
+serve` with `--disable-sandbox`: the OS sandbox has no namespaces to use
+  there, and every shell call failed with `sandbox enforcement
+unavailable`. Complements M59's verified tree kills on the same hosts.
+- **Scope.** `isProotEnvironment` and the `proot` reason in
+  `src/core/backends/musecode/sandbox.ts` (pure, environment injected); the
+  manager's posture wiring; README, the English manifest sentence,
+  CHANGELOG, this file, `docs/certification/m60.md`.
+- **Files.** `src/core/backends/musecode/sandbox.ts`,
+  `src/host/backend/museCodeBackendManager.ts`,
+  `test/unit/sandbox.test.ts`, `test/unit/museCodeBackendManager.test.ts`,
+  `README.md`, `package.nls.json`, `CHANGELOG.md`,
+  `docs/certification/m60.md`.
+- **Acceptance.** Termux and proot markers switch `auto` off with reason
+  `proot`; a desktop `PREFIX` does not; explicit `muse`/`off` win; the
+  signal is ignored off Linux; the spawn log and Diagnostics name the
+  reason; the Windows-only setup offer is untouched (already skipped when
+  unsandboxed).
+- **Tests.** Detector cases (5 true, 4 false), posture cases, manager wiring
+  through stubbed env. Each to be seen to fail before the fix, pass after
+  (`docs/certification/m60.md`).
+- **Gates.** `npm run quality`; no new UI text (no l10n churn), no new
+  suppression (§8 unchanged), no new dependency.
+- **Docs.** README (`shellSandbox` row, no-sandbox caveat), manifest English
+  sentence, CHANGELOG `[Unreleased]`.
+- **Security.** The sandbox is removed exactly where it cannot run; approval
+  cards still gate every command, and the README caveat (file tools may
+  write outside the workspace) already covers unsandboxed hosts.
+- **Status.** Implemented 2026-09-28 with unit tests; `npm run quality`, the
+  red drill and the live capture are pending a runnable host (this
+  checkout's shell refused every command) — see
+  `docs/certification/m60.md`.
+- **Left.** A localized per-session notice (the `profileWorkspace` notice's
+  counterpart) is deferred until the owner wants it; the 14 manifest
+  translations keep the older `auto` sentence until the next translation
+  pass; `sweepExitedTree`'s unverified POSIX group signal stays M59's
+  follow-up.
+- **Open.** Q10: confirm the marker set by live capture on the real setup.
 
 ## 7. Gates
 

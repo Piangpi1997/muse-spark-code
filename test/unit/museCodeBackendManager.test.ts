@@ -167,6 +167,38 @@ describe('MuseCodeBackendManager: the sandbox network (M56)', () => {
   })
 })
 
+const postureWith = (shell: 'auto' | 'muse' | 'off') =>
+  managerWith([], VS_CODE_PROXY, new FakeLogOutputChannel(), {
+    getShellSandbox: () => shell,
+  }).shellSandboxPosture()
+
+// M60: a Termux/proot host (code-server on Android) cannot run Muse Code's OS
+// sandbox, so `auto` starts `muse serve` with `--disable-sandbox` there.
+describe('MuseCodeBackendManager: the proot sandbox posture (M60)', () => {
+  const prootNames = ['PREFIX', 'TERMUX_VERSION', 'ANDROID_ROOT', 'ANDROID_DATA']
+
+  beforeEach(() => {
+    for (const name of prootNames) {
+      vi.stubEnv(name, undefined)
+    }
+  })
+  afterEach(() => {
+    vi.unstubAllEnvs()
+  })
+
+  it('stays sandboxed on a desktop host and switches off on a Termux/proot one', () => {
+    expect(postureWith('auto')).toEqual({ isSandboxed: true, reason: 'default' })
+    vi.stubEnv('PREFIX', '/data/data/com.termux/files/usr')
+    expect(postureWith('auto')).toEqual({ isSandboxed: false, reason: 'proot' })
+  })
+
+  it('lets an explicit setting win over the proot detection', () => {
+    vi.stubEnv('TERMUX_VERSION', '0.118.0')
+    expect(postureWith('muse')).toEqual({ isSandboxed: true, reason: 'setting' })
+    expect(postureWith('off')).toEqual({ isSandboxed: false, reason: 'setting' })
+  })
+})
+
 // M39: "CLI not found" must not hide a permission problem.
 describe('MuseCodeBackendManager: the CLI lookup reads (M39)', () => {
   it('says in the log when a file is there but cannot be read, not when it is missing', () => {

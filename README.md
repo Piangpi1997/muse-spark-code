@@ -276,8 +276,8 @@ without asking, as Muse Code does, and Plan refuses all but those, which ask. Th
 that leaves the workspace, including through a symbolic link or junction
 inside it. Muse Code refuses such a write while its sandbox runs; without
 the sandbox (`shellSandbox` set to `off`, or `auto` for a Windows workspace
-under your profile) its file tools may write outside the workspace, so
-choose the permission mode with that in mind.
+under your profile or a Termux/proot Linux host) its file tools may write
+outside the workspace, so choose the permission mode with that in mind.
 
 **Protected writes.** On the Model API backend, writes to files that
 configure or run code always ask, whatever the mode: `.git`, `.husky`,
@@ -1291,7 +1291,7 @@ Bypass at once.
 | `archiveInactiveSessions`         | `14`        | Hide sessions idle for this many days from the History dialog (`1`, `2`, `7`, `14`, or `0` for never); they stay on disk and **Show archived** lists them                                                                                                                                                                                   |
 | `cleanupPeriodDays`               | `30`        | Delete Model API conversations idle for more than this many days when a window lists them (`0` keeps them); Muse Code's own sessions are the CLI's to keep                                                                                                                                                                                  |
 | `backend`                         | `auto`      | `auto`: Muse Code when the CLI is signed in, else the Model API when a key is stored; `museCode` / `modelApi` force one. The pasted key never reaches the CLI. Changing it restarts the host                                                                                                                                                |
-| `shellSandbox`                    | `auto`      | `auto`: Muse Code's OS sandbox, except for Windows workspaces under your profile where it cannot run commands; `muse`: always the sandbox; `off`: commands run directly as you, gated by approvals (Claude Code style). Without the sandbox Muse Code's file tools may also write outside the workspace. Changing it restarts the host      |
+| `shellSandbox`                    | `auto`      | `auto`: Muse Code's OS sandbox, except where commands cannot run: Windows profile workspaces, Termux/proot; `muse`: always the sandbox; `off`: commands run directly as you, gated by approvals (Claude Code style). Without the sandbox Muse Code's file tools may also write outside the workspace. Changing it restarts the host         |
 | `sandboxNetwork`                  | `default`   | The network Muse Code's shell sandbox gives commands: `proxy-only` asks before each new destination, `restricted` allows none, `enabled` allows all; `default` passes nothing, leaving Muse Code's own default (`proxy-only`) or your administrator's managed configuration. Applies while the sandbox is on. Changing it restarts the host |
 | `museBinaryPath`                  | `""`        | Absolute path to the Muse Code executable (a relative one is refused); empty discovers it on `PATH` or the install dir. Changing it restarts the host                                                                                                                                                                                       |
 | `modelApiWebSearch`               | `false`     | [Paid](#paid-features): web search on the Model API backend, $2.50 per 1,000 searches; asks you to confirm the price when turned on, then asks before each prompt that may search                                                                                                                                                           |

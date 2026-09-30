@@ -52,7 +52,7 @@
   "config.backend.enumDescriptions.museCode": "Always the Muse Code CLI, with its own sign-in.",
   "config.backend.enumDescriptions.modelApi": "Always the Meta Model API with the key you pasted (pay as you go), using the extension's own tools.",
   "config.shellSandbox.description": "Whether shell commands run inside Muse Code's OS sandbox. Changing it restarts the Muse Code host.",
-  "config.shellSandbox.enumDescriptions.auto": "Use Muse Code's OS sandbox for shell commands, except on Windows for a workspace under your user profile, where the sandbox cannot run commands (they run directly as you there, still gated by approvals).",
+  "config.shellSandbox.enumDescriptions.auto": "Use Muse Code's OS sandbox for shell commands, except where it cannot run commands: on Windows a workspace under your user profile, or a Termux/proot Linux host (they run directly as you there, still gated by approvals).",
   "config.shellSandbox.enumDescriptions.muse": "Always use Muse Code's OS sandbox for shell commands.",
   "config.shellSandbox.enumDescriptions.off": "Never sandbox shell commands: they run directly as you, gated by the approval cards, as in Claude Code. Muse Code then also lets file tools write outside the workspace.",
   "config.autosave.description": "Save every dirty editor before each turn.",
