@@ -241,8 +241,12 @@ export function shellEnvironment(
   return clean
 }
 
-/** Hooks get Muse Code's narrow environment; provider credentials never pass. */
-function isForbiddenHookEnv(name: string): boolean {
+/**
+ * A provider credential's variable: any `*_API_KEY`, and the named ones.
+ * Hooks never get one (Muse Code's narrow environment), nor does any process
+ * the ACP agent starts but Muse Code's own (runtime/credentialVariables.ts).
+ */
+export function isCredentialVariable(name: string): boolean {
   const upper = name.toUpperCase()
   return upper.endsWith('_API_KEY') || HOOK_FORBIDDEN_ENV_NAMES.has(upper)
 }
@@ -258,7 +262,7 @@ export function hookEnvironment(
       ? [...HOOK_ENV_NAMES, ...WINDOWS_HOOK_ENV_NAMES, ...extraNames]
       : [...HOOK_ENV_NAMES, ...extraNames]
   for (const name of names) {
-    if (isForbiddenHookEnv(name)) {
+    if (isCredentialVariable(name)) {
       continue
     }
     const value = environmentValue(env, platform, name)

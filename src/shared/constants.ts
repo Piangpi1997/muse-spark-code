@@ -140,10 +140,10 @@ export const HTTP_SETTINGS_SECTION = 'http'
 export const HTTP_PROXY_SETTING = 'proxy'
 export const HTTP_NO_PROXY_SETTING = 'noProxy'
 // VS Code's network settings the Diagnostics report states (M56, PLAN.md
-// D43). VS Code 1.125 and later route an extension's global `fetch` and
-// `WebSocket` through its proxy support and the operating system's
-// certificates while these allow it; the extension relies on that rather
-// than a proxy client of its own.
+// D43). VS Code routes an extension's global `fetch` (every version from the
+// 1.99 floor) and `WebSocket` (from 1.112.0) through its proxy support and
+// the operating system's certificates while these allow it; the extension
+// relies on that rather than a proxy client of its own.
 export const HTTP_POSTURE_SETTINGS = {
   proxySupport: 'proxySupport',
   proxyStrictSsl: 'proxyStrictSSL',
@@ -152,6 +152,18 @@ export const HTTP_POSTURE_SETTINGS = {
   fetchAdditionalSupport: 'fetchAdditionalSupport',
   webSocketAdditionalSupport: 'webSocketAdditionalSupport',
 } as const
+// Each global, and the global VS Code's extension host sets beside it when it
+// installs its proxy-aware version (`proxyResolver.ts`: `fetch` at 1.99.0
+// and after, `WebSocket` from 1.112.0 with `@vscode/proxy-agent` 0.39.1).
+// Diagnostics reads them to say whether this editor routes each one at all
+// (M62, PLAN.md D43): VS Code 1.101 to 1.111 have a WebSocket they do not
+// route, and an editor that does not run VS Code's extension host routes
+// neither.
+export const VSCODE_ROUTED_GLOBALS = {
+  fetch: { name: 'fetch', marker: '__vscodeOriginalFetch' },
+  webSocket: { name: 'WebSocket', marker: '__vscodeOriginalWebSocket' },
+} as const
+export const VSCODE_WEBSOCKET_ROUTED_SINCE = '1.112'
 // VS Code's defaults for the settings above, for a value it does not report.
 export const HTTP_PROXY_SUPPORT_DEFAULT = 'override'
 export const HTTP_PROXY_SUPPORT_MODES = ['off', 'on', 'fallback', 'override'] as const
@@ -170,6 +182,25 @@ export const PROXY_VARIABLE_SPELLINGS = [
   'https_proxy',
   'http_proxy',
   'all_proxy',
+] as const
+// Node's own switch for `fetch` and a proxy (the ACP agent, PLAN.md D62,
+// Q66): only "1" turns the variable on; the flag works on the command line
+// or in NODE_OPTIONS; Node 22.21 on the 22 line and every release from 24
+// have it (23 never did). Measured 2026-09-27 against a local proxy.
+export const NODE_ENV_PROXY = {
+  variable: 'NODE_USE_ENV_PROXY',
+  on: '1',
+  flag: '--use-env-proxy',
+  since: { lineMajor: 22, lineMinor: 21, allFromMajor: 24 },
+} as const
+export const NODE_OPTIONS_VARIABLE = 'NODE_OPTIONS'
+// The proxy variables Node reads with the switch on (HTTPS_PROXY falls back to
+// HTTP_PROXY); ALL_PROXY is not among them.
+export const NODE_PROXY_VARIABLES = [
+  'HTTPS_PROXY',
+  'https_proxy',
+  'HTTP_PROXY',
+  'http_proxy',
 ] as const
 export const NO_PROXY_VARIABLE = 'NO_PROXY'
 export const NO_PROXY_SPELLINGS = [NO_PROXY_VARIABLE, 'no_proxy'] as const
@@ -966,6 +997,62 @@ export const MODEL_API_OUTPUT_ENCODING = 'utf8'
 // Model API sessions persist as one JSON file each under the workspace
 // storage directory (PLAN.md D14); the version guards the shape.
 export const MODEL_API_SESSIONS_DIR = 'modelapi-sessions'
+// --- The ACP agent (M63, PLAN.md D61, D62) ---
+// The executable other editors run, and how it names itself to them.
+export const ACP_AGENT_NAME = 'muse-spark-code-acp'
+export const ACP_AGENT_TITLE = 'Muse Spark Code (Unofficial)'
+// The OS credential store's entry for the Model API key (D61); the account
+// is the name the extension's SecretStorage uses (SECRET_KEYS.modelApiKey).
+export const KEYRING_SERVICE = 'Muse Spark Code (Unofficial)'
+// Which account pays is chosen at launch, never guessed (D62).
+export const ACP_BACKENDS = ['museCode', 'modelApi'] as const
+export type AcpBackendKind = (typeof ACP_BACKENDS)[number]
+export const ACP_DEFAULT_BACKEND: AcpBackendKind = 'museCode'
+// The terminal sign-ins `initialize` offers: the ids, and the arguments the
+// client runs the agent with for each.
+export const ACP_AUTH_METHODS = {
+  museCodeLogin: { id: 'muse-code-login', args: ['login'] },
+  modelApiKey: { id: 'model-api-key', args: ['auth', 'set'] },
+} as const
+export const ACP_CONFIG_IDS = { model: 'model', effort: 'effort' } as const
+// The paid Model API features the agent can use (M63c, PLAN.md D30): each
+// only with its flag, and each use asked in the editor (M58, D48). Muse
+// Voice needs the panel's microphone, so the agent has none.
+export const ACP_PAID_FEATURES = [
+  'webSearch',
+  'imageGeneration',
+] as const satisfies readonly PaidFeature[]
+export type AcpPaidFeature = (typeof ACP_PAID_FEATURES)[number]
+export const ACP_PAID_FLAGS = {
+  webSearch: 'web-search',
+  imageGeneration: 'image-generation',
+} as const satisfies Readonly<Record<AcpPaidFeature, string>>
+// The question before each paid use (M58, PLAN.md D48): its tool call row (a
+// count appended) and its answers.
+export const ACP_PAID_TOOL_CALL_PREFIX = 'paid-use-'
+export const ACP_PAID_OPTIONS = {
+  allowOnce: 'paid-allow-once',
+  allowAlways: 'paid-allow-always',
+  deny: 'paid-deny',
+} as const
+// A tool's output as the client sees it; the full text stays with the backend.
+export const ACP_TOOL_OUTPUT_MAX_CHARS = 20_000
+export const ACP_SESSION_LIST_LIMIT = 50
+// Model API sessions of the agent, per folder, under the user's data folder:
+// the folder named per platform, and the length of the folder's hash.
+export const ACP_DATA_FOLDER = {
+  win32: 'Muse Spark Code',
+  darwin: 'Muse Spark Code',
+  other: 'muse-spark-code',
+} as const
+export const ACP_SESSIONS_SUBFOLDER = 'acp'
+export const ACP_WORKSPACE_HASH_CHARS = 16
+// "Allow always in this workspace" for paid uses (M58), every folder's in one
+// file beside the folders' own, keyed by the same hash.
+export const ACP_PAID_GRANTS_FILE = 'paid-uses.json'
+// The file walk that stands in for VS Code's file search when git cannot
+// list a folder: what it never descends into.
+export const FILE_WALK_SKIPPED: ReadonlySet<string> = new Set(['.git', 'node_modules'])
 export const STORED_SESSION_VERSION = 1
 // PLAN.md D26: a session store `.tmp` this old is a crash's leftover, not a
 // save in flight (another window on the same workspace may be writing one).
@@ -1170,6 +1257,8 @@ export const CHAT_REFERENCE_LABEL_CHARS = 60
 export const IDE_CONTEXT_TAGS = {
   selection: 'ide_selection',
   openedFile: 'ide_opened_file',
+  // A file or excerpt an ACP client attached to the prompt (M63).
+  attachedContext: 'ide_attached_context',
 } as const
 // Virtual documents holding a file's pre-edit text for the diff view.
 export const MUSE_EDIT_SCHEME = 'muse-edit'
@@ -1547,6 +1636,9 @@ export const WINDOWS_PSMODULEPATH_VARIABLE = 'PSModulePath'
  * that app.
  */
 export const DICTATION_DARWIN_APP_NAME_FLAG = '--app-name'
+// The ACP agent's `login` (PLAN.md D62) runs Muse Code's own terminal sign-in;
+// the panel signs in through MSP's device code instead (M55).
+export const MUSE_LOGIN_ARGS = ['login'] as const
 export const MUSE_LOGOUT_ARGS = ['logout'] as const
 // `Muse Spark: Open in Terminal` runs the CLI with no arguments (its TUI).
 export const MUSE_TERMINAL_NAME = 'Muse Code'
