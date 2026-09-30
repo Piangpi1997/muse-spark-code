@@ -315,6 +315,10 @@ happened, not what was planned; superseded entries are kept.
 
 ### Fixed
 
+- **Android/Termux regression coverage** (PR #51). Tests preserve PATH and
+  home-directory Muse launcher discovery, XDG credential paths, and explicit
+  unavailability of bundled dictation/recording helpers on Android. This is
+  simulated platform coverage; no Android device support claim is added.
 - **Web fetch rechecks permission before every address attempt.** A permission
   withdrawal while the first connection waits or fails prevents fallback
   connections, stops outstanding attempts and closes late answers.

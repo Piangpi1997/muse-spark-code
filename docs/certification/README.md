@@ -1,5 +1,9 @@
 # Certification records
 
+[PR #51 Android/Termux regression tests](pr51-termux-tests.md) records the
+contributor test scope and resumed integration proof, separate from a real
+Android installation or microphone certification.
+
 One file per milestone, written when the milestone closed: the gate results
 of that day, what was built row by row and which test checks it, the visual
 verification, the test-fire proofs (every new check broken on purpose once,

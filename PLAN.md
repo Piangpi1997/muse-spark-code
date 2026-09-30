@@ -8409,10 +8409,19 @@ joined with M57, M58 and PR #49's sign-in
 **Merge goal progress (2026-09-29, America/Los_Angeles):** PR #32 merged at
 17:31 (`fefb6068`), PR #57/M67 at 18:20 (`4c35e73e`), and PR #52/M69 at
 19:46 (`c323dcc0`). Each passed independent review, four local full-quality
-environments and exact-head hosted checks. M79 now includes M69 content
-before final gates; its ordinary current-main ancestry merge follows the
-tested content commit and must retain identical tree bytes. WIP branches
-and other PRs are still being verified, with Grok skipped by the owner.
+environments and exact-head hosted checks before merge. M69's tested tree
+`42a65c7b` passed all four full gates, installed ACP stdio 9/9 on each rig,
+actual installed page conversion and the same worker under Node 20.18.3;
+all 19 triggered hosted checks passed. Its dated certification entries
+describe their recording phase; the final PR body links completed CI and
+Hosts runs. Other PRs and WIP branches remain under review and verification.
+
+**PR #51 integration review (2026-09-29):** preserve the contributor's four
+Android/Termux unit cases for launcher discovery, credential-path selection
+and unavailable voice helpers. Integrate the two test files into current main;
+prove these checks fail under deliberate behavior changes, then run exact-tree
+quality and the local rig gates. No production change or physical Android
+certification is implied. `docs/certification/pr51-termux-tests.md` tracks proof.
 
 **PR #32 final review reopened (2026-09-29, head `46ba5406`):** independent
 reviews found a pending-release/reload ownership race in the ACP session state,
