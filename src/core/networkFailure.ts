@@ -109,6 +109,20 @@ export function describeNetworkFailure(error: unknown): NetworkFailure {
   }
 }
 
+/**
+ * The error and its causes by their codes (`ERR_TLS_CERT_ALTNAME_INVALID`),
+ * a cause's message only where it has no code (M69). A code is Node's own
+ * word; a message can carry what a server sent, such as the names on its
+ * certificate.
+ */
+export function networkFailureCodes(error: unknown): string {
+  return redactSecrets(
+    chainOf(error)
+      .map((link) => link.code ?? link.message)
+      .join(': '),
+  )
+}
+
 /** The advice for a kind, read when shown (PLAN.md D33); none for an unrecognised failure. */
 function adviceFor(failure: NetworkFailure, advice: NetworkAdvice): string | undefined {
   const isAgent = advice === 'agent'

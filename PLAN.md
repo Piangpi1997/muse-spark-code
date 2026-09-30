@@ -127,36 +127,39 @@ tested on chunk splits inside frames and inside multi-byte characters.
 
 ### D3 — Quality toolchain versions (verified against the npm registry 2026-09-21)
 
-| Package                                                                 | Pinned                            | Why this version                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| ----------------------------------------------------------------------- | --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `typescript`                                                            | **6.0.3**                         | Registry latest is 7.0.2, but `typescript-eslint@8.70.1` declares `peerDependencies.typescript: ">=4.8.4 <6.1.0"`. TS 7 installs cleanly and silently disables every type-aware lint rule. 6.0.3 is the highest release inside the supported range.                                                                                                                                                                                                                                                  |
-| `eslint`                                                                | 10.11.0                           | `typescript-eslint` accepts `^10.0.0`; `eslint-plugin-unicorn@76` requires `>=10.4`.                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| `typescript-eslint`                                                     | 8.70.1                            | Latest; `strictTypeChecked` + `stylisticTypeChecked`.                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| `@eslint/js`                                                            | 10.0.1                            | Separate package from eslint; required by the flat config.                                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| `eslint-plugin-unicorn`                                                 | 76.0.0                            | Latest; needs eslint ≥ 10.4 (satisfied).                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| `eslint-plugin-react-hooks`                                             | 7.1.1                             | Declares eslint `^10.0.0`. `eslint-plugin-react` (7.37.5) and `eslint-plugin-jsx-a11y` (6.10.2) only declare up to eslint `^9`, so they are **not** installed; a11y is covered by manual checks in visual certification and revisited when the plugins add eslint 10 peers.                                                                                                                                                                                                                          |
-| `dpdm`                                                                  | 4.3.0                             | Circular-import gate (`--exit-code circular:1`). `madge` is incompatible with TS 6+. `eslint-plugin-import-x` was considered and dropped: its `no-cycle` rule is known not to fire, and unresolved imports are already a hard `tsc` error (TS2307) in every project here.                                                                                                                                                                                                                            |
-| `knip`                                                                  | 6.37.0                            | Unused files/exports/deps. Config is `knip.jsonc` (knip 6 rejects `"//"` pseudo-comments). Run without `--strict`: strict implies production mode, which needs `!`-suffixed entries and otherwise analyses nothing.                                                                                                                                                                                                                                                                                  |
-| `prettier`                                                              | 3.9.8                             | Formatter.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| `stylelint` + `stylelint-config-standard`                               | 17.15.0 / 40.0.0                  | Webview CSS gate (`--max-warnings=0`).                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| `vitest` + `@vitest/coverage-v8`                                        | 5.0.1                             | Unit tests (node env for extension code, jsdom for webview). Peer `@types/node ^22                                                                                                                                                                                                                                                                                                                                                                                                                   |     | >=24` satisfied. |
-| `jsdom`                                                                 | 30.1.0                            | Webview component tests.                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| `@testing-library/react` / `dom` / `jest-dom`                           | 16.3.3 / 10.4.2 / 7.0.1           | Component assertions.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| `@vscode/test-cli` + `@vscode/test-electron` + `mocha` + `@types/mocha` | 0.0.15 / 3.1.0 / 12.0.2 / 10.0.10 | Integration tests inside the Extension Development Host. `@vscode/test-electron` is an unlisted peer of test-cli, so knip ignores it explicitly.                                                                                                                                                                                                                                                                                                                                                     |
-| `esbuild`                                                               | 0.28.2                            | Bundles extension (cjs, node platform) and webview (esm/iife, browser platform).                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| `@types/vscode`                                                         | 1.99.0                            | Matches `engines.vscode` (test/unit/manifest.test.ts enforces the pairing).                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| `@types/vscode-webview`                                                 | 1.57.5                            | Types for `acquireVsCodeApi()` inside the webview.                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| `@types/node`                                                           | 22.20.4                           | Extension host on VS Code 1.138 is Electron 42 (Node ≥ 22). Typing against 22 keeps code portable to older hosts.                                                                                                                                                                                                                                                                                                                                                                                    |
-| `@vscode/vsce`                                                          | 4.0.0                             | Packaging. Needs Node ≥ 22.                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| `react` / `react-dom` / `@types/react` / `@types/react-dom`             | 19.3.0                            | Webview UI.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| `zod`                                                                   | 4.6.5                             | Runtime validation of every webview ⇄ extension message and every HTTP/MSP boundary.                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| `@muse-code/sdk`                                                        | 1.3.0                             | Official MSP client. Developer Preview: "minor releases may alter APIs before 1.0" → exact pin, adapter isolated in one module, schema fingerprint checked at handshake. Installed with a one-off `--min-release-age=0` on 2026-09-22 (published 2026-09-18, inside the 7-day window); the lockfile pins it so `npm ci` is unaffected. Only its `Connection`/`spawnMspConnection` surface is used; `Connection.onNotification` holds a single handler, so the facade (`MuseClient`) is not composed. |
-| `husky` / `lint-staged`                                                 | 9.1.7 / 17.5.1                    | Pre-commit gates.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| `jscpd`                                                                 | 5.3.1                             | Copy-paste detection.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| `npm-run-all2`                                                          | 9.0.3                             | Runs gate scripts in sequence/parallel.                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| `rimraf`                                                                | 6.1.3                             | Cross-platform clean.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| `axe-core`                                                              | 4.13.0                            | The accessibility gate (M37, D32): WCAG 2.0 to 2.2, levels A and AA, run inside the harness page. MPL-2.0; a dev dependency, never bundled.                                                                                                                                                                                                                                                                                                                                                          |
-| `playwright-core`                                                       | 1.63.0                            | The host checks' browser driver (hosts.yml, M62): code-server, Theia and JupyterLab driven in Chrome. Apache-2.0; a dev dependency, never bundled; it uses the installed Chrome, never downloads one.                                                                                                                                                                                                                                                                                                |
+| Package                                                                                              | Pinned                            | Why this version                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| ---------------------------------------------------------------------------------------------------- | --------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `typescript`                                                                                         | **6.0.3**                         | Registry latest is 7.0.2, but `typescript-eslint@8.70.1` declares `peerDependencies.typescript: ">=4.8.4 <6.1.0"`. TS 7 installs cleanly and silently disables every type-aware lint rule. 6.0.3 is the highest release inside the supported range.                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `eslint`                                                                                             | 10.11.0                           | `typescript-eslint` accepts `^10.0.0`; `eslint-plugin-unicorn@76` requires `>=10.4`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `typescript-eslint`                                                                                  | 8.70.1                            | Latest; `strictTypeChecked` + `stylisticTypeChecked`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `@eslint/js`                                                                                         | 10.0.1                            | Separate package from eslint; required by the flat config.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `eslint-plugin-unicorn`                                                                              | 76.0.0                            | Latest; needs eslint ≥ 10.4 (satisfied).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `eslint-plugin-react-hooks`                                                                          | 7.1.1                             | Declares eslint `^10.0.0`. `eslint-plugin-react` (7.37.5) and `eslint-plugin-jsx-a11y` (6.10.2) only declare up to eslint `^9`, so they are **not** installed; a11y is covered by manual checks in visual certification and revisited when the plugins add eslint 10 peers.                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `dpdm`                                                                                               | 4.3.0                             | Circular-import gate (`--exit-code circular:1`). `madge` is incompatible with TS 6+. `eslint-plugin-import-x` was considered and dropped: its `no-cycle` rule is known not to fire, and unresolved imports are already a hard `tsc` error (TS2307) in every project here.                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `knip`                                                                                               | 6.37.0                            | Unused files/exports/deps. Config is `knip.jsonc` (knip 6 rejects `"//"` pseudo-comments). Run without `--strict`: strict implies production mode, which needs `!`-suffixed entries and otherwise analyses nothing.                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `prettier`                                                                                           | 3.9.8                             | Formatter.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `stylelint` + `stylelint-config-standard`                                                            | 17.15.0 / 40.0.0                  | Webview CSS gate (`--max-warnings=0`).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `vitest` + `@vitest/coverage-v8`                                                                     | 5.0.1                             | Unit tests (node env for extension code, jsdom for webview). Peer `@types/node ^22                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |     | >=24` satisfied. |
+| `jsdom`                                                                                              | 30.1.0                            | Webview component tests.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `@testing-library/react` / `dom` / `jest-dom`                                                        | 16.3.3 / 10.4.2 / 7.0.1           | Component assertions.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `@vscode/test-cli` + `@vscode/test-electron` + `mocha` + `@types/mocha`                              | 0.0.15 / 3.1.0 / 12.0.2 / 10.0.10 | Integration tests inside the Extension Development Host. `@vscode/test-electron` is an unlisted peer of test-cli, so knip ignores it explicitly.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `esbuild`                                                                                            | 0.28.2                            | Bundles extension (cjs, node platform) and webview (esm/iife, browser platform).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `@types/vscode`                                                                                      | 1.99.0                            | Matches `engines.vscode` (test/unit/manifest.test.ts enforces the pairing).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `@types/vscode-webview`                                                                              | 1.57.5                            | Types for `acquireVsCodeApi()` inside the webview.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `@types/node`                                                                                        | 22.20.4                           | Extension host on VS Code 1.138 is Electron 42 (Node ≥ 22). Typing against 22 keeps code portable to older hosts.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `@vscode/vsce`                                                                                       | 4.0.0                             | Packaging. Needs Node ≥ 22.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `react` / `react-dom` / `@types/react` / `@types/react-dom`                                          | 19.3.0                            | Webview UI.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `zod`                                                                                                | 4.6.5                             | Runtime validation of every webview ⇄ extension message and every HTTP/MSP boundary.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `@muse-code/sdk`                                                                                     | 1.3.0                             | Official MSP client. Developer Preview: "minor releases may alter APIs before 1.0" → exact pin, adapter isolated in one module, schema fingerprint checked at handshake. Installed with a one-off `--min-release-age=0` on 2026-09-22 (published 2026-09-18, inside the 7-day window); the lockfile pins it so `npm ci` is unaffected. Only its `Connection`/`spawnMspConnection` surface is used; `Connection.onNotification` holds a single handler, so the facade (`MuseClient`) is not composed.                                                                                                                                                                          |
+| `husky` / `lint-staged`                                                                              | 9.1.7 / 17.5.1                    | Pre-commit gates.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `jscpd`                                                                                              | 5.3.1                             | Copy-paste detection.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `npm-run-all2`                                                                                       | 9.0.3                             | Runs gate scripts in sequence/parallel.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `rimraf`                                                                                             | 6.1.3                             | Cross-platform clean.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `axe-core`                                                                                           | 4.13.0                            | The accessibility gate (M37, D32): WCAG 2.0 to 2.2, levels A and AA, run inside the harness page. MPL-2.0; a dev dependency, never bundled.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `parse5`                                                                                             | 8.0.1                             | M69 (D49): web fetch parses a page with the HTML standard's own parsing algorithm (the implementation jsdom uses), after four review rounds found a hand-written tokenizer short of it. MIT; one dependency, `entities` ^8 (BSD-2-Clause, 8.1.0 locked, formerly our direct dependency); no peers; published 2026-04-19; already in the lockfile through jsdom and @vscode/vsce; `npm audit` clean. Quadratic on hostile nesting (40,000 nested lists in 73 s), so it runs only in `dist/pageWorker.js`, a worker per page (at most two at once) stopped at 10 s or 512 MiB (D6). `entities` 8 says Node ≥ 20.19 for `require(esm)`; bundled, the worker ran on Node 20.18.3. |
+| `html-encoding-sniffer`                                                                              | 6.0.0                             | M69: the HTML standard's encoding sniffing (byte order mark, the Content-Type charset, the 1,024-byte `<meta>` prescan) for web fetch's HTML, as jsdom uses it. MIT; one dependency, `@exodus/bytes` ^1.6 (MIT; 1.15.2 locked through jsdom, published 2026-09-21, inside the 7-day window: the lockfile pins it, as for `@muse-code/sdk`; its optional `@noble/hashes` peer is not used by the `encoding-lite` entry the sniffer imports); published 2025-12-26; `npm audit` clean. Says Node ≥ 20.19 (ESM); bundled into `dist/pageWorker.js` only and run on Node 20.18.3. Ships no types: `src/core/web/html-encoding-sniffer.d.ts`.                                      |
+| `playwright-core`                                                                                    | 1.63.0                            | The host checks' browser driver (hosts.yml, M62): code-server, Theia and JupyterLab driven in Chrome. Apache-2.0; a dev dependency, never bundled; it uses the installed Chrome, never downloads one.                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `mdast-util-from-markdown` / `micromark-extension-gfm` / `mdast-util-gfm` / `mdast-util-to-markdown` | 2.0.3 / 3.0.0 / 3.1.0 / 2.1.2     | M79: the host reads a plan with the panel's own Markdown grammar (what react-markdown 10.1.0 and remark-gfm 4.0.1 resolve to; no peers; 0 advisories). Its own lazily loaded bundle, `dist/planMarkdown.js` (139.0 KiB with the brief writer, `character-entities` among it), so `dist/extension.js` carries none of it (464.8 KiB after merging `main`, D6).                                                                                                                                                                                                                                                                                                                 |
 
 Deprecated and avoided: `@vscode/webview-ui-toolkit` (archived; npm marks it
 deprecated). Webview controls are hand-built on VS Code CSS theme variables.
@@ -208,14 +211,16 @@ quality`) and as a CI job.
 
 ### D6 — Bundle budgets (Phase 6)
 
-| Artifact               | Budget (minified, uncompressed)                                                                      |
-| ---------------------- | ---------------------------------------------------------------------------------------------------- |
-| `dist/extension.js`    | ≤ 600 KiB (the M7 Model API client fit without raising it; the activation bundle since M57)          |
-| `dist/modelApi.js`     | ≤ 400 KiB (M57: the Model API backend, loaded when it first starts; 295.6 KiB when split, see below) |
-| `dist/searchWorker.js` | ≤ 50 KiB                                                                                             |
-| `dist/webview/main.js` | ≤ 900 KiB including React, the markdown renderer and highlight.js (one bundle)                       |
-| `dist/acp.js`          | ≤ 850 KiB (the ACP agent, installed once, never loaded by VS Code; 713.2 KiB when set, see below)    |
-| `.vsix`                | not gated; 0.8.0 is 905,941 bytes (the GitHub Release asset, §10)                                    |
+| Artifact               | Budget (minified, uncompressed)                                                                                                 |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `dist/extension.js`    | ≤ 600 KiB (the M7 Model API client fit without raising it; the activation bundle since M57)                                     |
+| `dist/modelApi.js`     | ≤ 400 KiB (M57: the Model API backend, loaded when it first starts; 295.6 KiB when split, see below)                            |
+| `dist/searchWorker.js` | ≤ 50 KiB                                                                                                                        |
+| `dist/pageWorker.js`   | ≤ 300 KiB (M69: web fetch's page converter, parse5 and its parts, on a worker started for each page; 212.3 KiB when split)      |
+| `dist/webview/main.js` | ≤ 900 KiB including React, the markdown renderer and highlight.js (one bundle)                                                  |
+| `.vsix`                | not gated; 0.8.0 is 905,941 bytes (the GitHub Release asset, §10)                                                               |
+| `dist/acp.js`          | ≤ 850 KiB (the ACP agent, installed once, never loaded by VS Code; 713.2 KiB when set, see below)                               |
+| `dist/planMarkdown.js` | ≤ 150 KiB (M79: the plan reader, the panel's Markdown parser, loaded on the first plan action; 139.0 KiB with the brief writer) |
 
 `npm run build` prints sizes; `scripts/check-bundle-size.mjs` holds the numbers
 and fails the build over budget or when a bundle is missing. This table mirrors
@@ -272,6 +277,25 @@ instead.
   stops carrying one of them, or when a file of the folder is on neither the
   lazy list nor the allowed list above.
 
+**Amendment (M79, 2026-09-28): the plan reader is a bundle of its own.**
+Reading a plan with the panel's own Markdown grammar (PR #53 review) takes
+`mdast-util-from-markdown`, `micromark-extension-gfm` and `mdast-util-gfm`:
+114.5 KiB, which would have taken `dist/extension.js` from 448.7 to
+563.2 KiB with several milestones' host code still to land. So
+`src/core/plans/planMarkdown.ts` is built from `src/host/planMarkdownEntry.ts`
+into `dist/planMarkdown.js` (114.7 KiB, budget 150 KiB) and required by
+`planMarkdownLoader` on the first Save plan, Implement or Plans…;
+`dist/extension.js` is 449.7 KiB. The reader imports no value of
+`shared/constants` (that would bring the English table, 58.7 KiB): it
+lists, and `planDocument.ts` cuts and caps. There is no fallback without
+it: a plan action that cannot load it is refused with
+`planMarkdownUnavailable`, since it is what checks for hidden text. The
+split gate fails when `dist/extension.js` carries the reader's module, its
+entry or any file of the parser's packages (`micromark*`, `mdast-util-*`,
+`character-entities`, `decode-named-character-reference`), or when
+`dist/planMarkdown.js` stops carrying the reader. Since PR #53's third review
+the reader also writes the brief (`mdast-util-to-markdown`, the version
+remark-gfm's writer resolves to): 139.0 KiB.
 **Amendment (PR #32 joined with M57, 2026-09-27): the ACP agent loads the
 same `dist/modelApi.js`.** The agent's runtime (`src/runtime/backends.ts`,
 D62) builds a `ModelApiBackendManager` per folder, which since M57 needs a
@@ -623,6 +647,33 @@ Muse Code owns all of this on the CLI backend; the extension only passes
 the trust flag. On the Model API backend the extension is the host, so it
 mirrors the conventions above and no others: no invented file names, no
 `MUSE.md`.
+
+**Plans (M79, 2026-09-27).** The saved-plan location is Muse Code's own,
+not the extension's. It was read from `skills/plan/SKILL.md`, the `plan`
+skill bundled in `muse-bin-1.4.0-R4302.1.exe`, under "Explicit File Output":
+
+- "If saving and no stronger convention exists, save to
+  `.agents/plans/YYYY-MM-DD-<slug>.md`";
+- "When creating a new dated file and the chosen file exists, add a short
+  numeric suffix";
+- "If you save a plan file, its content must be exactly the canonical
+  body".
+
+The extension follows all three. It does not follow the skill's
+precedence for a stronger convention (an active `specs/<feature>/plan.md`,
+a `docs/plans/` folder), which is the model's judgement, not a fixed
+name. The skill's delivery form is the other half:
+
+- a plan reply starts with "This is a plan, not a special mode; I haven’t
+  started implementation. Reply `go` to execute this plan, or tell me what
+  to change.";
+- it ends with the second sentence repeated;
+- the user's next message ("go") is the approval.
+
+A live capture of a Plan-mode turn on Muse Code 1.4.0 showed exactly that
+reply as an ordinary `agentMessage`, with no plan item and no approval
+request (docs/certification/m79.md). The extension saves the text between
+those two lines; any other reply is saved whole.
 
 ### D14 — Production hardening set for 0.2.0 (2026-09-22)
 
@@ -2636,9 +2687,10 @@ both backends comes before what serves one.
   files and tool output are data, never instructions. They are marked as
   untrusted where the model receives them, and nothing in them can raise
   a permission, pick a model or skip a question. A conversation built on
-  such content (an imported session, a PR someone else wrote) starts in a
-  mode that asks, whatever `museSpark.initialPermissionMode` says, and
-  only the user's own action relaxes it.
+  such content (an imported session, a PR someone else wrote, a plan file
+  picked from Plans… in M79) starts in a mode that asks, whatever
+  `museSpark.initialPermissionMode` says, and only the user's own action
+  relaxes it.
 - **Automatic actions follow the mode.** Anything the extension runs on
   its own (checks after an edit, a memory flush, a review turn) takes the
   same path as the call it stands for: a shell command asks wherever the
@@ -3077,6 +3129,8 @@ modelApi` (the key of D61). There is no "auto", so the bill is never a
 | Q7  | **Resolved 2026-09-22:** owner pressed F5 and confirmed the Muse Spark chat shell renders in the Extension Development Host (verbal confirmation; no screenshot filed).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      | Closed.                                                                                 |
 | Q8  | **Resolved 2026-09-22:** owner signed in; publisher is `RandyNorthrup`. Publishing ran by hand from the CI artifact with a clipboard PAT for 0.1.0–0.5.0; since 2026-09-23 the `VSCE_PAT` repository secret lets `release.yml` publish every `v*` tag.                                                                                                                                                                                                                                                                                                                                                                                                                                       | Closed.                                                                                 |
 | Q9  | The Muse Code user rules file: `/rules import` writes one into the config root and the model is told "if user and project rules conflict, project rules win", but its file name is not printed by `muse --help`, `muse skills`, the settings skill or the binary's strings. The Model API backend cannot mirror what it cannot name.                                                                                                                                                                                                                                                                                                                                                         | Not loaded on the Model API backend; the CLI backend loads it itself.                   |
+| Q10 | M67's repo map on Muse Code: the plan asks for it "as an opt-in section of the system prompt", but Muse Code's instructions are its own (D13: nothing installed into its folders). It could ride as a hidden note on the first turn of a conversation (as the question-card hint does), billed to the subscription as prompt tokens. Wanted?                                                                                                                                                                                                                                                                                                                                                 | The `repoMap` tool only; no note in Muse Code turns.                                    |
+| Q11 | M67's prompt repo map setting: its name (`museSpark.modelApiRepoMap`), its default (off, since every request pays its tokens) and its fixed ~1,000-token budget, and whether the model should see the map by default once the M75 evaluation measures it.                                                                                                                                                                                                                                                                                                                                                                                                                                    | Off by default, machine-scoped, 1,024 tokens, no budget setting.                        |
 | Q60 | **Answered 2026-09-26:** the owner set up the Open VSX account: the Eclipse Publisher Agreement signed, the namespace `RandyNorthrup` created, the token in `OVSX_PAT`. The release workflow publishes there from the next tag (M62).                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | Q61 | **Resolved 2026-09-26:** the owner approved the ACP SDK. `@agentclientprotocol/sdk` 1.4.0 is pinned: 1.5.0 (2026-09-21) is inside `.npmrc`'s 7-day `min-release-age`, and 1.4.0 speaks the same ACP v1 (D62).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | Q62 | **Resolved 2026-09-26:** "you can install whatever you need". What this container's network lets in is recorded per editor (D62); the rest is qualified in CI or on the owner's machines.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
@@ -5055,7 +5109,8 @@ merged as PR #30 (`bdaede4`).
 ### M44b — Web fetch on the Model API backend (D36)
 
 **Status 2026-09-27: folded into M69 (D49), which also serves it to Muse
-Code through the `ide` server.** Muse Code's own
+Code through the `ide` server; built there on 2026-09-28 with every rule
+below (see M69's status).** Muse Code's own
 `web_fetch` is gated off in 1.3.0, and the Model API backend has no fetch
 tool. The D36 inventory named the network-safety design this needs before
 the model may read a page:
@@ -6878,6 +6933,12 @@ harness scenario, which is what the accessibility gate checks (D32).
 
 ### M67 — Code intelligence tools (D49)
 
+**Integration review 2026-09-29:** PR #57's candidate is being joined with
+PR #32 before final gates. A Stop during the last awaited check of the first
+rename file could still write; the first-write boundary now rechecks cancellation.
+The two held-check regression cases, independent review and final local rig
+gates are tracked in `docs/certification/m67.md`; no merged status is claimed.
+
 - **Goal.** The model finds definitions, references and symbols the way
   an IDE does, instead of grepping.
 - **Scope.**
@@ -6913,6 +6974,152 @@ harness scenario, which is what the accessibility gate checks (D32).
 - **Tests.** A fake language-service host in unit tests. An integration
   test in VS Code over a TypeScript fixture.
 - **Size.** M.
+- **As built (2026-09-28).** Decisions taken while building, each open to
+  the owner's review:
+  - **One core, two surfaces.** `src/core/codeIntel/` holds the tools
+    (confinement, placing, capping, the repo map, the rename plan) over a
+    `LanguageServiceHost` interface; `src/host/codeIntel/languageServices.ts`
+    implements it with VS Code's `vscode.execute…Provider`,
+    `vscode.prepareCallHierarchy`/`provide…Calls`, `vscode.prepareRename`
+    and `vscode.executeDocumentRenameProvider` commands. The Model API
+    offers `find_definition`, `find_references`, `workspace_symbols`,
+    `document_symbols`, `hover`, `call_hierarchy`, `repo_map`,
+    `rename_symbol`; the `ide` server offers the same as `findDefinition`,
+    …, `renameSymbol` (the camel case of `getDiagnostics`). The core stays
+    outside `src/core/backends/modelapi/**`, since the activation bundle
+    carries it for the `ide` tools.
+  - **Naming a symbol.** Path, line and column (1-based); path, line and
+    name (its first whole-word use on the line); path and name (its first
+    use in the file); or name alone, looked up among the workspace symbols
+    (exact name, TypeScript's `greet()` read as `greet`; the first in place
+    order is used and the others listed).
+  - **"No language service".** VS Code exposes no way to ask whether a
+    provider exists, and its commands answer an empty list either way. An
+    empty answer is therefore checked against the file's document symbols:
+    none means "no language service answered for <file> (language <id>)",
+    worded to allow for a file that declares nothing; some means "No
+    <kind> at <place>". Workspace symbols have no file to check, so an
+    empty answer says that they come from the languages' services and that
+    TypeScript's needs a project file open.
+  - **Placing results.** A result is in the workspace when its path is
+    (textual and canonical confinement, D24) or when its real path is under
+    the root's real path (a workspace opened through a link, whose files a
+    server reports by real path). Everything else, including virtual
+    documents, is left out and counted. Lines come from the disk.
+  - **Caps.** 100 locations, 200 symbols, 50 callers or callees with five
+    call sites each, 4,000 characters of hover, three outline levels; a
+    20-second deadline per language-service call.
+  - **Rename.** Planned before the card from VS Code's rename edit: every
+    file must be placed in the workspace (any outside refuses the whole
+    rename), at most 200 files, no file operations, no unsaved changes, and
+    the document's text equal to the disk's (BOM aside), so the edit lands
+    where the service meant it. On the Model API the card is a `fileWrite`
+    naming up to five files and counting the rest, protected when any file
+    is (D24); after approval every file is confined and read again and
+    nothing is written unless each is unchanged; files are written with the
+    tools' atomic write, one patch across them (per-line hunks, which Edit
+    Review's revert undoes), and the fingerprints `write_file` checks are
+    updated. A failed write stops the rest and names what was written.
+    Plan refuses a rename before the language service is asked. On `ide`
+    the tool returns a unified diff and writes nothing (read-only). The
+    file tools' one-hunk patch (D27's `hunkBetween`) moved beside the
+    rename's hunks as `changeHunk` in `codeText.ts`, unchanged, so the two
+    share one implementation (the duplication gate).
+  - **Repo map.** Aider's idea over VS Code's services: names of three
+    characters or more are counted in the text of up to 1,000 listed files
+    (128 KiB each, read confined); the 300 names used by the most files are
+    looked up as workspace symbols, eight at a time, within 10 seconds (5 for
+    the prompt); each file scores the uses of its names by other files,
+    shared among a name's definers. Document symbols per file were rejected:
+    opening every file would make VS Code open each document for every
+    extension (a linter lints them all). The prompt section is opt in
+    (`museSpark.modelApiRepoMap`, machine-scoped since it bills prompt
+    tokens), made on the first turn that has it on and kept for the session
+    so the prompt's prefix stays cached (a Stop ends it at once, and a map
+    cut short that way is not kept); Muse Code's instructions are its own,
+    so there it is the `repoMap` tool only.
+  - **Annotations.** `McpTool` gained `annotations` (as M69 adds it);
+    `getDiagnostics` and every code intelligence tool declare
+    `readOnlyHint: true`, and all are listed in Restricted Mode.
+  - **Tests.** `codeIntelTools`, `codeText`, `renamePlan`, `repoMap`,
+    `modelApiCodeIntel`, `ideCodeIntelTools`, `languageServices` (the
+    adapter over the `vscode` mock) and `toolPresentation`;
+    `test/integration/codeIntel.test.ts` over `test/fixtures/workspace/
+code-intel` on VS Code stable and 1.125.0; live case19 of the Model
+    API sweep; the `code-intel` harness scenario.
+  - **Review round (after `c5c4045b`).** Three class reviews; every
+    finding fixed in one commit on a merge of `origin/main` (PR #50):
+    - A rename's edit ranges must each cover exactly the old name (the
+      text the edit at the position replaces, read from the text the
+      position came from), and that file must still be that text: an edit
+      the service computed on an older version is refused, never applied.
+    - File operations: VS Code's `WorkspaceEdit.entries()` lists only text
+      edits and `size` counts them (read from the extension hosts of 1.99.0,
+      1.125.0 and 1.139.0), so the old check never fired. The adapter reads the
+      internal `_allEntries()` through zod (`_type` 2 is a text edit, 1 a
+      file operation); a missing or changed list is `unknown`, refused
+      (§8 records the undocumented member).
+    - Writing: every file is checked again after the card, then each once
+      more right before its own write; a change found partway stops with a
+      revertable patch of what was written. Stop before the first write
+      writes nothing; once writing starts the rest follow. A failed
+      `rename_symbol` row with a patch keeps review and rewind
+      (`PARTIAL_EDIT_TOOLS`, `hasLandedEdits`).
+    - The prompt's repo map: trusted workspaces only; only a map with text
+      is kept, a try that fails or comes out empty counts, three at most
+      (`REPO_MAP_PROMPT_TRIES`), and a Stop does not count; child tasks and
+      forks use the conversation's. `Limits` takes its Stop listener off,
+      begins no work past the budget, and holds the file listing to it; the
+      map says how many files it read.
+    - Unsaved files: a line number in one is refused; lines shown are the
+      editor's, and the answer says so.
+    - Hover: held back when every definition is outside the workspace and
+      outside the languages' libraries (VS Code's `appRoot` and each
+      extension's folder, `LanguageServiceHost.libraryRoots`). Types that
+      flow from outside files into workspace symbols remain (§9).
+    - Hooks: `rename_symbol` matches `Edit`, and a matching `PreToolUse`
+      hook gets the planned `files` (planned for it alone, only when one
+      would run and the mode allows edits).
+    - Wording: "no language service" allows a file that declares nothing;
+      an empty answer says the language may lack that provider; the same
+      name, a change after the plan, the header's file name. A rename named
+      by symbol alone has no file button. The card names protected files
+      first.
+    - Captures: live case19 again with a stand-in that skips string
+      literals (4 references, 4 edits, the import asserted); and Muse Code
+      1.4.0-R4302.1 calling `mcp__ide__findReferences` in on-request mode
+      (4 model attempts): it listed our tools with annotations, asked its
+      own card for a `readOnlyHint` tool, and showed our text verbatim.
+      The README's "reads in every mode" is the Model API's alone.
+  - **Second review (Grok Build on `585af100`).** One P1, five P2; all
+    held on inspection and are fixed in one commit:
+    - Unsaved changes by real path: `ToolIo.unsavedFiles()` lists the
+      editors' files, and `unsavedDocumentPath` matches one to a file by its
+      own path, the service's, or its real path (a workspace opened through
+      a link names files by the link in the editor and by the real path in
+      the language service). The plan, the recheck before each write, the
+      lines shown and the target all use it; a target is asked and read at
+      the editor's own path.
+    - Repo map: a batch the time or a Stop cuts off is dropped whole, so
+      nothing it finds later reaches the map or its counts; "no language
+      service" only when every lookup ran and none found anything, a cut
+      map being partial.
+    - A rename planned for its `PreToolUse` hooks is the plan written; a
+      hook's new arguments plan afresh.
+    - Call hierarchy: outgoing call sites name the file of the function
+      asked about; of several items at a position the one declared there is
+      asked, and the answer counts the others.
+  - **Codex on PR #57.** Two P2s, both held and fixed in one commit:
+    - The repo map counts every line it renders against its budget (the
+      lead, the count of files left out, the notes, and the prompt
+      section's heading); `repo_map` refuses a `max_tokens` too small for
+      its own fixed text and names the size that would do.
+    - `document_symbols` opens and outlines the file at the path of an
+      editor holding unsaved changes to it (`openAsEdited`), as the other
+      tools do; no other tool opened a named file directly.
+- **Status.** Built on `feature/m67-code-intel` (2026-09-28); reviewed and
+  fixed the same day. Drills and the live checks in
+  `docs/certification/m67.md`.
 
 ### M68 — Verify loop (D49)
 
@@ -6994,6 +7201,207 @@ harness scenario, which is what the accessibility gate checks (D32).
   one, and a proxy that cannot take a pinned address; a harness scenario
   for its row; the gate green; a certification record.
 - **Size.** S.
+- **Status 2026-09-29: built on `feature/m69-web-fetch`, PR #52 open**
+  (`docs/certification/m69.md`); the resumed picture repair passes focused
+  tests and red drills; final review and integration gates are pending.
+  Integration retains M67's separate language services, binds the existing
+  web fetcher to the standalone ACP Model API runtime, and ships its converter
+  worker/notices. Independent review found missing permission checks on later
+  address attempts and the Node 24.0–24.4 HTTPS proxy warning gap; both have
+  focused regressions and intended red/restored proofs. The standalone transport
+  remains Node's, without automatic proxy rerouting or VS Code settings.
+  Built to M44b's safeguards
+  and the plan review's six rules:
+  - **Destinations** (`src/core/web/publicAddress.ts`, `pageUrl.ts`):
+    `https:` only, no credentials, 2,048 characters at most; local and
+    reserved names (`localhost`, `local`, `internal`, `home.arpa`, `test`,
+    `invalid`, `example`, `onion`, `alt`, and any single-label name) refused
+    before any lookup. IPv4 is public outside IANA's special-purpose blocks
+    and Azure's WireServer (so 169.254.169.254, 100.100.100.200 and
+    192.0.0.192 are refused); IPv6 only inside 2000::/3 and outside
+    2001::/23, 2001:db8::/32 and 3fff::/20, with IPv4-mapped, -compatible,
+    NAT64 and 6to4 judged by the IPv4 inside. Every DNS answer is checked:
+    one non-public answer refuses the name.
+  - **Pinning** (`src/host/web/pinnedRequest.ts`): Node's `https` connects
+    to the checked address, with `servername` and `Host` carrying the name,
+    so TLS still verifies it. VS Code's patched `fetch` cannot pin (it
+    replaces a caller's dispatcher with its own agent, keeping only CA and
+    HTTP/2 options: @vscode/proxy-agent `createFetchPatch`, read
+    2026-09-27); its patched `https` can, and does so through the proxy:
+    the integration test shows a loopback proxy receiving
+    `CONNECT 203.0.113.7:443` and a ClientHello naming the host, on VS Code
+    1.139.1 and 1.125.0. Only an answer that arrived over TLS is read: a proxy's
+    own refusal of the tunnel is reported as `Proxy response (N)`, M56's
+    proxy failure, never read as the page. The checked addresses are raced
+    in the resolver's order (ADDRCONFIG) as RFC 8305 says, never
+    re-resolved.
+  - **Redirects**: same host (host and port) followed, each hop checked,
+    resolved and pinned again, at most `WEB_FETCH_MAX_REDIRECTS` (5); a
+    redirect to another host is handed back to the model as a URL to fetch
+    in a new call, so each host is approved on its own; into a refused URL
+    it fails naming the redirect.
+  - **Bounds**: 5 MiB after decompression (gzip, deflate, br; another
+    coding refused), declared or streamed; 30 s for the whole fetch; an
+    allow-list of text types; the header's charset, else HTML's `<meta>`,
+    else UTF-8. HTML becomes Markdown in one linear pass
+    (`htmlToMarkdown.ts`, with `entities` for character references, the
+    one new dependency, D3); inline nesting, list and quote indents and
+    table width are capped so a hostile page stays linear. The model reads
+    the first 50,000 characters and is told the total.
+  - **Approvals**: a new `network` tool class. Bypass allows, Plan
+    (`denyUnmatched`) refuses (its rules allow workspace reads, not network
+    reads), Manual, Edit automatically and Auto ask, per host: the card
+    (`webFetch` subject) names the URL as it will be fetched, and "Always
+    allow in this session" is keyed on the host. Restricted Mode: not
+    offered, refused if called; a side chat (always Plan) is not offered
+    it. A URL refused on its face (scheme, credentials, length, a reserved
+    name, a non-public literal address) is refused before any card; a name
+    is resolved only after approval, since the lookup itself carries the
+    name out, so one that resolves to a private address is refused after
+    the card and before any connection.
+  - **Untrusted content**: the model's text is the header line, a notice
+    that the page is untrusted data, and the content between markers with
+    8 random bytes the page cannot know; the instructions say the same.
+  - **Muse Code**: `webFetch` on the `ide` server, listed only while the
+    workspace is trusted and `museSpark.sandboxNetwork` is not
+    `restricted` (the list is read per request), with MCP annotations
+    `readOnlyHint: false, openWorldHint: true`, and the extension's own
+    modal (Allow once / Reject, naming host and URL) before every call,
+    whatever Muse Code's mode. Live (4 model attempts, contributor model,
+    empty folder): Muse Code listed and called it, asked its own approval in
+    on-request mode, and passed our text through verbatim as the row's
+    output, which the row's size line reads (AGENTS rule 13).
+  - **Row**: the URL beside the label, "Fetched 48.2 kB (text/html)" under
+    it, and what the model read in the body; harness scenario `web-fetch`.
+  - **Review round** (three class reviewers over `c3d7702c`, all fixed in
+    one commit): the `ide` call gets an `AbortSignal` aborted when Muse Code
+    closes the request or sends `notifications/cancelled` (both captured
+    from Muse Code 1.4.0 on a stopped turn, 2 model attempts), raced against
+    the modal, with `isOffered` checked again after it and one modal per URL
+    at a time; the checked addresses are raced as RFC 8305 says (250 ms);
+    connection failures in web fetch's own words naming the host and the
+    addresses (not M56's Meta advice), a proxy's refusal of the tunnel
+    included, the detail only as error codes (a name mismatch's message
+    lists the certificate's names); server text outside the markers only as short tokens, the
+    final URL, the title and a moved target inside them; the converter
+    bounded at 100,000 characters (prefix depth 4, rows unpadded); all
+    trailing dots stripped and empty labels refused; RFC 7050 NAT64 prefix
+    discovery; damaged compression is the coding's failure; the charset only
+    from `<meta>`, an unknown label ignored; sentences name "this tool";
+    Model API rows localized for a moved page and Restricted Mode;
+    `sandboxNetwork` described in fifteen manifest tables. PAC and
+    `http.noProxy` see the pinned address, not the name (@vscode/proxy-agent
+    0.45.0 `agent.js` builds the proxy URL from `opts.host`): kept, since the
+    name would let the proxy resolve it again; documented.
+  - **PR #52 review** (Codex): NAT64 discovery fails closed (only a
+    definite "no AAAA" from the page's own resolver means no DNS64; a
+    timeout, SERVFAIL or an answer without a prefix leaves it unknown, and
+    then no IPv6 answer is used, a name with only IPv6 answers refused as
+    `nat64Unknown`); a `PermissionRequest` hook's allow no longer replaces
+    the per-host card (it may still deny or ask). Swept: every other failed
+    lookup or check already refuses.
+  - **PR #52 second review** (Codex): what allowed a fetch is asked again
+    after every await: after the card or hook (the turn, trust, a mode that
+    now refuses), before each hop's lookup and connection (a caller's
+    `isStillAllowed`, ending the fetch as `withdrawn`), and once the page is
+    in, before the model gets it; on Muse Code the offer (trust,
+    `sandboxNetwork`) is that check.
+  - **PR #52 third review** (Codex): NAT64 absence is proven only by a DNS
+    query's own NXDOMAIN or NODATA (c-ares), while the system resolver's
+    answers still reveal a prefix; the converter hides an element a page
+    left open (`<p hidden>`, `<li aria-hidden>`, cells, rows) up to where a
+    browser ends it, tracking what is open inside and around it, and, from
+    the sweep, a hidden image's alt text, a self-closed hidden element, an
+    unopened dialog, ruby's `rp` and `datalist`.
+  - **PR #52 fourth review** (Codex, a self-closed `<template/>` shown):
+    the converter's hiding now follows the WHATWG parsing algorithm as a
+    whole: one stack of open elements with the algorithm's scopes, special
+    and formatting elements, implied ends, the adoption agency (a hidden
+    formatting element reopens until its own end tag), `</form>`, foreign
+    content (breakouts, integration points, CDATA), select, tables,
+    headings and `<body>` attribute merging; the tokenizer ends comments
+    (`<!-->`, `--!>`), bogus comments (`</ x>`), CDATA and script escapes as
+    HTML does, honours a slash only right before `>` and only on void and
+    foreign elements, and keeps attribute names that begin with `=`.
+    parse5 8.0.1 (MIT, already in the tree through jsdom) was measured and
+    not adopted: quadratic on hostile nesting (40,000 nested `<div>` in 25 s,
+    40,000 nested lists in 73 s, where the converter takes 34 and 127 ms), so
+    a 5 MiB page could hold the extension host for hours; no dependency
+    changes.
+  - **Redesign after the fifth review** (Codex: `<base href>` ignored, the
+    charset sniff reading `<meta>` text in comments and other attributes,
+    `display:/**/none` passing the hidden check; the fourth round on the
+    hand-written path, so the owner's rule applied: redesign, not patch).
+    The page is parsed by parse5, decoded by html-encoding-sniffer (the
+    standard's sniffing) and Node's `TextDecoder`, and its inline styles
+    read by @csstools/css-tokenizer (D3); the converter walks the tree,
+    leaving out exactly what HTML hides, and resolves links against the
+    first `<base href>`. parse5's time on hostile nesting is contained by
+    running it on a worker of its own bundle, `dist/pageWorker.js` (D6), one
+    per page (never at activation; the bundle-split gate checks it), at most
+    two at once, stopped at 10 s or 512 MiB, which refuses the page with the
+    reason.
+  - **Redesign review** (two class reviewers): the sniffer's crash on a
+    malformed `<meta>` content read past; `replacement` encodings read as one
+    U+FFFD; XHTML sniffed as XML; a later `<meta>` changes a tentative
+    encoding (the standard's reparse); the header's charset read as a MIME
+    parameter; at most two conversion workers at once, the wait honouring
+    the fetch's signal; a deadline passing during conversion named as the
+    conversion's; failure details as short codes, crashes logged by name,
+    code and frames; `popover`, closed `<details>` and declarative shadow
+    roots read as they render; inline `display` by its real grammar, a
+    bracket stack, and a `var()` on a hiding property counted as hiding;
+    the `.vsix` check and an integration test for `dist/pageWorker.js`.
+    Grok Build's review of the same diff added: the title only from the first
+    `<title>` child of `<head>` (one the parser put inside a hidden element
+    no longer reaches the model), and an encoding the runtime cannot decode
+    refuses the page (`undecodable`) instead of reading it as UTF-8, with
+    `x-user-defined` and `replacement` decoded by the Encoding standard's own
+    definitions (Node 20.18 has no decoder for the first, no Node for the
+    second).
+  - **PR #52 review of `19f843f3`** (Codex): XHTML is refused
+    (`application/xhtml+xml` read by an HTML parser misreads its XML syntax,
+    `<script src="x"/>` swallowing what follows, and no XML parser is
+    bundled; it is no longer in the Accept header either); `visibility` is
+    inherited, so the walk carries it down instead of dropping the subtree:
+    a descendant with `visibility: visible` shows, an invisible element keeps
+    its tags (a shown item stays in its list) but writes no text or void
+    element. Swept: `display: none`, `content-visibility: hidden`, `hidden`,
+    `inert`, `aria-hidden`, `popover`, a closed dialog or `<details>` hide
+    all they hold, which no descendant can undo; `visibility` was the only
+    inherited one.
+  - **PR #52 review of `83eedf26`** (Codex: a `<col>` styled
+    `visibility: collapse` hides a column whose cells are not its
+    descendants; the third round on the converter's hiding, so the owner's
+    rule applied: redesign, not patch): the converter no longer emulates
+    rendering. It cannot do so completely (a stylesheet, a class, a `<col>`,
+    a script, a font or a colour can hide text), and the attempt protects
+    nothing, since a page can put the same words in visible small print; the
+    defence is the untrusted markers around everything a page returns. Left
+    out now is only what is never page text by structure: the head (the
+    title is read from it), scripts, styles, template content (a declarative
+    shadow root's is written where it stands), `<noscript>`, embedded frames
+    and media, form controls, SVG and MathML. `hidden`, `inert`,
+    `aria-hidden`, `popover`, closed dialogs and `<details>`, `rp` and
+    inline styles are no longer read, for one consistent rule. The result is
+    the page's text as served, which can include text a browser would not
+    show, all of it marked untrusted, and the tool description and the
+    notice before the markers say so. `inlineStyle.ts` and
+    @csstools/css-tokenizer (D3) are removed; the worker bundle is
+    201.2 KiB. This supersedes the earlier bullets' hiding.
+  - **PR #52 resume repair (2026-09-29, focused verification complete)**: traverse
+    `<picture>` so its fallback `<img>` keeps the existing safe-source and
+    nonempty-alt rules. `<source>` contributes no image or attributes;
+    no `srcset`, media-query or browser rendering selection is emulated.
+    Regression coverage must keep document order, relative fallback URLs
+    and alt text, refuse unsafe or wordless images, and still exclude
+    images inside inert templates and embedded media. Reuse the converter
+    and its unit suite, with a red drill restoring `picture` to `OMITTED`
+    in a disposable copy. Final reviewed-tree quality remains required.
+  - **Left**: a machine-scoped switch to turn web fetch off entirely,
+    whether Muse Code's "Always allow this MCP tool" should also silence the
+    extension's own modal, and whether Plan should allow fetches as reads,
+    are the owner's (§3 is untouched until asked).
 
 ### M70 — Review (D49)
 
@@ -7281,6 +7689,43 @@ harness scenario, which is what the accessibility gate checks (D32).
 
 ### M79 — Plans as files (D49)
 
+**Continuation review, 2026-09-29 (verification held).** Recheck current
+workspace trust and controller disposal after saved-plan lookup and the
+save confirmation, before writing or starting a brief. A conversation
+change alone still permits the already approved plan to be saved; it does
+not permit implementation in the replaced conversation. Check the
+no-clobber creator's canonical directory before recursive mkdir as well
+as after creation and before publication, so a swapped ancestor cannot
+create a folder outside confinement before being refused. Held lookup/
+modal trust/disposal regressions and a real-disk pre-entry ancestor swap
+must fail deliberately and pass restored before this source is certified.
+The same no-clobber helper records its stage's dev/ino, checks ownership
+before publication and every cleanup retry, and preserves a moved stage
+or a replacement file. Stale-stage cleanup rechecks canonical confinement,
+identity and captured modification/size metadata before removing a
+candidate; a refreshed file is kept. Real-disk replacement, folder-swap
+and refresh regressions cover these admitted cleanup repairs.
+The 2026-09-29 local proof is preliminary on integrated base `4c35e73e`:
+all five type projects, 341 focused tests (one platform skip), scoped lint
+and zero duplication passed; six isolated mutants fired all ten new
+cases and all three repaired suffix-boundary cases, with 50 filtered
+tests restored green. Main has since advanced through M69, so its content
+must be included and final gates repeated before merge. The later M68
+join must wrap actual canonical plan publication in shared WorkspaceEdits
+begin/finally-end for all ledgers and note the owning round only when
+no-clobber creation returns true; that API is not copied into this base.
+
+**Status 2026-09-29: built on `feature/m79-plans-as-files`, reviewed and
+pushed as draft PR #53; certification and review fixes are in
+`docs/certification/m79.md`. Hosted Windows quality failed when the
+100-name exhaustion test exceeded its unchanged 5-second timeout. Resume
+repair passed focused Windows tests: the complete suffix range is proved
+with the existing in-memory file port, including the last free name,
+exhaustion without replacement and
+reuse at the last name; retain the real-file-system publication,
+collision, cleanup, bounds and junction tests. Latest-main integration,
+independent review and the full candidate gates remain required.**
+
 - **Goal.** A plan the user approved survives and can drive a clean run.
 - **Scope.**
   - A Plan-mode reply that holds a plan gets **Save plan** and **Implement
@@ -7300,6 +7745,135 @@ harness scenario, which is what the accessibility gate checks (D32).
   old one.
 - **Tests.** Both fakes.
 - **Size.** S.
+- **Research.**
+  - **Muse Code 1.4.0**, one live Plan-mode turn (`denyUnmatched`, the
+    contributor model, an empty folder, 19 model attempts). The model read
+    its bundled `plan` skill and delivered the plan as an ordinary
+    `agentMessage`, wrapped in the skill's handoff. There was no plan item,
+    exit-plan request or approval event; the skill's own approval is the
+    user's next message, "go".
+  - **MSP 1.3.0** has `session/todoListChanged` but no command that sets a
+    todo list.
+  - **The Model API harness** has no plan tool.
+- **Decisions.**
+  - **The approval.** "Save plan" and "Implement in a fresh conversation"
+    appear under the latest Plan-mode reply once no turn runs; pressing
+    either is the approval. The host reads the reply back from the backend
+    (`readSession`) on every press and takes it only while it is the latest
+    finished reply, after the latest prompt, in Plan mode, from a turn this
+    panel started in Plan mode that stayed in it (a message steered into a
+    running turn does not make it one). The webview's ids only name it.
+    - After a restart (a setting, trust granted, the host gone) the
+      conversation is resumed first (`resumeTarget`); when the panel no
+      longer holds it, the press says so. History mode `none` says the
+      history was not served.
+    - A second press finds the file already holding the same bytes and
+      writes nothing; a plan over 256 KB is refused at save.
+  - **The file (D13).** Muse Code's own convention:
+    `.agents/plans/YYYY-MM-DD-<slug>.md`, a numeric suffix on a taken name,
+    the plan byte for byte.
+    - Between a Muse Code plan reply's two captured handoff lines;
+      otherwise the whole reply.
+    - The slug comes from the top-level heading, else the prompt.
+    - No front matter, so the title lives in the file name, and the source
+      conversation's session id in the log line that names the file.
+    - It is published by a hard link from a hidden stage, so it never
+      replaces a file (`createFileExclusively`, shared with memory). A file
+      system without hard links refuses the save. A stage the OS holds is
+      removed again; one left by a crash is swept after five minutes.
+    - It is confined to the workspace's own `.agents/plans`; a link or
+      junction there is refused, and the folder is checked again after it
+      is made and before the link (memory too), so a swap after the check
+      is refused. Node cannot link relative to a folder handle, so a swap
+      between that last check and the link is outside the guarantee.
+    - `.agents` is a protected path (D24), so the save asks in a modal.
+    - Restricted Mode refuses it.
+    - The log names the file by a short hash of its name, after its day
+      only when the name verifiably starts with a real one (a file someone
+      else put there may be named anything), never the slug (M39).
+  - **The brief.** "Start a new conversation from a brief"
+    (`ConversationBrief`, `startFromBrief`) is its own piece, for M74's
+    `/handoff`.
+    - The attachment is checked before the old conversation is left.
+    - The conversation is then cleared (History keeps it), Plan mode gives
+      way to the starting mode, and the brief goes as the first message.
+      Its card is the host's `briefSubmitted`.
+    - The plan file travels as named text on both backends (M54), after an
+      English MODEL_TEXT request and before a MODEL_TEXT note; the card
+      shows the localized text.
+    - Nothing else from the old conversation comes along: no editor
+      context, no reference, no goal.
+    - **Two kinds of brief (D49 "Untrusted content").** A reply saved from
+      a Plan-mode turn of the conversation on screen is the plan the user
+      approved: its note says so, and it starts in the starting mode
+      (Manual when that is Plan, never Bypass in a remote window). A file
+      picked from Plans… may come from a cloned repository or a tool: it
+      starts in Manual (Plan when that is the starting mode), whatever
+      `initialPermissionMode` says, its note tells the model nobody
+      confirmed who wrote it, and the panel names the mode.
+    - **What the user saw is what the model gets, by construction** (PR
+      #53's third review). A plan is parsed with the panel's own parser
+      (`mdast-util-from-markdown` with `micromark-extension-gfm` and
+      `mdast-util-gfm`, which react-markdown and remark-gfm use), then
+      rewritten by `showPlanParts` (`shared/planView.ts`) so that every
+      part is rendered text: a link's destination after its text
+      (`details <https://…>`), a picture's alt text and source, titles,
+      definitions, footnotes, a code fence's whole info string. The panel
+      renders the reply the plan actions sit under through that transform
+      (MarkdownView's `isPlan`), and the brief is the same tree written
+      back with `mdast-util-to-markdown` (`briefText`), for a reply and
+      for a file alike. The separate "hidden markup" predicate is gone; a
+      jsdom test checks, for a corpus of tricky plans, that every character
+      of the brief's text appears in order in the rendered DOM and that the
+      brief holds no link, picture, definition or footnote a view could
+      show only part of.
+    - Raw HTML, which the panel never renders, stays the exception: a reply
+      holding it is saved with a warning and not started; the user reads
+      the file and starts it from Plans…, as untrusted content.
+    - A control character other than a tab or a line break (DEL and C1
+      included) or a format character (a direction override, a zero-width
+      character) makes the panel paint the plan otherwise than the model
+      reads it, which no DOM-text comparison sees: a reply or a plan file
+      holding one is neither saved nor started (`hasUnshownCharacters`),
+      emoji joined by U+200D and right-to-left marks included, for now.
+    - A refused change out of Plan mode keeps the turns it left pending:
+      Plan mode was never left on the backend.
+    - Implementing a saved plan is refused in Restricted Mode.
+    - A brief the backend refuses leaves nothing behind: its chip goes with
+      the card, the todo list it set is taken back, and no "started" notice
+      is said. A brief overtaken by another action says it was saved but not
+      started.
+  - **The todo list.** The top-level numbered items, else the top-level
+    bullets, outside code; at most 50.
+    - Model API: `AgentSession.setTodos`, before the first request, refused
+      while a turn runs. The harness does not send the list to the model,
+      so the note lists the steps it was set to (cut where long).
+    - Muse Code: the note asks the model to take the steps as its list, and
+      the panel says so.
+  - **Plans…** in the palette lists `.agents/plans/*.md` newest date first
+    (names start with the date), to open or implement. A plan file is read
+    with the plan limit only, even when it starts like a PDF.
+  - **One plan action at a time.** A second press is dropped, and said.
+- **Acceptance.**
+  - The captured reply saves byte for byte as its body.
+  - Implement on the fake MSP host sends the file, the note and the
+    display marker in a new `promptUnmatched` session.
+  - On the fake Model API, the todo list lands before the brief's request,
+    and nothing of the planning turn is in it.
+  - Restricted Mode, a no, a stale reply, a side chat, a plan neither
+    backend takes and a double press all start or write nothing.
+  - A plan from Plans… starts in Manual (Plan when that is the starting
+    mode) with the untrusted note, on the fake MSP host.
+  - The live Model API case drove the panel's controller (10 requests):
+    Plan mode, Save plan, Implement found the file saved and started a
+    Manual conversation whose seeded list the model moved to completed.
+    Muse Code Implement was not run live; its side rests on the capture and
+    the fake MSP host.
+  - The harness has `plan`, `plan-brief` (the Model API render: the seeded
+    list, all pending) and `plan-narrow`.
+- **Left.** None of the milestone. Not taken: the plan skill's precedence
+  for a stronger plan location (`specs/…/plan.md`, `docs/plans/`), which is
+  the model's judgement, not a fixed name (D13).
 
 ### M80 — Headless and CI (D49)
 
@@ -7832,6 +8406,23 @@ joined with M57, M58 and PR #49's sign-in
 
 ## 7. Gates
 
+**Merge goal progress (2026-09-29, America/Los_Angeles):** PR #32 merged at
+17:31 (`fefb6068`), PR #57/M67 at 18:20 (`4c35e73e`), and PR #52/M69 at
+19:46 (`c323dcc0`). Each passed independent review, four local full-quality
+environments and exact-head hosted checks before merge. M69's tested tree
+`42a65c7b` passed all four full gates, installed ACP stdio 9/9 on each rig,
+actual installed page conversion and the same worker under Node 20.18.3;
+all 19 triggered hosted checks passed. Its dated certification entries
+describe their recording phase; the final PR body links completed CI and
+Hosts runs. Other PRs and WIP branches remain under review and verification.
+
+**PR #51 integration review (2026-09-29):** preserve the contributor's four
+Android/Termux unit cases for launcher discovery, credential-path selection
+and unavailable voice helpers. Integrate the two test files into current main;
+prove these checks fail under deliberate behavior changes, then run exact-tree
+quality and the local rig gates. No production change or physical Android
+certification is implied. `docs/certification/pr51-termux-tests.md` tracks proof.
+
 **PR #32 final review reopened (2026-09-29, head `46ba5406`):** independent
 reviews found a pending-release/reload ownership race in the ACP session state,
 cross-process whole-file paid-grant updates that can resurrect a revoked grant,
@@ -7961,23 +8552,33 @@ remain available.
 
 Every lint or scanner suppression (`eslint-disable`, `@ts-expect-error`, `nosemgrep`), every cast the compiler cannot verify, and every error swallowed inside generated shell, C# or Swift must be listed here with its reason. A TypeScript `catch {}` needs only an inline comment saying why the error is dropped.
 
-| File                                  | Construct                                                          | Reason                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | Added      |
-| ------------------------------------- | ------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------- |
-| `src/host/backend/toolIo.ts`          | `nosemgrep` on `spawn` (`detect-child-process`)                    | The command line is the tool's payload by design: the user approved it on a card, and it runs through PowerShell / bash as an argument array, never a shell string.                                                                                                                                                                                                                                                                                                                                                                                                                    | 2026-09-22 |
-| `src/host/backend/searchWorker.ts`    | `nosemgrep` on `new RegExp(pattern)` (`detect-non-literal-regexp`) | The model's search pattern is evaluated on a worker thread that `toolIo.searchOnWorker` terminates at `SEARCH_TIMEOUT_MS`, and the pattern is capped at `SEARCH_PATTERN_MAX_LENGTH`; a runaway match cannot hang the host.                                                                                                                                                                                                                                                                                                                                                             | 2026-09-22 |
-| `src/host/voice/dictationHost.ts`     | `nosemgrep` on two `spawn` calls (`detect-child-process`)          | The dictation and capture helpers' command lines are fixed by `helperLocation.ts` (Windows PowerShell under `%SystemRoot%` with a bundled script, or the bundled macOS binary with VS Code's own app name (`--app-name`)); M35's Linux recorder is `arecord` or `parec` found by absolute path on PATH, with fixed arguments. Argument arrays; no user, model or workspace input reaches them.                                                                                                                                                                                         | 2026-09-25 |
-| `native/darwin/Dictation.swift`       | `unsafeBitCast(symbol, to: SetDisclaim.self)`                      | `responsibility_spawnattrs_setdisclaim` is a private libsystem call with no header, so it is resolved with `dlsym` and cast to its C signature, `int (posix_spawnattr_t *, int)`, the one Chromium and Qt declare (M28). A missing symbol is handled before the cast (the helper then asks as before); the signature has been stable since macOS 10.14.                                                                                                                                                                                                                                | 2026-09-23 |
-| `src/host/backend/shellJob.ts`        | `catch { }` in the join statement each Windows command starts with | A command whose job cannot be joined (the assembly removed since the self-test, a policy change) must still run as it would without one; its kill then finds no job, logs that, and falls back to taskkill and the sweep (M27), so the failure is reported where it matters.                                                                                                                                                                                                                                                                                                           | 2026-09-23 |
-| `test/unit/App.test.tsx`              | `as unknown as Selection` (four stubs)                             | jsdom offers no usable `Selection`; the quote-menu tests stub the two members the code reads (`toString`, `anchorNode`) and nothing else, so a structural cast is the honest shape. Test-only.                                                                                                                                                                                                                                                                                                                                                                                         | 2026-09-23 |
-| `scripts/capture-themes.mjs`          | `nosemgrep` on `spawn` (`detect-child-process`)                    | A developer script (M37): it starts the VS Code build `@vscode/test-electron` downloaded, with its own fixed arguments, as an argument array with no shell. Nothing from a user, the model or a workspace reaches it, and it never ships.                                                                                                                                                                                                                                                                                                                                              | 2026-09-24 |
-| `scripts/sast.mjs`                    | `nosemgrep` on two `spawnSync` calls (`detect-child-process`)      | The SAST gate's own launcher (M40): it runs `semgrep` or the semgrep executable found in a Python's user Scripts folder, and asks the interpreters in a fixed list (`python`, `python3`, `py`) where that folder is. Every command and argument is the script's own, passed as an argument array with no shell; nothing from a user, the model or a workspace reaches them, and the script never ships.                                                                                                                                                                                | 2026-09-25 |
-| `src/host/backend/mcpProcess.ts`      | `nosemgrep` on `spawn` (`detect-child-process`)                    | A stdio MCP server the user configured in Muse Code's own settings file (M50, D42), started only in a trusted workspace: its command found by absolute path (D24), its arguments passed as an array. A `.cmd`/`.bat` launcher goes through `cmd.exe /d /v:off /s /c` with every part quoted and `"`, `%` and line breaks refused. Nothing the model writes reaches the command line.                                                                                                                                                                                                   | 2026-09-25 |
-| `src/host/backend/mcpJobLaunch.ts`    | `nosemgrep` on `spawn` (`detect-child-process`)                    | On Windows M50 starts only its compiled C# executable in extension storage, with no arguments. The configured command, arguments and allowlisted environment are in a private encoded environment value; C# removes it and builds the server's exact environment before `CreateProcessW`. The server is assigned to its job before its first instruction. Since M56 the launcher's C# ships as `native/windows/MuseSparkMcpLauncher.cs` and the shared `MuseSparkMcpJob.cs`, is read by `jobSourceReader`, and compiles to an executable named by its source's digest (`jobBuild.ts`). | 2026-09-26 |
-| `src/runtime/main.ts`                 | `nosemgrep` on `spawn` (`detect-child-process`)                    | The ACP agent's `login` (M63, D62) runs `muse login` in the user's terminal the way the agent starts `muse serve`: the command is the CLI `MuseCodeBackendManager.resolveLaunch` found (the install layout, `PATH`, or an absolute `--muse-binary` that must exist, D1a, D4), the arguments its launcher's fixed prefix and `MUSE_LOGIN_ARGS`, passed as an array with no shell. Nothing from an editor, the model or a workspace reaches it. Found by the first local SAST run on PR #32's code (2026-09-27).                                                                         | 2026-09-27 |
-| `test/unit/helpers/fakeMcpOrphan.mjs` | `nosemgrep` on `spawn` (`detect-child-process`)                    | The M50 Windows regression fixture starts only this Node with its own fixed file to test an MCP server whose child outlives it. The child self-exits after 12 seconds; no model or workspace input reaches its command line, and the fixture never ships.                                                                                                                                                                                                                                                                                                                              | 2026-09-25 |
-| `src/host/backend/modelApiBundle.ts`  | `value is ModelApiBundle` (`isModelApiBundle`, a type predicate)   | `require` of `dist/modelApi.js` returns `unknown`; the guard checks that `createModelApiHost` is a function, but not its parameter and result types, which no run-time check can see. Both bundles come from one source tree in one `npm run build` and ship in one package, this module types the factory on both sides, and `modelApiBundle.test.ts` builds the real bundle and runs a turn through it (M57).                                                                                                                                                                        | 2026-09-27 |
+| File                                     | Construct                                                          | Reason                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | Added      |
+| ---------------------------------------- | ------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------- |
+| `src/host/backend/toolIo.ts`             | `nosemgrep` on `spawn` (`detect-child-process`)                    | The command line is the tool's payload by design: the user approved it on a card, and it runs through PowerShell / bash as an argument array, never a shell string.                                                                                                                                                                                                                                                                                                                                                                                                                    | 2026-09-22 |
+| `src/host/backend/searchWorker.ts`       | `nosemgrep` on `new RegExp(pattern)` (`detect-non-literal-regexp`) | The model's search pattern is evaluated on a worker thread that `toolIo.searchOnWorker` terminates at `SEARCH_TIMEOUT_MS`, and the pattern is capped at `SEARCH_PATTERN_MAX_LENGTH`; a runaway match cannot hang the host.                                                                                                                                                                                                                                                                                                                                                             | 2026-09-22 |
+| `src/host/voice/dictationHost.ts`        | `nosemgrep` on two `spawn` calls (`detect-child-process`)          | The dictation and capture helpers' command lines are fixed by `helperLocation.ts` (Windows PowerShell under `%SystemRoot%` with a bundled script, or the bundled macOS binary with VS Code's own app name (`--app-name`)); M35's Linux recorder is `arecord` or `parec` found by absolute path on PATH, with fixed arguments. Argument arrays; no user, model or workspace input reaches them.                                                                                                                                                                                         | 2026-09-25 |
+| `native/darwin/Dictation.swift`          | `unsafeBitCast(symbol, to: SetDisclaim.self)`                      | `responsibility_spawnattrs_setdisclaim` is a private libsystem call with no header, so it is resolved with `dlsym` and cast to its C signature, `int (posix_spawnattr_t *, int)`, the one Chromium and Qt declare (M28). A missing symbol is handled before the cast (the helper then asks as before); the signature has been stable since macOS 10.14.                                                                                                                                                                                                                                | 2026-09-23 |
+| `src/host/backend/shellJob.ts`           | `catch { }` in the join statement each Windows command starts with | A command whose job cannot be joined (the assembly removed since the self-test, a policy change) must still run as it would without one; its kill then finds no job, logs that, and falls back to taskkill and the sweep (M27), so the failure is reported where it matters.                                                                                                                                                                                                                                                                                                           | 2026-09-23 |
+| `test/unit/App.test.tsx`                 | `as unknown as Selection` (four stubs)                             | jsdom offers no usable `Selection`; the quote-menu tests stub the two members the code reads (`toString`, `anchorNode`) and nothing else, so a structural cast is the honest shape. Test-only.                                                                                                                                                                                                                                                                                                                                                                                         | 2026-09-23 |
+| `scripts/capture-themes.mjs`             | `nosemgrep` on `spawn` (`detect-child-process`)                    | A developer script (M37): it starts the VS Code build `@vscode/test-electron` downloaded, with its own fixed arguments, as an argument array with no shell. Nothing from a user, the model or a workspace reaches it, and it never ships.                                                                                                                                                                                                                                                                                                                                              | 2026-09-24 |
+| `scripts/sast.mjs`                       | `nosemgrep` on two `spawnSync` calls (`detect-child-process`)      | The SAST gate's own launcher (M40): it runs `semgrep` or the semgrep executable found in a Python's user Scripts folder, and asks the interpreters in a fixed list (`python`, `python3`, `py`) where that folder is. Every command and argument is the script's own, passed as an argument array with no shell; nothing from a user, the model or a workspace reaches them, and the script never ships.                                                                                                                                                                                | 2026-09-25 |
+| `src/host/backend/mcpProcess.ts`         | `nosemgrep` on `spawn` (`detect-child-process`)                    | A stdio MCP server the user configured in Muse Code's own settings file (M50, D42), started only in a trusted workspace: its command found by absolute path (D24), its arguments passed as an array. A `.cmd`/`.bat` launcher goes through `cmd.exe /d /v:off /s /c` with every part quoted and `"`, `%` and line breaks refused. Nothing the model writes reaches the command line.                                                                                                                                                                                                   | 2026-09-25 |
+| `src/host/backend/mcpJobLaunch.ts`       | `nosemgrep` on `spawn` (`detect-child-process`)                    | On Windows M50 starts only its compiled C# executable in extension storage, with no arguments. The configured command, arguments and allowlisted environment are in a private encoded environment value; C# removes it and builds the server's exact environment before `CreateProcessW`. The server is assigned to its job before its first instruction. Since M56 the launcher's C# ships as `native/windows/MuseSparkMcpLauncher.cs` and the shared `MuseSparkMcpJob.cs`, is read by `jobSourceReader`, and compiles to an executable named by its source's digest (`jobBuild.ts`). | 2026-09-26 |
+| `test/unit/helpers/fakeMcpOrphan.mjs`    | `nosemgrep` on `spawn` (`detect-child-process`)                    | The M50 Windows regression fixture starts only this Node with its own fixed file to test an MCP server whose child outlives it. The child self-exits after 12 seconds; no model or workspace input reaches its command line, and the fixture never ships.                                                                                                                                                                                                                                                                                                                              | 2026-09-25 |
+| `src/host/backend/modelApiBundle.ts`     | `value is ModelApiBundle` (`isModelApiBundle`, a type predicate)   | `require` of `dist/modelApi.js` returns `unknown`; the guard checks that `createModelApiHost` is a function, but not its parameter and result types, which no run-time check can see. Both bundles come from one source tree in one `npm run build` and ship in one package, this module types the factory on both sides, and `modelApiBundle.test.ts` builds the real bundle and runs a turn through it (M57).                                                                                                                                                                        | 2026-09-27 |
+| `src/host/codeIntel/languageServices.ts` | `Reflect.get(edit, '_allEntries')`, an undocumented member         | VS Code's `WorkspaceEdit` API lists only text edits (`entries()`, and `size` counts them), so a rename that also moves or creates files looks plain. The internal `_allEntries()` (1.99.0 to 1.139.0) lists every entry with its `_type`; it is read as `unknown` and parsed with zod, and a missing member or a changed shape answers `unknown`, which refuses the rename rather than applying half of it (M67). `languageServices.test.ts` and the integration suite cover both.                                                                                                     | 2026-09-28 |
+| `src/runtime/main.ts`                    | `nosemgrep` on `spawn` (`detect-child-process`)                    | The ACP agent's `login` (M63, D62) runs `muse login` in the user's terminal the way the agent starts `muse serve`: the command is the CLI `MuseCodeBackendManager.resolveLaunch` found (the install layout, `PATH`, or an absolute `--muse-binary` that must exist, D1a, D4), the arguments its launcher's fixed prefix and `MUSE_LOGIN_ARGS`, passed as an array with no shell. Nothing from an editor, the model or a workspace reaches it. Found by the first local SAST run on PR #32's code (2026-09-27).                                                                         | 2026-09-27 |
 
 ## 9. Security assumptions and accepted residual risk
+
+- Code intelligence (M67) shows what VS Code's language services say. A
+  result located outside the workspace is left out and a hover defined only
+  there is held back, but a language service also infers: a workspace
+  symbol whose type comes from an imported file outside the workspace (a
+  `../` import, a `tsconfig` path) carries that type, a literal type
+  included, into its hover and into diagnostics, as the editor shows it.
+  Accepted: it is the language's own view of the workspace the user opened,
+  the same text the Problems panel (`getDiagnostics`) already sends.
 
 - The `muse` CLI is closed source; we trust its stdio protocol as documented
   by Meta's SDK and validate every message shape at our boundary. Residual
@@ -8046,6 +8647,38 @@ Every lint or scanner suppression (`eslint-disable`, `@ts-expect-error`, `nosemg
   never across a redirect. Residual risk: a server's own `readOnlyHint` is
   trusted, as Muse Code trusts it; a result's text reaches the model as
   data it may be steered by (prompt injection), as a web page's would.
+- Web fetch (M69, D49) reaches the internet from the user's machine. The
+  controls: `https:` only; every DNS answer checked against the non-public
+  ranges and the connection pinned to a checked address (through a proxy,
+  the tunnel is asked for that address, and only a TLS answer is read);
+  same-host redirects checked and pinned again, another host's handed back;
+  size, time and type bounds; per-host approval in every mode but Bypass,
+  Plan and Restricted Mode refusing; on Muse Code the extension's modal
+  before every call. Residual risks: (1) an intranet service on a public
+  address, or a split-horizon name that answers public addresses here,
+  looks like the internet; (2) the URL is model-written and reaches the
+  host the user approved, so it can carry conversation text there (the
+  card and the modal name it whole; a session rule covers one host); (3)
+  the page's text steers the model like any tool output (the markers and
+  the notice are a signal, not a guarantee); (4) on a network where only
+  the proxy can resolve names, the local check refuses every fetch, which
+  fails closed; (5) the proxy decision (`http.noProxy`, a PAC file) sees the
+  pinned address, not the host name, so a rule written for a name does not
+  apply; (6) NAT64 discovery takes the prefix from answers either the
+  system resolver (as the page's name was looked up) or a DNS query of its
+  own (c-ares) returns, and only the DNS query's NXDOMAIN or NODATA means no
+  DNS64 (getaddrinfo's ENOTFOUND proves nothing); any other outcome uses no
+  IPv6 answer, so what remains is a DNS server that answers NODATA while the
+  system resolver's path synthesizes nothing for `ipv4only.arpa` but does
+  for other names; (7) VS Code cannot close a modal, so the extension's
+  question for a Muse Code call that was stopped stays open until answered,
+  and its answer then fetches nothing; (8) the model reads a page's text as
+  served, which can include text a browser would not show (hidden by a
+  stylesheet, an attribute or a script), all of it marked untrusted: the
+  converter emulates no rendering and leaves out only what is never page
+  text by structure; (9) parse5 is quadratic on hostile
+  nesting, so such a page costs up to 10 seconds of one worker thread before
+  it is refused.
 - Contributor-tier models send content Meta may train on; guarded by opt-in
   dialog and `confidentialWorkspace` setting.
 - The Marketplace token (M28, 2026-09-23): the publish job runs in the

@@ -409,6 +409,62 @@ export const EN = {
   toolReadImageInvalid: 'The file `{path}` is not a supported image.',
   toolVisualFileMissing: 'The file `{path}` was not found.',
   toolVisualReadFailed: 'The file `{path}` could not be read.',
+  // M69 (PLAN.md D49): web fetch. The row's line under a fetched page: its
+  // size and content type (text/html).
+  webFetchSize: 'Fetched {size} ({type})',
+  // Before each fetch Muse Code asks the extension for.
+  webFetchConfirmTitle: 'Muse Code wants to fetch a page from {host}',
+  webFetchConfirmDetail:
+    'The extension will download {url} from this computer and give its text to Muse Code. The whole address is sent to {host}, so anything written into it leaves the conversation.',
+  // Why a fetch did not happen or did not finish.
+  webFetchInvalidUrl: 'That is not a complete web address.',
+  webFetchNotHttps: 'Only https:// pages are fetched.',
+  webFetchCredentials: 'An address with a user name or password is refused.',
+  webFetchUrlTooLong: 'The address is longer than {max} characters.',
+  webFetchReservedHost: '{host} is a local or reserved name, not a public site.',
+  webFetchPrivateAddress:
+    '{host} leads to {address}, which is not a public internet address. Nothing was fetched.',
+  webFetchUnresolved: '{host} could not be found from this computer.',
+  webFetchWithdrawn:
+    'Web fetch is no longer allowed here (the workspace lost its trust, the permission mode changed, or the sandbox network setting became restricted), so the fetch stopped before its next request.',
+  webFetchNat64Unknown:
+    '{host} has only IPv6 addresses here, and whether this network translates them to IPv4 addresses (NAT64) could not be learned ({detail}), so they could not be checked for a private address. Nothing was fetched.',
+  webFetchTooManyRedirects: 'The page redirected more than {max} times.',
+  webFetchRedirectWithoutLocation: 'The server answered {status} without saying where to go.',
+  webFetchRedirectRefused: 'The page redirected to an address that is refused: {reason}',
+  webFetchHttpStatus: 'The server answered {status}.',
+  webFetchTooLarge: 'The page is larger than {size}.',
+  webFetchNoContentType: 'The server did not say what the page contains.',
+  webFetchContentType: 'The page is {type}, not HTML or text.',
+  webFetchContentTypeUnnamed: 'The page is not HTML or text.',
+  webFetchEncoding: 'The page’s compression ({encoding}) could not be read.',
+  webFetchEncodingUnnamed: 'The page’s compression could not be read.',
+  webFetchTimeout: 'The page did not arrive within {duration}.',
+  webFetchConversionTimeout:
+    'The page arrived, but its HTML could not be converted in the time allowed (at most {duration}), so none of it was read.',
+  webFetchConversionMemory:
+    'The page’s HTML needed more than {max} to convert, so none of it was read.',
+  webFetchXhtml:
+    'The page is XHTML (application/xhtml+xml), which web fetch does not read: read as HTML, its XML syntax would be misread. Nothing was read.',
+  webFetchUndecodable:
+    'The page is in the {encoding} encoding, which this computer cannot decode, so none of it was read.',
+  webFetchConversionFailed:
+    'The page’s HTML could not be converted ({detail}), so none of it was read.',
+  // Why no connection gave an answer: the page's host, and the checked
+  // address(es) the request went to.
+  webFetchCertificate:
+    '{host}’s certificate at {address} is not trusted on this computer. Nothing was read. ({detail})',
+  webFetchProxyCredentials:
+    'The proxy asked for credentials before it would connect to {address} for {host}. Nothing was read.',
+  webFetchProxyRefused:
+    'A proxy or another machine in the way answered {status} instead of connecting securely to {address} ({host}). Nothing was read.',
+  webFetchUnreachable: '{host} could not be reached at {address}. ({detail})',
+  webFetchNetwork: 'The request failed: {detail}',
+  // A redirect to another host, handed back to the model on the Model API
+  // backend; and the refusal in Restricted Mode.
+  webFetchMoved:
+    'The page redirected to {location}, on another host. Muse can fetch it in a new call, which asks again.',
+  webFetchRestrictedMode: 'Web fetch is off in Restricted Mode. Trust the workspace to use it.',
   textFileTooLarge: 'Text files must be 1 MB or smaller.',
   textFilesOverBudget:
     'Attachments fill Muse Code’s message limit. Remove an attachment or shorten the message.',
@@ -441,8 +497,19 @@ export const EN = {
   approvalAction: 'Muse wants to {action}',
   /** A bare tool name (subject kind "tool", e.g. subagent_spawn), M18. */
   approvalUseTool: 'Muse wants to use {action}',
+  /** A web fetch on the Model API backend (M69): {action} is the URL, shown as code. */
+  approvalFetch: 'Muse wants to fetch {action}',
   // {paths} is the list of images an edit starts from, shown as code.
   approvalImageSources: 'Starting from {paths}',
+  // M67: a rename's card names a few of its files ({files}) and counts the rest.
+  renameCardMore: forms({
+    one: '{files} and {count} more file',
+    other: '{files} and {count} more files',
+  }),
+  // M67: the code intelligence rows when VS Code's language services cannot answer.
+  codeIntelNoService: 'No language service answered for {path}, or it declares no symbols.',
+  codeIntelTimedOut: 'The language service did not answer within {seconds} seconds.',
+  repoMapNoService: 'No language service answered for the workspace’s symbols.',
   // The paid-use popup before an image, on either backend (M34, M44, M58).
   imageBuyTitle: 'Muse wants to create the image {path}',
   imageBuyEditTitle: 'Muse wants to make the edited image {path}',
@@ -673,6 +740,58 @@ export const EN = {
   rewindConversationFailed: 'Could not rewind the conversation',
   sideChatFailed: 'Could not open a side chat',
   sideChatPlanOnly: 'Side chats stay in Plan mode.',
+  // M79 (PLAN.md D49): plans as files. {path} is the plan's workspace path.
+  planActionsLabel: 'Plan actions',
+  savePlan: 'Save plan',
+  implementPlan: 'Implement in a fresh conversation',
+  planImplementDetail: 'A new conversation with this plan as its brief, out of Plan mode',
+  planSaved: 'Plan saved to {path}.',
+  planAlreadySaved: 'This plan is already saved in {path}.',
+  planSaveFailed: 'Could not save the plan',
+  planSaveConfirm: 'Save this plan in .agents/plans?',
+  planSaveConfirmDetail:
+    '.agents is a protected folder: what is in it guides the agents that work here. The plan is saved as a new file; no file is replaced.',
+  planImplementFailed: 'Could not start the plan',
+  planRestricted:
+    'Plans are not saved or implemented in Restricted Mode. Trust this workspace to use them.',
+  planWaitForTurn: 'Wait for the reply to finish, or stop it, first.',
+  planReplyNotLatest: 'Only the latest reply in Plan mode can be saved as a plan.',
+  planImplementSideChat:
+    'Implement a plan from the main conversation; a side chat stays in Plan mode.',
+  planBriefText: 'Implement the plan in {path}.',
+  planTodosByModel:
+    'Muse Code does not let the extension set its todo list, so the brief asks Muse to list the plan’s steps there.',
+  planNamesTaken: 'Every file name for this plan is taken in .agents/plans.',
+  planFileMissing: 'That plan file no longer exists.',
+  // {size}: the limit in KB.
+  planTooLarge: 'This plan is larger than {size} KB, the most a plan may be.',
+  planSessionGone:
+    'That conversation is no longer open in this panel, so this reply can no longer be saved or implemented as a plan.',
+  planNotFromPlanTurn:
+    'This reply was not written in Plan mode here, so it is not saved or implemented as a plan.',
+  planHiddenMarkup:
+    'The plan holds HTML that the panel does not show. Open {path} and read all of it before you implement it.',
+  planHiddenMarkupNotStarted:
+    'Plan saved to {path}, but not started: it holds HTML that the panel does not show. Read the file, then implement it from Plans….',
+  planSavedNotStarted:
+    'Plan saved to {path}, but not started: the conversation changed in the meantime.',
+  planChangedNotStarted: 'The plan was not started: the conversation changed in the meantime.',
+  planActionBusy: 'A plan action is still running.',
+  planUnshownCharacters:
+    'This plan holds a control or format character (such as a direction override or a zero-width character) that makes the panel show it otherwise than the model would read it, so it is not saved or started.',
+  planMarkdownUnavailable:
+    'The plan reader could not be loaded, so plans are not saved, listed or implemented; reinstall the extension and reload the window. The log has the details.',
+  // {mode}: the permission mode's name.
+  planFromFileMode:
+    'A plan picked from Plans… starts in {mode}: the file comes from the workspace, so the conversation asks before it acts.',
+  planOpen: 'Open',
+  plansItem: 'Plans…',
+  plansItemDetail: 'Saved plans in .agents/plans: open one or implement it',
+  plansTitle: 'Plans',
+  plansCount: forms({ one: '{count} saved plan', other: '{count} saved plans' }),
+  plansNone: 'No saved plans yet. Save one from a reply in Plan mode.',
+  plansFailed: 'Could not list the plans',
+  planOpenFailed: 'Could not open the plan',
   sideChatSessionOnly: 'This side chat can open only side-chat conversations.',
   renameFailed: 'Could not rename the conversation',
   sandboxOffProfileNotice:
@@ -875,6 +994,8 @@ export const EN = {
     // The same, made by the extension's ide server for Muse Code (M44).
     mcp__ide__generateImage: 'Image',
     mcp__ide__editImage: 'Edit image',
+    // The extension's web fetch for Muse Code, through the ide server (M69).
+    mcp__ide__webFetch: 'Fetch page',
     // Muse Code's own tools (M43): captured live 2026-09-25, the rest named
     // from the CLI's tool list (PLAN.md D36).
     read_memory: 'Read memory',
@@ -911,6 +1032,23 @@ export const EN = {
     snooze_reminder: 'Snooze reminder',
     submit_reminder_decision: 'Reminder',
     submit_result: 'Result',
+    // M67: code intelligence, native on the Model API and on the ide server.
+    find_definition: 'Definition',
+    find_references: 'References',
+    workspace_symbols: 'Symbols',
+    document_symbols: 'Outline',
+    hover: 'Hover',
+    call_hierarchy: 'Calls',
+    repo_map: 'Repo map',
+    rename_symbol: 'Rename',
+    mcp__ide__findDefinition: 'Definition',
+    mcp__ide__findReferences: 'References',
+    mcp__ide__workspaceSymbols: 'Symbols',
+    mcp__ide__documentSymbols: 'Outline',
+    mcp__ide__hover: 'Hover',
+    mcp__ide__callHierarchy: 'Calls',
+    mcp__ide__repoMap: 'Repo map',
+    mcp__ide__renameSymbol: 'Rename',
   },
   // A tool from an MCP server the table does not name (`mcp__<server>__<tool>`).
   mcpToolLabel: '{tool} ({server})',

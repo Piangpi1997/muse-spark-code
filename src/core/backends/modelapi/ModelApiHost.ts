@@ -35,6 +35,8 @@ import {
   MODEL_API_EFFORT_OFF,
   ISO_DATE_LENGTH,
   MODEL_API_MAX_OUTPUT_TOKENS,
+  CODE_INTEL_TOOLS,
+  type CodeIntelTool,
   MODEL_API_MAX_RETRIES,
   MODEL_API_MAX_TOOL_ROUNDS,
   MAX_ENCODED_MEDIA_CHARS,
@@ -50,9 +52,11 @@ import {
   MODEL_API_SCHEDULED_TOOL,
   MODEL_API_SUBAGENT_TOOLS,
   MODEL_API_TOOLS,
+  WEB_FETCH_SUBJECT_KIND,
   MODEL_API_VERSION,
   MODEL_API_WEB_SEARCH_TOOL,
   MODEL_TEXT,
+  REPO_MAP_PROMPT_TRIES,
   OUTPUT_REF_PREFIX,
   SCHEDULE_LIFETIME_MS,
   SCHEDULE_MAX_INTERVAL_MS,
@@ -136,7 +140,24 @@ import { textFileInput } from '../../textAttachment'
 import { isProtectedPath } from '../../protectedPaths'
 import { confineWorkspacePath } from '../../workspacePath'
 import type { McpTool } from '../../mcp'
+import type { WebFetcher, WebFetchResult } from '../../web/webFetch'
+import type { WebFetchFailure } from '../../web/fetchFailure'
+import { approvalHost, checkPageUrl } from '../../web/pageUrl'
 import type { MemoryStore } from '../../memory/memoryStore'
+import type { CodeIntelDeps } from '../../codeIntel/codeIntelQuery'
+import { codeIntelToolOf } from '../../codeIntel/definitions'
+import type { LanguageServiceHost } from '../../codeIntel/languageService'
+import type { RenamePlanResult } from '../../codeIntel/rename'
+import { repoMapSection } from '../../codeIntel/repoMap'
+import {
+  applyRename,
+  isProtectedRename,
+  planRenameCall,
+  renameCardPath,
+  renameHookFiles,
+  renameRefused,
+  runCodeIntelRead,
+} from './codeIntelCalls'
 import {
   type ConfirmedModelRequest,
   MissingApiKeyError,
@@ -160,6 +181,7 @@ import type { GoalRecord } from './goalRecord'
 import { type EnvironmentFacts, instructionsFor } from './instructions'
 import {
   dispatchHooks,
+  matchingHooks,
   type HookDefinition,
   type HookDispatch,
   type HookEvent,
@@ -217,6 +239,7 @@ import {
   executeTool,
   parseQuestions,
   readSkillArgs,
+  webFetchArgs,
   type ShellResult,
   shellOutcome,
   shellText,
@@ -311,6 +334,18 @@ export interface ModelApiHostDeps extends ModelApiPaidHooks {
    * session-start snapshot; undefined leaves them out.
    */
   readonly memory: MemoryStore | undefined
+  /**
+   * The window's web fetch (M69, PLAN.md D49): resolved, checked and pinned
+   * in the activation bundle; undefined leaves `web_fetch` out.
+   */
+  readonly webFetch?: WebFetcher | undefined
+  /**
+   * VS Code's language services (M67, PLAN.md D49): the code intelligence
+   * tools; undefined leaves them out.
+   */
+  readonly codeIntel?: LanguageServiceHost | undefined
+  /** `museSpark.modelApiRepoMap`, read per turn: the repo map in the system prompt (M67). */
+  readonly isRepoMapInPrompt?: (() => boolean) | undefined
 }
 
 const NO_ENVIRONMENT: EnvironmentFacts = { git: undefined }
@@ -697,6 +732,37 @@ function pressureFor(used: number, window: number): string {
 
 function toolFailure(reason: string): ToolOutcome {
   return { output: `Error: ${reason}`, visibleOutput: reason, failureReason: reason }
+}
+
+/** A web fetch that did not happen: the model's reason, the row's in the user's language. */
+function webFetchRefusal(failure: WebFetchFailure): ToolOutcome {
+  return {
+    output: `Error: ${failure.reason}`,
+    visibleOutput: failure.visibleReason,
+    failureReason: failure.visibleReason,
+  }
+}
+
+/** A web fetch refused in Restricted Mode: the model's reason, the row's in the user's language. */
+function webFetchRestricted(): CallResult {
+  return {
+    outcome: {
+      output: `Error: ${MODEL_TEXT.webFetchRestrictedMode}`,
+      visibleOutput: UI_TEXT.webFetchRestrictedMode,
+      failureReason: UI_TEXT.webFetchRestrictedMode,
+    },
+    isRejected: true,
+  }
+}
+
+/** What the model and the row receive for a web fetch (M69). */
+function webFetchOutcome(result: WebFetchResult): ToolOutcome {
+  return result.kind === 'failed'
+    ? webFetchRefusal(result.failure)
+    : {
+        output: result.text,
+        visibleOutput: result.kind === 'moved' ? result.visibleText : result.text,
+      }
 }
 
 /**
@@ -1156,6 +1222,14 @@ export class ModelApiSession implements AgentSession {
   private readonly context: WorkspaceContext
   /** The git facts of the prompt's environment section (D15), read on the first turn. */
   private environment: EnvironmentFacts | undefined
+  /**
+   * The repo map of the prompt (M67), made on a turn that has it on and kept
+   * for the session once it has text, so the prompt's prefix stays the same.
+   * A try that failed or came out empty is not kept; a few are made, on
+   * later turns, before the session goes without.
+   */
+  private repoMapText: string | undefined
+  private repoMapTries = 0
   private readonly pendingApprovals = new Map<string, Pending<ApprovalDecision>>()
   /** Live cards for a second surface joining while a decision is still pending. */
   private readonly pendingApprovalEvents = new Map<
@@ -1211,6 +1285,8 @@ export class ModelApiSession implements AgentSession {
   private active: ActiveTurn | undefined
   /** Each file as the model last read or wrote it, for `write_file`'s check (D27). */
   private readonly seenFiles = new Map<string, string>()
+  /** Rename plans made for a call's PreToolUse hooks, which the call then writes (M67). */
+  private readonly hookRenamePlans = new WeakMap<FunctionCallItem, Promise<RenamePlanResult>>()
   /** Keeps each request within the page and encoded-media budgets (M54, PLAN.md D47). */
   private readonly budget: MediaBudget
   private mediaNoticeSent = false
@@ -1343,6 +1419,46 @@ export class ModelApiSession implements AgentSession {
     }
   }
 
+  /** The hooks that run for this session: none in a side chat or with the opt-in off (M51). */
+  private enabledHooks(): readonly HookDefinition[] {
+    return this.isSideChat || this.deps.isHooksEnabled?.() === false ? [] : this.hooks
+  }
+
+  /**
+   * A call's arguments as its PreToolUse hooks see them. A rename also names
+   * the files it would write (M67), planned only when a hook would run and
+   * the mode allows the edit at all; the call then writes that same plan
+   * (`decideAndRunRename`), so a hook never allows one set of files while
+   * another is written.
+   */
+  private async preToolInput(
+    call: FunctionCallItem,
+    signal: AbortSignal,
+  ): Promise<Readonly<Record<string, unknown>>> {
+    const args = argumentsOf(call)
+    const deps = this.codeIntelDeps()
+    if (
+      deps === undefined ||
+      signal.aborted ||
+      call.name !== CODE_INTEL_TOOLS.renameSymbol ||
+      matchingHooks(this.enabledHooks(), 'PreToolUse', toolMatcherNames(call.name)).length === 0 ||
+      this.verdictWithHook({ toolName: call.name, toolClass: 'edit' }, false) === 'deny'
+    ) {
+      return toolHookInput(args)
+    }
+    const planning = planRenameCall(call.arguments, deps)
+    this.hookRenamePlans.set(call, planning)
+    try {
+      const planned = await unlessStopped(planning, signal)
+      return toolHookInput(planned.ok ? { ...args, files: renameHookFiles(planned.plan) } : args)
+    } catch {
+      // A Stop, or the provider's own refusal: the call itself then ends with
+      // its row and its output (a Stop's included), which a throw from here,
+      // before the row exists, would leave without one (D26).
+      return toolHookInput(args)
+    }
+  }
+
   private async runHooks(
     event: HookEvent,
     turnId: string | undefined,
@@ -1352,9 +1468,8 @@ export class ModelApiSession implements AgentSession {
     shouldReplayContext = true,
     shouldShowMessages = true,
   ): Promise<HookDispatch> {
-    const enabledHooks = this.isSideChat || this.deps.isHooksEnabled?.() === false ? [] : this.hooks
     const result = await dispatchHooks(
-      enabledHooks,
+      this.enabledHooks(),
       event,
       this.hookPayload(event, turnId, fields),
       matcher,
@@ -1424,6 +1539,73 @@ export class ModelApiSession implements AgentSession {
     }
   }
 
+  /** What the code intelligence tools work with (M67); undefined without language services. */
+  private codeIntelDeps(): CodeIntelDeps | undefined {
+    const { codeIntel } = this.deps
+    return codeIntel === undefined
+      ? undefined
+      : {
+          service: codeIntel,
+          workspaceRoot: this.deps.workspaceRoot,
+          platform: this.deps.platform,
+          io: this.deps.io,
+          now: this.deps.now,
+        }
+  }
+
+  /**
+   * Whether this request's prompt carries the repo map (M67): the setting
+   * on, now, in a trusted workspace only, since the map repeats the
+   * workspace's file paths and names in every request's instructions.
+   */
+  private isRepoMapOn(): boolean {
+    return (
+      this.deps.codeIntel !== undefined &&
+      this.deps.isWorkspaceTrusted() &&
+      this.deps.isRepoMapInPrompt?.() === true
+    )
+  }
+
+  /** The map this session's prompt carries: a child's is its parent's, never one of its own. */
+  private promptRepoMap(): string | undefined {
+    if (!this.isRepoMapOn()) {
+      return undefined
+    }
+    return this.isSubagent ? this.parentSession?.promptRepoMap() : this.repoMapText
+  }
+
+  /**
+   * The repo map for the prompt (M67) while the setting is on. Never throws:
+   * a map that cannot be made is logged and the prompt goes without it. Only
+   * a map with text is kept; a try that failed or came out empty counts, and
+   * after `REPO_MAP_PROMPT_TRIES` the session stops trying. A Stop ends the
+   * lookups at once and does not count. A child task never builds one.
+   */
+  private async loadRepoMap(signal: AbortSignal): Promise<void> {
+    const deps = this.codeIntelDeps()
+    if (
+      deps === undefined ||
+      this.isSubagent ||
+      this.repoMapText !== undefined ||
+      this.repoMapTries >= REPO_MAP_PROMPT_TRIES ||
+      !this.isRepoMapOn()
+    ) {
+      return
+    }
+    try {
+      const text = await repoMapSection(deps, signal)
+      if (!signal.aborted) {
+        this.repoMapTries += 1
+        this.repoMapText = text
+      }
+    } catch (error: unknown) {
+      if (!signal.aborted) {
+        this.repoMapTries += 1
+      }
+      this.deps.log.warn(`The repo map for the prompt could not be made: ${describe(error)}`)
+    }
+  }
+
   /** Never throws: a describer that fails leaves the section at "no git". */
   private async loadEnvironment(): Promise<EnvironmentFacts> {
     try {
@@ -1464,6 +1646,7 @@ export class ModelApiSession implements AgentSession {
     const hasMemory = hasShell && this.deps.memory !== undefined
     const context = this.context.sections()
     const goalSection = goalInstructions(this.goal, this.goalSteps)
+    const repoMap = this.promptRepoMap()
     const input = this.budget.fit(this.replay.map((entry) => entry.item))
     if (this.budget.omitted && !this.mediaNoticeSent) {
       this.emit({ type: 'backendNotice', level: 'warning', text: UI_TEXT.olderMediaOmitted })
@@ -1479,9 +1662,12 @@ export class ModelApiSession implements AgentSession {
         shellName: shell.shellName,
         hasShell,
         hasMemory,
+        hasWebFetch: this.isWebFetchOffered(hasShell),
+        hasCodeIntel: this.deps.codeIntel !== undefined,
         today: new Date(this.deps.now()).toISOString().slice(0, ISO_DATE_LENGTH),
         environment: this.environment ?? NO_ENVIRONMENT,
         context,
+        ...(repoMap !== undefined && { repoMap }),
         // Pinned while the goal is active (M45, PLAN.md D38).
         ...(goalSection !== undefined && { goalSection }),
       }),
@@ -1539,6 +1725,9 @@ export class ModelApiSession implements AgentSession {
       hasSubagents: !this.isSubagent && this.deps.isPaidFeatureOn('subagents'),
       isSubagent: this.isSubagent,
       hasMemory,
+      // Trusted workspaces only, as the shell (M69).
+      hasWebFetch: this.isWebFetchOffered(hasShell),
+      hasCodeIntel: this.deps.codeIntel !== undefined,
     })
     const ide = (this.deps.ideTools ?? []).map(
       (tool) => mcpFunctionDefinition(ideFunctionName(tool), tool).definition,
@@ -1546,6 +1735,14 @@ export class ModelApiSession implements AgentSession {
     const mcp = hasShell ? (this.deps.mcpServers?.definitions() ?? []) : []
     const offered = [...own, ...ide, ...mcp]
     return this.isWebSearchOffered() ? [...offered, { type: MODEL_API_WEB_SEARCH_TOOL }] : offered
+  }
+
+  /**
+   * Web fetch (M69): in a trusted workspace (`hasShell`) with the window's
+   * fetch, and not in a side chat, whose Plan mode refuses every fetch.
+   */
+  private isWebFetchOffered(hasShell: boolean): boolean {
+    return hasShell && this.deps.webFetch !== undefined && !this.isSideChat
   }
 
   /**
@@ -2314,8 +2511,10 @@ export class ModelApiSession implements AgentSession {
    * The user's decision on a call: an approval card, or for a paid call
    * (an image, a subagent task) the paid-use popup (M58, PLAN.md D48),
    * which asks in every mode unless the feature is allowed always in this
-   * workspace. A hook's "allow" never answers either for a protected write
-   * or a paid call; a hook that demands a question asks even then.
+   * workspace. A hook's "allow" never answers for a protected write, a web
+   * fetch (its URL can carry the conversation to the host; M69) or a paid
+   * call; a hook may still deny them, and one that demands a question asks
+   * even then.
    */
   private async askApproval(
     itemId: string,
@@ -2348,7 +2547,9 @@ export class ModelApiSession implements AgentSession {
         stopNotifying()
       }
     }
-    if (!requiresUserApproval && query.isProtected !== true && hook.approvalDecision === 'allow') {
+    const isHookAllowEnough =
+      !requiresUserApproval && query.isProtected !== true && query.toolClass !== 'network'
+    if (isHookAllowEnough && hook.approvalDecision === 'allow') {
       return { isApproved: true, feedback: undefined }
     }
     const approvalId = this.deps.newId()
@@ -2834,7 +3035,7 @@ export class ModelApiSession implements AgentSession {
     signal: AbortSignal,
   ): Promise<ToolOutcome> {
     if (external.kind === 'ide') {
-      const text = clipOutput(await external.tool.call(argumentsOf(call)))
+      const text = clipOutput(await external.tool.call(argumentsOf(call), signal))
       return { output: text, visibleOutput: text }
     }
     const servers = this.deps.mcpServers
@@ -3510,6 +3711,10 @@ export class ModelApiSession implements AgentSession {
         return await this.runShellCall(itemId, call, signal)
       }
       default: {
+        const intelTool = codeIntelToolOf(call.name)
+        if (intelTool !== undefined && intelTool !== 'renameSymbol') {
+          return { outcome: await this.readCode(intelTool, call, signal) }
+        }
         return {
           outcome: await executeTool(call.name, call.arguments, {
             workspaceRoot: this.deps.workspaceRoot,
@@ -3624,6 +3829,150 @@ export class ModelApiSession implements AgentSession {
     return { outcome: await runMemoryCall(memory, placed.value), isRejected: false }
   }
 
+  /**
+   * A web fetch (M69, PLAN.md D49): refused in Restricted Mode, and for a
+   * URL the fetch would refuse anyway, before any card; then judged as a
+   * network tool per host, its card naming the URL as it will be fetched.
+   * The fetch itself resolves, checks and pins every hop.
+   */
+  private async decideAndRunWebFetch(
+    itemId: string,
+    call: FunctionCallItem,
+    signal: AbortSignal,
+    shouldForceApproval: boolean,
+  ): Promise<CallResult> {
+    const fetchPage = this.deps.webFetch
+    if (fetchPage === undefined) {
+      return { outcome: toolFailure(`unknown tool ${call.name}`), isRejected: false }
+    }
+    if (!this.deps.isWorkspaceTrusted()) {
+      return webFetchRestricted()
+    }
+    const parsed = webFetchArgs.safeParse(argumentsOf(call))
+    if (!parsed.success) {
+      return { outcome: toolFailure('invalid arguments: url is required'), isRejected: false }
+    }
+    const checked = checkPageUrl(parsed.data.url)
+    if (!checked.ok) {
+      return { outcome: webFetchRefusal(checked.failure), isRejected: false }
+    }
+    const url = checked.url.href
+    const query: PermissionQuery = {
+      toolName: call.name,
+      toolClass: 'network',
+      command: approvalHost(checked.url),
+    }
+    const refusal = await this.judge(
+      itemId,
+      call,
+      signal,
+      query,
+      { kind: WEB_FETCH_SUBJECT_KIND, target: url, toolName: call.name },
+      shouldForceApproval,
+    )
+    if (refusal !== undefined) {
+      return refusal
+    }
+    // The card or a hook was awaited: the turn may have stopped, the
+    // workspace lost its trust, or the mode turned to one that refuses.
+    const withdrawn = this.webFetchWithdrawn(call, query, signal)
+    if (withdrawn !== undefined) {
+      return withdrawn
+    }
+    const result = await fetchPage(url, signal, () => this.isWebFetchStillAllowed(query))
+    // Asked again once the page is in: it reaches the model only while web
+    // fetch is still allowed.
+    return (
+      this.webFetchWithdrawn(call, query, signal) ?? {
+        outcome: webFetchOutcome(result),
+        isRejected: false,
+      }
+    )
+  }
+
+  /** Whether what allowed a web fetch still holds: trust, and a mode that does not refuse it. */
+  private isWebFetchStillAllowed(query: PermissionQuery): boolean {
+    return this.deps.isWorkspaceTrusted() && this.permissions.verdict(query) !== 'deny'
+  }
+
+  /** The refusal for a web fetch no longer allowed after an await; throws when the turn stopped. */
+  private webFetchWithdrawn(
+    call: FunctionCallItem,
+    query: PermissionQuery,
+    signal: AbortSignal,
+  ): CallResult | undefined {
+    if (signal.aborted) {
+      throw new AbortedError()
+    }
+    if (!this.deps.isWorkspaceTrusted()) {
+      return webFetchRestricted()
+    }
+    return this.permissions.verdict(query) === 'deny' ? this.refusedByMode(call) : undefined
+  }
+
+  /** A read-only code intelligence call (M67): a read in every mode, stopped by Stop. */
+  private async readCode(
+    tool: Exclude<CodeIntelTool, 'renameSymbol'>,
+    call: FunctionCallItem,
+    signal: AbortSignal,
+  ): Promise<ToolOutcome> {
+    const deps = this.codeIntelDeps()
+    return deps === undefined
+      ? toolFailure(`unknown tool ${call.name}`)
+      : await unlessStopped(runCodeIntelRead(tool, call.arguments, deps, signal), signal)
+  }
+
+  /**
+   * `rename_symbol` (M67, PLAN.md D49): the edit planned and checked before
+   * any card (a refused rename asks nothing), judged as an edit whose card
+   * names its files (protected if any file is, D24), then written file by
+   * file after every file is checked again.
+   */
+  private async decideAndRunRename(
+    itemId: string,
+    call: FunctionCallItem,
+    signal: AbortSignal,
+    shouldForceApproval: boolean,
+  ): Promise<CallResult> {
+    const deps = this.codeIntelDeps()
+    if (deps === undefined) {
+      return { outcome: toolFailure(`unknown tool ${call.name}`), isRejected: false }
+    }
+    // Plan refuses every edit: the language service is not even asked then.
+    if (this.verdictWithHook({ toolName: call.name, toolClass: 'edit' }, false) === 'deny') {
+      return this.refusedByMode(call)
+    }
+    // The plan the PreToolUse hooks were shown, if they were: it is the one
+    // written, each file checked again for its content after the card. A
+    // hook's new arguments are a new call object, planned afresh.
+    const planning = this.hookRenamePlans.get(call) ?? planRenameCall(call.arguments, deps)
+    this.hookRenamePlans.delete(call)
+    const planned = await unlessStopped(planning, signal)
+    if (!planned.ok) {
+      return { outcome: renameRefused(planned), isRejected: false }
+    }
+    const { plan } = planned
+    const refusal = await this.judge(
+      itemId,
+      call,
+      signal,
+      { toolName: call.name, toolClass: 'edit', isProtected: isProtectedRename(plan) },
+      { kind: 'fileWrite', path: renameCardPath(plan), toolName: call.name },
+      shouldForceApproval,
+    )
+    if (refusal !== undefined) {
+      return refusal
+    }
+    const outcome = await applyRename(plan, {
+      workspaceRoot: this.deps.workspaceRoot,
+      platform: this.deps.platform,
+      io: this.deps.io,
+      seen: this.seenFiles,
+      signal,
+    })
+    return { outcome, isRejected: false }
+  }
+
   /** The permission check and, when it allows, the tool itself. May throw (an abort, an I/O error). */
   private async decideAndRun(
     turnId: string,
@@ -3650,6 +3999,12 @@ export class ModelApiSession implements AgentSession {
     }
     if (isMemoryTool(call.name)) {
       return await this.decideAndRunMemory(itemId, call, signal, toolClass, shouldForceApproval)
+    }
+    if (toolClass === 'network') {
+      return await this.decideAndRunWebFetch(itemId, call, signal, shouldForceApproval)
+    }
+    if (call.name === CODE_INTEL_TOOLS.renameSymbol) {
+      return await this.decideAndRunRename(itemId, call, signal, shouldForceApproval)
     }
     if (
       this.isSubagent &&
@@ -3827,7 +4182,11 @@ export class ModelApiSession implements AgentSession {
     const pre = await this.runHooks(
       'PreToolUse',
       turnId,
-      { tool_name: call.name, tool_input: toolHookInput(argumentsOf(call)), tool_use_id: itemId },
+      {
+        tool_name: call.name,
+        tool_input: await this.preToolInput(call, signal),
+        tool_use_id: itemId,
+      },
       toolMatcherNames(call.name),
       signal,
       false,
@@ -4367,6 +4726,7 @@ export class ModelApiSession implements AgentSession {
     // it never throws, so the user message always follows.
     await this.context.load()
     this.environment ??= await this.loadEnvironment()
+    await this.loadRepoMap(turn.abort.signal)
     // Pending background output and user shell commands precede this turn.
     this.settleNotes(turn.turnId)
     this.touch()
@@ -5390,6 +5750,20 @@ export class ModelApiSession implements AgentSession {
     return Promise.resolve(name)
   }
 
+  /**
+   * The todo list set from outside a turn (M79): a plan's steps before the
+   * turn that implements it. Refused while a turn or a compaction holds the
+   * session, where `todo_write` may be replacing the list.
+   */
+  public setTodos(items: readonly TodoItem[]): void {
+    if (this.active !== undefined || this.compacting !== undefined) {
+      throw new Error(UI_TEXT.planWaitForTurn)
+    }
+    this.todos = [...items]
+    this.emit({ type: 'todoChanged', items: [...this.todos] })
+    this.touch()
+  }
+
   /** The exact user card's pictures, or unavailable without a durable replay link. */
   public sentImages(turnId: string, itemId: string): readonly SentImage[] | undefined {
     const card = this.transcript.find(
@@ -5688,6 +6062,9 @@ export class ModelApiSession implements AgentSession {
     // The goal as it stands goes with the fork (M45): a goal has no history
     // to cut, so a fork from an earlier turn gets today's goal too.
     target.goal = target.isSideChat ? undefined : this.goal
+    // The prompt's repo map goes with the fork (M67), so it is not made again.
+    target.repoMapText = this.repoMapText
+    target.repoMapTries = this.repoMapTries
     for (const child of this.children.values()) {
       if (!kept.has(child.parentTurnId)) {
         continue

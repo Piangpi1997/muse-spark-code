@@ -14,7 +14,6 @@ import { readBackendChoice } from './core/backendSelection'
 import { personalSkillsRoot } from './core/context/skills'
 import { memoryDataRoot } from './core/memory/memoryLocation'
 import { MemoryStore } from './core/memory/memoryStore'
-import { isSamePath } from './core/paths'
 import { terminalArgument } from './core/shellQuote'
 import { renderSupportReport } from './core/support/report'
 import { type CliInvocation, isSandboxNetworkApplied } from './core/backends/musecode/sandbox'
@@ -77,10 +76,19 @@ import { canonicalPath } from './host/canonicalPath'
 import { loadToolImage } from './core/toolImages'
 import { ModelApiClient } from './core/backends/modelapi/client'
 import { ideImageTools } from './host/ide/imageTools'
+import { ideWebFetchTools, isIdeWebFetchOffered, oneQuestionPerUrl } from './host/ide/webFetchTool'
+import { isWebFetchAllowed } from './host/web/webFetchConfirm'
+import { pageConverter } from './host/web/pageConverter'
+import { createWebFetcher } from './host/web/webFetcher'
+import { ideCodeIntelTools } from './host/ide/codeIntelTools'
+import { vscodeLanguageServices } from './host/codeIntel/languageServices'
 import { usablePaidFeatures } from './shared/paid'
 import { createCliFeatures } from './host/cliFeatures'
 import { createWorktreeFeatures } from './host/worktreeFeatures'
 import { createMemoryFeatures } from './host/memoryFeatures'
+import { createPlanFiles, createPlanIo } from './host/planFeatures'
+import { planMarkdownLoader } from './host/planMarkdownBundle'
+import { showPickOne } from './host/quickPick'
 import { processGitRunner } from './host/git'
 import { createLogger, errorDetail, type Logger, logRejection } from './host/logger'
 import {
@@ -122,6 +130,7 @@ import {
   FIND_FILES_GLOB,
   MODEL_API_BASE_URL,
   MODEL_API_BUNDLE_FILE,
+  PLAN_MARKDOWN_BUNDLE_FILE,
   MODEL_API_SCHEDULES_DIR,
   MODEL_API_SESSIONS_DIR,
   PAID_FEATURE_SETTINGS,
@@ -142,6 +151,7 @@ import {
   OUTPUT_DOCUMENT_SCHEME,
   PRODUCT_NAME,
   SANDBOX_NETWORK_SETTING,
+  PAGE_WORKER_FILE,
   SEARCH_WORKER_FILE,
   SETTINGS_SECTION,
   SHELL_SANDBOX_SETTING,
@@ -833,14 +843,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     // Each Windows command in a job object of its own, so a Stop ends
     // everything it started (PLAN.md M27).
     shellJobAssembly: windowsJobAssembly,
-    // An open editor with unsaved changes to the file (PLAN.md D27).
-    hasUnsavedChanges: (absolutePath) =>
-      vscode.workspace.textDocuments.some(
-        (document) =>
-          document.isDirty &&
-          document.uri.scheme === FILE_SCHEME &&
-          isSamePath(document.uri.fsPath, absolutePath, process.platform),
-      ),
+    // The open editors with unsaved changes to a file (PLAN.md D27).
+    unsavedFiles: () =>
+      vscode.workspace.textDocuments
+        .filter((document) => document.isDirty && document.uri.scheme === FILE_SCHEME)
+        .map((document) => document.uri.fsPath),
   })
   const diagnostics = diagnosticsTool({
     getDiagnostics: collectDiagnostics,
@@ -863,9 +870,42 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     log,
   })
   const ideTools = [diagnostics]
+  // Web fetch (M69, PLAN.md D49): resolved, checked and pinned here, for the
+  // Model API backend's `web_fetch` and Muse Code's `mcp__ide__webFetch`.
+  // HTML is converted on a worker of its own bundle, started for each page.
+  const webFetch = createWebFetcher(
+    log,
+    pageConverter(vscode.Uri.joinPath(context.extensionUri, 'dist', PAGE_WORKER_FILE).fsPath, log),
+  )
+  const askWebFetch = oneQuestionPerUrl(isWebFetchAllowed)
+  // Code intelligence over VS Code's language services (M67, PLAN.md D49):
+  // native tools on the Model API backend, `ide` tools for Muse Code. Only
+  // with a folder open, since every path is the workspace's.
+  const languageServices = vscodeLanguageServices()
+  const codeIntel =
+    workspaceRoot === undefined
+      ? undefined
+      : {
+          service: languageServices,
+          workspaceRoot,
+          platform: process.platform,
+          io: toolIo,
+          now: () => Date.now(),
+        }
   const ideServer = new IdeMcpServer(
     () => [
       diagnostics,
+      ...ideCodeIntelTools(codeIntel),
+      // The server is attached in Restricted Mode too, and has no session
+      // identity: the tool is listed only in a trusted workspace whose
+      // sandbox network setting allows the network, and every call asks.
+      ...ideWebFetchTools({
+        isOffered: () =>
+          isIdeWebFetchOffered(vscode.workspace.isTrusted, currentSettings().sandboxNetwork),
+        fetchPage: webFetch,
+        confirm: askWebFetch,
+        log,
+      }),
       ...ideImageTools({
         isOffered: () => isKeyStored && paid.gate.isOn('imageGeneration'),
         keyGeneration: () => auth.admissionGeneration,
@@ -998,6 +1038,25 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     },
   })
   const memoryView = createMemoryFeatures({ store: memory, log })
+  // Plans as files (M79): `.agents/plans/` of the workspace folder, when there is one.
+  const plans =
+    workspaceRoot === undefined
+      ? undefined
+      : createPlanFiles({
+          workspaceRoot,
+          platform: process.platform,
+          io: createPlanIo({ log, now: () => Date.now() }),
+          pick: showPickOne,
+          confirm: async (message, detail, action) =>
+            (await vscode.window.showWarningMessage(message, { modal: true, detail }, action)) ===
+            action,
+          // The panel's Markdown parser, its own bundle, loaded on the first plan action (D6).
+          markdown: planMarkdownLoader({
+            bundlePath: vscode.Uri.joinPath(context.extensionUri, 'dist', PLAN_MARKDOWN_BUNDLE_FILE)
+              .fsPath,
+            log,
+          }),
+        })
   const modelApi = new ModelApiBackendManager({
     log,
     getApiKey: () => credentials.getApiKey(),
@@ -1071,6 +1130,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         }),
       ),
     ideTools,
+    webFetch,
+    codeIntel: languageServices,
+    isRepoMapInPrompt: () => currentSettings().modelApiRepoMap,
     allowsPaidUse: async (request, requiresAsking) =>
       await paid.consent.allows(request, requiresAsking),
     isPaidUseRemembered: (feature) => paid.consent.isRemembered(feature),
@@ -1392,6 +1454,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             ? museVoiceSetup
             : undefined,
         exports: cliFeatures.exports,
+        plans,
         // The palette's paid-feature toggles (M33): on goes through the price confirmation.
         setPaidFeature: async (feature, isOn) => {
           if (isOn) {

@@ -15,7 +15,13 @@ const BUDGETS = [
   // The Model API backend, loaded when it first starts (M57): 295.6 KiB when
   // split out, plus about a third for the Model API work already planned.
   { path: 'dist/modelApi.js', budgetKiB: 400 },
+  // The plan reader, the panel's Markdown parser, loaded on the first plan
+  // action (M79): 114.7 KiB when split out, 139.0 KiB with the brief's writer.
+  { path: 'dist/planMarkdown.js', budgetKiB: 150 },
   { path: 'dist/searchWorker.js', budgetKiB: 50 },
+  // Web fetch's page converter (M69), on a worker started for each page:
+  // 201.2 KiB when split out (parse5 122.7 of it), plus room.
+  { path: 'dist/pageWorker.js', budgetKiB: 300 },
   { path: 'dist/webview/main.js', budgetKiB: 900 },
   // The ACP agent (M63, PLAN.md D62), a process of its own installed once,
   // never loaded by VS Code: the engine without the webview or the Model API

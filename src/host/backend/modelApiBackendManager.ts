@@ -11,7 +11,6 @@
 // next call tries again.
 
 import { createHash } from 'node:crypto'
-import { createRequire } from 'node:module'
 import type { EnvironmentFacts } from '../../core/backends/modelapi/instructions'
 import type { NetworkAdvice } from '../../core/networkFailure'
 import type { McpPoolSnapshot, McpToolSource } from '../../core/backends/modelapi/mcp/pool'
@@ -20,10 +19,13 @@ import type { SessionStore } from '../../core/backends/modelapi/sessionStore'
 import type { ScheduleStore } from '../../shared/schedule'
 import type { ToolIo } from '../../core/backends/modelapi/tools'
 import type { ContextIo } from '../../core/context/contextFiles'
+import type { LanguageServiceHost } from '../../core/codeIntel/languageService'
 import type { McpTool } from '../../core/mcp'
 import type { MemoryStore } from '../../core/memory/memoryStore'
+import type { WebFetcher } from '../../core/web/webFetch'
 import { MODEL_API_BASE_URL, type PromptCacheRetention, UI_TEXT } from '../../shared/constants'
 import { uiLocale } from '../../shared/l10n/text'
+import { forgetFile, requireFile } from '../lazyBundle'
 import type { Logger } from '../logger'
 import { isModelApiBundle, type McpPoolFactory, type ModelApiBundle } from './modelApiBundle'
 
@@ -60,6 +62,12 @@ export interface ModelApiBackendManagerDeps extends ModelApiPaidHooks {
     | undefined
   /** The extension's own IDE tools, offered in process (M50). */
   readonly ideTools?: readonly McpTool[] | undefined
+  /** The window's web fetch, run in this bundle for the backend's `web_fetch` (M69). */
+  readonly webFetch?: WebFetcher | undefined
+  /** VS Code's language services, for the code intelligence tools (M67). */
+  readonly codeIntel?: LanguageServiceHost | undefined
+  /** `museSpark.modelApiRepoMap`, read per turn (M67). */
+  readonly isRepoMapInPrompt?: (() => boolean) | undefined
   /** Muse Code's memory, shared with the Memory view (M49, PLAN.md D41). */
   readonly memory: MemoryStore | undefined
   /** The Model API bundle, dist/modelApi.js beside the running bundle (M57, PLAN.md D6). */
@@ -73,22 +81,6 @@ export interface ModelApiBackendManagerDeps extends ModelApiPaidHooks {
 }
 
 const MANAGER_DISPOSED = 'The Model API backend was stopped while it was starting'
-
-/** Node's own `require` of an absolute path, from wherever this code was bundled. */
-function requireFile(file: string): unknown {
-  return createRequire(file)(file)
-}
-
-/**
- * Forgets a file Node loaded but that is not the bundle, so the next build
- * reads it again: a module that ran without throwing stays in Node's cache,
- * and a file repaired in place would otherwise never be seen (the review of
- * PR #47). One that threw while loading is never cached.
- */
-function forgetFile(file: string): void {
-  const nodeRequire = createRequire(file)
-  Reflect.deleteProperty(nodeRequire.cache, nodeRequire.resolve(file))
-}
 
 function describe(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
@@ -192,6 +184,9 @@ export class ModelApiBackendManager {
         notePaidUse: this.deps.notePaidUse,
         promptCacheRetention: this.deps.promptCacheRetention,
         ideTools: this.deps.ideTools,
+        webFetch: this.deps.webFetch,
+        codeIntel: this.deps.codeIntel,
+        isRepoMapInPrompt: this.deps.isRepoMapInPrompt,
         allowsPaidUse: this.deps.allowsPaidUse,
         isPaidUseRemembered: this.deps.isPaidUseRemembered,
         noteSubagentUsage: this.deps.noteSubagentUsage,

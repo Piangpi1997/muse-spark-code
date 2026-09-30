@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // Bundles the extension host entry, the Model API backend, the search worker,
-// the webview, and (in dev mode) the integration tests with esbuild.
+// web fetch's page converter worker (M69: parse5 and the HTML converter,
+// loaded on a worker thread started for each page, never at activation), the
+// webview, and (in dev mode) the integration tests with esbuild.
 //
 //   node scripts/build.mjs               dev build + integration test bundles
 //   node scripts/build.mjs --watch       rebuild on change (extension + webview)
@@ -40,8 +42,12 @@ const HOST_ENTRY = 'src/extension.ts'
 const HOST_OUTFILE = 'dist/extension.js'
 const MODEL_API_ENTRY = 'src/host/backend/modelApiEntry.ts'
 const MODEL_API_OUTFILE = 'dist/modelApi.js'
+const PLAN_MARKDOWN_ENTRY = 'src/host/planMarkdownEntry.ts'
+const PLAN_MARKDOWN_OUTFILE = 'dist/planMarkdown.js'
 const SEARCH_WORKER_ENTRY = 'src/host/backend/searchWorker.ts'
 const SEARCH_WORKER_OUTFILE = 'dist/searchWorker.js'
+const PAGE_WORKER_ENTRY = 'src/host/web/pageWorker.ts'
+const PAGE_WORKER_OUTFILE = 'dist/pageWorker.js'
 const WEBVIEW_ENTRY = 'src/webview/main.tsx'
 const WEBVIEW_OUTDIR = 'dist/webview'
 const ACP_ENTRY = 'src/runtime/main.ts'
@@ -89,6 +95,16 @@ const modelApiOptions = {
 }
 
 /** @type {import('esbuild').BuildOptions} */
+const planMarkdownOptions = {
+  ...common,
+  entryPoints: [PLAN_MARKDOWN_ENTRY],
+  outfile: PLAN_MARKDOWN_OUTFILE,
+  platform: 'node',
+  format: 'cjs',
+  target: HOST_NODE_TARGET,
+}
+
+/** @type {import('esbuild').BuildOptions} */
 const searchWorkerOptions = {
   ...common,
   entryPoints: [SEARCH_WORKER_ENTRY],
@@ -108,6 +124,16 @@ const acpOptions = {
   target: AGENT_NODE_TARGET,
   external: ['@napi-rs/keyring'],
   banner: { js: '#!/usr/bin/env node' },
+}
+
+/** @type {import('esbuild').BuildOptions} */
+const pageWorkerOptions = {
+  ...common,
+  entryPoints: [PAGE_WORKER_ENTRY],
+  outfile: PAGE_WORKER_OUTFILE,
+  platform: 'node',
+  format: 'cjs',
+  target: HOST_NODE_TARGET,
 }
 
 /** @type {import('esbuild').BuildOptions} */
@@ -148,7 +174,9 @@ if (isWatch) {
   const contexts = await Promise.all([
     esbuild.context(hostOptions),
     esbuild.context(modelApiOptions),
+    esbuild.context(planMarkdownOptions),
     esbuild.context(searchWorkerOptions),
+    esbuild.context(pageWorkerOptions),
     esbuild.context(webviewOptions),
   ])
   await Promise.all(contexts.map((ctx) => ctx.watch()))
@@ -157,7 +185,9 @@ if (isWatch) {
   const shipped = {
     extension: esbuild.build(hostOptions),
     modelApi: esbuild.build(modelApiOptions),
+    planMarkdown: esbuild.build(planMarkdownOptions),
     searchWorker: esbuild.build(searchWorkerOptions),
+    pageWorker: esbuild.build(pageWorkerOptions),
     webview: esbuild.build(webviewOptions),
   }
   const acp = esbuild.build(acpOptions)
@@ -179,7 +209,9 @@ if (isWatch) {
   console.log('bundle sizes:')
   reportSize(HOST_OUTFILE)
   reportSize(MODEL_API_OUTFILE)
+  reportSize(PLAN_MARKDOWN_OUTFILE)
   reportSize(SEARCH_WORKER_OUTFILE)
+  reportSize(PAGE_WORKER_OUTFILE)
   reportSize(path.join(WEBVIEW_OUTDIR, 'main.js'))
   reportSize(path.join(WEBVIEW_OUTDIR, 'main.css'))
   reportSize(ACP_OUTFILE)
