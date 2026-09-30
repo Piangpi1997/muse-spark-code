@@ -11,7 +11,10 @@
 // - a LAZY_ONLY file, or the bundle's entry, is in dist/extension.js or in
 //   dist/acp.js (a second build of the backend);
 // - a LAZY_ONLY file is missing from dist/modelApi.js (the entry stopped
-//   carrying the backend).
+//   carrying the backend);
+// - web fetch's page converter (M69: parse5, the HTML converter and what
+//   they use) is in dist/extension.js or dist/modelApi.js, or missing from
+//   its worker, dist/pageWorker.js, started for each page.
 //
 // Exits 1 on any problem.
 //
@@ -131,6 +134,39 @@ for (const [output, inputs] of loaders) {
   }
 }
 
+const PAGE_WORKER = { output: 'dist/pageWorker.js', metafile: 'dist/meta/pageWorker.json' }
+// What loads only on the page converter's worker, by path prefix.
+const CONVERTER_ONLY = [
+  'node_modules/parse5/',
+  'node_modules/entities/',
+  'node_modules/html-encoding-sniffer/',
+  'node_modules/@exodus/bytes/',
+  'src/core/web/htmlToMarkdown.ts',
+  'src/core/web/htmlCharset.ts',
+  'src/host/web/pageWorker.ts',
+]
+const pageWorker = inputsOf(PAGE_WORKER)
+function hasPrefix(inputs, prefix) {
+  for (const input of inputs.keys()) {
+    if (input.startsWith(prefix)) {
+      return true
+    }
+  }
+  return false
+}
+for (const prefix of CONVERTER_ONLY) {
+  for (const bundle of [BUNDLES.activation, BUNDLES.modelApi]) {
+    if (hasPrefix(inputsOf(bundle), prefix)) {
+      problems.push(
+        `${bundle.output} carries ${prefix}, which loads only on the page converter's worker`,
+      )
+    }
+  }
+  if (!hasPrefix(pageWorker, prefix)) {
+    problems.push(`${PAGE_WORKER.output} no longer carries ${prefix}`)
+  }
+}
+
 if (problems.length > 0) {
   console.error(`bundle split: ${String(problems.length)} problem(s); see PLAN.md D6 and M57`)
   for (const problem of problems) {
@@ -161,4 +197,7 @@ console.log(
 )
 console.log(
   `ok   ${BUNDLES.modelApi.output}: carries the ${String(lazy.size)} files that load only with the backend`,
+)
+console.log(
+  `ok   ${PAGE_WORKER.output}: the page converter (parse5 and its parts) loads only there, never at activation`,
 )

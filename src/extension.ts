@@ -76,6 +76,10 @@ import { canonicalPath } from './host/canonicalPath'
 import { loadToolImage } from './core/toolImages'
 import { ModelApiClient } from './core/backends/modelapi/client'
 import { ideImageTools } from './host/ide/imageTools'
+import { ideWebFetchTools, isIdeWebFetchOffered, oneQuestionPerUrl } from './host/ide/webFetchTool'
+import { isWebFetchAllowed } from './host/web/webFetchConfirm'
+import { pageConverter } from './host/web/pageConverter'
+import { createWebFetcher } from './host/web/webFetcher'
 import { ideCodeIntelTools } from './host/ide/codeIntelTools'
 import { vscodeLanguageServices } from './host/codeIntel/languageServices'
 import { usablePaidFeatures } from './shared/paid'
@@ -143,6 +147,7 @@ import {
   OUTPUT_DOCUMENT_SCHEME,
   PRODUCT_NAME,
   SANDBOX_NETWORK_SETTING,
+  PAGE_WORKER_FILE,
   SEARCH_WORKER_FILE,
   SETTINGS_SECTION,
   SHELL_SANDBOX_SETTING,
@@ -861,6 +866,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     log,
   })
   const ideTools = [diagnostics]
+  // Web fetch (M69, PLAN.md D49): resolved, checked and pinned here, for the
+  // Model API backend's `web_fetch` and Muse Code's `mcp__ide__webFetch`.
+  // HTML is converted on a worker of its own bundle, started for each page.
+  const webFetch = createWebFetcher(
+    log,
+    pageConverter(vscode.Uri.joinPath(context.extensionUri, 'dist', PAGE_WORKER_FILE).fsPath, log),
+  )
+  const askWebFetch = oneQuestionPerUrl(isWebFetchAllowed)
   // Code intelligence over VS Code's language services (M67, PLAN.md D49):
   // native tools on the Model API backend, `ide` tools for Muse Code. Only
   // with a folder open, since every path is the workspace's.
@@ -879,6 +892,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     () => [
       diagnostics,
       ...ideCodeIntelTools(codeIntel),
+      // The server is attached in Restricted Mode too, and has no session
+      // identity: the tool is listed only in a trusted workspace whose
+      // sandbox network setting allows the network, and every call asks.
+      ...ideWebFetchTools({
+        isOffered: () =>
+          isIdeWebFetchOffered(vscode.workspace.isTrusted, currentSettings().sandboxNetwork),
+        fetchPage: webFetch,
+        confirm: askWebFetch,
+        log,
+      }),
       ...ideImageTools({
         isOffered: () => isKeyStored && paid.gate.isOn('imageGeneration'),
         keyGeneration: () => auth.admissionGeneration,
@@ -1084,6 +1107,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         }),
       ),
     ideTools,
+    webFetch,
     codeIntel: languageServices,
     isRepoMapInPrompt: () => currentSettings().modelApiRepoMap,
     allowsPaidUse: async (request, requiresAsking) =>

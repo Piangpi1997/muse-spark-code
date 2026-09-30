@@ -23,6 +23,7 @@ import type { ContextIo } from '../../core/context/contextFiles'
 import type { LanguageServiceHost } from '../../core/codeIntel/languageService'
 import type { McpTool } from '../../core/mcp'
 import type { MemoryStore } from '../../core/memory/memoryStore'
+import type { WebFetcher } from '../../core/web/webFetch'
 import { MODEL_API_BASE_URL, type PromptCacheRetention, UI_TEXT } from '../../shared/constants'
 import { uiLocale } from '../../shared/l10n/text'
 import type { Logger } from '../logger'
@@ -61,6 +62,8 @@ export interface ModelApiBackendManagerDeps extends ModelApiPaidHooks {
     | undefined
   /** The extension's own IDE tools, offered in process (M50). */
   readonly ideTools?: readonly McpTool[] | undefined
+  /** The window's web fetch, run in this bundle for the backend's `web_fetch` (M69). */
+  readonly webFetch?: WebFetcher | undefined
   /** VS Code's language services, for the code intelligence tools (M67). */
   readonly codeIntel?: LanguageServiceHost | undefined
   /** `museSpark.modelApiRepoMap`, read per turn (M67). */
@@ -197,6 +200,7 @@ export class ModelApiBackendManager {
         notePaidUse: this.deps.notePaidUse,
         promptCacheRetention: this.deps.promptCacheRetention,
         ideTools: this.deps.ideTools,
+        webFetch: this.deps.webFetch,
         codeIntel: this.deps.codeIntel,
         isRepoMapInPrompt: this.deps.isRepoMapInPrompt,
         allowsPaidUse: this.deps.allowsPaidUse,

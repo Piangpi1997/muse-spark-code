@@ -31,7 +31,7 @@ security notes for contributors are in `PLAN.md` §9.
   saves never passes through the extension. What the CLI sends
   beyond your messages (its system prompt, its own telemetry, if any) is
   governed by Meta's Muse Code terms, not by this extension.
-  For the Problems panel, the code intelligence tools and, when turned on,
+  For the Problems panel, code intelligence, web fetch and, when turned on,
   paid images, the extension serves Muse Code a tool server bound to
   `127.0.0.1` with a per-window token; nothing else on the network can
   reach it.
@@ -84,6 +84,25 @@ security notes for contributors are in `PLAN.md` §9.
   nonce travels over a separate local control pipe to prove this window
   still owns the launch; neither that nonce nor the pipe enters server
   requests or its environment.
+- **Web fetch (both backends, M69).** When the model asks to read a web page
+  (`web_fetch` on the Model API backend, `mcp__ide__webFetch` on Muse Code),
+  the extension downloads it from your machine and sends its text to Meta
+  like any other tool output: the text as served, which can include text
+  a browser would not show. The page's site receives the whole address the
+  model wrote, from your IP address (or your proxy's), with a user agent
+  naming this extension and no cookies or credentials; since the model
+  writes that address, it can carry what the conversation holds, which is
+  why the request asks first and names it whole: on the Model API backend a
+  card per host (Plan refuses, Bypass does not ask), on Muse Code the
+  extension's own dialog before every fetch. Only `https://` pages on public
+  internet addresses are fetched; the address the extension checked is the
+  one it connects to, and nothing is fetched in Restricted Mode. The page's
+  name is looked up in DNS only after the fetch is allowed; when an answer
+  is IPv6, your resolver, and your configured DNS servers directly, are
+  also asked for `ipv4only.arpa`, the standard name that reveals a NAT64
+  prefix, which carries nothing of yours. Web fetch
+  is free: it is not Meta's paid web search. The log names the host and the
+  outcome, never the path, the query or the page.
 - **Hooks on the Model API backend (off by default).** With
   `museSpark.modelApiHooks` on, the hook commands in Muse Code's settings
   run on your machine as you, outside the agent's sandbox. That means your
@@ -188,7 +207,9 @@ sign in, dictate with Muse Voice, use a paid feature, run a scheduled prompt
 you confirmed, or open a panel while signed in (to list models; that request
 carries no message). **Install Muse Code** downloads Meta's installer from
 `dev.meta.ai`. On the Model API backend it also contacts remote MCP servers
-you configured when a conversation starts or uses their tools. On macOS,
+you configured when a conversation starts or uses their tools. On either
+backend it contacts the site of a web page the model asks to read, once you
+allow it (see **Web fetch** above). On macOS,
 dictation may contact Apple as described above. Behind a proxy, those
 requests go through the proxy VS Code is set to use under its `http.*`
 settings. When neither Muse Code's environment nor

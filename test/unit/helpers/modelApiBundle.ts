@@ -5,14 +5,17 @@
 
 import path from 'node:path'
 import { buildSync } from 'esbuild'
-import { MODEL_API_BUNDLE_FILE } from '../../../src/shared/constants'
+import { MODEL_API_BUNDLE_FILE, PAGE_WORKER_FILE } from '../../../src/shared/constants'
 
-/** Builds the bundle into `folder` and returns its path. */
+/** Builds the backend and its page worker into `folder`; returns the backend's path. */
 export function buildModelApiBundle(folder: string): string {
   const file = path.join(folder, MODEL_API_BUNDLE_FILE)
   buildSync({
-    entryPoints: [path.resolve('src/host/backend/modelApiEntry.ts')],
-    outfile: file,
+    entryPoints: {
+      [path.parse(MODEL_API_BUNDLE_FILE).name]: path.resolve('src/host/backend/modelApiEntry.ts'),
+      [path.parse(PAGE_WORKER_FILE).name]: path.resolve('src/host/web/pageWorker.ts'),
+    },
+    outdir: folder,
     bundle: true,
     platform: 'node',
     format: 'cjs',

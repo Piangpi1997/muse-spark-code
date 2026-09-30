@@ -130,17 +130,21 @@ them, the milestone plan, and the certification checklist.
 src/extension.ts      activation: the view, the panel, the commands, the openers
 src/host/**           VS Code adapters (views, conversation, backend managers,
                       the Model API bundle's entry (dist/modelApi.js, loaded
-                      when that backend first starts) and the search worker,
+                      when that backend first starts), the search worker and
+                      web fetch's page converter worker (dist/pageWorker.js,
+                      started for each page),
                       commands, auth, settings, mentions,
-                      editor tracking, usage trace logs, voice, the diagnostics
-                      MCP server and its code intelligence tools, VS Code's
-                      language services, the MCP servers' spawner, the network
-                      posture)
+                      editor tracking, usage trace logs, voice, the IDE tool
+                      MCP server (diagnostics, code intelligence, images, web
+                      fetch), VS Code's language services, the MCP servers'
+                      spawner, the network posture and web fetch's pinned
+                      transport)
 src/core/**           backend-agnostic logic; must not import `vscode`
                       (MSP host, Model API client and tools, the MCP client,
                       context, Muse Code's memory, export, worktrees, usage,
                       dictation, Muse Voice, the paid gate, network failures,
-                      code intelligence and the repo map)
+                      code intelligence and the repo map, web fetch's
+                      public-address checks and HTML converter)
 src/acp/**            the ACP agent (D62): the ACP side of a session and the
                       translation of the engine's events; must not import
                       `vscode`

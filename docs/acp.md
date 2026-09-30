@@ -8,6 +8,15 @@ calls, the plan and the permission prompts; the agent runs Muse Code (or
 the Meta Model API) the way the VS Code panel does. It is unofficial and not
 endorsed by Meta.
 
+On the Model API backend, `web_fetch` reads public HTTPS pages using the
+same address checks, pinned connections and bounded page-converter worker
+as the extension. It is available only in a trusted workspace and follows
+the session's network permission mode. The package carries the converter;
+it provides no VS Code language service. In this standalone process the
+transport is Node's `https` implementation: VS Code proxy/PAC settings do
+not apply. Its proxy and certificate behavior follows the installed Node
+version and environment, rather than VS Code's network patch.
+
 The configuration below names the command and its arguments. Where each
 editor keeps its agent settings is in that editor's documentation, linked
 from [the compatibility plan](https://github.com/RandyNorthrup/muse-spark-code/blob/main/docs/ide-compatibility.md#32-ides-and-editors-reached-through-a-shared-acp-agent);
@@ -295,6 +304,16 @@ against a local proxy with Node 22.0.0, 22.20.0, 22.21.0, 22.23.3, 24.0.0,
 `NODE_OPTIONS=--use-env-proxy` does the same from Node 22.21 and 24.5.
 Without the switch, or on an older Node, there is no way to route the
 agent's own requests through a proxy.
+
+**Public page fetches** use Node's `https.request` instead of `fetch` so
+the checked address stays pinned. Its environment-proxy support starts on
+Node 22.21 or Node 24.5. Node 24.0–24.4 can proxy Meta calls while page
+requests still go directly; the agent warns about that separately at start.
+For page requests, `NO_PROXY` matches the pinned IP address, not the
+original hostname; hostname rules do not bypass the proxy for a page.
+The request's TLS server name and `Host` header still name the original
+site. [Node's network documentation](https://nodejs.org/learn/http/enterprise-network-configuration)
+records the different transport version floors.
 
 Certificates: Node trusts its own bundled roots. A network that inspects
 HTTPS needs its root named in `NODE_EXTRA_CA_CERTS` (a PEM file, read when

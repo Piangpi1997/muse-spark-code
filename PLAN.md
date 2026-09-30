@@ -127,36 +127,38 @@ tested on chunk splits inside frames and inside multi-byte characters.
 
 ### D3 — Quality toolchain versions (verified against the npm registry 2026-09-21)
 
-| Package                                                                 | Pinned                            | Why this version                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| ----------------------------------------------------------------------- | --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `typescript`                                                            | **6.0.3**                         | Registry latest is 7.0.2, but `typescript-eslint@8.70.1` declares `peerDependencies.typescript: ">=4.8.4 <6.1.0"`. TS 7 installs cleanly and silently disables every type-aware lint rule. 6.0.3 is the highest release inside the supported range.                                                                                                                                                                                                                                                  |
-| `eslint`                                                                | 10.11.0                           | `typescript-eslint` accepts `^10.0.0`; `eslint-plugin-unicorn@76` requires `>=10.4`.                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| `typescript-eslint`                                                     | 8.70.1                            | Latest; `strictTypeChecked` + `stylisticTypeChecked`.                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| `@eslint/js`                                                            | 10.0.1                            | Separate package from eslint; required by the flat config.                                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| `eslint-plugin-unicorn`                                                 | 76.0.0                            | Latest; needs eslint ≥ 10.4 (satisfied).                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| `eslint-plugin-react-hooks`                                             | 7.1.1                             | Declares eslint `^10.0.0`. `eslint-plugin-react` (7.37.5) and `eslint-plugin-jsx-a11y` (6.10.2) only declare up to eslint `^9`, so they are **not** installed; a11y is covered by manual checks in visual certification and revisited when the plugins add eslint 10 peers.                                                                                                                                                                                                                          |
-| `dpdm`                                                                  | 4.3.0                             | Circular-import gate (`--exit-code circular:1`). `madge` is incompatible with TS 6+. `eslint-plugin-import-x` was considered and dropped: its `no-cycle` rule is known not to fire, and unresolved imports are already a hard `tsc` error (TS2307) in every project here.                                                                                                                                                                                                                            |
-| `knip`                                                                  | 6.37.0                            | Unused files/exports/deps. Config is `knip.jsonc` (knip 6 rejects `"//"` pseudo-comments). Run without `--strict`: strict implies production mode, which needs `!`-suffixed entries and otherwise analyses nothing.                                                                                                                                                                                                                                                                                  |
-| `prettier`                                                              | 3.9.8                             | Formatter.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| `stylelint` + `stylelint-config-standard`                               | 17.15.0 / 40.0.0                  | Webview CSS gate (`--max-warnings=0`).                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| `vitest` + `@vitest/coverage-v8`                                        | 5.0.1                             | Unit tests (node env for extension code, jsdom for webview). Peer `@types/node ^22                                                                                                                                                                                                                                                                                                                                                                                                                   |     | >=24` satisfied. |
-| `jsdom`                                                                 | 30.1.0                            | Webview component tests.                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| `@testing-library/react` / `dom` / `jest-dom`                           | 16.3.3 / 10.4.2 / 7.0.1           | Component assertions.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| `@vscode/test-cli` + `@vscode/test-electron` + `mocha` + `@types/mocha` | 0.0.15 / 3.1.0 / 12.0.2 / 10.0.10 | Integration tests inside the Extension Development Host. `@vscode/test-electron` is an unlisted peer of test-cli, so knip ignores it explicitly.                                                                                                                                                                                                                                                                                                                                                     |
-| `esbuild`                                                               | 0.28.2                            | Bundles extension (cjs, node platform) and webview (esm/iife, browser platform).                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| `@types/vscode`                                                         | 1.99.0                            | Matches `engines.vscode` (test/unit/manifest.test.ts enforces the pairing).                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| `@types/vscode-webview`                                                 | 1.57.5                            | Types for `acquireVsCodeApi()` inside the webview.                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| `@types/node`                                                           | 22.20.4                           | Extension host on VS Code 1.138 is Electron 42 (Node ≥ 22). Typing against 22 keeps code portable to older hosts.                                                                                                                                                                                                                                                                                                                                                                                    |
-| `@vscode/vsce`                                                          | 4.0.0                             | Packaging. Needs Node ≥ 22.                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| `react` / `react-dom` / `@types/react` / `@types/react-dom`             | 19.3.0                            | Webview UI.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| `zod`                                                                   | 4.6.5                             | Runtime validation of every webview ⇄ extension message and every HTTP/MSP boundary.                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| `@muse-code/sdk`                                                        | 1.3.0                             | Official MSP client. Developer Preview: "minor releases may alter APIs before 1.0" → exact pin, adapter isolated in one module, schema fingerprint checked at handshake. Installed with a one-off `--min-release-age=0` on 2026-09-22 (published 2026-09-18, inside the 7-day window); the lockfile pins it so `npm ci` is unaffected. Only its `Connection`/`spawnMspConnection` surface is used; `Connection.onNotification` holds a single handler, so the facade (`MuseClient`) is not composed. |
-| `husky` / `lint-staged`                                                 | 9.1.7 / 17.5.1                    | Pre-commit gates.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| `jscpd`                                                                 | 5.3.1                             | Copy-paste detection.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| `npm-run-all2`                                                          | 9.0.3                             | Runs gate scripts in sequence/parallel.                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| `rimraf`                                                                | 6.1.3                             | Cross-platform clean.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| `axe-core`                                                              | 4.13.0                            | The accessibility gate (M37, D32): WCAG 2.0 to 2.2, levels A and AA, run inside the harness page. MPL-2.0; a dev dependency, never bundled.                                                                                                                                                                                                                                                                                                                                                          |
-| `playwright-core`                                                       | 1.63.0                            | The host checks' browser driver (hosts.yml, M62): code-server, Theia and JupyterLab driven in Chrome. Apache-2.0; a dev dependency, never bundled; it uses the installed Chrome, never downloads one.                                                                                                                                                                                                                                                                                                |
+| Package                                                                 | Pinned                            | Why this version                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| ----------------------------------------------------------------------- | --------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `typescript`                                                            | **6.0.3**                         | Registry latest is 7.0.2, but `typescript-eslint@8.70.1` declares `peerDependencies.typescript: ">=4.8.4 <6.1.0"`. TS 7 installs cleanly and silently disables every type-aware lint rule. 6.0.3 is the highest release inside the supported range.                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `eslint`                                                                | 10.11.0                           | `typescript-eslint` accepts `^10.0.0`; `eslint-plugin-unicorn@76` requires `>=10.4`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `typescript-eslint`                                                     | 8.70.1                            | Latest; `strictTypeChecked` + `stylisticTypeChecked`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `@eslint/js`                                                            | 10.0.1                            | Separate package from eslint; required by the flat config.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `eslint-plugin-unicorn`                                                 | 76.0.0                            | Latest; needs eslint ≥ 10.4 (satisfied).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `eslint-plugin-react-hooks`                                             | 7.1.1                             | Declares eslint `^10.0.0`. `eslint-plugin-react` (7.37.5) and `eslint-plugin-jsx-a11y` (6.10.2) only declare up to eslint `^9`, so they are **not** installed; a11y is covered by manual checks in visual certification and revisited when the plugins add eslint 10 peers.                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `dpdm`                                                                  | 4.3.0                             | Circular-import gate (`--exit-code circular:1`). `madge` is incompatible with TS 6+. `eslint-plugin-import-x` was considered and dropped: its `no-cycle` rule is known not to fire, and unresolved imports are already a hard `tsc` error (TS2307) in every project here.                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `knip`                                                                  | 6.37.0                            | Unused files/exports/deps. Config is `knip.jsonc` (knip 6 rejects `"//"` pseudo-comments). Run without `--strict`: strict implies production mode, which needs `!`-suffixed entries and otherwise analyses nothing.                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `prettier`                                                              | 3.9.8                             | Formatter.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `stylelint` + `stylelint-config-standard`                               | 17.15.0 / 40.0.0                  | Webview CSS gate (`--max-warnings=0`).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `vitest` + `@vitest/coverage-v8`                                        | 5.0.1                             | Unit tests (node env for extension code, jsdom for webview). Peer `@types/node ^22                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |     | >=24` satisfied. |
+| `jsdom`                                                                 | 30.1.0                            | Webview component tests.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `@testing-library/react` / `dom` / `jest-dom`                           | 16.3.3 / 10.4.2 / 7.0.1           | Component assertions.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `@vscode/test-cli` + `@vscode/test-electron` + `mocha` + `@types/mocha` | 0.0.15 / 3.1.0 / 12.0.2 / 10.0.10 | Integration tests inside the Extension Development Host. `@vscode/test-electron` is an unlisted peer of test-cli, so knip ignores it explicitly.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `esbuild`                                                               | 0.28.2                            | Bundles extension (cjs, node platform) and webview (esm/iife, browser platform).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `@types/vscode`                                                         | 1.99.0                            | Matches `engines.vscode` (test/unit/manifest.test.ts enforces the pairing).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `@types/vscode-webview`                                                 | 1.57.5                            | Types for `acquireVsCodeApi()` inside the webview.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `@types/node`                                                           | 22.20.4                           | Extension host on VS Code 1.138 is Electron 42 (Node ≥ 22). Typing against 22 keeps code portable to older hosts.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `@vscode/vsce`                                                          | 4.0.0                             | Packaging. Needs Node ≥ 22.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `react` / `react-dom` / `@types/react` / `@types/react-dom`             | 19.3.0                            | Webview UI.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `zod`                                                                   | 4.6.5                             | Runtime validation of every webview ⇄ extension message and every HTTP/MSP boundary.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `@muse-code/sdk`                                                        | 1.3.0                             | Official MSP client. Developer Preview: "minor releases may alter APIs before 1.0" → exact pin, adapter isolated in one module, schema fingerprint checked at handshake. Installed with a one-off `--min-release-age=0` on 2026-09-22 (published 2026-09-18, inside the 7-day window); the lockfile pins it so `npm ci` is unaffected. Only its `Connection`/`spawnMspConnection` surface is used; `Connection.onNotification` holds a single handler, so the facade (`MuseClient`) is not composed.                                                                                                                                                                          |
+| `husky` / `lint-staged`                                                 | 9.1.7 / 17.5.1                    | Pre-commit gates.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `jscpd`                                                                 | 5.3.1                             | Copy-paste detection.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `npm-run-all2`                                                          | 9.0.3                             | Runs gate scripts in sequence/parallel.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `rimraf`                                                                | 6.1.3                             | Cross-platform clean.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `axe-core`                                                              | 4.13.0                            | The accessibility gate (M37, D32): WCAG 2.0 to 2.2, levels A and AA, run inside the harness page. MPL-2.0; a dev dependency, never bundled.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `parse5`                                                                | 8.0.1                             | M69 (D49): web fetch parses a page with the HTML standard's own parsing algorithm (the implementation jsdom uses), after four review rounds found a hand-written tokenizer short of it. MIT; one dependency, `entities` ^8 (BSD-2-Clause, 8.1.0 locked, formerly our direct dependency); no peers; published 2026-04-19; already in the lockfile through jsdom and @vscode/vsce; `npm audit` clean. Quadratic on hostile nesting (40,000 nested lists in 73 s), so it runs only in `dist/pageWorker.js`, a worker per page (at most two at once) stopped at 10 s or 512 MiB (D6). `entities` 8 says Node ≥ 20.19 for `require(esm)`; bundled, the worker ran on Node 20.18.3. |
+| `html-encoding-sniffer`                                                 | 6.0.0                             | M69: the HTML standard's encoding sniffing (byte order mark, the Content-Type charset, the 1,024-byte `<meta>` prescan) for web fetch's HTML, as jsdom uses it. MIT; one dependency, `@exodus/bytes` ^1.6 (MIT; 1.15.2 locked through jsdom, published 2026-09-21, inside the 7-day window: the lockfile pins it, as for `@muse-code/sdk`; its optional `@noble/hashes` peer is not used by the `encoding-lite` entry the sniffer imports); published 2025-12-26; `npm audit` clean. Says Node ≥ 20.19 (ESM); bundled into `dist/pageWorker.js` only and run on Node 20.18.3. Ships no types: `src/core/web/html-encoding-sniffer.d.ts`.                                      |
+| `playwright-core`                                                       | 1.63.0                            | The host checks' browser driver (hosts.yml, M62): code-server, Theia and JupyterLab driven in Chrome. Apache-2.0; a dev dependency, never bundled; it uses the installed Chrome, never downloads one.                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 
 Deprecated and avoided: `@vscode/webview-ui-toolkit` (archived; npm marks it
 deprecated). Webview controls are hand-built on VS Code CSS theme variables.
@@ -208,14 +210,15 @@ quality`) and as a CI job.
 
 ### D6 — Bundle budgets (Phase 6)
 
-| Artifact               | Budget (minified, uncompressed)                                                                      |
-| ---------------------- | ---------------------------------------------------------------------------------------------------- |
-| `dist/extension.js`    | ≤ 600 KiB (the M7 Model API client fit without raising it; the activation bundle since M57)          |
-| `dist/modelApi.js`     | ≤ 400 KiB (M57: the Model API backend, loaded when it first starts; 295.6 KiB when split, see below) |
-| `dist/searchWorker.js` | ≤ 50 KiB                                                                                             |
-| `dist/webview/main.js` | ≤ 900 KiB including React, the markdown renderer and highlight.js (one bundle)                       |
-| `dist/acp.js`          | ≤ 850 KiB (the ACP agent, installed once, never loaded by VS Code; 713.2 KiB when set, see below)    |
-| `.vsix`                | not gated; 0.8.0 is 905,941 bytes (the GitHub Release asset, §10)                                    |
+| Artifact               | Budget (minified, uncompressed)                                                                                            |
+| ---------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `dist/extension.js`    | ≤ 600 KiB (the M7 Model API client fit without raising it; the activation bundle since M57)                                |
+| `dist/modelApi.js`     | ≤ 400 KiB (M57: the Model API backend, loaded when it first starts; 295.6 KiB when split, see below)                       |
+| `dist/searchWorker.js` | ≤ 50 KiB                                                                                                                   |
+| `dist/pageWorker.js`   | ≤ 300 KiB (M69: web fetch's page converter, parse5 and its parts, on a worker started for each page; 212.3 KiB when split) |
+| `dist/webview/main.js` | ≤ 900 KiB including React, the markdown renderer and highlight.js (one bundle)                                             |
+| `.vsix`                | not gated; 0.8.0 is 905,941 bytes (the GitHub Release asset, §10)                                                          |
+| `dist/acp.js`          | ≤ 850 KiB (the ACP agent, installed once, never loaded by VS Code; 713.2 KiB when set, see below)                          |
 
 `npm run build` prints sizes; `scripts/check-bundle-size.mjs` holds the numbers
 and fails the build over budget or when a bundle is missing. This table mirrors
@@ -5057,7 +5060,8 @@ merged as PR #30 (`bdaede4`).
 ### M44b — Web fetch on the Model API backend (D36)
 
 **Status 2026-09-27: folded into M69 (D49), which also serves it to Muse
-Code through the `ide` server.** Muse Code's own
+Code through the `ide` server; built there on 2026-09-28 with every rule
+below (see M69's status).** Muse Code's own
 `web_fetch` is gated off in 1.3.0, and the Model API backend has no fetch
 tool. The D36 inventory named the network-safety design this needs before
 the model may read a page:
@@ -7148,6 +7152,207 @@ code-intel` on VS Code stable and 1.125.0; live case19 of the Model
   one, and a proxy that cannot take a pinned address; a harness scenario
   for its row; the gate green; a certification record.
 - **Size.** S.
+- **Status 2026-09-29: built on `feature/m69-web-fetch`, PR #52 open**
+  (`docs/certification/m69.md`); the resumed picture repair passes focused
+  tests and red drills; final review and integration gates are pending.
+  Integration retains M67's separate language services, binds the existing
+  web fetcher to the standalone ACP Model API runtime, and ships its converter
+  worker/notices. Independent review found missing permission checks on later
+  address attempts and the Node 24.0–24.4 HTTPS proxy warning gap; both have
+  focused regressions and intended red/restored proofs. The standalone transport
+  remains Node's, without automatic proxy rerouting or VS Code settings.
+  Built to M44b's safeguards
+  and the plan review's six rules:
+  - **Destinations** (`src/core/web/publicAddress.ts`, `pageUrl.ts`):
+    `https:` only, no credentials, 2,048 characters at most; local and
+    reserved names (`localhost`, `local`, `internal`, `home.arpa`, `test`,
+    `invalid`, `example`, `onion`, `alt`, and any single-label name) refused
+    before any lookup. IPv4 is public outside IANA's special-purpose blocks
+    and Azure's WireServer (so 169.254.169.254, 100.100.100.200 and
+    192.0.0.192 are refused); IPv6 only inside 2000::/3 and outside
+    2001::/23, 2001:db8::/32 and 3fff::/20, with IPv4-mapped, -compatible,
+    NAT64 and 6to4 judged by the IPv4 inside. Every DNS answer is checked:
+    one non-public answer refuses the name.
+  - **Pinning** (`src/host/web/pinnedRequest.ts`): Node's `https` connects
+    to the checked address, with `servername` and `Host` carrying the name,
+    so TLS still verifies it. VS Code's patched `fetch` cannot pin (it
+    replaces a caller's dispatcher with its own agent, keeping only CA and
+    HTTP/2 options: @vscode/proxy-agent `createFetchPatch`, read
+    2026-09-27); its patched `https` can, and does so through the proxy:
+    the integration test shows a loopback proxy receiving
+    `CONNECT 203.0.113.7:443` and a ClientHello naming the host, on VS Code
+    1.139.1 and 1.125.0. Only an answer that arrived over TLS is read: a proxy's
+    own refusal of the tunnel is reported as `Proxy response (N)`, M56's
+    proxy failure, never read as the page. The checked addresses are raced
+    in the resolver's order (ADDRCONFIG) as RFC 8305 says, never
+    re-resolved.
+  - **Redirects**: same host (host and port) followed, each hop checked,
+    resolved and pinned again, at most `WEB_FETCH_MAX_REDIRECTS` (5); a
+    redirect to another host is handed back to the model as a URL to fetch
+    in a new call, so each host is approved on its own; into a refused URL
+    it fails naming the redirect.
+  - **Bounds**: 5 MiB after decompression (gzip, deflate, br; another
+    coding refused), declared or streamed; 30 s for the whole fetch; an
+    allow-list of text types; the header's charset, else HTML's `<meta>`,
+    else UTF-8. HTML becomes Markdown in one linear pass
+    (`htmlToMarkdown.ts`, with `entities` for character references, the
+    one new dependency, D3); inline nesting, list and quote indents and
+    table width are capped so a hostile page stays linear. The model reads
+    the first 50,000 characters and is told the total.
+  - **Approvals**: a new `network` tool class. Bypass allows, Plan
+    (`denyUnmatched`) refuses (its rules allow workspace reads, not network
+    reads), Manual, Edit automatically and Auto ask, per host: the card
+    (`webFetch` subject) names the URL as it will be fetched, and "Always
+    allow in this session" is keyed on the host. Restricted Mode: not
+    offered, refused if called; a side chat (always Plan) is not offered
+    it. A URL refused on its face (scheme, credentials, length, a reserved
+    name, a non-public literal address) is refused before any card; a name
+    is resolved only after approval, since the lookup itself carries the
+    name out, so one that resolves to a private address is refused after
+    the card and before any connection.
+  - **Untrusted content**: the model's text is the header line, a notice
+    that the page is untrusted data, and the content between markers with
+    8 random bytes the page cannot know; the instructions say the same.
+  - **Muse Code**: `webFetch` on the `ide` server, listed only while the
+    workspace is trusted and `museSpark.sandboxNetwork` is not
+    `restricted` (the list is read per request), with MCP annotations
+    `readOnlyHint: false, openWorldHint: true`, and the extension's own
+    modal (Allow once / Reject, naming host and URL) before every call,
+    whatever Muse Code's mode. Live (4 model attempts, contributor model,
+    empty folder): Muse Code listed and called it, asked its own approval in
+    on-request mode, and passed our text through verbatim as the row's
+    output, which the row's size line reads (AGENTS rule 13).
+  - **Row**: the URL beside the label, "Fetched 48.2 kB (text/html)" under
+    it, and what the model read in the body; harness scenario `web-fetch`.
+  - **Review round** (three class reviewers over `c3d7702c`, all fixed in
+    one commit): the `ide` call gets an `AbortSignal` aborted when Muse Code
+    closes the request or sends `notifications/cancelled` (both captured
+    from Muse Code 1.4.0 on a stopped turn, 2 model attempts), raced against
+    the modal, with `isOffered` checked again after it and one modal per URL
+    at a time; the checked addresses are raced as RFC 8305 says (250 ms);
+    connection failures in web fetch's own words naming the host and the
+    addresses (not M56's Meta advice), a proxy's refusal of the tunnel
+    included, the detail only as error codes (a name mismatch's message
+    lists the certificate's names); server text outside the markers only as short tokens, the
+    final URL, the title and a moved target inside them; the converter
+    bounded at 100,000 characters (prefix depth 4, rows unpadded); all
+    trailing dots stripped and empty labels refused; RFC 7050 NAT64 prefix
+    discovery; damaged compression is the coding's failure; the charset only
+    from `<meta>`, an unknown label ignored; sentences name "this tool";
+    Model API rows localized for a moved page and Restricted Mode;
+    `sandboxNetwork` described in fifteen manifest tables. PAC and
+    `http.noProxy` see the pinned address, not the name (@vscode/proxy-agent
+    0.45.0 `agent.js` builds the proxy URL from `opts.host`): kept, since the
+    name would let the proxy resolve it again; documented.
+  - **PR #52 review** (Codex): NAT64 discovery fails closed (only a
+    definite "no AAAA" from the page's own resolver means no DNS64; a
+    timeout, SERVFAIL or an answer without a prefix leaves it unknown, and
+    then no IPv6 answer is used, a name with only IPv6 answers refused as
+    `nat64Unknown`); a `PermissionRequest` hook's allow no longer replaces
+    the per-host card (it may still deny or ask). Swept: every other failed
+    lookup or check already refuses.
+  - **PR #52 second review** (Codex): what allowed a fetch is asked again
+    after every await: after the card or hook (the turn, trust, a mode that
+    now refuses), before each hop's lookup and connection (a caller's
+    `isStillAllowed`, ending the fetch as `withdrawn`), and once the page is
+    in, before the model gets it; on Muse Code the offer (trust,
+    `sandboxNetwork`) is that check.
+  - **PR #52 third review** (Codex): NAT64 absence is proven only by a DNS
+    query's own NXDOMAIN or NODATA (c-ares), while the system resolver's
+    answers still reveal a prefix; the converter hides an element a page
+    left open (`<p hidden>`, `<li aria-hidden>`, cells, rows) up to where a
+    browser ends it, tracking what is open inside and around it, and, from
+    the sweep, a hidden image's alt text, a self-closed hidden element, an
+    unopened dialog, ruby's `rp` and `datalist`.
+  - **PR #52 fourth review** (Codex, a self-closed `<template/>` shown):
+    the converter's hiding now follows the WHATWG parsing algorithm as a
+    whole: one stack of open elements with the algorithm's scopes, special
+    and formatting elements, implied ends, the adoption agency (a hidden
+    formatting element reopens until its own end tag), `</form>`, foreign
+    content (breakouts, integration points, CDATA), select, tables,
+    headings and `<body>` attribute merging; the tokenizer ends comments
+    (`<!-->`, `--!>`), bogus comments (`</ x>`), CDATA and script escapes as
+    HTML does, honours a slash only right before `>` and only on void and
+    foreign elements, and keeps attribute names that begin with `=`.
+    parse5 8.0.1 (MIT, already in the tree through jsdom) was measured and
+    not adopted: quadratic on hostile nesting (40,000 nested `<div>` in 25 s,
+    40,000 nested lists in 73 s, where the converter takes 34 and 127 ms), so
+    a 5 MiB page could hold the extension host for hours; no dependency
+    changes.
+  - **Redesign after the fifth review** (Codex: `<base href>` ignored, the
+    charset sniff reading `<meta>` text in comments and other attributes,
+    `display:/**/none` passing the hidden check; the fourth round on the
+    hand-written path, so the owner's rule applied: redesign, not patch).
+    The page is parsed by parse5, decoded by html-encoding-sniffer (the
+    standard's sniffing) and Node's `TextDecoder`, and its inline styles
+    read by @csstools/css-tokenizer (D3); the converter walks the tree,
+    leaving out exactly what HTML hides, and resolves links against the
+    first `<base href>`. parse5's time on hostile nesting is contained by
+    running it on a worker of its own bundle, `dist/pageWorker.js` (D6), one
+    per page (never at activation; the bundle-split gate checks it), at most
+    two at once, stopped at 10 s or 512 MiB, which refuses the page with the
+    reason.
+  - **Redesign review** (two class reviewers): the sniffer's crash on a
+    malformed `<meta>` content read past; `replacement` encodings read as one
+    U+FFFD; XHTML sniffed as XML; a later `<meta>` changes a tentative
+    encoding (the standard's reparse); the header's charset read as a MIME
+    parameter; at most two conversion workers at once, the wait honouring
+    the fetch's signal; a deadline passing during conversion named as the
+    conversion's; failure details as short codes, crashes logged by name,
+    code and frames; `popover`, closed `<details>` and declarative shadow
+    roots read as they render; inline `display` by its real grammar, a
+    bracket stack, and a `var()` on a hiding property counted as hiding;
+    the `.vsix` check and an integration test for `dist/pageWorker.js`.
+    Grok Build's review of the same diff added: the title only from the first
+    `<title>` child of `<head>` (one the parser put inside a hidden element
+    no longer reaches the model), and an encoding the runtime cannot decode
+    refuses the page (`undecodable`) instead of reading it as UTF-8, with
+    `x-user-defined` and `replacement` decoded by the Encoding standard's own
+    definitions (Node 20.18 has no decoder for the first, no Node for the
+    second).
+  - **PR #52 review of `19f843f3`** (Codex): XHTML is refused
+    (`application/xhtml+xml` read by an HTML parser misreads its XML syntax,
+    `<script src="x"/>` swallowing what follows, and no XML parser is
+    bundled; it is no longer in the Accept header either); `visibility` is
+    inherited, so the walk carries it down instead of dropping the subtree:
+    a descendant with `visibility: visible` shows, an invisible element keeps
+    its tags (a shown item stays in its list) but writes no text or void
+    element. Swept: `display: none`, `content-visibility: hidden`, `hidden`,
+    `inert`, `aria-hidden`, `popover`, a closed dialog or `<details>` hide
+    all they hold, which no descendant can undo; `visibility` was the only
+    inherited one.
+  - **PR #52 review of `83eedf26`** (Codex: a `<col>` styled
+    `visibility: collapse` hides a column whose cells are not its
+    descendants; the third round on the converter's hiding, so the owner's
+    rule applied: redesign, not patch): the converter no longer emulates
+    rendering. It cannot do so completely (a stylesheet, a class, a `<col>`,
+    a script, a font or a colour can hide text), and the attempt protects
+    nothing, since a page can put the same words in visible small print; the
+    defence is the untrusted markers around everything a page returns. Left
+    out now is only what is never page text by structure: the head (the
+    title is read from it), scripts, styles, template content (a declarative
+    shadow root's is written where it stands), `<noscript>`, embedded frames
+    and media, form controls, SVG and MathML. `hidden`, `inert`,
+    `aria-hidden`, `popover`, closed dialogs and `<details>`, `rp` and
+    inline styles are no longer read, for one consistent rule. The result is
+    the page's text as served, which can include text a browser would not
+    show, all of it marked untrusted, and the tool description and the
+    notice before the markers say so. `inlineStyle.ts` and
+    @csstools/css-tokenizer (D3) are removed; the worker bundle is
+    201.2 KiB. This supersedes the earlier bullets' hiding.
+  - **PR #52 resume repair (2026-09-29, focused verification complete)**: traverse
+    `<picture>` so its fallback `<img>` keeps the existing safe-source and
+    nonempty-alt rules. `<source>` contributes no image or attributes;
+    no `srcset`, media-query or browser rendering selection is emulated.
+    Regression coverage must keep document order, relative fallback URLs
+    and alt text, refuse unsafe or wordless images, and still exclude
+    images inside inert templates and embedded media. Reuse the converter
+    and its unit suite, with a red drill restoring `picture` to `OMITTED`
+    in a disposable copy. Final reviewed-tree quality remains required.
+  - **Left**: a machine-scoped switch to turn web fetch off entirely,
+    whether Muse Code's "Always allow this MCP tool" should also silence the
+    extension's own modal, and whether Plan should allow fetches as reads,
+    are the owner's (§3 is untouched until asked).
 
 ### M70 — Review (D49)
 
@@ -8210,6 +8415,38 @@ Every lint or scanner suppression (`eslint-disable`, `@ts-expect-error`, `nosemg
   never across a redirect. Residual risk: a server's own `readOnlyHint` is
   trusted, as Muse Code trusts it; a result's text reaches the model as
   data it may be steered by (prompt injection), as a web page's would.
+- Web fetch (M69, D49) reaches the internet from the user's machine. The
+  controls: `https:` only; every DNS answer checked against the non-public
+  ranges and the connection pinned to a checked address (through a proxy,
+  the tunnel is asked for that address, and only a TLS answer is read);
+  same-host redirects checked and pinned again, another host's handed back;
+  size, time and type bounds; per-host approval in every mode but Bypass,
+  Plan and Restricted Mode refusing; on Muse Code the extension's modal
+  before every call. Residual risks: (1) an intranet service on a public
+  address, or a split-horizon name that answers public addresses here,
+  looks like the internet; (2) the URL is model-written and reaches the
+  host the user approved, so it can carry conversation text there (the
+  card and the modal name it whole; a session rule covers one host); (3)
+  the page's text steers the model like any tool output (the markers and
+  the notice are a signal, not a guarantee); (4) on a network where only
+  the proxy can resolve names, the local check refuses every fetch, which
+  fails closed; (5) the proxy decision (`http.noProxy`, a PAC file) sees the
+  pinned address, not the host name, so a rule written for a name does not
+  apply; (6) NAT64 discovery takes the prefix from answers either the
+  system resolver (as the page's name was looked up) or a DNS query of its
+  own (c-ares) returns, and only the DNS query's NXDOMAIN or NODATA means no
+  DNS64 (getaddrinfo's ENOTFOUND proves nothing); any other outcome uses no
+  IPv6 answer, so what remains is a DNS server that answers NODATA while the
+  system resolver's path synthesizes nothing for `ipv4only.arpa` but does
+  for other names; (7) VS Code cannot close a modal, so the extension's
+  question for a Muse Code call that was stopped stays open until answered,
+  and its answer then fetches nothing; (8) the model reads a page's text as
+  served, which can include text a browser would not show (hidden by a
+  stylesheet, an attribute or a script), all of it marked untrusted: the
+  converter emulates no rendering and leaves out only what is never page
+  text by structure; (9) parse5 is quadratic on hostile
+  nesting, so such a page costs up to 10 seconds of one worker thread before
+  it is refused.
 - Contributor-tier models send content Meta may train on; guarded by opt-in
   dialog and `confidentialWorkspace` setting.
 - The Marketplace token (M28, 2026-09-23): the publish job runs in the

@@ -48,6 +48,7 @@ import { changeHunk } from '../../codeIntel/codeText'
 import { MODEL_API_CODE_INTEL_DEFINITIONS } from '../../codeIntel/definitions'
 import { readImageInfo } from '../../imageDimensions'
 import { isPdf, pdfPageCount } from '../../pdf'
+import { WEB_FETCH_DESCRIPTION, WEB_FETCH_PARAMETERS } from '../../web/webFetchDefinition'
 import { confineWorkspacePath } from '../../workspacePath'
 import { compileGlob } from './glob'
 import {
@@ -276,6 +277,8 @@ const TOOL_CLASSES: Readonly<Record<string, ToolClass>> = {
   [MODEL_API_TOOLS.getGoal]: 'interactive',
   [MODEL_API_TOOLS.updateGoal]: 'interactive',
   [MODEL_API_TOOLS.reportProgress]: 'interactive',
+  // M69 (PLAN.md D49): a network tool, asked per host.
+  [MODEL_API_TOOLS.webFetch]: 'network',
   // M67 (PLAN.md D49): the language services read, in every mode; a rename is an edit.
   [CODE_INTEL_TOOLS.findDefinition]: 'read',
   [CODE_INTEL_TOOLS.findReferences]: 'read',
@@ -322,6 +325,7 @@ const shellArgs = z.object({
 })
 export const askUserArgs = z.object({ questions: z.array(questionSchema) })
 export const readSkillArgs = z.object({ id: z.string() })
+export const webFetchArgs = z.object({ url: z.string() })
 export const todoWriteArgs = z.object({ items: z.array(todoItemSchema) })
 
 const PATH_PROPERTY = { type: 'string', description: 'Workspace-relative path' }
@@ -340,6 +344,8 @@ export interface ToolDefinitionOptions {
   readonly isSubagent?: boolean
   /** Muse Code's memory tools, trusted workspaces only (M49, PLAN.md D41). */
   readonly hasMemory?: boolean
+  /** Web fetch, trusted workspaces only, when the host has a fetch (M69, PLAN.md D49). */
+  readonly hasWebFetch?: boolean
   /** The code intelligence tools, while VS Code's language services are at hand (M67). */
   readonly hasCodeIntel?: boolean
 }
@@ -532,6 +538,9 @@ export function toolDefinitions(
       ? MEMORY_TOOL_DEFINITIONS.map((tool) =>
           define(tool.name, tool.description, tool.properties, tool.required),
         )
+      : []),
+    ...(options.hasWebFetch === true
+      ? [define(MODEL_API_TOOLS.webFetch, WEB_FETCH_DESCRIPTION, WEB_FETCH_PARAMETERS, ['url'])]
       : []),
     ...(options.hasCodeIntel === true
       ? MODEL_API_CODE_INTEL_DEFINITIONS.map((tool) =>

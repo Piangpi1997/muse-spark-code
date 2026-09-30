@@ -2,9 +2,11 @@ import * as acp from '@agentclientprotocol/sdk'
 import { mkdtempSync, readFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
+import { Readable } from 'node:stream'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { createAcpAgent } from '../../src/acp/agent'
 import { createRuntimeBackend } from '../../src/runtime/backends'
+import { pinnedHttpsRequest } from '../../src/host/web/pinnedRequest'
 import { paidGrantsFile } from '../../src/runtime/dataFolder'
 import { paidGrantFile } from '../../src/runtime/paidGrants'
 import { type AcpPaidFeature, SECRET_KEYS, UI_TEXT } from '../../src/shared/constants'
@@ -12,6 +14,10 @@ import { memorySecrets } from './helpers/fakes'
 import { fakeModelApi } from './helpers/fakeModelApi'
 import { buildModelApiBundle } from './helpers/modelApiBundle'
 import { removeFolder } from './helpers/temporaryFolders'
+
+// Only the admitted page's transport is controlled; the runtime factory,
+// Model API backend bundle and actual page-converter worker remain real.
+vi.mock('../../src/host/web/pinnedRequest', { spy: true })
 
 // M63 (PLAN.md D61, D62): the agent on the Model API backend, end to end in
 // process: the ACP SDK's client, the agent, the runtime's backend with its
@@ -221,6 +227,76 @@ describe('the ACP agent on the Model API backend (M63)', () => {
     expect(offered).toContain('write_file')
     await t.runtime.close()
   })
+
+  it('converts an admitted public page through the portable runtime worker', async () => {
+    const t = setup(allowOnce, [], true)
+    const pageUrl = 'https://93.184.215.14/guide'
+    const close = vi.fn()
+    vi.mocked(pinnedHttpsRequest).mockImplementationOnce((_target, _signal, connected) => {
+      connected()
+      return Promise.resolve({
+        status: 200,
+        headers: { 'content-type': 'text/html; charset=utf-8' },
+        body: Readable.from([
+          Buffer.from('<title>Worker page</title><p>Portable page content</p>'),
+        ]),
+        close,
+      })
+    })
+    t.api.script(
+      {
+        calls: [{ name: 'web_fetch', arguments: JSON.stringify({ url: pageUrl }), callId: 'page' }],
+      },
+      { text: 'Read it.' },
+    )
+    try {
+      await t.run((client) => promptOnce(client, t.workspace))
+      expect(pinnedHttpsRequest).toHaveBeenCalledWith(
+        expect.objectContaining({ address: '93.184.215.14', host: '93.184.215.14' }),
+        expect.any(AbortSignal),
+        expect.any(Function),
+      )
+      expect(t.permissions).toHaveLength(1)
+      expect(JSON.stringify(t.api.responseBodies())).toContain('Portable page content')
+      expect(close).toHaveBeenCalledOnce()
+      expect(JSON.stringify([t.updates, t.permissions])).not.toContain(KEY)
+    } finally {
+      await t.runtime.close()
+    }
+  })
+
+  it.each([true, false])(
+    'offers portable web fetch only with workspace trust (%s), and refuses loopback',
+    async (isTrusted) => {
+      const t = setup(allowOnce, [], isTrusted)
+      t.api.script(
+        {
+          calls: [
+            {
+              name: 'web_fetch',
+              arguments: JSON.stringify({ url: 'https://127.0.0.1/private' }),
+              callId: 'fetch_private',
+            },
+          ],
+        },
+        { text: 'Nothing fetched.' },
+      )
+      try {
+        await t.run((client) => promptOnce(client, t.workspace))
+        const tools = JSON.stringify(t.api.responseBodies()[0]?.['tools'])
+        expect(tools.includes('web_fetch')).toBe(isTrusted)
+        expect(t.permissions).toEqual([])
+        expect(
+          t.updates.some(
+            (update) => update.sessionUpdate === 'tool_call_update' && update.status === 'failed',
+          ),
+        ).toBe(true)
+        expect(JSON.stringify([t.updates, t.permissions])).not.toContain(KEY)
+      } finally {
+        await t.runtime.close()
+      }
+    },
+  )
 
   it('writes nothing the client cancelled, then lists and loads the session from disk', async () => {
     const t = setup(() => ({ outcome: { outcome: 'cancelled' } }))

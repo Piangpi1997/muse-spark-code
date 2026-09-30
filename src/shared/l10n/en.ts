@@ -409,6 +409,62 @@ export const EN = {
   toolReadImageInvalid: 'The file `{path}` is not a supported image.',
   toolVisualFileMissing: 'The file `{path}` was not found.',
   toolVisualReadFailed: 'The file `{path}` could not be read.',
+  // M69 (PLAN.md D49): web fetch. The row's line under a fetched page: its
+  // size and content type (text/html).
+  webFetchSize: 'Fetched {size} ({type})',
+  // Before each fetch Muse Code asks the extension for.
+  webFetchConfirmTitle: 'Muse Code wants to fetch a page from {host}',
+  webFetchConfirmDetail:
+    'The extension will download {url} from this computer and give its text to Muse Code. The whole address is sent to {host}, so anything written into it leaves the conversation.',
+  // Why a fetch did not happen or did not finish.
+  webFetchInvalidUrl: 'That is not a complete web address.',
+  webFetchNotHttps: 'Only https:// pages are fetched.',
+  webFetchCredentials: 'An address with a user name or password is refused.',
+  webFetchUrlTooLong: 'The address is longer than {max} characters.',
+  webFetchReservedHost: '{host} is a local or reserved name, not a public site.',
+  webFetchPrivateAddress:
+    '{host} leads to {address}, which is not a public internet address. Nothing was fetched.',
+  webFetchUnresolved: '{host} could not be found from this computer.',
+  webFetchWithdrawn:
+    'Web fetch is no longer allowed here (the workspace lost its trust, the permission mode changed, or the sandbox network setting became restricted), so the fetch stopped before its next request.',
+  webFetchNat64Unknown:
+    '{host} has only IPv6 addresses here, and whether this network translates them to IPv4 addresses (NAT64) could not be learned ({detail}), so they could not be checked for a private address. Nothing was fetched.',
+  webFetchTooManyRedirects: 'The page redirected more than {max} times.',
+  webFetchRedirectWithoutLocation: 'The server answered {status} without saying where to go.',
+  webFetchRedirectRefused: 'The page redirected to an address that is refused: {reason}',
+  webFetchHttpStatus: 'The server answered {status}.',
+  webFetchTooLarge: 'The page is larger than {size}.',
+  webFetchNoContentType: 'The server did not say what the page contains.',
+  webFetchContentType: 'The page is {type}, not HTML or text.',
+  webFetchContentTypeUnnamed: 'The page is not HTML or text.',
+  webFetchEncoding: 'The page’s compression ({encoding}) could not be read.',
+  webFetchEncodingUnnamed: 'The page’s compression could not be read.',
+  webFetchTimeout: 'The page did not arrive within {duration}.',
+  webFetchConversionTimeout:
+    'The page arrived, but its HTML could not be converted in the time allowed (at most {duration}), so none of it was read.',
+  webFetchConversionMemory:
+    'The page’s HTML needed more than {max} to convert, so none of it was read.',
+  webFetchXhtml:
+    'The page is XHTML (application/xhtml+xml), which web fetch does not read: read as HTML, its XML syntax would be misread. Nothing was read.',
+  webFetchUndecodable:
+    'The page is in the {encoding} encoding, which this computer cannot decode, so none of it was read.',
+  webFetchConversionFailed:
+    'The page’s HTML could not be converted ({detail}), so none of it was read.',
+  // Why no connection gave an answer: the page's host, and the checked
+  // address(es) the request went to.
+  webFetchCertificate:
+    '{host}’s certificate at {address} is not trusted on this computer. Nothing was read. ({detail})',
+  webFetchProxyCredentials:
+    'The proxy asked for credentials before it would connect to {address} for {host}. Nothing was read.',
+  webFetchProxyRefused:
+    'A proxy or another machine in the way answered {status} instead of connecting securely to {address} ({host}). Nothing was read.',
+  webFetchUnreachable: '{host} could not be reached at {address}. ({detail})',
+  webFetchNetwork: 'The request failed: {detail}',
+  // A redirect to another host, handed back to the model on the Model API
+  // backend; and the refusal in Restricted Mode.
+  webFetchMoved:
+    'The page redirected to {location}, on another host. Muse can fetch it in a new call, which asks again.',
+  webFetchRestrictedMode: 'Web fetch is off in Restricted Mode. Trust the workspace to use it.',
   textFileTooLarge: 'Text files must be 1 MB or smaller.',
   textFilesOverBudget:
     'Attachments fill Muse Code’s message limit. Remove an attachment or shorten the message.',
@@ -441,6 +497,8 @@ export const EN = {
   approvalAction: 'Muse wants to {action}',
   /** A bare tool name (subject kind "tool", e.g. subagent_spawn), M18. */
   approvalUseTool: 'Muse wants to use {action}',
+  /** A web fetch on the Model API backend (M69): {action} is the URL, shown as code. */
+  approvalFetch: 'Muse wants to fetch {action}',
   // {paths} is the list of images an edit starts from, shown as code.
   approvalImageSources: 'Starting from {paths}',
   // M67: a rename's card names a few of its files ({files}) and counts the rest.
@@ -884,6 +942,8 @@ export const EN = {
     // The same, made by the extension's ide server for Muse Code (M44).
     mcp__ide__generateImage: 'Image',
     mcp__ide__editImage: 'Edit image',
+    // The extension's web fetch for Muse Code, through the ide server (M69).
+    mcp__ide__webFetch: 'Fetch page',
     // Muse Code's own tools (M43): captured live 2026-09-25, the rest named
     // from the CLI's tool list (PLAN.md D36).
     read_memory: 'Read memory',

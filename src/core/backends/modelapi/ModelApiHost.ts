@@ -52,6 +52,7 @@ import {
   MODEL_API_SCHEDULED_TOOL,
   MODEL_API_SUBAGENT_TOOLS,
   MODEL_API_TOOLS,
+  WEB_FETCH_SUBJECT_KIND,
   MODEL_API_VERSION,
   MODEL_API_WEB_SEARCH_TOOL,
   MODEL_TEXT,
@@ -139,6 +140,9 @@ import { textFileInput } from '../../textAttachment'
 import { isProtectedPath } from '../../protectedPaths'
 import { confineWorkspacePath } from '../../workspacePath'
 import type { McpTool } from '../../mcp'
+import type { WebFetcher, WebFetchResult } from '../../web/webFetch'
+import type { WebFetchFailure } from '../../web/fetchFailure'
+import { approvalHost, checkPageUrl } from '../../web/pageUrl'
 import type { MemoryStore } from '../../memory/memoryStore'
 import type { CodeIntelDeps } from '../../codeIntel/codeIntelQuery'
 import { codeIntelToolOf } from '../../codeIntel/definitions'
@@ -235,6 +239,7 @@ import {
   executeTool,
   parseQuestions,
   readSkillArgs,
+  webFetchArgs,
   type ShellResult,
   shellOutcome,
   shellText,
@@ -329,6 +334,11 @@ export interface ModelApiHostDeps extends ModelApiPaidHooks {
    * session-start snapshot; undefined leaves them out.
    */
   readonly memory: MemoryStore | undefined
+  /**
+   * The window's web fetch (M69, PLAN.md D49): resolved, checked and pinned
+   * in the activation bundle; undefined leaves `web_fetch` out.
+   */
+  readonly webFetch?: WebFetcher | undefined
   /**
    * VS Code's language services (M67, PLAN.md D49): the code intelligence
    * tools; undefined leaves them out.
@@ -722,6 +732,37 @@ function pressureFor(used: number, window: number): string {
 
 function toolFailure(reason: string): ToolOutcome {
   return { output: `Error: ${reason}`, visibleOutput: reason, failureReason: reason }
+}
+
+/** A web fetch that did not happen: the model's reason, the row's in the user's language. */
+function webFetchRefusal(failure: WebFetchFailure): ToolOutcome {
+  return {
+    output: `Error: ${failure.reason}`,
+    visibleOutput: failure.visibleReason,
+    failureReason: failure.visibleReason,
+  }
+}
+
+/** A web fetch refused in Restricted Mode: the model's reason, the row's in the user's language. */
+function webFetchRestricted(): CallResult {
+  return {
+    outcome: {
+      output: `Error: ${MODEL_TEXT.webFetchRestrictedMode}`,
+      visibleOutput: UI_TEXT.webFetchRestrictedMode,
+      failureReason: UI_TEXT.webFetchRestrictedMode,
+    },
+    isRejected: true,
+  }
+}
+
+/** What the model and the row receive for a web fetch (M69). */
+function webFetchOutcome(result: WebFetchResult): ToolOutcome {
+  return result.kind === 'failed'
+    ? webFetchRefusal(result.failure)
+    : {
+        output: result.text,
+        visibleOutput: result.kind === 'moved' ? result.visibleText : result.text,
+      }
 }
 
 /**
@@ -1621,6 +1662,7 @@ export class ModelApiSession implements AgentSession {
         shellName: shell.shellName,
         hasShell,
         hasMemory,
+        hasWebFetch: this.isWebFetchOffered(hasShell),
         hasCodeIntel: this.deps.codeIntel !== undefined,
         today: new Date(this.deps.now()).toISOString().slice(0, ISO_DATE_LENGTH),
         environment: this.environment ?? NO_ENVIRONMENT,
@@ -1683,6 +1725,8 @@ export class ModelApiSession implements AgentSession {
       hasSubagents: !this.isSubagent && this.deps.isPaidFeatureOn('subagents'),
       isSubagent: this.isSubagent,
       hasMemory,
+      // Trusted workspaces only, as the shell (M69).
+      hasWebFetch: this.isWebFetchOffered(hasShell),
       hasCodeIntel: this.deps.codeIntel !== undefined,
     })
     const ide = (this.deps.ideTools ?? []).map(
@@ -1691,6 +1735,14 @@ export class ModelApiSession implements AgentSession {
     const mcp = hasShell ? (this.deps.mcpServers?.definitions() ?? []) : []
     const offered = [...own, ...ide, ...mcp]
     return this.isWebSearchOffered() ? [...offered, { type: MODEL_API_WEB_SEARCH_TOOL }] : offered
+  }
+
+  /**
+   * Web fetch (M69): in a trusted workspace (`hasShell`) with the window's
+   * fetch, and not in a side chat, whose Plan mode refuses every fetch.
+   */
+  private isWebFetchOffered(hasShell: boolean): boolean {
+    return hasShell && this.deps.webFetch !== undefined && !this.isSideChat
   }
 
   /**
@@ -2459,8 +2511,10 @@ export class ModelApiSession implements AgentSession {
    * The user's decision on a call: an approval card, or for a paid call
    * (an image, a subagent task) the paid-use popup (M58, PLAN.md D48),
    * which asks in every mode unless the feature is allowed always in this
-   * workspace. A hook's "allow" never answers either for a protected write
-   * or a paid call; a hook that demands a question asks even then.
+   * workspace. A hook's "allow" never answers for a protected write, a web
+   * fetch (its URL can carry the conversation to the host; M69) or a paid
+   * call; a hook may still deny them, and one that demands a question asks
+   * even then.
    */
   private async askApproval(
     itemId: string,
@@ -2493,7 +2547,9 @@ export class ModelApiSession implements AgentSession {
         stopNotifying()
       }
     }
-    if (!requiresUserApproval && query.isProtected !== true && hook.approvalDecision === 'allow') {
+    const isHookAllowEnough =
+      !requiresUserApproval && query.isProtected !== true && query.toolClass !== 'network'
+    if (isHookAllowEnough && hook.approvalDecision === 'allow') {
       return { isApproved: true, feedback: undefined }
     }
     const approvalId = this.deps.newId()
@@ -2979,7 +3035,7 @@ export class ModelApiSession implements AgentSession {
     signal: AbortSignal,
   ): Promise<ToolOutcome> {
     if (external.kind === 'ide') {
-      const text = clipOutput(await external.tool.call(argumentsOf(call)))
+      const text = clipOutput(await external.tool.call(argumentsOf(call), signal))
       return { output: text, visibleOutput: text }
     }
     const servers = this.deps.mcpServers
@@ -3773,6 +3829,87 @@ export class ModelApiSession implements AgentSession {
     return { outcome: await runMemoryCall(memory, placed.value), isRejected: false }
   }
 
+  /**
+   * A web fetch (M69, PLAN.md D49): refused in Restricted Mode, and for a
+   * URL the fetch would refuse anyway, before any card; then judged as a
+   * network tool per host, its card naming the URL as it will be fetched.
+   * The fetch itself resolves, checks and pins every hop.
+   */
+  private async decideAndRunWebFetch(
+    itemId: string,
+    call: FunctionCallItem,
+    signal: AbortSignal,
+    shouldForceApproval: boolean,
+  ): Promise<CallResult> {
+    const fetchPage = this.deps.webFetch
+    if (fetchPage === undefined) {
+      return { outcome: toolFailure(`unknown tool ${call.name}`), isRejected: false }
+    }
+    if (!this.deps.isWorkspaceTrusted()) {
+      return webFetchRestricted()
+    }
+    const parsed = webFetchArgs.safeParse(argumentsOf(call))
+    if (!parsed.success) {
+      return { outcome: toolFailure('invalid arguments: url is required'), isRejected: false }
+    }
+    const checked = checkPageUrl(parsed.data.url)
+    if (!checked.ok) {
+      return { outcome: webFetchRefusal(checked.failure), isRejected: false }
+    }
+    const url = checked.url.href
+    const query: PermissionQuery = {
+      toolName: call.name,
+      toolClass: 'network',
+      command: approvalHost(checked.url),
+    }
+    const refusal = await this.judge(
+      itemId,
+      call,
+      signal,
+      query,
+      { kind: WEB_FETCH_SUBJECT_KIND, target: url, toolName: call.name },
+      shouldForceApproval,
+    )
+    if (refusal !== undefined) {
+      return refusal
+    }
+    // The card or a hook was awaited: the turn may have stopped, the
+    // workspace lost its trust, or the mode turned to one that refuses.
+    const withdrawn = this.webFetchWithdrawn(call, query, signal)
+    if (withdrawn !== undefined) {
+      return withdrawn
+    }
+    const result = await fetchPage(url, signal, () => this.isWebFetchStillAllowed(query))
+    // Asked again once the page is in: it reaches the model only while web
+    // fetch is still allowed.
+    return (
+      this.webFetchWithdrawn(call, query, signal) ?? {
+        outcome: webFetchOutcome(result),
+        isRejected: false,
+      }
+    )
+  }
+
+  /** Whether what allowed a web fetch still holds: trust, and a mode that does not refuse it. */
+  private isWebFetchStillAllowed(query: PermissionQuery): boolean {
+    return this.deps.isWorkspaceTrusted() && this.permissions.verdict(query) !== 'deny'
+  }
+
+  /** The refusal for a web fetch no longer allowed after an await; throws when the turn stopped. */
+  private webFetchWithdrawn(
+    call: FunctionCallItem,
+    query: PermissionQuery,
+    signal: AbortSignal,
+  ): CallResult | undefined {
+    if (signal.aborted) {
+      throw new AbortedError()
+    }
+    if (!this.deps.isWorkspaceTrusted()) {
+      return webFetchRestricted()
+    }
+    return this.permissions.verdict(query) === 'deny' ? this.refusedByMode(call) : undefined
+  }
+
   /** A read-only code intelligence call (M67): a read in every mode, stopped by Stop. */
   private async readCode(
     tool: Exclude<CodeIntelTool, 'renameSymbol'>,
@@ -3862,6 +3999,9 @@ export class ModelApiSession implements AgentSession {
     }
     if (isMemoryTool(call.name)) {
       return await this.decideAndRunMemory(itemId, call, signal, toolClass, shouldForceApproval)
+    }
+    if (toolClass === 'network') {
+      return await this.decideAndRunWebFetch(itemId, call, signal, shouldForceApproval)
     }
     if (call.name === CODE_INTEL_TOOLS.renameSymbol) {
       return await this.decideAndRunRename(itemId, call, signal, shouldForceApproval)

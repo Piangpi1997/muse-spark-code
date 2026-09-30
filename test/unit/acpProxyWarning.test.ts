@@ -57,7 +57,7 @@ describe('envProxyWarning', () => {
       }),
     ).toBeUndefined()
     expect(
-      warning({ nodeVersion: 'v24.0.0', env: { HTTPS_PROXY: PROXY, NODE_USE_ENV_PROXY: '1' } }),
+      warning({ nodeVersion: 'v24.5.0', env: { HTTPS_PROXY: PROXY, NODE_USE_ENV_PROXY: '1' } }),
     ).toBeUndefined()
   })
 
@@ -84,7 +84,18 @@ describe('envProxyWarning', () => {
     },
   )
 
-  it.each(['v22.21.0', 'v22.23.3', 'v24.0.0', 'v24.20.0', 'v25.1.0'])(
+  it.each(['v24.0.0', 'v24.4.0'])(
+    'warns that Node %s sends page requests directly even when Meta requests use the proxy',
+    (nodeVersion) => {
+      const said = warning({ nodeVersion, env: { HTTPS_PROXY: PROXY, NODE_USE_ENV_PROXY: '1' } })
+      expect(said).toContain('Meta requests use the proxy')
+      expect(said).toContain('sends web_fetch page requests directly, bypassing it')
+      expect(said).toContain('Node 24.5 or later')
+      expect(said).not.toContain(PROXY)
+    },
+  )
+
+  it.each(['v22.21.0', 'v22.23.3', 'v24.5.0', 'v24.20.0', 'v25.1.0'])(
     'takes Node %s as one with the switch',
     (nodeVersion) => {
       expect(warning({ nodeVersion })).toContain('NODE_USE_ENV_PROXY is not 1')

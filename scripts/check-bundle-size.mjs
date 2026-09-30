@@ -16,6 +16,9 @@ const BUDGETS = [
   // split out, plus about a third for the Model API work already planned.
   { path: 'dist/modelApi.js', budgetKiB: 400 },
   { path: 'dist/searchWorker.js', budgetKiB: 50 },
+  // Web fetch's page converter (M69), on a worker started for each page:
+  // 201.2 KiB when split out (parse5 122.7 of it), plus room.
+  { path: 'dist/pageWorker.js', budgetKiB: 300 },
   { path: 'dist/webview/main.js', budgetKiB: 900 },
   // The ACP agent (M63, PLAN.md D62), a process of its own installed once,
   // never loaded by VS Code: the engine without the webview or the Model API

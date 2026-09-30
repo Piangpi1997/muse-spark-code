@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, it } from 'vitest'
+import { MODEL_TEXT } from '../../src/shared/constants'
 import { EN } from '../../src/shared/l10n/en'
-import { setUiText } from '../../src/shared/l10n/text'
+import { fill, setUiText } from '../../src/shared/l10n/text'
 import {
   changeSummary,
   describeTool,
+  fetchedSize,
   toolLabel,
   writtenContent,
 } from '../../src/webview/toolPresentation'
@@ -263,6 +265,36 @@ describe('image edits and the ide server’s images (M44)', () => {
       label: 'Edit image',
       imagePath: 'b.png',
     })
+  })
+})
+
+describe('web fetch rows (M69)', () => {
+  afterEach(() => {
+    setUiText(EN, 'en')
+  })
+
+  it('shows the URL on both backends, and the size a fetched page reports', () => {
+    for (const tool of ['web_fetch', 'mcp__ide__webFetch']) {
+      expect(describeTool(tool, '{"url":"https://docs.example.com/a"}')).toMatchObject({
+        label: 'Fetch page',
+        summary: 'https://docs.example.com/a',
+        body: 'fetch',
+      })
+    }
+    const output = [
+      fill(MODEL_TEXT.webFetchHeader, {
+        url: 'https://docs.example.com/a',
+        status: '200',
+        type: 'text/html',
+        bytes: '48213',
+      }),
+      MODEL_TEXT.webFetchUntrusted,
+    ].join(' ')
+    expect(fetchedSize(output)).toBe('Fetched 48.2 kB (text/html)')
+    expect(fetchedSize('Fetched 512 bytes of nothing')).toBeUndefined()
+    expect(fetchedSize('Error: the server answered HTTP 404')).toBeUndefined()
+    setUiText({ ...EN, webFetchSize: '{type}: {size}' }, 'de')
+    expect(fetchedSize(output)).toBe('text/html: 48,2 kB')
   })
 })
 

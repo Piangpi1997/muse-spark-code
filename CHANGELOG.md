@@ -9,6 +9,65 @@ happened, not what was planned; superseded entries are kept.
 
 ### Added
 
+- **Web fetch on both backends** (M69, PLAN.md D49; folds in M44b). The
+  model can read one public web page it found or you named: `web_fetch` on
+  the Model API backend, and `mcp__ide__webFetch` on Muse Code, whose own
+  `web_fetch` is switched off. The extension fetches the page from your
+  machine; it is free, not Meta's paid search.
+  - `https://` only, public internet addresses only: the name is resolved
+    here and refused when any answer is loopback, private, link-local,
+    carrier-grade NAT, cloud metadata or reserved (IPv4-mapped, NAT64 and
+    6to4 forms judged by the IPv4 inside), and local or reserved names are
+    refused before any lookup. The connection goes to the address that was
+    checked, never to a second lookup; TLS still verifies the name.
+  - Same-host redirects are checked and pinned again, at most five; a
+    redirect to another host is handed back to the model. 5 MiB after
+    decompression, 30 seconds, an allow-list of text types; HTML becomes
+    Markdown, text stays as it is, anything else is refused with the reason.
+  - Through VS Code's proxy and certificates: the proxy is asked to tunnel
+    to the checked address, and a proxy's own answer is refused as such,
+    never read as the page.
+  - On the Model API backend it asks per host in Manual, Edit automatically
+    and Auto ("Always allow in this session" covers that host), runs in
+    Bypass, and is refused in Plan and in Restricted Mode. On Muse Code the
+    tool is listed only in a trusted workspace whose
+    `museSpark.sandboxNetwork` is not `restricted`, declares itself
+    open-world and not read-only, and the extension asks in its own dialog
+    before every fetch.
+  - The model receives the page between random markers, with a note that it
+    is untrusted content; the row shows the URL, the size and type, and what
+    the model read. 23 new strings in fifteen languages.
+  - After review: Muse Code's Stop (a closed request, or
+    `notifications/cancelled`) stops the fetch and voids a later answer in
+    the dialog, which is also asked only once per URL at a time and checks
+    the workspace again after it; the checked addresses are raced as RFC 8305
+    says; failures name the page's host and the addresses tried instead of
+    M56's advice about Meta, and a network failure's detail only by its
+    error codes (never a certificate's names); a server's text reaches the
+    model outside the markers only as short tokens; the HTML converter is bounded; names with
+    trailing dots or empty labels are refused; a network's own NAT64 prefix
+    is discovered (RFC 7050), and while it cannot be learned no IPv6 answer
+    is used (only a DNS answer proves there is none); pages are parsed by
+    HTML's own rules (implied ends, misnested and self-closed tags, SVG and
+    MathML, comments and scripts), and the Markdown is the page's text as
+    served, which can include text a browser would not show (no stylesheet
+    or hiding attribute is read, since hiding cannot be worked out
+    completely and visible small print hides nothing), all of it between
+    the untrusted markers, as the tool's description and the note now say;
+    a hook's "allow" no longer replaces
+    the per-host card; trust
+    and the mode are asked again after the card, before each request and
+    before the page reaches the model; damaged compression and unknown charsets are
+    handled as a browser would; `museSpark.sandboxNetwork`'s description now
+    says it also hides web fetch from Muse Code. Fifteen more strings, one
+    changed and one dropped, and two changed setting descriptions, in
+    fifteen languages.
+- **Dependencies.** Web fetch parses HTML with `parse5` 8.0.1 (MIT)
+  and sniffs its encoding with `html-encoding-sniffer` 6.0.0 (MIT), both
+  already in the tree through the test tools. They load only in
+  `dist/pageWorker.js` (201 KiB, budget 300 KiB), on a worker thread started for each page (at
+  most two at once) and stopped at 10 seconds or 512 MiB; `dist/extension.js` does not carry
+  them. `entities` is no longer a direct dependency.
 - **Code intelligence** (M67, PLAN.md D49): the agent finds definitions,
   references and symbols the way the editor does, from VS Code's own
   language services, instead of searching text. `find_definition`,
@@ -199,6 +258,14 @@ happened, not what was planned; superseded entries are kept.
 
 ### Fixed
 
+- **Web fetch rechecks permission before every address attempt.** A permission
+  withdrawal while the first connection waits or fails prevents fallback
+  connections, stops outstanding attempts and closes late answers.
+- **Standalone page-fetch proxy warnings distinguish Node transports.**
+  Node 24.0–24.4 can proxy Meta's `fetch` requests while HTTPS page requests
+  still go directly; startup now warns about that gap. The ACP package includes
+  the page-converter worker and its notices, and documents pinned-IP `NO_PROXY`
+  matching.
 - **Stop still prevents a rename's first write during its final file check.**
   A cancellation after approval is checked again after the awaited recheck.
   Once a write starts, the remaining rename keeps its existing completion path.
@@ -221,6 +288,11 @@ happened, not what was planned; superseded entries are kept.
 - **ACP packaging works from Windows paths containing spaces.** npm runs in
   the staging directory with fixed relative arguments. Host documentation now
   distinguishes development-extension integration tests from VSIX installation.
+- **Web fetch preserves picture fallback images** (M69). HTML conversion
+  now walks `<picture>` instead of discarding it, retaining the fallback
+  `<img>` and its alt text under the existing safe-source rules. Source
+  alternatives are not selected or fetched; images inside inert templates
+  or embedded media remain excluded.
 
 - **Signing out of Muse Code finishes, and a signed-out CLI no longer reads
   as signed in** (PLAN.md D26).

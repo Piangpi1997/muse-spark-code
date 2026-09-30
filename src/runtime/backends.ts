@@ -34,10 +34,13 @@ import { CliAccount, isCliSignedIn } from '../host/auth/cliAccount'
 import { CredentialStore, type SecretStore } from '../host/auth/credentialStore'
 import type { Logger } from '../host/logger'
 import { createWorkspaceFileLister } from '../host/mention/workspaceFiles'
+import { pageConverter } from '../host/web/pageConverter'
+import { createWebFetcher } from '../host/web/webFetcher'
 import {
   type EnvironmentVariable,
   MENTION_INDEX_LIMIT,
   MODEL_API_BUNDLE_FILE,
+  PAGE_WORKER_FILE,
   SEARCH_WORKER_FILE,
   SECRET_KEYS,
   SETTING_DEFAULTS,
@@ -58,7 +61,7 @@ import { paidGrantFile } from './paidGrants'
 export interface RuntimeBackendDeps {
   readonly options: ServeOptions
   readonly version: string
-  /** The folder holding `acp.js`, `modelApi.js` and `searchWorker.js`. */
+  /** The folder holding the agent, backend, search and page-converter bundles. */
   readonly distDir: string
   readonly platform: NodeJS.Platform
   readonly env: NodeJS.ProcessEnv
@@ -186,6 +189,7 @@ function modelApiManager(
     workspaceRoot,
     io,
     contextIo: fileContextIo,
+    webFetch: createWebFetcher(log, pageConverter(path.join(deps.distDir, PAGE_WORKER_FILE), log)),
     fetch: deps.fetch,
     newId: () => randomUUID(),
     now: () => Date.now(),

@@ -59,6 +59,7 @@ import { type FakeMcpSource, fakeMcpSource } from './helpers/fakeMcpSource'
 import type { McpCallOutcome } from '../../src/core/backends/modelapi/mcp/functions'
 import { countLogged } from './helpers/logText'
 import type { McpTool } from '../../src/core/mcp'
+import type { WebFetcher, WebFetchResult } from '../../src/core/web/webFetch'
 import { memoryStoreOver, PERSONAL } from './helpers/fakeMemoryIo'
 
 const ROOT = '/ws'
@@ -207,6 +208,8 @@ function setup(
     hasMemory?: boolean
     /** Folders the memory fake reports as links to elsewhere (M49). */
     memoryLinks?: Record<string, string>
+    /** The window's web fetch (M69); none unless a test gives one. */
+    webFetch?: ModelApiHostDeps['webFetch']
   } = {},
 ) {
   const paidUses: { readonly feature: PaidFeature; readonly units: number }[] = []
@@ -296,6 +299,7 @@ function setup(
     isHooksEnabled: options.isHooksEnabled,
     hookNotificationDelayMs: options.hookNotificationDelayMs,
     memory,
+    webFetch: options.webFetch,
   })
   return {
     api,
@@ -9789,5 +9793,343 @@ describe('ModelApiHost: MCP servers and the IDE tool (M50)', () => {
     await vi.waitFor(() => {
       expect(countLogged(t.log, 'The MCP servers could not be started: nope')).toBe(1)
     })
+  })
+})
+
+// --- Web fetch (M69, PLAN.md D49) ---
+
+const FETCHED_PAGE: WebFetchResult = {
+  kind: 'page',
+  page: {
+    url: 'https://docs.example.com/guide',
+    finalUrl: 'https://docs.example.com/guide',
+    status: 200,
+    type: 'text/html',
+    bytes: 42,
+  },
+  text: 'Fetched https://docs.example.com/guide (HTTP 200, text/html, 42 bytes). The page.',
+}
+
+/** A web fetch that records what it was asked and answers with `result`. */
+function recordingFetch(result: (url: string) => WebFetchResult = () => FETCHED_PAGE) {
+  const urls: string[] = []
+  const fetcher: WebFetcher = (url) => {
+    urls.push(url)
+    return Promise.resolve(result(url))
+  }
+  return { fetcher, urls }
+}
+
+/** One `web_fetch` call per URL, a round each, then a reply. */
+function scriptFetches(t: ReturnType<typeof setup>, ...urls: readonly string[]): void {
+  t.api.script(
+    ...urls.map((url, index) => ({
+      calls: [
+        { name: 'web_fetch', arguments: JSON.stringify({ url }), callId: `fetch_${String(index)}` },
+      ],
+    })),
+    { text: 'done' },
+  )
+}
+
+function fetchRows(events: readonly AgentEvent[]) {
+  return events.flatMap((event) =>
+    event.type === 'itemCompleted' && event.item.tool === 'web_fetch' ? [event.item] : [],
+  )
+}
+
+/** Answers the n-th card with `choiceId`, and returns it. */
+async function answerCard(
+  session: ModelApiSession,
+  events: readonly AgentEvent[],
+  index: number,
+  choiceId: string,
+) {
+  const request = await approvalRequest(events, index)
+  await session.decideApproval({
+    approvalId: request.approvalId,
+    choiceId,
+    requirementId: request.requirementId,
+  })
+  return request
+}
+
+describe('web fetch on the Model API backend (M69)', () => {
+  it('is offered, and named in the instructions, only in a trusted workspace with a fetch', async () => {
+    const fetch = recordingFetch()
+    for (const [options, isOffered] of [
+      [{ webFetch: fetch.fetcher }, true],
+      [{ webFetch: fetch.fetcher, isTrusted: false }, false],
+      [{}, false],
+    ] as const) {
+      const t = setup(options)
+      const { session, turnDone } = await startSession(t)
+      await answerFirst(t, session, turnDone)
+      const body = t.api.responseBodies()[0]
+      expect(toolNames(body).includes('web_fetch'), JSON.stringify(options)).toBe(isOffered)
+      expect(String(body?.['instructions']).includes('web_fetch reads one public')).toBe(isOffered)
+    }
+  })
+
+  it('asks per host in Manual, names the URL, and keeps "always" to that host', async () => {
+    const fetch = recordingFetch()
+    const t = setup({ webFetch: fetch.fetcher })
+    const { session, events, turnDone } = await startSession(t)
+    scriptFetches(
+      t,
+      'https://Docs.Example.com/guide#intro',
+      'https://docs.example.com/other?q=1',
+      'https://evil.example.net/?leak=1',
+    )
+    await session.sendTurn([{ type: 'text', text: 'read the docs' }])
+    const first = await answerCard(session, events, 0, 'allow_session')
+    expect(first.subject).toEqual({
+      kind: 'webFetch',
+      target: 'https://docs.example.com/guide',
+      toolName: 'web_fetch',
+    })
+    expect(first.availableChoices[1]?.label).toBe('Always allow in this session: docs.example.com')
+    // The same host runs without a card; another host asks again.
+    const second = await answerCard(session, events, 1, 'abort')
+    expect(second.subject.target).toBe('https://evil.example.net/?leak=1')
+    await turnDone()
+    expect(fetch.urls).toEqual([
+      'https://docs.example.com/guide',
+      'https://docs.example.com/other?q=1',
+    ])
+    expect(toolOutput(t, 'fetch_0')).toBe(FETCHED_PAGE.text)
+    const rows = fetchRows(events)
+    expect(rows.map((row) => row.status)).toEqual(['completed', 'completed', 'rejected'])
+    expect(rows[0]?.visibleOutput).toBe(FETCHED_PAGE.text)
+    expect(rows.every((row) => row.paid === undefined)).toBe(true)
+  })
+
+  it('asks in Auto, runs in Bypass, and is refused in Plan without a request', async () => {
+    for (const [mode, isAsked, isFetched] of [
+      ['onRequest', true, true],
+      ['allowAll', false, true],
+      ['denyUnmatched', false, false],
+    ] as const) {
+      const fetch = recordingFetch()
+      const t = setup({ webFetch: fetch.fetcher })
+      const { session, events, turnDone } = await startSession(t, mode)
+      scriptFetches(t, 'https://docs.example.com/guide')
+      await session.sendTurn([{ type: 'text', text: 'read' }])
+      if (isAsked) {
+        await answerCard(session, events, 0, 'allow_once')
+      }
+      await turnDone()
+      expect(hasApprovalCard(events), mode).toBe(isAsked)
+      expect(fetch.urls.length, mode).toBe(isFetched ? 1 : 0)
+      if (!isFetched) {
+        expect(fetchRows(events)[0]).toMatchObject({
+          status: 'rejected',
+          failureReason: 'web_fetch refused by the permission mode',
+        })
+      }
+    }
+  })
+
+  it("keeps the per-host card when a PermissionRequest hook allows; a hook's deny still refuses", async () => {
+    const fetch = recordingFetch()
+    const allowing = setup({
+      webFetch: fetch.fetcher,
+      hooks: hooksFor('PermissionRequest', 'allow'),
+      runHook: permitHook,
+    })
+    const first = await startSession(allowing)
+    scriptFetches(allowing, 'https://docs.example.com/guide')
+    await first.session.sendTurn([{ type: 'text', text: 'read' }])
+    // The hook's allow is not the user's: the card still asks, and a refusal holds.
+    await answerCard(first.session, first.events, 0, 'abort')
+    await first.turnDone()
+    expect(fetch.urls).toEqual([])
+    expect(fetchRows(first.events)[0]?.status).toBe('rejected')
+
+    const denying = setup({
+      webFetch: fetch.fetcher,
+      hooks: hooksFor('PermissionRequest', 'deny'),
+      runHook: denyHook,
+    })
+    const second = await startSession(denying)
+    scriptFetches(denying, 'https://docs.example.com/guide')
+    await second.session.sendTurn([{ type: 'text', text: 'read' }])
+    await second.turnDone()
+    expect(hasApprovalCard(second.events)).toBe(false)
+    expect(fetch.urls).toEqual([])
+    expect(fetchRows(second.events)[0]).toMatchObject({
+      status: 'rejected',
+      failureReason: 'web_fetch rejected by a hook',
+    })
+  })
+
+  it('asks trust and the mode again after the card, and fetches nothing once either is gone', async () => {
+    const fetch = recordingFetch()
+    const options = { webFetch: fetch.fetcher, isTrusted: true }
+    const untrusted = setup(options)
+    const first = await startSession(untrusted)
+    scriptFetches(untrusted, 'https://docs.example.com/guide')
+    await first.session.sendTurn([{ type: 'text', text: 'read' }])
+    const card = await approvalRequest(first.events, 0)
+    // Trust is revoked while the card is open; the user then allows.
+    options.isTrusted = false
+    await first.session.decideApproval({
+      approvalId: card.approvalId,
+      choiceId: 'allow_once',
+      requirementId: card.requirementId,
+    })
+    await first.turnDone()
+    expect(fetch.urls).toEqual([])
+    expect(fetchRows(first.events)[0]).toMatchObject({
+      status: 'rejected',
+      failureReason: UI_TEXT.webFetchRestrictedMode,
+    })
+
+    const planned = setup({ webFetch: fetch.fetcher })
+    const second = await startSession(planned)
+    scriptFetches(planned, 'https://docs.example.com/guide')
+    await second.session.sendTurn([{ type: 'text', text: 'read' }])
+    const secondCard = await approvalRequest(second.events, 0)
+    // The mode turns to Plan while the card is open.
+    await second.session.setApprovalMode('denyUnmatched')
+    await second.session.decideApproval({
+      approvalId: secondCard.approvalId,
+      choiceId: 'allow_once',
+      requirementId: secondCard.requirementId,
+    })
+    await second.turnDone()
+    expect(fetch.urls).toEqual([])
+    expect(fetchRows(second.events)[0]?.status).toBe('rejected')
+  })
+
+  it('gives the fetch a check it asks before each request, and drops a page trust no longer allows', async () => {
+    const answers: boolean[] = []
+    const options: { webFetch: WebFetcher; isTrusted: boolean } = {
+      webFetch: (_url, _signal, isStillAllowed) => {
+        answers.push(isStillAllowed?.() ?? true)
+        // Trust is revoked while the page is being fetched.
+        options.isTrusted = false
+        answers.push(isStillAllowed?.() ?? true)
+        return Promise.resolve(FETCHED_PAGE)
+      },
+      isTrusted: true,
+    }
+    const t = setup(options)
+    const { session, events, turnDone } = await startSession(t, 'allowAll')
+    scriptFetches(t, 'https://docs.example.com/guide')
+    await session.sendTurn([{ type: 'text', text: 'read' }])
+    await turnDone()
+    expect(answers).toEqual([true, false])
+    expect(toolOutput(t, 'fetch_0')).toBe(`Error: ${MODEL_TEXT.webFetchRestrictedMode}`)
+    expect(fetchRows(events)[0]?.failureReason).toBe(UI_TEXT.webFetchRestrictedMode)
+  })
+
+  it('refuses a URL the fetch would refuse before any card, in the words of the user', async () => {
+    const fetch = recordingFetch()
+    const t = setup({ webFetch: fetch.fetcher })
+    const { session, events, turnDone } = await startSession(t)
+    // The same page over plain HTTP, then the cloud metadata address.
+    const plainHttp = 'https://docs.example.com/'.replace('https:', 'http:')
+    scriptFetches(t, plainHttp, 'https://169.254.169.254/latest/meta-data/')
+    await session.sendTurn([{ type: 'text', text: 'read' }])
+    await turnDone()
+    expect(hasApprovalCard(events)).toBe(false)
+    expect(fetch.urls).toEqual([])
+    expect(fetchRows(events).map((row) => row.failureReason)).toEqual([
+      UI_TEXT.webFetchNotHttps,
+      fill(UI_TEXT.webFetchPrivateAddress, { host: '169.254.169.254', address: '169.254.169.254' }),
+    ])
+    expect(toolOutput(t, 'fetch_1')).toContain('not a public internet address')
+  })
+
+  it('is refused in Restricted Mode even when the model calls it', async () => {
+    const fetch = recordingFetch()
+    const t = setup({ webFetch: fetch.fetcher, isTrusted: false })
+    const { session, events, turnDone } = await startSession(t, 'allowAll')
+    scriptFetches(t, 'https://docs.example.com/guide')
+    await session.sendTurn([{ type: 'text', text: 'read' }])
+    await turnDone()
+    expect(fetch.urls).toEqual([])
+    expect(fetchRows(events)[0]).toMatchObject({
+      status: 'rejected',
+      failureReason: UI_TEXT.webFetchRestrictedMode,
+    })
+    expect(toolOutput(t, 'fetch_0')).toBe(`Error: ${MODEL_TEXT.webFetchRestrictedMode}`)
+  })
+
+  it('shows a redirect to another host in the words of the user, and the model its own', async () => {
+    const moved: WebFetchResult = {
+      kind: 'moved',
+      location: 'https://other.example.net/',
+      text: 'model text with markers',
+      visibleText: 'visible text',
+    }
+    const fetch = recordingFetch(() => moved)
+    const t = setup({ webFetch: fetch.fetcher })
+    const { session, events, turnDone } = await startSession(t, 'allowAll')
+    scriptFetches(t, 'https://docs.example.com/guide')
+    await session.sendTurn([{ type: 'text', text: 'read' }])
+    await turnDone()
+    expect(fetchRows(events)[0]).toMatchObject({
+      status: 'completed',
+      visibleOutput: 'visible text',
+    })
+    expect(toolOutput(t, 'fetch_0')).toBe('model text with markers')
+  })
+
+  it('is not offered in a side chat, whose Plan mode refuses every fetch', async () => {
+    const fetch = recordingFetch()
+    const t = setup({ webFetch: fetch.fetcher, store: memorySessionStore() })
+    const { session, turnDone } = await startSession(t)
+    await answerFirst(t, session, turnDone)
+    const side = await openSideFork(t, session)
+    const sideTurns = watchTurns(side.session)
+    t.api.script({ text: 'side reply' })
+    await side.session.sendTurn([{ type: 'text', text: 'side question' }])
+    await sideTurns.turnDone()
+    const body = t.api.responseBodies().at(-1)
+    expect(toolNames(body)).not.toContain('web_fetch')
+    expect(String(body?.['instructions'])).not.toContain('web_fetch reads one public')
+  })
+
+  it("shows the fetch's own refusal to the user and the model", async () => {
+    const refused = recordingFetch(() => ({
+      kind: 'failed',
+      failure: {
+        kind: 'contentType',
+        reason: 'the response is image/png',
+        visibleReason: 'Not text',
+      },
+    }))
+    const t = setup({ webFetch: refused.fetcher })
+    const { session, events, turnDone } = await startSession(t, 'allowAll')
+    scriptFetches(t, 'https://docs.example.com/logo.png')
+    await session.sendTurn([{ type: 'text', text: 'read' }])
+    await turnDone()
+    expect(fetchRows(events)[0]).toMatchObject({ status: 'failed', failureReason: 'Not text' })
+    expect(toolOutput(t, 'fetch_0')).toBe('Error: the response is image/png')
+  })
+
+  it('ends a fetch the user stops', async () => {
+    const signals: AbortSignal[] = []
+    const hanging: WebFetcher = (_url, signal) => {
+      signals.push(signal)
+      return new Promise((_resolve, reject) => {
+        signal.addEventListener('abort', () => {
+          reject(new Error('stopped'))
+        })
+      })
+    }
+    const t = setup({ webFetch: hanging })
+    const { session, events, turnDone } = await startSession(t, 'allowAll')
+    scriptFetches(t, 'https://docs.example.com/slow')
+    await session.sendTurn([{ type: 'text', text: 'read' }])
+    await vi.waitFor(() => {
+      expect(signals).toHaveLength(1)
+    })
+    await session.cancel()
+    await turnDone()
+    expect(signals[0]?.aborted).toBe(true)
+    expect(fetchRows(events)[0]).toMatchObject({ status: 'cancelled' })
   })
 })
